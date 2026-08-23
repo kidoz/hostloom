@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/HostLoom.Pipelines/HostLoom.Pipelines.csproj" />
+    <Project Path="src/HostLoom/HostLoom.csproj" />
+    <Project Path="src/HostLoom.Transport.InMemory/HostLoom.Transport.InMemory.csproj" />
+    <Project Path="src/HostLoom.Transport.Kafka/HostLoom.Transport.Kafka.csproj" />
+    <Project Path="src/HostLoom.Transport.RabbitMq/HostLoom.Transport.RabbitMq.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/HostLoom.Tests/HostLoom.Tests.csproj" />
+  </Folder>
+</Solution>
