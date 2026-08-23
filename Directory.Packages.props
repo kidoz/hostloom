@@ -10,6 +10,7 @@
     <PackageVersion Include="NSubstitute" Version="6.2.0" />
     <PackageVersion Include="NSubstitute.Analyzers.CSharp" Version="1.0.17" />
     <PackageVersion Include="RabbitMQ.Client" Version="7.2.1" />
+    <PackageVersion Include="Serilog" Version="4.0.1" />
     <PackageVersion Include="protobuf-net" Version="3.4.14" />
     <PackageVersion Include="xunit.v3" Version="4.0.0" />
   </ItemGroup>
