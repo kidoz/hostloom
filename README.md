@@ -92,10 +92,15 @@ Two subscription names on one topic each receive every event. Two handlers under
 *same* name share one delivery and one dependency-injection scope. A subscription that
 has no handler for a published contract ignores it rather than failing.
 
-Publish/subscribe is a separate transport capability, `IEventBroker`. Only the in-memory
-transport implements it today; publishing through a request-only transport throws, and
-registering a subscription against one fails at startup rather than starting up looking
-subscribed while nothing is delivered.
+Publish/subscribe is a separate transport capability, `IEventBroker`. Publishing through
+a transport that lacks it throws, and registering a subscription against one fails at
+startup rather than starting up looking subscribed while nothing is delivered.
+
+On RabbitMQ a topic is a **fanout exchange** and each subscription is a durable queue
+named `topic.subscription` bound to it, so subscriptions accumulate their own backlog
+instead of competing for one queue. Events publish with no routing key and without
+`mandatory`, so an event nobody subscribes to is dropped rather than failing the publish.
+Kafka pub/sub is not implemented yet.
 
 ## Receive pipeline
 
