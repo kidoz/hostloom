@@ -1,0 +1,85 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{csproj,props,targets,slnx,json,yml,yaml}]
+indent_size = 2
+
+# ---------------------------------------------------------------------------
+# Analyzers
+#
+# Directory.Build.props sets AnalysisLevel=latest-all with TreatWarningsAsErrors,
+# so every CA rule is on by default and any rule left enabled is a build gate.
+# Each rule silenced below is a deliberate design decision, not noise triage.
+# Do not add a blanket suppression here without a reason on the same line.
+# ---------------------------------------------------------------------------
+
+[*.cs]
+
+# CA1062: parameters are already contract-checked by nullable reference types, which are
+# enabled repo-wide. Public entry points that dereference an argument still guard with
+# ArgumentNullException.ThrowIfNull; this rule would demand a guard on every parameter.
+dotnet_diagnostic.CA1062.severity = none
+
+# CA1812: internal types are instantiated by the dependency-injection container, which the
+# analyzer cannot see (MessageDispatcher, RequestClient, RequestExecutor, hosted services).
+dotnet_diagnostic.CA1812.severity = none
+
+# CA1031: the messaging runtime deliberately catches every exception at the fault boundary
+# and at the Kafka per-record boundary. Narrowing these would let one handler kill a loop.
+dotnet_diagnostic.CA1031.severity = none
+
+# CA1716: 'next' and 'Set' are the idiomatic middleware and probe vocabulary. Renaming them
+# to satisfy VB keyword rules would make the pipeline API worse for its actual audience.
+dotnet_diagnostic.CA1716.severity = none
+
+# CA1711: RequestHandlerDelegate is a delegate, and the name mirrors ASP.NET Core's
+# RequestDelegate. The suffix is accurate rather than misleading here.
+dotnet_diagnostic.CA1711.severity = none
+
+# CA1032: RemoteRequestException and RequestTimeoutException carry required structured fault
+# data. Adding the parameterless and (string) constructors would allow instances whose
+# non-nullable ErrorType is null, which nullable reference types are meant to prevent.
+dotnet_diagnostic.CA1032.severity = none
+
+# CA1848: LoggerMessage source generation is a hot-path optimisation. Every log call in this
+# repo is on an exceptional path (consume failure, poison record, commit failure).
+dotnet_diagnostic.CA1848.severity = none
+
+# CA1040: IRequest<TResponse> is a deliberate marker interface. It is the type-level link
+# between a request and its response, resolved at compile time.
+dotnet_diagnostic.CA1040.severity = none
+
+# CA1515: this repository ships libraries, so public types are the product. The rule targets
+# applications, where an unnecessarily public type is a real leak.
+dotnet_diagnostic.CA1515.severity = none
+
+# CA1001: ConcurrencyLimitFilter owns a SemaphoreSlim but IFilter/IPipe have no disposal
+# contract. Adding one is a public-protocol change that needs an ADR, not a silent fix.
+# Tracked deliberately: the semaphore's wait handle is never allocated, so nothing leaks.
+dotnet_diagnostic.CA1001.severity = suggestion
+
+[tests/**.cs]
+
+# CA1707: Subject_ExpectedBehaviour is the test naming convention in this repository.
+dotnet_diagnostic.CA1707.severity = none
+
+# CA1034: nested types are how xUnit fixtures keep request/handler shapes next to the test.
+dotnet_diagnostic.CA1034.severity = none
+
+# CA2007: tests have no synchronization context to capture, and ConfigureAwait(false) on
+# every await would bury the intent of the test.
+dotnet_diagnostic.CA2007.severity = none
+
+# CA2012: NSubstitute's arrange and Received() syntax necessarily produces ValueTask values
+# that are configured rather than awaited.
+dotnet_diagnostic.CA2012.severity = none
+
+# CA1002: List<string> is used directly as a recording collector in test doubles.
+dotnet_diagnostic.CA1002.severity = none
