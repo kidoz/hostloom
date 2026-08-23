@@ -2,9 +2,20 @@ using System.Collections.Concurrent;
 
 namespace HostLoom.Transport.InMemory;
 
-public sealed class InMemoryRequestBroker : IRequestBroker
+public sealed class InMemoryRequestBroker : IRequestBroker, IBrokerHealthProbe
 {
     private readonly ConcurrentDictionary<RequestAddress, RequestFrameHandler> _handlers = new();
+
+    /// <summary>Simulates an unreachable broker, so readiness behaviour is testable in process.</summary>
+    public bool IsReachable { get; set; } = true;
+
+    public ValueTask<BrokerHealth> CheckHealthAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(IsReachable
+            ? BrokerHealth.Healthy("In-memory transport is always reachable in process.")
+            : BrokerHealth.Unhealthy("In-memory transport was marked unreachable."));
+    }
 
     public ValueTask<IAsyncDisposable> ListenAsync(
         RequestAddress address,
