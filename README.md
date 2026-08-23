@@ -14,7 +14,8 @@ middleware pipeline. The current slice implements:
   concurrency limits, intentional short-circuits, and immutable pipeline probes;
 - typed `IRequest<TResponse>` contracts with handler, behavior, and client
   abstractions;
-- one dependency-injection scope per request;
+- a configurable receive pipeline wrapping handler execution on every transport;
+- one dependency-injection scope per delivery attempt;
 - explicit wire envelopes carrying message id, correlation id, logical type
   name, timestamp, and remote faults;
 - a configurable `System.Text.Json` serialization boundary;
@@ -66,6 +67,36 @@ builder.Services
 var client = services.GetRequiredService<IRequestClient<GetGreeting, Greeting>>();
 var reply = await client.GetResponseAsync("greetings", new GetGreeting("Ada"), cancellationToken: stoppingToken);
 ```
+
+## Receive pipeline
+
+Filters registered with `ConfigureReceivePipeline` wrap handler execution for
+every inbound request, on every transport:
+
+```csharp
+builder.Services
+    .AddHostLoom()
+    .UseRabbitMq()
+    .ConfigureReceivePipeline(pipe =>
+    {
+        pipe.UseRetry(RetryPolicy.Exponential(3, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(5)));
+        pipe.UseCircuitBreaker(failureThreshold: 5, resetInterval: TimeSpan.FromSeconds(30));
+    })
+    .AddHandler<GetGreeting, Greeting, GetGreetingHandler>("greetings");
+```
+
+These filters see a handler failure as an exception, before it is encoded as a
+fault envelope, which is what makes retry and circuit breaking apply to it. The
+wire contract is unchanged: an exhausted retry or an open breaker still reaches
+the caller as a `RemoteRequestException`.
+
+Each attempt runs in its own dependency-injection scope, so a retry never
+inherits scoped state left behind by the attempt that failed. The pipeline is
+composed once, so a circuit breaker or rate limiter shares state across every
+delivery rather than resetting per message.
+
+Retrying in process is a different thing from broker redelivery. This pipeline
+never moves a broker offset; redelivery is the transport's concern.
 
 ## Transports
 
@@ -189,7 +220,7 @@ src/HostLoom/                    messaging kernel
   Configuration/                 AddHostLoom builder and DI registration
   Diagnostics/                   the HostLoom ActivitySource
   Exceptions/                    remote fault and request timeout types
-  Runtime/                       dispatcher, executor, client, hosted endpoint
+  Runtime/                       dispatcher, receive pipeline, executor, client, endpoint
   Serialization/                 System.Text.Json serialization boundary
   Wire/                          envelope, logical type names, codec
 src/HostLoom.Pipelines/          transport-neutral middleware pipelines
