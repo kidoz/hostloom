@@ -1,3 +1,4 @@
+using HostLoom.Pipelines;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -46,6 +47,19 @@ public sealed class HostLoomBuilder
         where TRequest : class, IRequest<TResponse>
     {
         Services.TryAddTransient<IRequestClient<TRequest, TResponse>, RequestClient<TRequest, TResponse>>();
+        return this;
+    }
+
+    /// <summary>
+    /// Adds filters that wrap handler execution for every inbound request, on every transport.
+    /// Handler faults reach these filters as exceptions, before they are encoded as fault
+    /// envelopes, so <c>UseRetry</c> and <c>UseCircuitBreaker</c> apply to them. Call more than
+    /// once to append; filters run in registration order.
+    /// </summary>
+    public HostLoomBuilder ConfigureReceivePipeline(Action<PipeBuilder<ReceiveContext>> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        Configuration.ConfigureReceivePipeline(configure);
         return this;
     }
 

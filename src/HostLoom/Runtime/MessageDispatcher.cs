@@ -1,12 +1,31 @@
+using HostLoom.Pipelines;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace HostLoom;
 
-internal sealed class MessageDispatcher(
-    HostLoomConfiguration configuration,
-    IServiceScopeFactory scopeFactory,
-    IMessageSerializer serializer)
+internal sealed class MessageDispatcher
 {
+    private readonly HostLoomConfiguration _configuration;
+    private readonly IMessageSerializer _serializer;
+    private readonly IPipe<ReceiveContext> _receivePipe;
+
+    public MessageDispatcher(
+        HostLoomConfiguration configuration,
+        IServiceScopeFactory scopeFactory,
+        IMessageSerializer serializer)
+    {
+        _configuration = configuration;
+        _serializer = serializer;
+
+        // Composed once, not per delivery: a circuit breaker or rate limit is only meaningful if
+        // its state is shared across every request the endpoint receives.
+        _receivePipe = Pipe.Create<ReceiveContext>(builder =>
+        {
+            configuration.ReceivePipeline?.Invoke(builder);
+            builder.Use(new ExecuteRequestFilter(scopeFactory));
+        });
+    }
+
     public async ValueTask<ReadOnlyMemory<byte>> DispatchAsync(
         RequestAddress endpoint,
         ReadOnlyMemory<byte> requestFrame,
@@ -19,7 +38,7 @@ internal sealed class MessageDispatcher(
             throw new InvalidDataException($"Expected a request envelope, received '{request.Kind}'.");
         }
 
-        if (!configuration.TryGetHandler(endpoint, request.MessageType, out var registration))
+        if (!_configuration.TryGetHandler(endpoint, request.MessageType, out var registration))
         {
             return EncodeFault(
                 request,
@@ -43,28 +62,31 @@ internal sealed class MessageDispatcher(
 
         try
         {
-            var message = serializer.Deserialize(request.Body, registration.RequestType)
+            var message = _serializer.Deserialize(request.Body, registration.RequestType)
                 ?? throw new InvalidDataException($"Request body for '{request.MessageType}' was null.");
 
-            var scope = scopeFactory.CreateAsyncScope();
-            await using (scope.ConfigureAwait(false))
+            var receiveContext = new ReceiveContext(
+                endpoint,
+                request.MessageId,
+                request.MessageType,
+                registration.ExecutorType,
+                message,
+                cancellationToken);
+
+            await _receivePipe.SendAsync(receiveContext).ConfigureAwait(false);
+
+            var envelope = new MessageEnvelope
             {
-                var executor = (IRequestExecutor)scope.ServiceProvider.GetRequiredService(registration.ExecutorType);
-                var response = await executor.ExecuteAsync(message, cancellationToken).ConfigureAwait(false);
+                MessageId = Guid.NewGuid(),
+                CorrelationId = request.MessageId,
+                Kind = MessageKind.Response,
+                MessageType = request.ResponseType,
+                ResponseType = request.ResponseType,
+                SentAt = DateTimeOffset.UtcNow,
+                Body = _serializer.Serialize(receiveContext.Response, registration.ResponseType)
+            };
 
-                var envelope = new MessageEnvelope
-                {
-                    MessageId = Guid.NewGuid(),
-                    CorrelationId = request.MessageId,
-                    Kind = MessageKind.Response,
-                    MessageType = request.ResponseType,
-                    ResponseType = request.ResponseType,
-                    SentAt = DateTimeOffset.UtcNow,
-                    Body = serializer.Serialize(response, registration.ResponseType)
-                };
-
-                return WireEnvelopeCodec.Encode(envelope);
-            }
+            return WireEnvelopeCodec.Encode(envelope);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

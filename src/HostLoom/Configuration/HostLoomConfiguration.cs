@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using HostLoom.Pipelines;
 
 namespace HostLoom;
 
@@ -8,6 +9,15 @@ internal sealed class HostLoomConfiguration
     private readonly HashSet<string> _messageTypes = new(StringComparer.Ordinal);
 
     public IReadOnlyCollection<RequestAddress> Endpoints => _endpoints.Keys;
+
+    /// <summary>
+    /// Receive-pipeline filters, in registration order. Composed once when the dispatcher is
+    /// constructed, so stateful filters such as a circuit breaker span every delivery.
+    /// </summary>
+    public Action<PipeBuilder<ReceiveContext>>? ReceivePipeline { get; private set; }
+
+    public void ConfigureReceivePipeline(Action<PipeBuilder<ReceiveContext>> configure) =>
+        ReceivePipeline += configure;
 
     public void AddHandler(HandlerRegistration registration, RequestAddress endpoint)
     {
