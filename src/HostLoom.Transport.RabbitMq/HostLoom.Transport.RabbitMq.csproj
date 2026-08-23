@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>RabbitMQ request transport for HostLoom.</Description>
+    <PackageId>HostLoom.Transport.RabbitMq</PackageId>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="RabbitMQ.Client" />
+    <ProjectReference Include="../HostLoom/HostLoom.csproj" />
+  </ItemGroup>
+</Project>
