@@ -10,8 +10,8 @@ over interchangeable transports, carried by a transport-neutral asynchronous
 middleware pipeline. The current slice implements:
 
 - generic `IPipe<TContext>` and `IFilter<TContext>` composition, with typed
-  context payloads, conditional branches, concurrency limits, intentional
-  short-circuits, and immutable pipeline probes;
+  context payloads, conditional branches, retry, circuit breaking, rate and
+  concurrency limits, intentional short-circuits, and immutable pipeline probes;
 - typed `IRequest<TResponse>` contracts with handler, behavior, and client
   abstractions;
 - one dependency-injection scope per request;
@@ -130,6 +130,23 @@ Use `UseTerminal` for an intentional short circuit. Context payloads are lazy
 and thread-safe, and can be retrieved through an implemented interface.
 `PipelineProbe.Inspect` returns an immutable tree suitable for health endpoints
 and diagnostics.
+
+Resilience is composed the same way, from filters rather than from a separate
+policy engine:
+
+```csharp
+pipe.UseRetry(RetryPolicy.Exponential(3, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(5)).WithJitter(0.2));
+pipe.UseCircuitBreaker(failureThreshold: 5, resetInterval: TimeSpan.FromSeconds(30));
+pipe.UseRateLimit(limit: 100, interval: TimeSpan.FromSeconds(1));
+```
+
+`UseRetry` re-invokes the rest of the pipeline, exposing the attempt as a
+`RetryAttempt` payload and never retrying cancellation. `UseCircuitBreaker`
+throws `CircuitBreakerOpenException` once the downstream has failed
+`failureThreshold` times in a row, then admits one trial call per
+`resetInterval`. `UseRateLimit` shapes throughput by waiting rather than
+throwing. All three accept a `TimeProvider`, so their timing is testable
+without real waiting.
 
 ## Requirements
 
