@@ -135,6 +135,104 @@ public sealed class RabbitMqBrokerTests
         Assert.Equal([11ul], listener.Rejects);
     }
 
+    [Fact]
+    public async Task Subscribing_binds_a_named_queue_to_a_fanout_topic_exchange()
+    {
+        var rabbit = new FakeRabbit();
+        await using var broker = Create(rabbit);
+
+        await using var subscription = await broker.SubscribeAsync(
+            "orders",
+            "audit",
+            (_, _) => ValueTask.CompletedTask,
+            TestContext.Current.CancellationToken);
+
+        var channel = rabbit.Channels[0];
+        var exchange = Assert.Single(channel.Exchanges);
+        Assert.Equal("orders", exchange.Name);
+        Assert.Equal("fanout", exchange.Type);
+        Assert.True(exchange.Durable);
+
+        // The queue is named for the subscription, so a second subscriber gets its own backlog
+        // rather than competing for the first one's messages.
+        var binding = Assert.Single(channel.Bindings);
+        Assert.Equal("orders.audit", binding.Queue);
+        Assert.Equal("orders", binding.Exchange);
+        Assert.Equal(string.Empty, binding.RoutingKey);
+    }
+
+    [Fact]
+    public async Task Two_subscriptions_on_one_topic_get_separate_queues()
+    {
+        var rabbit = new FakeRabbit();
+        await using var broker = Create(rabbit);
+
+        await using var audit = await broker.SubscribeAsync("orders", "audit", (_, _) => ValueTask.CompletedTask, TestContext.Current.CancellationToken);
+        await using var shipping = await broker.SubscribeAsync("orders", "shipping", (_, _) => ValueTask.CompletedTask, TestContext.Current.CancellationToken);
+
+        var queues = rabbit.Channels.SelectMany(channel => channel.Bindings).Select(binding => binding.Queue).Order(StringComparer.Ordinal);
+        Assert.Equal(["orders.audit", "orders.shipping"], queues);
+    }
+
+    [Fact]
+    public async Task Publishing_an_event_goes_to_the_topic_exchange_without_a_routing_key()
+    {
+        var rabbit = new FakeRabbit();
+        await using var broker = Create(rabbit);
+
+        await broker.PublishAsync("orders", Encoding.UTF8.GetBytes("placed"), TestContext.Current.CancellationToken);
+
+        var client = rabbit.Channels[0];
+        Assert.Contains(client.Exchanges, exchange => exchange is { Name: "orders", Type: "fanout" });
+
+        var published = Assert.Single(client.Publishes);
+        Assert.Equal("orders", published.Exchange);
+        Assert.Equal(string.Empty, published.RoutingKey);
+        Assert.Equal("placed", Encoding.UTF8.GetString(published.Body));
+    }
+
+    [Fact]
+    public async Task A_topic_exchange_is_declared_once_however_often_it_is_published_to()
+    {
+        var rabbit = new FakeRabbit();
+        await using var broker = Create(rabbit);
+
+        for (var i = 0; i < 3; i++)
+        {
+            await broker.PublishAsync("orders", Encoding.UTF8.GetBytes($"e{i}"), TestContext.Current.CancellationToken);
+        }
+
+        Assert.Single(rabbit.Channels[0].Exchanges);
+        Assert.Equal(3, rabbit.Channels[0].Publishes.Count);
+    }
+
+    [Fact]
+    public async Task A_delivered_event_is_acknowledged_and_a_failing_one_is_rejected()
+    {
+        var rabbit = new FakeRabbit();
+        await using var broker = Create(rabbit);
+        var handled = new List<string>();
+
+        await using var subscription = await broker.SubscribeAsync(
+            "orders",
+            "audit",
+            (frame, _) =>
+            {
+                var body = Encoding.UTF8.GetString(frame.Span);
+                handled.Add(body);
+                return body == "bad" ? throw new InvalidOperationException("subscriber failed") : ValueTask.CompletedTask;
+            },
+            TestContext.Current.CancellationToken);
+
+        var channel = rabbit.Channels[0];
+        await channel.DeliverAsync("c1", replyTo: null, body: Encoding.UTF8.GetBytes("good"), deliveryTag: 1);
+        await channel.DeliverAsync("c2", replyTo: null, body: Encoding.UTF8.GetBytes("bad"), deliveryTag: 2);
+
+        Assert.Equal(["good", "bad"], handled);
+        Assert.Equal([1ul], channel.Acks);
+        Assert.Equal([2ul], channel.Rejects);
+    }
+
     private static RabbitMqRequestBroker Create(FakeRabbit rabbit) =>
         new(Options.Create(new RabbitMqOptions()), _ => ValueTask.FromResult(rabbit.Connection));
 
@@ -157,6 +255,10 @@ public sealed class RabbitMqBrokerTests
     }
 
     private sealed record Published(string Exchange, string RoutingKey, string? CorrelationId, string? ReplyTo, byte[] Body);
+
+    private sealed record DeclaredExchange(string Name, string Type, bool Durable);
+
+    private sealed record Binding(string Queue, string Exchange, string RoutingKey);
 
     private sealed class FakeRabbit
     {
@@ -248,6 +350,18 @@ public sealed class RabbitMqBrokerTests
                 });
 
             Channel
+                .When(c => c.ExchangeDeclareAsync(
+                    Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<bool>(),
+                    Arg.Any<IDictionary<string, object?>?>(), Arg.Any<bool>(), Arg.Any<bool>(), Arg.Any<CancellationToken>()))
+                .Do(call => Exchanges.Add(new DeclaredExchange(call.ArgAt<string>(0), call.ArgAt<string>(1), call.ArgAt<bool>(2))));
+
+            Channel
+                .When(c => c.QueueBindAsync(
+                    Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
+                    Arg.Any<IDictionary<string, object?>?>(), Arg.Any<bool>(), Arg.Any<CancellationToken>()))
+                .Do(call => Bindings.Add(new Binding(call.ArgAt<string>(0), call.ArgAt<string>(1), call.ArgAt<string>(2))));
+
+            Channel
                 .When(c => c.BasicAckAsync(Arg.Any<ulong>(), Arg.Any<bool>(), Arg.Any<CancellationToken>()))
                 .Do(call => Acks.Add(call.ArgAt<ulong>(0)));
 
@@ -263,6 +377,10 @@ public sealed class RabbitMqBrokerTests
         public List<ulong> Acks { get; } = [];
 
         public List<ulong> Rejects { get; } = [];
+
+        public List<DeclaredExchange> Exchanges { get; } = [];
+
+        public List<Binding> Bindings { get; } = [];
 
         public List<Published> Publishes
         {
