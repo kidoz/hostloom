@@ -206,10 +206,19 @@ public sealed class KafkaRequestBroker : IRequestBroker
     /// Owns one long-running consumer loop. The loop survives per-record failures: a single bad
     /// record, handler fault, produce failure, or commit failure must never take the consumer
     /// down permanently, because nothing restarts it and every later request would time out.
+    /// A failed record is rewound and retried rather than consumed past, because the partition
+    /// commits a single position and any later commit would silently skip it.
     /// </summary>
     private sealed class Subscription : IAsyncDisposable
     {
         private static readonly TimeSpan ConsumeFailureBackoff = TimeSpan.FromMilliseconds(500);
+
+        /// <summary>
+        /// How many times one record is delivered to the handler before it is skipped. A partition
+        /// tracks a single committed position, so a record that keeps failing blocks every later
+        /// request behind it; the cap trades that stall for an explicit, logged drop.
+        /// </summary>
+        private const int MaxDeliveryAttempts = 5;
 
         private readonly IConsumer<string, byte[]> _consumer;
         private readonly string _topic;
@@ -278,6 +287,10 @@ public sealed class KafkaRequestBroker : IRequestBroker
 
         private async Task RunAsync(Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler)
         {
+            // Delivery attempts for the record currently being retried on each partition. Keyed by
+            // partition because an assignment spans several, and each has its own committed offset.
+            var retries = new Dictionary<TopicPartition, (long Offset, int Attempts)>();
+
             while (!_stopping.IsCancellationRequested)
             {
                 ConsumeResult<string, byte[]> record;
@@ -308,6 +321,7 @@ public sealed class KafkaRequestBroker : IRequestBroker
                 try
                 {
                     await handler(record, _stopping.Token).ConfigureAwait(false);
+                    retries.Remove(record.TopicPartition);
                 }
                 catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
                 {
@@ -323,17 +337,73 @@ public sealed class KafkaRequestBroker : IRequestBroker
                         record.TopicPartitionOffset,
                         _topic);
                     TryCommit(record);
+                    retries.Remove(record.TopicPartition);
                 }
                 catch (Exception exception)
                 {
-                    // Transient: leave the offset uncommitted so the record is redelivered after
-                    // a rebalance or restart, and keep serving the rest of the partition.
+                    // Transient. A partition carries one committed position, and Commit(result)
+                    // commits result.Offset + 1, so committing any later record here would advance
+                    // the group past this offset and drop it for good. Rewind to this record and
+                    // retry it instead of consuming on.
+                    var attempts =
+                        retries.TryGetValue(record.TopicPartition, out var state) && state.Offset == record.Offset.Value
+                            ? state.Attempts + 1
+                            : 1;
+
+                    if (attempts >= MaxDeliveryAttempts)
+                    {
+                        _logger.LogError(
+                            exception,
+                            "HostLoom Kafka record at {Offset} on '{Topic}' failed {Attempts} times; skipping it.",
+                            record.TopicPartitionOffset,
+                            _topic,
+                            attempts);
+                        TryCommit(record);
+                        retries.Remove(record.TopicPartition);
+                        continue;
+                    }
+
                     _logger.LogError(
                         exception,
-                        "HostLoom Kafka record at {Offset} on '{Topic}' failed; leaving it uncommitted.",
+                        "HostLoom Kafka record at {Offset} on '{Topic}' failed on attempt {Attempts}; rewinding to retry it.",
                         record.TopicPartitionOffset,
-                        _topic);
+                        _topic,
+                        attempts);
+
+                    if (TrySeek(record))
+                    {
+                        retries[record.TopicPartition] = (record.Offset.Value, attempts);
+                    }
+                    else
+                    {
+                        // The partition was most likely revoked. Its offset is still uncommitted,
+                        // so whoever is assigned it next redelivers the record.
+                        retries.Remove(record.TopicPartition);
+                    }
+
+                    if (!await DelayAsync().ConfigureAwait(false))
+                    {
+                        break;
+                    }
                 }
+            }
+        }
+
+        private bool TrySeek(ConsumeResult<string, byte[]> record)
+        {
+            try
+            {
+                _consumer.Seek(record.TopicPartitionOffset);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(
+                    exception,
+                    "HostLoom Kafka consumer could not rewind to {Offset} on '{Topic}'.",
+                    record.TopicPartitionOffset,
+                    _topic);
+                return false;
             }
         }
 
