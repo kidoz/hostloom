@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Authenticated raw WebSocket RPC and subscription gateway for HostLoom.</Description>
+    <PackageId>HostLoom.AspNetCore.WebSockets</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="MessagePack" />
+    <PackageReference Include="protobuf-net" />
+    <ProjectReference Include="../HostLoom/HostLoom.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="HostLoom.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+    <None Include="hostloom-websocket-v1.proto" Pack="true" PackagePath="protocol/" />
+  </ItemGroup>
+</Project>

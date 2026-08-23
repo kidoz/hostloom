@@ -1,0 +1,39 @@
+using System.Net.WebSockets;
+using System.Text.Json;
+
+namespace HostLoom.AspNetCore.WebSockets;
+
+public sealed class JsonWebSocketHubProtocol : IWebSocketHubProtocol
+{
+    private static readonly JsonSerializerOptions SerializerOptions = new(
+        JsonSerializerDefaults.Web
+    )
+    {
+        MaxDepth = 32,
+    };
+
+    public const string ProtocolName = "hostloom.json.v1";
+
+    public string SubProtocol => ProtocolName;
+
+    public WebSocketMessageType MessageType => WebSocketMessageType.Text;
+
+    public HubFrame Decode(ReadOnlySpan<byte> payload)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<HubFrame>(payload, SerializerOptions)
+                ?? throw new InvalidDataException("The JSON frame was null.");
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidDataException("The JSON frame was invalid.", exception);
+        }
+    }
+
+    public byte[] Encode(HubFrame frame)
+    {
+        ArgumentNullException.ThrowIfNull(frame);
+        return JsonSerializer.SerializeToUtf8Bytes(frame, SerializerOptions);
+    }
+}

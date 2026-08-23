@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package hostloom.websocket.v1;
+
+enum HubFrameKind {
+  HUB_FRAME_KIND_NONE = 0;
+  HUB_FRAME_KIND_WELCOME = 1;
+  HUB_FRAME_KIND_REQUEST = 2;
+  HUB_FRAME_KIND_RESPONSE = 3;
+  HUB_FRAME_KIND_FAULT = 4;
+  HUB_FRAME_KIND_CANCEL = 5;
+  HUB_FRAME_KIND_SUBSCRIBE = 6;
+  HUB_FRAME_KIND_SUBSCRIBED = 7;
+  HUB_FRAME_KIND_EVENT = 8;
+  HUB_FRAME_KIND_CREDIT = 9;
+  HUB_FRAME_KIND_ACK = 10;
+  HUB_FRAME_KIND_UNSUBSCRIBE = 11;
+  HUB_FRAME_KIND_COMPLETE = 12;
+}
+
+message HubFrame {
+  HubFrameKind kind = 1;
+  uint64 stream_id = 2;
+  optional string session_id = 3;
+  optional string operation = 4;
+  optional string topic = 5;
+  optional string key = 6;
+  optional int32 timeout_milliseconds = 7;
+  optional int32 credit = 8;
+  optional int64 sequence = 9;
+  optional string event_id = 10;
+  optional string code = 11;
+  optional string message = 12;
+  optional bytes payload = 13;
+  optional int32 maximum_message_size = 14;
+  optional int32 maximum_concurrent_requests = 15;
+}
