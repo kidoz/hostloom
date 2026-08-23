@@ -214,11 +214,13 @@ public sealed class KafkaRequestBroker : IRequestBroker
         private static readonly TimeSpan ConsumeFailureBackoff = TimeSpan.FromMilliseconds(500);
 
         /// <summary>
-        /// How many times one record is delivered to the handler before it is skipped. A partition
+        /// How many times one record is rewound and re-consumed before it is skipped. A partition
         /// tracks a single committed position, so a record that keeps failing blocks every later
         /// request behind it; the cap trades that stall for an explicit, logged drop.
+        /// This is broker redelivery, a separate layer from the in-process retry that
+        /// <c>ConfigureReceivePipeline</c> applies within a single delivery.
         /// </summary>
-        private const int MaxDeliveryAttempts = 5;
+        private const int MaxRedeliveryAttempts = 5;
 
         private readonly IConsumer<string, byte[]> _consumer;
         private readonly string _topic;
@@ -350,7 +352,7 @@ public sealed class KafkaRequestBroker : IRequestBroker
                             ? state.Attempts + 1
                             : 1;
 
-                    if (attempts >= MaxDeliveryAttempts)
+                    if (attempts >= MaxRedeliveryAttempts)
                     {
                         _logger.LogError(
                             exception,
