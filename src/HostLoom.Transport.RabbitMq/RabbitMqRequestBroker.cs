@@ -5,10 +5,11 @@ using RabbitMQ.Client.Events;
 
 namespace HostLoom.Transport.RabbitMq;
 
-public sealed class RabbitMqRequestBroker(IOptions<RabbitMqOptions> options) : IRequestBroker
+public sealed class RabbitMqRequestBroker : IRequestBroker
 {
     private const string ContentType = "application/vnd.hostloom.envelope+json";
-    private readonly RabbitMqOptions _options = options.Value;
+    private readonly RabbitMqOptions _options;
+    private readonly Func<CancellationToken, ValueTask<IConnection>> _connectionFactory;
     private readonly SemaphoreSlim _initializationGate = new(1, 1);
     private readonly SemaphoreSlim _publishGate = new(1, 1);
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<ReadOnlyMemory<byte>>> _pending = new();
@@ -16,6 +17,24 @@ public sealed class RabbitMqRequestBroker(IOptions<RabbitMqOptions> options) : I
     private IChannel? _clientChannel;
     private string? _replyQueue;
     private bool _disposed;
+
+    public RabbitMqRequestBroker(IOptions<RabbitMqOptions> options)
+        : this(options, connectionFactory: null)
+    {
+    }
+
+    /// <summary>
+    /// Takes a connection factory so the request/reply correlation can be driven by fake
+    /// <see cref="IConnection"/> and <see cref="IChannel"/> instances in tests, without a broker.
+    /// </summary>
+    internal RabbitMqRequestBroker(
+        IOptions<RabbitMqOptions> options,
+        Func<CancellationToken, ValueTask<IConnection>>? connectionFactory)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        _options = options.Value;
+        _connectionFactory = connectionFactory ?? ConnectAsync;
+    }
 
     public async ValueTask<IAsyncDisposable> ListenAsync(
         RequestAddress address,
@@ -177,13 +196,7 @@ public sealed class RabbitMqRequestBroker(IOptions<RabbitMqOptions> options) : I
                     await _connection.DisposeAsync().ConfigureAwait(false);
                 }
 
-                var factory = new ConnectionFactory
-                {
-                    Uri = _options.Uri,
-                    ClientProvidedName = _options.ClientProvidedName,
-                    AutomaticRecoveryEnabled = true
-                };
-                _connection = await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
+                _connection = await _connectionFactory(cancellationToken).ConfigureAwait(false);
             }
 
             return _connection;
@@ -250,6 +263,17 @@ public sealed class RabbitMqRequestBroker(IOptions<RabbitMqOptions> options) : I
         {
             _initializationGate.Release();
         }
+    }
+
+    private async ValueTask<IConnection> ConnectAsync(CancellationToken cancellationToken)
+    {
+        var factory = new ConnectionFactory
+        {
+            Uri = _options.Uri,
+            ClientProvidedName = _options.ClientProvidedName,
+            AutomaticRecoveryEnabled = true
+        };
+        return await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private sealed class ChannelSubscription(IChannel channel) : IAsyncDisposable

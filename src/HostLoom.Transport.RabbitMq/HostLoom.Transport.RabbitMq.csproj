@@ -7,4 +7,8 @@
     <PackageReference Include="RabbitMQ.Client" />
     <ProjectReference Include="../HostLoom/HostLoom.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The connection factory seam is internal; the tests supply fake connections. -->
+    <InternalsVisibleTo Include="HostLoom.Tests" />
+  </ItemGroup>
 </Project>
