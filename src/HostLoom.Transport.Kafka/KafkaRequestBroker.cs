@@ -7,7 +7,7 @@ using Microsoft.Extensions.Options;
 
 namespace HostLoom.Transport.Kafka;
 
-public sealed class KafkaRequestBroker : IRequestBroker
+public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
 {
     private const string CorrelationHeader = "hostloom-correlation-id";
     private const string ReplyToHeader = "hostloom-reply-to";
@@ -17,10 +17,24 @@ public sealed class KafkaRequestBroker : IRequestBroker
     private readonly ConcurrentBag<ConsumerSubscription> _subscriptions = [];
     private readonly SemaphoreSlim _replyConsumerGate = new(1, 1);
     private readonly ILogger<KafkaRequestBroker> _logger;
+    private readonly Func<ConsumerConfig, IConsumer<string, byte[]>> _consumerFactory;
     private ConsumerSubscription? _replySubscription;
     private bool _disposed;
 
     public KafkaRequestBroker(IOptions<KafkaOptions> options, ILogger<KafkaRequestBroker>? logger = null)
+        : this(options, logger, producer: null, consumerFactory: null)
+    {
+    }
+
+    /// <summary>
+    /// Takes the producer and a consumer factory so topology and delivery can be driven by fakes in
+    /// tests, without a broker.
+    /// </summary>
+    internal KafkaRequestBroker(
+        IOptions<KafkaOptions> options,
+        ILogger<KafkaRequestBroker>? logger,
+        IProducer<string, byte[]>? producer,
+        Func<ConsumerConfig, IConsumer<string, byte[]>>? consumerFactory)
     {
         ArgumentNullException.ThrowIfNull(options);
         _logger = logger ?? NullLogger<KafkaRequestBroker>.Instance;
@@ -30,7 +44,8 @@ public sealed class KafkaRequestBroker : IRequestBroker
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.ResponseTopic);
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.ClientId);
 
-        _producer = new ProducerBuilder<string, byte[]>(new ProducerConfig
+        _consumerFactory = consumerFactory ?? (config => new ConsumerBuilder<string, byte[]>(config).Build());
+        _producer = producer ?? new ProducerBuilder<string, byte[]>(new ProducerConfig
         {
             BootstrapServers = _options.BootstrapServers,
             ClientId = _options.ClientId,
@@ -47,14 +62,14 @@ public sealed class KafkaRequestBroker : IRequestBroker
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var consumer = new ConsumerBuilder<string, byte[]>(new ConsumerConfig
+        var consumer = _consumerFactory(new ConsumerConfig
         {
             BootstrapServers = _options.BootstrapServers,
             ClientId = $"{_options.ClientId}-{address.Value}",
             GroupId = $"{_options.ConsumerGroup}.{address.Value}",
             EnableAutoCommit = false,
             AutoOffsetReset = AutoOffsetReset.Earliest
-        }).Build();
+        });
         consumer.Subscribe(address.Value);
 
         var subscription = ConsumerSubscription.Start(consumer, address.Value, async (record, token) =>
@@ -74,6 +89,56 @@ public sealed class KafkaRequestBroker : IRequestBroker
         _subscriptions.Add(subscription);
         return ValueTask.FromResult<IAsyncDisposable>(subscription);
     }
+
+    /// <summary>
+    /// A topic is a Kafka topic; a subscription is a consumer group. Distinct groups each receive
+    /// every record, which is the fan-out, while instances sharing a group divide the partitions.
+    /// </summary>
+    public ValueTask<IAsyncDisposable> SubscribeAsync(
+        RequestAddress topic,
+        string subscription,
+        EventFrameHandler handler,
+        CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(subscription);
+        ArgumentNullException.ThrowIfNull(handler);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var consumer = _consumerFactory(new ConsumerConfig
+        {
+            BootstrapServers = _options.BootstrapServers,
+            ClientId = $"{_options.ClientId}-{topic.Value}-{subscription}",
+            GroupId = SubscriptionGroup(_options.ConsumerGroup, topic, subscription),
+            EnableAutoCommit = false,
+            AutoOffsetReset = AutoOffsetReset.Earliest
+        });
+        consumer.Subscribe(topic.Value);
+
+        var handled = ConsumerSubscription.Start(consumer, topic.Value, async (record, token) =>
+        {
+            await handler(record.Message.Value, token).ConfigureAwait(false);
+            consumer.Commit(record);
+        }, _logger);
+        _subscriptions.Add(handled);
+        return ValueTask.FromResult<IAsyncDisposable>(handled);
+    }
+
+    public async ValueTask PublishAsync(RequestAddress topic, ReadOnlyMemory<byte> frame, CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // No key, so records round-robin across partitions. Ordering therefore holds within a
+        // partition only; key-based partitioning is a contract-level concern the broker cannot infer.
+        await _producer.ProduceAsync(topic.Value, new Message<string, byte[]>
+        {
+            Value = frame.ToArray()
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Consumer group backing one subscription, scoped by the service's group prefix.</summary>
+    internal static string SubscriptionGroup(string prefix, RequestAddress topic, string subscription) =>
+        $"{prefix}.{topic.Value}.{subscription}";
 
     public async ValueTask<ReadOnlyMemory<byte>> RequestAsync(
         RequestAddress address,
@@ -167,7 +232,7 @@ public sealed class KafkaRequestBroker : IRequestBroker
                 return;
             }
 
-            var consumer = new ConsumerBuilder<string, byte[]>(new ConsumerConfig
+            var consumer = _consumerFactory(new ConsumerConfig
             {
                 BootstrapServers = _options.BootstrapServers,
                 ClientId = $"{_options.ClientId}-replies",
@@ -176,7 +241,7 @@ public sealed class KafkaRequestBroker : IRequestBroker
                 // The unique group may not be assigned before the first response is produced.
                 // Earliest avoids losing that race; retained unrelated responses are filtered below.
                 AutoOffsetReset = AutoOffsetReset.Earliest
-            }).Build();
+            });
             consumer.Subscribe(_options.ResponseTopic);
             _replySubscription = ConsumerSubscription.Start(consumer, _options.ResponseTopic, (record, _) =>
             {
