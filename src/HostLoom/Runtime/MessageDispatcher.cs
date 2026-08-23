@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HostLoom.Pipelines;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -38,10 +39,17 @@ internal sealed class MessageDispatcher
             throw new InvalidDataException($"Expected a request envelope, received '{request.Kind}'.");
         }
 
+        var tags = new TagList
+        {
+            { "messaging.destination.name", endpoint.Value },
+            { "messaging.message.type", request.MessageType }
+        };
+
         if (!_configuration.TryGetHandler(endpoint, request.MessageType, out var registration))
         {
             return EncodeFault(
                 request,
+                tags,
                 new InvalidOperationException($"No handler is registered for '{request.MessageType}' on endpoint '{endpoint}'."));
         }
 
@@ -50,6 +58,7 @@ internal sealed class MessageDispatcher
         {
             return EncodeFault(
                 request,
+                tags,
                 new InvalidDataException(
                     $"Request declares response '{request.ResponseType}', but '{request.MessageType}' returns '{registeredResponseType}'."));
         }
@@ -60,6 +69,8 @@ internal sealed class MessageDispatcher
         activity?.SetTag("messaging.message.type", request.MessageType);
         activity?.SetTag("messaging.message.id", request.MessageId);
 
+        var start = Stopwatch.GetTimestamp();
+        HostLoomDiagnostics.ActiveRequests.Add(1, tags);
         try
         {
             var message = _serializer.Deserialize(request.Body, registration.RequestType)
@@ -74,6 +85,7 @@ internal sealed class MessageDispatcher
                 cancellationToken);
 
             await _receivePipe.SendAsync(receiveContext).ConfigureAwait(false);
+            RecordRetries(receiveContext, tags);
 
             var envelope = new MessageEnvelope
             {
@@ -94,12 +106,36 @@ internal sealed class MessageDispatcher
         }
         catch (Exception exception)
         {
-            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, exception.Message);
-            return EncodeFault(request, exception);
+            activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
+            return EncodeFault(request, tags, exception);
+        }
+        finally
+        {
+            HostLoomDiagnostics.ActiveRequests.Add(-1, tags);
+            HostLoomDiagnostics.RequestDuration.Record(Stopwatch.GetElapsedTime(start).TotalSeconds, tags);
         }
     }
 
-    private static byte[] EncodeFault(MessageEnvelope request, Exception exception) =>
+    /// <summary>Structure of the composed receive pipeline, surfaced through <see cref="HostLoomProbe"/>.</summary>
+    internal ProbeResult ProbeReceivePipeline(CancellationToken cancellationToken = default) =>
+        PipelineProbe.Inspect(_receivePipe, cancellationToken);
+
+    // The payload is absent unless a retry filter ran, so its number is the count of extra attempts.
+    private static void RecordRetries(ReceiveContext context, in TagList tags)
+    {
+        if (context.TryGetPayload<RetryAttempt>(out var attempt) && attempt is not null)
+        {
+            HostLoomDiagnostics.Retries.Add(attempt.Number, tags);
+        }
+    }
+
+    private static byte[] EncodeFault(MessageEnvelope request, in TagList tags, Exception exception)
+    {
+        HostLoomDiagnostics.Faults.Add(1, tags);
+        return EncodeFaultCore(request, exception);
+    }
+
+    private static byte[] EncodeFaultCore(MessageEnvelope request, Exception exception) =>
         WireEnvelopeCodec.Encode(new MessageEnvelope
         {
             MessageId = Guid.NewGuid(),

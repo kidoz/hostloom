@@ -5,7 +5,8 @@ namespace HostLoom;
 internal sealed class RequestEndpointHostedService(
     HostLoomConfiguration configuration,
     IRequestBroker broker,
-    MessageDispatcher dispatcher) : IHostedService, IAsyncDisposable
+    MessageDispatcher dispatcher,
+    EndpointRuntimeState state) : IHostedService, IAsyncDisposable
 {
     private readonly List<IAsyncDisposable> _subscriptions = [];
 
@@ -31,6 +32,8 @@ internal sealed class RequestEndpointHostedService(
                     .ConfigureAwait(false);
                 _subscriptions.Add(subscription);
             }
+
+            state.MarkListening(_subscriptions.Count);
         }
         catch
         {
@@ -57,6 +60,7 @@ internal sealed class RequestEndpointHostedService(
     /// </summary>
     private async ValueTask UnwindAsync()
     {
+        state.MarkStopped();
         List<Exception>? failures = null;
 
         for (var i = _subscriptions.Count - 1; i >= 0; i--)

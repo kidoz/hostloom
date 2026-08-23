@@ -1,6 +1,7 @@
 using HostLoom.Pipelines;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 namespace HostLoom;
 
@@ -60,6 +61,18 @@ public sealed class HostLoomBuilder
     {
         ArgumentNullException.ThrowIfNull(configure);
         Configuration.ConfigureReceivePipeline(configure);
+        return this;
+    }
+
+    /// <summary>
+    /// Registers HostLoom's liveness and readiness checks, tagged <c>live</c> and <c>ready</c> so
+    /// they can be mapped to separate probe endpoints. Liveness never contacts the broker.
+    /// </summary>
+    public HostLoomBuilder AddHealthChecks(string livenessName = "hostloom-live", string readinessName = "hostloom-ready")
+    {
+        Services.AddHealthChecks()
+            .AddCheck<HostLoomLivenessCheck>(livenessName, HealthStatus.Unhealthy, ["live"])
+            .AddCheck<HostLoomReadinessCheck>(readinessName, HealthStatus.Unhealthy, ["ready"]);
         return this;
     }
 
