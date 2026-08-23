@@ -36,6 +36,28 @@ public sealed class HostLoomBuilder
         return this;
     }
 
+    /// <summary>
+    /// Subscribes <typeparamref name="THandler"/> to <typeparamref name="TEvent"/> on
+    /// <paramref name="topic"/>. Subscriptions are named: two names on one topic each receive every
+    /// event, while two handlers under one name share a delivery and a scope.
+    /// </summary>
+    public HostLoomBuilder AddSubscriber<TEvent, THandler>(RequestAddress topic, string subscription = "default")
+        where TEvent : class, IEvent
+        where THandler : class, IEventHandler<TEvent>
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(subscription);
+        Configuration.AddSubscriber(
+            new SubscriberRegistration(MessageTypeName.For<TEvent>(), typeof(TEvent), typeof(EventExecutor<TEvent>)),
+            new TopicSubscription(topic, subscription),
+            typeof(THandler));
+
+        // Registered as the concrete type: the subscription decides which handlers run, so the
+        // container must not be able to hand one subscription another's handlers.
+        Services.TryAddScoped<THandler>();
+        Services.TryAddScoped<EventExecutor<TEvent>>();
+        return this;
+    }
+
     public HostLoomBuilder AddBehavior<TRequest, TResponse, TBehavior>()
         where TRequest : class, IRequest<TResponse>
         where TBehavior : class, IRequestBehavior<TRequest, TResponse>

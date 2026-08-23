@@ -6,13 +6,14 @@ internal sealed class RequestEndpointHostedService(
     HostLoomConfiguration configuration,
     IRequestBroker broker,
     MessageDispatcher dispatcher,
+    EventDispatcher eventDispatcher,
     EndpointRuntimeState state) : IHostedService, IAsyncDisposable
 {
     private readonly List<IAsyncDisposable> _subscriptions = [];
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        if (configuration.Endpoints.Count == 0)
+        if (configuration.Endpoints.Count == 0 && configuration.Subscriptions.Count == 0)
         {
             return;
         }
@@ -31,6 +32,31 @@ internal sealed class RequestEndpointHostedService(
                         cancellationToken)
                     .ConfigureAwait(false);
                 _subscriptions.Add(subscription);
+            }
+
+            if (configuration.Subscriptions.Count > 0)
+            {
+                if (broker is not IEventBroker events)
+                {
+                    throw new NotSupportedException(
+                        $"The configured transport '{broker.GetType().Name}' supports request/response only, "
+                        + $"but {configuration.Subscriptions.Count} event subscription(s) are registered.");
+                }
+
+                foreach (var topicSubscription in configuration.Subscriptions)
+                {
+                    // Bound into the handler so the dispatcher only considers subscribers belonging
+                    // to the subscription that received the frame.
+                    var target = topicSubscription;
+                    var subscription = await events
+                        .SubscribeAsync(
+                            target.Topic,
+                            target.Name,
+                            (frame, token) => eventDispatcher.DispatchAsync(target.Topic, target.Name, frame, token),
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    _subscriptions.Add(subscription);
+                }
             }
 
             state.MarkListening(_subscriptions.Count);

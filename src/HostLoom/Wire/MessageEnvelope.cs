@@ -4,7 +4,10 @@ internal enum MessageKind
 {
     Request,
     Response,
-    Fault
+    Fault,
+
+    /// <summary>Published to a topic with no reply. Carries an empty <c>ResponseType</c>.</summary>
+    Event
 }
 
 /// <summary>
