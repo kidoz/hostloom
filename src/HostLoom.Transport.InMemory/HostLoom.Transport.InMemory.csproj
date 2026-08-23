@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Deterministic in-memory request transport for HostLoom.</Description>
+    <PackageId>HostLoom.Transport.InMemory</PackageId>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HostLoom/HostLoom.csproj" />
+  </ItemGroup>
+</Project>
