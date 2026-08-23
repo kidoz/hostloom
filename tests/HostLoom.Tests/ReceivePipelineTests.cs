@@ -103,7 +103,7 @@ public sealed class ReceivePipelineTests
         using var host = await StartAsync(attempts, pipe => pipe.Use(
             async (context, next) =>
             {
-                observed.Add($"{context.Endpoint.Value}|{context.MessageType}|{context.Message.GetType().Name}");
+                observed.Add($"{context.Destination.Value}|{context.MessageType}|{context.Message.GetType().Name}");
                 await next.SendAsync(context);
             },
             "observer"));

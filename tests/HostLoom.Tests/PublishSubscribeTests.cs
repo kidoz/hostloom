@@ -125,6 +125,63 @@ public sealed class PublishSubscribeTests
             await host.StartAsync(TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task Events_run_through_the_configured_receive_pipeline()
+    {
+        var received = new Received();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(received);
+        builder.Services.AddSingleton<FlakyHandler.Attempts>();
+        builder.Services
+            .AddHostLoom()
+            .UseInMemory()
+            .ConfigureReceivePipeline(pipe => pipe.UseRetry(Pipelines.RetryPolicy.Immediate(3)))
+            .AddSubscriber<OrderPlaced, FlakyHandler>("orders", "flaky");
+
+        using var host = builder.Build();
+        await host.StartAsync(TestContext.Current.CancellationToken);
+
+        await PublisherOf(host).PublishAsync(
+            "orders",
+            new OrderPlaced("A-7"),
+            TestContext.Current.CancellationToken);
+
+        // Retry applies to subscribers, not just request handlers: two failures then a success.
+        Assert.Equal(["flaky:1", "flaky:2", "flaky:3"], received.Sorted());
+    }
+
+    [Fact]
+    public async Task Receive_filters_see_the_topic_and_subscription_of_an_event()
+    {
+        var received = new Received();
+        var observed = new List<string>();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(received);
+        builder.Services
+            .AddHostLoom()
+            .UseInMemory()
+            .ConfigureReceivePipeline(pipe => pipe.Use(
+                async (context, next) =>
+                {
+                    observed.Add(context is EventReceiveContext e
+                        ? $"event {e.Destination.Value}/{e.Subscription}"
+                        : $"request {context.Destination.Value}");
+                    await next.SendAsync(context);
+                },
+                "observer"))
+            .AddSubscriber<OrderPlaced, AuditHandler>("orders", "audit");
+
+        using var host = builder.Build();
+        await host.StartAsync(TestContext.Current.CancellationToken);
+
+        await PublisherOf(host).PublishAsync(
+            "orders",
+            new OrderPlaced("A-8"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(["event orders/audit"], observed);
+    }
+
     private static async Task<IHost> StartAsync(Received received, Action<HostLoomBuilder> configure)
     {
         var builder = Host.CreateApplicationBuilder();
@@ -180,6 +237,26 @@ public sealed class PublishSubscribeTests
         {
             received.Add($"shipping:{@event.Reference}");
             return ValueTask.CompletedTask;
+        }
+    }
+
+    /// <summary>Fails its first two deliveries, so a retry filter is observable.</summary>
+    public sealed class FlakyHandler(Received received, FlakyHandler.Attempts attempts) : IEventHandler<OrderPlaced>
+    {
+        public ValueTask HandleAsync(OrderPlaced @event, CancellationToken cancellationToken)
+        {
+            var attempt = attempts.Next();
+            received.Add($"flaky:{attempt}");
+            return attempt < 3
+                ? throw new InvalidOperationException("transient")
+                : ValueTask.CompletedTask;
+        }
+
+        public sealed class Attempts
+        {
+            private int _count;
+
+            public int Next() => Interlocked.Increment(ref _count);
         }
     }
 

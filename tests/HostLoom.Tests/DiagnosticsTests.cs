@@ -138,7 +138,7 @@ public sealed class DiagnosticsTests
         var result = probe.ReceivePipeline(TestContext.Current.CancellationToken);
 
         Assert.Equal(
-            ["retry", "circuitBreaker", "executeRequest", "empty"],
+            ["retry", "circuitBreaker", "executeReceive", "empty"],
             result.Children.Select(child => child.Name));
         Assert.Equal(2, result.Children[0].Properties["retryLimit"]);
         Assert.Equal("Closed", result.Children[1].Properties["state"]);
