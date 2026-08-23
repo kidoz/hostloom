@@ -7,4 +7,8 @@
     <PackageReference Include="Confluent.Kafka" />
     <ProjectReference Include="../HostLoom/HostLoom.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The consumer loop is internal; the tests drive it with a fake IConsumer. -->
+    <InternalsVisibleTo Include="HostLoom.Tests" />
+  </ItemGroup>
 </Project>

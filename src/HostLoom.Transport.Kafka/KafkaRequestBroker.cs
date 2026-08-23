@@ -14,10 +14,10 @@ public sealed class KafkaRequestBroker : IRequestBroker
     private readonly KafkaOptions _options;
     private readonly IProducer<string, byte[]> _producer;
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<ReadOnlyMemory<byte>>> _pending = new();
-    private readonly ConcurrentBag<Subscription> _subscriptions = [];
+    private readonly ConcurrentBag<ConsumerSubscription> _subscriptions = [];
     private readonly SemaphoreSlim _replyConsumerGate = new(1, 1);
     private readonly ILogger<KafkaRequestBroker> _logger;
-    private Subscription? _replySubscription;
+    private ConsumerSubscription? _replySubscription;
     private bool _disposed;
 
     public KafkaRequestBroker(IOptions<KafkaOptions> options, ILogger<KafkaRequestBroker>? logger = null)
@@ -57,7 +57,7 @@ public sealed class KafkaRequestBroker : IRequestBroker
         }).Build();
         consumer.Subscribe(address.Value);
 
-        var subscription = Subscription.Start(consumer, address.Value, async (record, token) =>
+        var subscription = ConsumerSubscription.Start(consumer, address.Value, async (record, token) =>
         {
             var correlationId = GetRequiredHeader(record.Message.Headers, CorrelationHeader);
             var replyTo = GetRequiredHeader(record.Message.Headers, ReplyToHeader);
@@ -178,7 +178,7 @@ public sealed class KafkaRequestBroker : IRequestBroker
                 AutoOffsetReset = AutoOffsetReset.Earliest
             }).Build();
             consumer.Subscribe(_options.ResponseTopic);
-            _replySubscription = Subscription.Start(consumer, _options.ResponseTopic, (record, _) =>
+            _replySubscription = ConsumerSubscription.Start(consumer, _options.ResponseTopic, (record, _) =>
             {
                 var value = GetRequiredHeader(record.Message.Headers, CorrelationHeader);
                 if (Guid.TryParseExact(value, "N", out var id) && _pending.TryGetValue(id, out var completion))
@@ -200,242 +200,5 @@ public sealed class KafkaRequestBroker : IRequestBroker
         var value = headers.GetLastBytes(name)
             ?? throw new InvalidDataException($"Kafka message is missing required header '{name}'.");
         return Encoding.UTF8.GetString(value);
-    }
-
-    /// <summary>
-    /// Owns one long-running consumer loop. The loop survives per-record failures: a single bad
-    /// record, handler fault, produce failure, or commit failure must never take the consumer
-    /// down permanently, because nothing restarts it and every later request would time out.
-    /// A failed record is rewound and retried rather than consumed past, because the partition
-    /// commits a single position and any later commit would silently skip it.
-    /// </summary>
-    private sealed class Subscription : IAsyncDisposable
-    {
-        private static readonly TimeSpan ConsumeFailureBackoff = TimeSpan.FromMilliseconds(500);
-
-        /// <summary>
-        /// How many times one record is rewound and re-consumed before it is skipped. A partition
-        /// tracks a single committed position, so a record that keeps failing blocks every later
-        /// request behind it; the cap trades that stall for an explicit, logged drop.
-        /// This is broker redelivery, a separate layer from the in-process retry that
-        /// <c>ConfigureReceivePipeline</c> applies within a single delivery.
-        /// </summary>
-        private const int MaxRedeliveryAttempts = 5;
-
-        private readonly IConsumer<string, byte[]> _consumer;
-        private readonly string _topic;
-        private readonly ILogger _logger;
-        private readonly CancellationTokenSource _stopping = new();
-        private readonly Task _loop;
-
-        private Subscription(
-            IConsumer<string, byte[]> consumer,
-            string topic,
-            Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler,
-            ILogger logger)
-        {
-            _consumer = consumer;
-            _topic = topic;
-            _logger = logger;
-            _loop = Task.Factory.StartNew(
-                () => RunAsync(handler),
-                CancellationToken.None,
-                TaskCreationOptions.LongRunning,
-                TaskScheduler.Default).Unwrap();
-        }
-
-        public static Subscription Start(
-            IConsumer<string, byte[]> consumer,
-            string topic,
-            Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler,
-            ILogger logger) => new(consumer, topic, handler, logger);
-
-        public async ValueTask DisposeAsync()
-        {
-            if (_stopping.IsCancellationRequested)
-            {
-                return;
-            }
-
-            await _stopping.CancelAsync().ConfigureAwait(false);
-            try
-            {
-                await _loop.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            catch (Exception exception)
-            {
-                _logger.LogError(exception, "HostLoom Kafka consumer loop for '{Topic}' faulted before shutdown.", _topic);
-            }
-            finally
-            {
-                // Must run even when the loop faulted, or the consumer leaks its group membership
-                // and the broker waits out the session timeout before rebalancing.
-                try
-                {
-                    _consumer.Close();
-                }
-                catch (Exception exception)
-                {
-                    _logger.LogError(exception, "HostLoom Kafka consumer for '{Topic}' failed to close cleanly.", _topic);
-                }
-
-                _consumer.Dispose();
-                _stopping.Dispose();
-            }
-        }
-
-        private async Task RunAsync(Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler)
-        {
-            // Delivery attempts for the record currently being retried on each partition. Keyed by
-            // partition because an assignment spans several, and each has its own committed offset.
-            var retries = new Dictionary<TopicPartition, (long Offset, int Attempts)>();
-
-            while (!_stopping.IsCancellationRequested)
-            {
-                ConsumeResult<string, byte[]> record;
-                try
-                {
-                    record = _consumer.Consume(_stopping.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-                catch (Exception exception)
-                {
-                    _logger.LogError(exception, "HostLoom Kafka consume failed on '{Topic}'; retrying.", _topic);
-                    if (!await DelayAsync().ConfigureAwait(false))
-                    {
-                        break;
-                    }
-
-                    continue;
-                }
-
-                if (record is null || record.IsPartitionEOF)
-                {
-                    continue;
-                }
-
-                try
-                {
-                    await handler(record, _stopping.Token).ConfigureAwait(false);
-                    retries.Remove(record.TopicPartition);
-                }
-                catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (InvalidDataException exception)
-                {
-                    // Poison record: it can never be decoded, so committing past it keeps the
-                    // partition moving instead of blocking every later request behind it.
-                    _logger.LogError(
-                        exception,
-                        "HostLoom Kafka record at {Offset} on '{Topic}' is malformed; skipping it.",
-                        record.TopicPartitionOffset,
-                        _topic);
-                    TryCommit(record);
-                    retries.Remove(record.TopicPartition);
-                }
-                catch (Exception exception)
-                {
-                    // Transient. A partition carries one committed position, and Commit(result)
-                    // commits result.Offset + 1, so committing any later record here would advance
-                    // the group past this offset and drop it for good. Rewind to this record and
-                    // retry it instead of consuming on.
-                    var attempts =
-                        retries.TryGetValue(record.TopicPartition, out var state) && state.Offset == record.Offset.Value
-                            ? state.Attempts + 1
-                            : 1;
-
-                    if (attempts >= MaxRedeliveryAttempts)
-                    {
-                        _logger.LogError(
-                            exception,
-                            "HostLoom Kafka record at {Offset} on '{Topic}' failed {Attempts} times; skipping it.",
-                            record.TopicPartitionOffset,
-                            _topic,
-                            attempts);
-                        TryCommit(record);
-                        retries.Remove(record.TopicPartition);
-                        continue;
-                    }
-
-                    _logger.LogError(
-                        exception,
-                        "HostLoom Kafka record at {Offset} on '{Topic}' failed on attempt {Attempts}; rewinding to retry it.",
-                        record.TopicPartitionOffset,
-                        _topic,
-                        attempts);
-
-                    if (TrySeek(record))
-                    {
-                        retries[record.TopicPartition] = (record.Offset.Value, attempts);
-                    }
-                    else
-                    {
-                        // The partition was most likely revoked. Its offset is still uncommitted,
-                        // so whoever is assigned it next redelivers the record.
-                        retries.Remove(record.TopicPartition);
-                    }
-
-                    if (!await DelayAsync().ConfigureAwait(false))
-                    {
-                        break;
-                    }
-                }
-            }
-        }
-
-        private bool TrySeek(ConsumeResult<string, byte[]> record)
-        {
-            try
-            {
-                _consumer.Seek(record.TopicPartitionOffset);
-                return true;
-            }
-            catch (Exception exception)
-            {
-                _logger.LogError(
-                    exception,
-                    "HostLoom Kafka consumer could not rewind to {Offset} on '{Topic}'.",
-                    record.TopicPartitionOffset,
-                    _topic);
-                return false;
-            }
-        }
-
-        private void TryCommit(ConsumeResult<string, byte[]> record)
-        {
-            try
-            {
-                _consumer.Commit(record);
-            }
-            catch (Exception exception)
-            {
-                _logger.LogError(
-                    exception,
-                    "HostLoom Kafka commit failed at {Offset} on '{Topic}'.",
-                    record.TopicPartitionOffset,
-                    _topic);
-            }
-        }
-
-        private async Task<bool> DelayAsync()
-        {
-            try
-            {
-                await Task.Delay(ConsumeFailureBackoff, _stopping.Token).ConfigureAwait(false);
-                return true;
-            }
-            catch (OperationCanceledException)
-            {
-                return false;
-            }
-        }
     }
 }
