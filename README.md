@@ -19,7 +19,8 @@ middleware pipeline. The current slice implements:
 - explicit wire envelopes carrying message id, correlation id, logical type
   name, timestamp, and remote faults;
 - a configurable `System.Text.Json` serialization boundary;
-- an OpenTelemetry-compatible `ActivitySource` named `HostLoom`;
+- an OpenTelemetry-compatible `ActivitySource` and `Meter`, both named `HostLoom`;
+- liveness and readiness health checks, and an execution-free pipeline probe;
 - in-memory, RabbitMQ, and Kafka broker adapters;
 - .NET Generic Host startup with graceful endpoint disposal;
 - tests for typed round trips, behavior ordering, and fault propagation.
@@ -97,6 +98,37 @@ delivery rather than resetting per message.
 
 Retrying in process is a different thing from broker redelivery. This pipeline
 never moves a broker offset; redelivery is the transport's concern.
+
+## Health and metrics
+
+`AddHealthChecks()` registers two checks, tagged `live` and `ready` so they map to
+separate probe endpoints:
+
+```csharp
+builder.Services.AddHostLoom().UseRabbitMq().AddHealthChecks();
+
+app.MapHealthChecks("/health/live", new() { Predicate = r => r.Tags.Contains("live") });
+app.MapHealthChecks("/health/ready", new() { Predicate = r => r.Tags.Contains("ready") });
+```
+
+**Liveness never contacts the broker.** It answers "should this process be restarted",
+and a broker outage answering yes turns one outage into a restart storm across every pod
+that talks to it. Broker reachability belongs in readiness, which reports unhealthy when
+endpoints are not listening or the transport says the broker is unreachable.
+
+A transport reports reachability by implementing `IBrokerHealthProbe`. One that does not
+is treated as reachable, because "cannot tell" must not read as "broken".
+
+Metrics are published on a `Meter` named `HostLoom`, tagged by destination and message
+type: `hostloom.request.duration`, `hostloom.request.active`, `hostloom.request.faults`,
+and `hostloom.request.retries`.
+
+`HostLoomProbe` returns the receive pipeline's structure without executing it, which suits
+a debug endpoint:
+
+```csharp
+app.MapGet("/diagnostics/pipeline", (HostLoomProbe probe) => probe.ReceivePipeline());
+```
 
 ## Transports
 
