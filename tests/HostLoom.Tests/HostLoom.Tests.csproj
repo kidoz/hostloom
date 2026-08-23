@@ -18,6 +18,7 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="../../src/HostLoom.AspNetCore.WebSockets/HostLoom.AspNetCore.WebSockets.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Logging/HostLoom.Logging.csproj" />
     <ProjectReference Include="../../src/HostLoom.Pipelines/HostLoom.Pipelines.csproj" />
     <ProjectReference Include="../../src/HostLoom.Transport.InMemory/HostLoom.Transport.InMemory.csproj" />
     <ProjectReference Include="../../src/HostLoom.Transport.Kafka/HostLoom.Transport.Kafka.csproj" />
