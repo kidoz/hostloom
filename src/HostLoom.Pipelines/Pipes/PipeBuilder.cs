@@ -49,6 +49,32 @@ public sealed class PipeBuilder<TContext> where TContext : class, IPipeContext
 
     public PipeBuilder<TContext> UseConcurrencyLimit(int limit) => Use(new ConcurrencyLimitFilter<TContext>(limit));
 
+    /// <summary>Retries the remainder of the pipeline when it faults, per <paramref name="policy"/>.</summary>
+    /// <param name="shouldRetry">Decides whether a given fault is retryable. Retries everything when null.</param>
+    public PipeBuilder<TContext> UseRetry(
+        RetryPolicy policy,
+        Func<Exception, bool>? shouldRetry = null,
+        TimeProvider? timeProvider = null) =>
+        Use(new RetryFilter<TContext>(policy, shouldRetry, timeProvider ?? TimeProvider.System));
+
+    /// <summary>
+    /// Rejects calls with <see cref="CircuitBreakerOpenException"/> after
+    /// <paramref name="failureThreshold"/> consecutive faults, admitting one trial call per
+    /// <paramref name="resetInterval"/> until the pipeline succeeds again.
+    /// </summary>
+    public PipeBuilder<TContext> UseCircuitBreaker(
+        int failureThreshold,
+        TimeSpan resetInterval,
+        TimeProvider? timeProvider = null) =>
+        Use(new CircuitBreakerFilter<TContext>(failureThreshold, resetInterval, timeProvider ?? TimeProvider.System));
+
+    /// <summary>Admits at most <paramref name="limit"/> calls per <paramref name="interval"/>, delaying the rest.</summary>
+    public PipeBuilder<TContext> UseRateLimit(
+        int limit,
+        TimeSpan interval,
+        TimeProvider? timeProvider = null) =>
+        Use(new RateLimitFilter<TContext>(limit, interval, timeProvider ?? TimeProvider.System));
+
     public IPipe<TContext> Build()
     {
         ObjectDisposedException.ThrowIf(_built, this);
