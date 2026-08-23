@@ -14,6 +14,8 @@ middleware pipeline. The current slice implements:
   concurrency limits, intentional short-circuits, and immutable pipeline probes;
 - typed `IRequest<TResponse>` contracts with handler, behavior, and client
   abstractions;
+- typed `IEvent` contracts published to a topic and fanned out to named
+  subscriptions;
 - a configurable receive pipeline wrapping handler execution on every transport;
 - one dependency-injection scope per delivery attempt;
 - explicit wire envelopes carrying message id, correlation id, logical type
@@ -68,6 +70,32 @@ builder.Services
 var client = services.GetRequiredService<IRequestClient<GetGreeting, Greeting>>();
 var reply = await client.GetResponseAsync("greetings", new GetGreeting("Ada"), cancellationToken: stoppingToken);
 ```
+
+## Publish and subscribe
+
+A request addresses one handler and expects one reply. An event is published to a topic
+and delivered to every *subscription* on it:
+
+```csharp
+builder.Services
+    .AddHostLoom()
+    .UseInMemory()
+    .AddSubscriber<OrderPlaced, AuditHandler>("orders", subscription: "audit")
+    .AddSubscriber<OrderPlaced, ShippingHandler>("orders", subscription: "shipping");
+
+await publisher.PublishAsync("orders", new OrderPlaced("A-1"));
+
+public sealed record OrderPlaced(string Reference) : IEvent;
+```
+
+Two subscription names on one topic each receive every event. Two handlers under the
+*same* name share one delivery and one dependency-injection scope. A subscription that
+has no handler for a published contract ignores it rather than failing.
+
+Publish/subscribe is a separate transport capability, `IEventBroker`. Only the in-memory
+transport implements it today; publishing through a request-only transport throws, and
+registering a subscription against one fails at startup rather than starting up looking
+subscribed while nothing is delivered.
 
 ## Receive pipeline
 
