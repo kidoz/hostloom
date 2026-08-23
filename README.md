@@ -96,11 +96,17 @@ Publish/subscribe is a separate transport capability, `IEventBroker`. Publishing
 a transport that lacks it throws, and registering a subscription against one fails at
 startup rather than starting up looking subscribed while nothing is delivered.
 
-On RabbitMQ a topic is a **fanout exchange** and each subscription is a durable queue
-named `topic.subscription` bound to it, so subscriptions accumulate their own backlog
-instead of competing for one queue. Events publish with no routing key and without
-`mandatory`, so an event nobody subscribes to is dropped rather than failing the publish.
-Kafka pub/sub is not implemented yet.
+Each transport maps a subscription onto its own fan-out primitive:
+
+- **In-memory** — a named handler on the topic, delivered to in process.
+- **RabbitMQ** — a **fanout exchange** per topic, and a durable queue named
+  `topic.subscription` bound to it, so subscriptions accumulate their own backlog rather
+  than competing for one queue. Events publish with no routing key and without
+  `mandatory`, so an event nobody subscribes to is dropped instead of failing the publish.
+- **Kafka** — the topic is a Kafka topic and each subscription is its own **consumer
+  group**, so every group receives every record while instances sharing a group divide the
+  partitions. Records are produced without a key, so ordering holds within a partition
+  only.
 
 ## Receive pipeline
 
