@@ -5,7 +5,7 @@ using RabbitMQ.Client.Events;
 
 namespace HostLoom.Transport.RabbitMq;
 
-public sealed class RabbitMqRequestBroker : IRequestBroker
+public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 {
     private const string ContentType = "application/vnd.hostloom.envelope+json";
     private readonly RabbitMqOptions _options;
@@ -13,6 +13,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker
     private readonly SemaphoreSlim _initializationGate = new(1, 1);
     private readonly SemaphoreSlim _publishGate = new(1, 1);
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<ReadOnlyMemory<byte>>> _pending = new();
+    private readonly ConcurrentDictionary<RequestAddress, bool> _declaredTopics = new();
     private IConnection? _connection;
     private IChannel? _clientChannel;
     private string? _replyQueue;
@@ -93,6 +94,94 @@ public sealed class RabbitMqRequestBroker : IRequestBroker
         {
             await channel.DisposeAsync().ConfigureAwait(false);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// A topic is a fanout exchange; a subscription is a queue named <c>topic.subscription</c> bound
+    /// to it. Fanout because every subscription must receive every event, and a durable named queue
+    /// because a subscription's backlog has to survive the consumer being away.
+    /// </summary>
+    public async ValueTask<IAsyncDisposable> SubscribeAsync(
+        RequestAddress topic,
+        string subscription,
+        EventFrameHandler handler,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(subscription);
+        ArgumentNullException.ThrowIfNull(handler);
+
+        var connection = await EnsureConnectionAsync(cancellationToken).ConfigureAwait(false);
+        var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            await DeclareTopicAsync(channel, topic, cancellationToken).ConfigureAwait(false);
+
+            var queue = $"{topic.Value}.{subscription}";
+            await channel.QueueDeclareAsync(
+                queue: queue,
+                durable: _options.DurableTopics,
+                exclusive: false,
+                autoDelete: false,
+                arguments: null,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            await channel.QueueBindAsync(
+                queue: queue,
+                exchange: topic.Value,
+                routingKey: string.Empty,
+                arguments: null,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            await channel.BasicQosAsync(0, _options.PrefetchCount, global: false, cancellationToken).ConfigureAwait(false);
+
+            var consumer = new AsyncEventingBasicConsumer(channel);
+            consumer.ReceivedAsync += async (_, delivery) =>
+            {
+                try
+                {
+                    await handler(delivery.Body, delivery.CancellationToken).ConfigureAwait(false);
+                    await channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, delivery.CancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    await channel.BasicRejectAsync(delivery.DeliveryTag, requeue: false, CancellationToken.None).ConfigureAwait(false);
+                }
+            };
+
+            await channel.BasicConsumeAsync(queue, autoAck: false, consumer, cancellationToken).ConfigureAwait(false);
+            return new ChannelSubscription(channel);
+        }
+        catch
+        {
+            await channel.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    public async ValueTask PublishAsync(RequestAddress topic, ReadOnlyMemory<byte> frame, CancellationToken cancellationToken)
+    {
+        await EnsureClientAsync(cancellationToken).ConfigureAwait(false);
+        await DeclareTopicAsync(_clientChannel!, topic, cancellationToken).ConfigureAwait(false);
+
+        var properties = new BasicProperties { ContentType = ContentType };
+
+        await _publishGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Not mandatory: an event with no subscriptions is dropped, which is ordinary
+            // publish/subscribe. Returning it unrouted would make publishing fail whenever
+            // nobody happens to be listening.
+            await _clientChannel!.BasicPublishAsync(
+                exchange: topic.Value,
+                routingKey: string.Empty,
+                mandatory: false,
+                basicProperties: properties,
+                body: frame,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _publishGate.Release();
         }
     }
 
@@ -263,6 +352,27 @@ public sealed class RabbitMqRequestBroker : IRequestBroker
         {
             _initializationGate.Release();
         }
+    }
+
+    /// <summary>
+    /// Declares the topic exchange once per broker instance. Declaration is idempotent, so a race
+    /// between two publishers costs a redundant frame and nothing else.
+    /// </summary>
+    private async ValueTask DeclareTopicAsync(IChannel channel, RequestAddress topic, CancellationToken cancellationToken)
+    {
+        if (_declaredTopics.ContainsKey(topic))
+        {
+            return;
+        }
+
+        await channel.ExchangeDeclareAsync(
+            exchange: topic.Value,
+            type: ExchangeType.Fanout,
+            durable: _options.DurableTopics,
+            autoDelete: false,
+            arguments: null,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        _declaredTopics[topic] = true;
     }
 
     private async ValueTask<IConnection> ConnectAsync(CancellationToken cancellationToken)
