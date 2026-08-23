@@ -20,11 +20,12 @@ public static class ServiceCollectionExtensions
             services.AddSingleton<EndpointRuntimeState>();
             services.AddOptions<HostLoomOptions>();
             services.TryAddSingleton<IMessageSerializer, SystemTextJsonMessageSerializer>();
+            services.TryAddSingleton<ReceivePipeline>();
             services.TryAddSingleton<MessageDispatcher>();
             services.TryAddSingleton<EventDispatcher>();
             services.TryAddTransient<IPublishEndpoint, PublishEndpoint>();
             // Constructed by hand because HostLoomProbe keeps an internal constructor.
-            services.TryAddSingleton(provider => new HostLoomProbe(provider.GetRequiredService<MessageDispatcher>()));
+            services.TryAddSingleton(provider => new HostLoomProbe(provider.GetRequiredService<ReceivePipeline>()));
             services.TryAddEnumerable(ServiceDescriptor.Singleton<Microsoft.Extensions.Hosting.IHostedService, RequestEndpointHostedService>());
         }
 

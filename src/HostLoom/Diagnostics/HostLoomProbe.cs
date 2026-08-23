@@ -8,11 +8,11 @@ namespace HostLoom;
 /// </summary>
 public sealed class HostLoomProbe
 {
-    private readonly MessageDispatcher _dispatcher;
+    private readonly ReceivePipeline _pipeline;
 
-    internal HostLoomProbe(MessageDispatcher dispatcher) => _dispatcher = dispatcher;
+    internal HostLoomProbe(ReceivePipeline pipeline) => _pipeline = pipeline;
 
     /// <summary>Immutable tree of the filters composed around handler execution.</summary>
     public ProbeResult ReceivePipeline(CancellationToken cancellationToken = default) =>
-        _dispatcher.ProbeReceivePipeline(cancellationToken);
+        _pipeline.Probe(cancellationToken);
 }

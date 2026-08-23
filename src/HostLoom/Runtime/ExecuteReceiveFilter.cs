@@ -4,9 +4,9 @@ using Microsoft.Extensions.DependencyInjection;
 namespace HostLoom;
 
 /// <summary>
-/// Terminal filter of the receive pipeline. Resolves the executor and runs the handler.
+/// Terminal filter of the receive pipeline. Opens the scope and runs the delivery's handlers.
 /// </summary>
-internal sealed class ExecuteRequestFilter(IServiceScopeFactory scopeFactory) : IFilter<ReceiveContext>
+internal sealed class ExecuteReceiveFilter(IServiceScopeFactory scopeFactory) : IFilter<ReceiveContext>
 {
     public async ValueTask SendAsync(ReceiveContext context, IPipe<ReceiveContext> next)
     {
@@ -15,10 +15,9 @@ internal sealed class ExecuteRequestFilter(IServiceScopeFactory scopeFactory) : 
         var scope = scopeFactory.CreateAsyncScope();
         await using (scope.ConfigureAwait(false))
         {
-            var executor = (IRequestExecutor)scope.ServiceProvider.GetRequiredService(context.ExecutorType);
-            context.Response = await executor.ExecuteAsync(context.Message, context.CancellationToken).ConfigureAwait(false);
+            await context.InvokeAsync(scope.ServiceProvider, context.CancellationToken).ConfigureAwait(false);
         }
     }
 
-    public void Probe(IProbeContext context) => context.CreateScope("executeRequest");
+    public void Probe(IProbeContext context) => context.CreateScope("executeReceive");
 }

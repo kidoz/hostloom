@@ -8,23 +8,16 @@ internal sealed class MessageDispatcher
 {
     private readonly HostLoomConfiguration _configuration;
     private readonly IMessageSerializer _serializer;
-    private readonly IPipe<ReceiveContext> _receivePipe;
+    private readonly ReceivePipeline _receivePipeline;
 
     public MessageDispatcher(
         HostLoomConfiguration configuration,
-        IServiceScopeFactory scopeFactory,
-        IMessageSerializer serializer)
+        IMessageSerializer serializer,
+        ReceivePipeline receivePipeline)
     {
         _configuration = configuration;
         _serializer = serializer;
-
-        // Composed once, not per delivery: a circuit breaker or rate limit is only meaningful if
-        // its state is shared across every request the endpoint receives.
-        _receivePipe = Pipe.Create<ReceiveContext>(builder =>
-        {
-            configuration.ReceivePipeline?.Invoke(builder);
-            builder.Use(new ExecuteRequestFilter(scopeFactory));
-        });
+        _receivePipeline = receivePipeline;
     }
 
     public async ValueTask<ReadOnlyMemory<byte>> DispatchAsync(
@@ -76,7 +69,7 @@ internal sealed class MessageDispatcher
             var message = _serializer.Deserialize(request.Body, registration.RequestType)
                 ?? throw new InvalidDataException($"Request body for '{request.MessageType}' was null.");
 
-            var receiveContext = new ReceiveContext(
+            var receiveContext = new RequestReceiveContext(
                 endpoint,
                 request.MessageId,
                 request.MessageType,
@@ -84,7 +77,7 @@ internal sealed class MessageDispatcher
                 message,
                 cancellationToken);
 
-            await _receivePipe.SendAsync(receiveContext).ConfigureAwait(false);
+            await _receivePipeline.SendAsync(receiveContext).ConfigureAwait(false);
             RecordRetries(receiveContext, tags);
 
             var envelope = new MessageEnvelope
@@ -115,10 +108,6 @@ internal sealed class MessageDispatcher
             HostLoomDiagnostics.RequestDuration.Record(Stopwatch.GetElapsedTime(start).TotalSeconds, tags);
         }
     }
-
-    /// <summary>Structure of the composed receive pipeline, surfaced through <see cref="HostLoomProbe"/>.</summary>
-    internal ProbeResult ProbeReceivePipeline(CancellationToken cancellationToken = default) =>
-        PipelineProbe.Inspect(_receivePipe, cancellationToken);
 
     // The payload is absent unless a retry filter ran, so its number is the count of extra attempts.
     private static void RecordRetries(ReceiveContext context, in TagList tags)
