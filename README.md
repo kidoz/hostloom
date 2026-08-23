@@ -100,7 +100,7 @@ subscribed while nothing is delivered.
 ## Receive pipeline
 
 Filters registered with `ConfigureReceivePipeline` wrap handler execution for
-every inbound request, on every transport:
+every inbound delivery — requests and events alike — on every transport:
 
 ```csharp
 builder.Services
@@ -126,6 +126,12 @@ delivery rather than resetting per message.
 
 Retrying in process is a different thing from broker redelivery. This pipeline
 never moves a broker offset; redelivery is the transport's concern.
+
+A filter receives a `ReceiveContext`, which is a `RequestReceiveContext` or an
+`EventReceiveContext`. Both carry `Destination`, `MessageType`, and `Message`;
+the event form adds `Subscription`. One pipeline serves both, so a breaker
+tripped by failing requests also rejects events — a single verdict on whether
+this process should be taking work.
 
 ## Health and metrics
 
