@@ -24,6 +24,9 @@ middleware pipeline. The current slice implements:
 - an OpenTelemetry-compatible `ActivitySource` and `Meter`, both named `HostLoom`;
 - liveness and readiness health checks, and an execution-free pipeline probe;
 - in-memory, RabbitMQ, and Kafka broker adapters;
+- an authenticated raw-WebSocket RPC and live-subscription gateway with JSON,
+  MessagePack, and Protocol Buffers subprotocols, bounded per-connection memory,
+  and explicit credit;
 - .NET Generic Host startup with graceful endpoint disposal;
 - tests for typed round trips, behavior ordering, and fault propagation.
 
@@ -143,6 +146,47 @@ A filter receives a `ReceiveContext`, which is a `RequestReceiveContext` or an
 the event form adds `Subscription`. One pipeline serves both, so a breaker
 tripped by failing requests also rejects events — a single verdict on whether
 this process should be taking work.
+
+## Raw WebSocket gateway
+
+`HostLoom.AspNetCore.WebSockets` exposes an explicit subset of request operations and event
+topics to WebSocket clients without SignalR:
+
+```csharp
+builder.Services
+    .AddHostLoom()
+    .UseRabbitMq()
+    .AddWebSocketGateway()
+    .AddRequest<GetOrder, OrderView>("orders.get", "orders-api", "orders.read")
+    .AddTopic<OrderChanged>("orders.changed", "orders", e => e.CustomerId,
+        subscription: "realtime-node-a", authorizationPolicy: "orders.read");
+
+app.UseAuthentication();
+app.UseAuthorization();
+app.UseHostLoomWebSockets();
+app.MapHostLoomWebSocketHub("/realtime");
+```
+
+Clients negotiate `hostloom.msgpack.v1`, `hostloom.protobuf.v1`, or `hostloom.json.v1`.
+Authentication happens before upgrade and named ASP.NET Core policies are checked again for every
+operation and subscription. One receive loop, one socket writer, a byte-bounded outbound queue,
+concurrent-request limits, and subscription credit prevent a slow client from creating unbounded
+per-connection work or memory.
+
+The initial subscription protocol is live and process-local: acknowledgements record progress but
+do not provide replay, and gateway-generated event IDs are not broker offsets. Multi-node services
+must choose distinct broker subscription names per node or add a fan-out/backplane according to the
+broker's actual queue or consumer-group semantics. See the
+[gateway protocol and operating notes](src/HostLoom.AspNetCore.WebSockets/README.md).
+
+Codec encode/decode throughput and allocations are measured separately with BenchmarkDotNet:
+
+```text
+dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --filter "*WebSocketProtocol*"
+```
+
+The suite covers zero-byte, 256-byte, and 4 KiB payloads. A `--job Dry` run verifies benchmark
+discovery and execution but is not statistically meaningful.
 
 ## Health and metrics
 
@@ -308,6 +352,8 @@ src/HostLoom.Pipelines/          transport-neutral middleware pipelines
 src/HostLoom.Transport.InMemory/ deterministic in-process broker
 src/HostLoom.Transport.RabbitMq/ request queues and exclusive reply queues
 src/HostLoom.Transport.Kafka/    request/response topics with header correlation
+src/HostLoom.AspNetCore.WebSockets/ raw Kestrel WebSocket RPC and subscriptions
+benchmarks/HostLoom.Benchmarks/    JSON, MessagePack, and Protobuf codec benchmarks
 tests/HostLoom.Tests/            pipeline, round-trip, behavior, and fault tests
 ```
 
