@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Deterministic test doubles and harnesses for HostLoom pipelines.</Description>
+    <PackageId>HostLoom.Pipelines.Testing</PackageId>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <ProjectReference Include="../HostLoom.Pipelines/HostLoom.Pipelines.csproj" />
+    <ProjectReference Include="../HostLoom.Pipelines.DependencyInjection/HostLoom.Pipelines.DependencyInjection.csproj" />
+  </ItemGroup>
+</Project>
