@@ -77,7 +77,11 @@ internal sealed class PipelineRunner<TContext>(
                 }
 
                 var filter =
-                    (IFilter<TContext>)provider.GetRequiredService(registration.FilterType);
+                    (IFilter<TContext>)
+                        provider.GetRequiredKeyedService(
+                            registration.FilterType,
+                            registration.ServiceKey
+                        );
                 builder.Use(
                     definition.Instrumented
                         ? new InstrumentedFilter<TContext>(

@@ -3,7 +3,8 @@ namespace HostLoom.Pipelines.DependencyInjection;
 internal sealed record PipelineFilterDefinition(
     Type FilterType,
     string Name,
-    Func<IServiceProvider, bool>? EnabledWhen
+    Func<IServiceProvider, bool>? EnabledWhen,
+    object ServiceKey
 );
 
 internal sealed record PipelineStageDefinition(
@@ -17,7 +18,7 @@ internal interface IPipelineDefinition
     string Name { get; }
     Type ContextType { get; }
     PipelineTopology Topology { get; }
-    IEnumerable<Type> FilterTypes { get; }
+    IEnumerable<PipelineFilterDefinition> Filters { get; }
 }
 
 internal sealed class PipelineDefinition<TContext> : IPipelineDefinition
@@ -64,6 +65,6 @@ internal sealed class PipelineDefinition<TContext> : IPipelineDefinition
 
     public PipelineTopology Topology { get; }
 
-    public IEnumerable<Type> FilterTypes =>
-        Stages.SelectMany(stage => stage.Filters).Select(filter => filter.FilterType).Distinct();
+    public IEnumerable<PipelineFilterDefinition> Filters =>
+        Stages.SelectMany(stage => stage.Filters);
 }

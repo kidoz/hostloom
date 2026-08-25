@@ -40,29 +40,12 @@ public static class PipelineServiceCollectionExtensions
         configure(builder);
         var definition = builder.Build();
 
-        foreach (var filterType in definition.FilterTypes)
+        foreach (var filter in definition.Filters)
         {
-            // TryAdd would silently keep a conflicting registration, so a filter the caller had
-            // already registered as a singleton would outlive the run it is documented to belong to
-            // — sharing mutable state across concurrent runs, or capturing a scoped dependency.
-            // Failing here is louder than either, and the caller can drop their registration.
-            var existing = services.FirstOrDefault(descriptor =>
-                descriptor.ServiceType == filterType
-            );
-            if (existing is null)
-            {
-                services.AddTransient(filterType);
-                continue;
-            }
-
-            if (existing.Lifetime != ServiceLifetime.Transient)
-            {
-                throw new InvalidOperationException(
-                    $"Filter '{filterType.Name}' in pipeline '{name}' is already registered as "
-                        + $"{existing.Lifetime}, but pipeline filters are resolved per run and must be "
-                        + "transient. Remove the existing registration, or register the filter as transient."
-                );
-            }
+            // Each declaration gets a private keyed registration. Unkeyed application services,
+            // registrations added later, and a second declaration of the same filter type cannot
+            // replace the transient instance owned by this pipeline registration.
+            services.AddKeyedTransient(filter.FilterType, filter.ServiceKey);
         }
 
         services.AddSingleton<IPipelineDefinition>(definition);

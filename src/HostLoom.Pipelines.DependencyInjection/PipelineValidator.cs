@@ -9,7 +9,10 @@ namespace HostLoom.Pipelines.DependencyInjection;
 /// </summary>
 public static class PipelineValidator
 {
-    public static void Validate(IServiceProvider services)
+    public static async ValueTask ValidateAsync(
+        IServiceProvider services,
+        CancellationToken cancellationToken = default
+    )
     {
         ArgumentNullException.ThrowIfNull(services);
         var definitions = services.GetServices<IPipelineDefinition>().ToList();
@@ -29,33 +32,39 @@ public static class PipelineValidator
         var logger = services
             .GetService<ILoggerFactory>()
             ?.CreateLogger("HostLoom.Pipelines.DependencyInjection.PipelineValidator");
-        using var scope = services.GetRequiredService<IServiceScopeFactory>().CreateScope();
-        foreach (var definition in definitions)
-        {
-            foreach (var filterType in definition.FilterTypes)
+        var scope = services.GetRequiredService<IServiceScopeFactory>().CreateAsyncScope();
+        await using (scope.ConfigureAwait(false))
+            foreach (var definition in definitions)
             {
-                try
+                foreach (var filter in definition.Filters)
                 {
-                    _ = scope.ServiceProvider.GetRequiredService(filterType);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    try
+                    {
+                        _ = scope.ServiceProvider.GetRequiredKeyedService(
+                            filter.FilterType,
+                            filter.ServiceKey
+                        );
+                    }
+                    catch (InvalidOperationException exception)
+                    {
+                        throw new InvalidOperationException(
+                            $"Pipeline '{definition.Name}' cannot construct filter '{filter.Name}' "
+                                + $"of type '{filter.FilterType.Name}'. "
+                                + "Register its constructor dependencies, or the pipeline will fail on its first run.",
+                            exception
+                        );
+                    }
                 }
-                catch (InvalidOperationException exception)
+
+                if (logger?.IsEnabled(LogLevel.Information) == true)
                 {
-                    throw new InvalidOperationException(
-                        $"Pipeline '{definition.Name}' cannot construct filter '{filterType.Name}'. "
-                            + "Register its constructor dependencies, or the pipeline will fail on its first run.",
-                        exception
+                    logger.LogInformation(
+                        "HostLoom pipeline '{PipelineName}' topology: {Topology}",
+                        definition.Name,
+                        definition.Topology.Describe()
                     );
                 }
             }
-
-            if (logger?.IsEnabled(LogLevel.Information) == true)
-            {
-                logger.LogInformation(
-                    "HostLoom pipeline '{PipelineName}' topology: {Topology}",
-                    definition.Name,
-                    definition.Topology.Describe()
-                );
-            }
-        }
     }
 }

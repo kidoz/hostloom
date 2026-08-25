@@ -8,11 +8,10 @@ namespace HostLoom.Pipelines.DependencyInjection;
 /// </summary>
 internal sealed class PipelineStartupValidator(IServiceProvider serviceProvider) : IHostedService
 {
-    public Task StartAsync(CancellationToken cancellationToken)
-    {
-        PipelineValidator.Validate(serviceProvider);
-        return Task.CompletedTask;
-    }
+    public async Task StartAsync(CancellationToken cancellationToken) =>
+        await PipelineValidator
+            .ValidateAsync(serviceProvider, cancellationToken)
+            .ConfigureAwait(false);
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

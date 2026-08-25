@@ -87,40 +87,25 @@ public sealed class PipelineRegistrationTests
     }
 
     [Fact]
-    public void A_filter_already_registered_with_another_lifetime_is_rejected()
+    public async Task Application_registrations_cannot_override_pipeline_filter_lifetime()
     {
         var services = new ServiceCollection();
         services.AddSingleton(new ExecutionLog());
         services.AddSingleton<CountingFilter>();
-        services.AddSingleton(new Constructions());
-
-        // Silently honouring the singleton would share one filter across concurrent runs and let it
-        // capture scoped dependencies, both of which contradict the documented per-run lifetime.
-        var exception = Assert.Throws<InvalidOperationException>(() =>
-            services.AddPipeline<RunContext>(
-                "conflicting",
-                pipeline => pipeline.Stage("only", stage => stage.AddFilter<CountingFilter>())
-            )
-        );
-
-        Assert.Contains("Singleton", exception.Message, StringComparison.Ordinal);
-        Assert.Contains(nameof(CountingFilter), exception.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void A_filter_already_registered_as_transient_is_accepted()
-    {
-        var services = new ServiceCollection();
-        services.AddSingleton(new ExecutionLog());
-        services.AddSingleton(new Constructions());
-        services.AddTransient<CountingFilter>();
-
+        var constructions = new Constructions();
+        services.AddSingleton(constructions);
         services.AddPipeline<RunContext>(
-            "compatible",
+            "isolated",
             pipeline => pipeline.Stage("only", stage => stage.AddFilter<CountingFilter>())
         );
+        services.AddSingleton<CountingFilter>();
+        await using var provider = services.BuildServiceProvider();
+        var runner = provider.GetRequiredKeyedService<IPipelineRunner<RunContext>>("isolated");
 
-        Assert.Single(services, descriptor => descriptor.ServiceType == typeof(CountingFilter));
+        await runner.RunAsync(new RunContext());
+        await runner.RunAsync(new RunContext());
+
+        Assert.Equal(2, constructions.Count);
     }
 
     [Fact]

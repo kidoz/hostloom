@@ -67,7 +67,7 @@ public sealed class PipelineTestingTests
     public async Task Pipeline_harness_runs_a_registered_pipeline_against_fakes()
     {
         var log = new ExecutionLog();
-        await using var harness = PipelineHarness.Create<HarnessContext>(
+        await using var harness = await PipelineHarness.CreateAsync<HarnessContext>(
             "profiled",
             services =>
             {
@@ -76,7 +76,8 @@ public sealed class PipelineTestingTests
                     "profiled",
                     pipeline => pipeline.Stage("enrich", stage => stage.AddFilter<LoggingFilter>())
                 );
-            }
+            },
+            TestContext.Current.CancellationToken
         );
 
         var result = await harness.RunAsync(new HarnessContext());
@@ -87,22 +88,47 @@ public sealed class PipelineTestingTests
     }
 
     [Fact]
-    public void Pipeline_harness_surfaces_validation_failures_like_host_startup()
+    public async Task Pipeline_harness_surfaces_validation_failures_like_host_startup()
     {
         // LoggingFilter needs an ExecutionLog that is deliberately not registered.
-        var exception = Assert.Throws<InvalidOperationException>(() =>
-            PipelineHarness.Create<HarnessContext>(
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await PipelineHarness.CreateAsync<HarnessContext>(
                 "broken",
                 services =>
                     services.AddPipeline<HarnessContext>(
                         "broken",
                         pipeline =>
                             pipeline.Stage("enrich", stage => stage.AddFilter<LoggingFilter>())
-                    )
+                    ),
+                TestContext.Current.CancellationToken
             )
         );
 
         Assert.Contains("broken", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Pipeline_validation_disposes_async_only_filters()
+    {
+        var disposals = new Disposals();
+        await using var harness = await PipelineHarness.CreateAsync<HarnessContext>(
+            "async-disposal",
+            services =>
+            {
+                services.AddSingleton(disposals);
+                services.AddPipeline<HarnessContext>(
+                    "async-disposal",
+                    pipeline =>
+                        pipeline.Stage("only", stage => stage.AddFilter<AsyncDisposableFilter>())
+                );
+            },
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(1, disposals.Count);
+        var result = await harness.RunAsync(new HarnessContext());
+        Assert.True(result.Completed);
+        Assert.Equal(2, disposals.Count);
     }
 
     public sealed class HarnessContext : PipeContext;
@@ -113,6 +139,29 @@ public sealed class PipelineTestingTests
         {
             log.Record("ran");
             return next.SendAsync(context);
+        }
+    }
+
+    public sealed class Disposals
+    {
+        private int _count;
+
+        public int Count => Volatile.Read(ref _count);
+
+        public void Record() => Interlocked.Increment(ref _count);
+    }
+
+    public sealed class AsyncDisposableFilter(Disposals disposals)
+        : IFilter<HarnessContext>,
+            IAsyncDisposable
+    {
+        public ValueTask SendAsync(HarnessContext context, IPipe<HarnessContext> next) =>
+            next.SendAsync(context);
+
+        public ValueTask DisposeAsync()
+        {
+            disposals.Record();
+            return ValueTask.CompletedTask;
         }
     }
 }

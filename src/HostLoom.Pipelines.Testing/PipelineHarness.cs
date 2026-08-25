@@ -10,9 +10,10 @@ public static class PipelineHarness
     /// registered pipeline exactly as host startup would, and returns a harness around the named
     /// runner. Register fakes for the filters' dependencies in the same callback.
     /// </summary>
-    public static PipelineHarness<TContext> Create<TContext>(
+    public static async ValueTask<PipelineHarness<TContext>> CreateAsync<TContext>(
         string pipelineName,
-        Action<IServiceCollection> configureServices
+        Action<IServiceCollection> configureServices,
+        CancellationToken cancellationToken = default
     )
         where TContext : class, IPipeContext
     {
@@ -26,13 +27,15 @@ public static class PipelineHarness
         );
         try
         {
-            PipelineValidator.Validate(provider);
+            await PipelineValidator
+                .ValidateAsync(provider, cancellationToken)
+                .ConfigureAwait(false);
             var runner = provider.GetRequiredKeyedService<IPipelineRunner<TContext>>(pipelineName);
             return new PipelineHarness<TContext>(provider, runner);
         }
         catch
         {
-            provider.Dispose();
+            await provider.DisposeAsync().ConfigureAwait(false);
             throw;
         }
     }

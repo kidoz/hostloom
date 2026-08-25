@@ -155,5 +155,5 @@ public sealed class PipelineFilterBuilder
     }
 
     internal PipelineFilterDefinition Build(Type filterType) =>
-        new(filterType, _name, _enabledWhen);
+        new(filterType, _name, _enabledWhen, new object());
 }

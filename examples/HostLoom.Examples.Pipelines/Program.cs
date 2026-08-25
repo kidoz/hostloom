@@ -12,10 +12,13 @@ internal static class Program
     {
         var builder = Host.CreateApplicationBuilder();
 
-        // Filter dependencies register like any other service; filters themselves are registered
-        // transient by AddPipeline and resolved per run, so they take these through constructors.
+        // Filter dependencies register like any other service. AddPipeline owns private transient
+        // registrations for its filters and resolves them per run through constructor injection.
         builder.Services.AddSingleton<IDocumentStore, LoggingDocumentStore>();
         builder.Services.AddSingleton<FeatureFlags>();
+        builder.Services.AddTransient<WordCountFilter>();
+        builder.Services.AddTransient<ReadingTimeFilter>();
+        builder.Services.AddTransient<StoreDocumentFilter>();
 
         // One pipeline from several filters: stages execute in declared order, filters inside a
         // stage in registration order. WithTimeout/WithRetry wrap the whole run, first outermost,
@@ -89,8 +92,8 @@ internal static class Program
 
     /// <summary>
     /// Composing a pipe yourself from container-resolved filters: useful when a host wants full
-    /// control of composition but still wants constructor-injected filters. AddPipeline already
-    /// registered the filter types transient, so a scope hands out fresh instances.
+    /// control of composition but still wants constructor-injected filters. These filter types
+    /// were registered explicitly for this manual path, so a scope hands out fresh instances.
     /// </summary>
     private static async Task RunManuallyComposedPipeAsync(
         IServiceProvider services,
