@@ -1,8 +1,10 @@
 namespace HostLoom.Pipelines;
 
-internal sealed class EmptyPipe<TContext> : IPipe<TContext> where TContext : class, IPipeContext
+internal sealed class EmptyPipe<TContext> : IPipe<TContext>
+    where TContext : class, IPipeContext
 {
     public static EmptyPipe<TContext> Instance { get; } = new();
+
     private EmptyPipe() { }
 
     public ValueTask SendAsync(TContext context)

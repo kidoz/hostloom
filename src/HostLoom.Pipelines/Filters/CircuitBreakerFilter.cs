@@ -1,6 +1,7 @@
 namespace HostLoom.Pipelines;
 
-internal sealed class CircuitBreakerFilter<TContext> : IFilter<TContext> where TContext : class, IPipeContext
+internal sealed class CircuitBreakerFilter<TContext> : IFilter<TContext>
+    where TContext : class, IPipeContext
 {
     private readonly int _failureThreshold;
     private readonly TimeSpan _resetInterval;
@@ -10,7 +11,11 @@ internal sealed class CircuitBreakerFilter<TContext> : IFilter<TContext> where T
     private int _consecutiveFailures;
     private DateTimeOffset _openedAt;
 
-    public CircuitBreakerFilter(int failureThreshold, TimeSpan resetInterval, TimeProvider timeProvider)
+    public CircuitBreakerFilter(
+        int failureThreshold,
+        TimeSpan resetInterval,
+        TimeProvider timeProvider
+    )
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(failureThreshold, 1);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(resetInterval, TimeSpan.Zero);

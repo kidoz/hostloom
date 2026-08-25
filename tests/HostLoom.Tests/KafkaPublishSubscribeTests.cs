@@ -24,7 +24,8 @@ public sealed class KafkaPublishSubscribeTests
             "orders",
             "audit",
             (_, _) => ValueTask.CompletedTask,
-            TestContext.Current.CancellationToken);
+            TestContext.Current.CancellationToken
+        );
 
         var config = Assert.Single(kafka.ConsumerConfigs);
         Assert.Equal("hostloom.orders.audit", config.GroupId);
@@ -38,14 +39,25 @@ public sealed class KafkaPublishSubscribeTests
         var kafka = new FakeKafka();
         await using var broker = Create(kafka);
 
-        await using var audit = await broker.SubscribeAsync("orders", "audit", (_, _) => ValueTask.CompletedTask, TestContext.Current.CancellationToken);
-        await using var shipping = await broker.SubscribeAsync("orders", "shipping", (_, _) => ValueTask.CompletedTask, TestContext.Current.CancellationToken);
+        await using var audit = await broker.SubscribeAsync(
+            "orders",
+            "audit",
+            (_, _) => ValueTask.CompletedTask,
+            TestContext.Current.CancellationToken
+        );
+        await using var shipping = await broker.SubscribeAsync(
+            "orders",
+            "shipping",
+            (_, _) => ValueTask.CompletedTask,
+            TestContext.Current.CancellationToken
+        );
 
         // Distinct groups are the fan-out. One shared group would make them competing consumers,
         // so each event would reach only one of the two.
         Assert.Equal(
             ["hostloom.orders.audit", "hostloom.orders.shipping"],
-            kafka.ConsumerConfigs.Select(config => config.GroupId).Order(StringComparer.Ordinal));
+            kafka.ConsumerConfigs.Select(config => config.GroupId).Order(StringComparer.Ordinal)
+        );
     }
 
     [Fact]
@@ -54,7 +66,11 @@ public sealed class KafkaPublishSubscribeTests
         var kafka = new FakeKafka();
         await using var broker = Create(kafka);
 
-        await broker.PublishAsync("orders", Encoding.UTF8.GetBytes("placed"), TestContext.Current.CancellationToken);
+        await broker.PublishAsync(
+            "orders",
+            Encoding.UTF8.GetBytes("placed"),
+            TestContext.Current.CancellationToken
+        );
 
         var produced = Assert.Single(kafka.Produced);
         Assert.Equal("orders", produced.Topic);
@@ -79,7 +95,8 @@ public sealed class KafkaPublishSubscribeTests
                 handled.Add(Encoding.UTF8.GetString(frame.Span));
                 return ValueTask.CompletedTask;
             },
-            TestContext.Current.CancellationToken);
+            TestContext.Current.CancellationToken
+        );
 
         await WaitUntilAsync(() => kafka.Commits.Count == 1, "the record commits");
 
@@ -116,7 +133,11 @@ public sealed class KafkaPublishSubscribeTests
         {
             Producer = Substitute.For<IProducer<string, byte[]>>();
             Producer
-                .ProduceAsync(Arg.Any<string>(), Arg.Any<Message<string, byte[]>>(), Arg.Any<CancellationToken>())
+                .ProduceAsync(
+                    Arg.Any<string>(),
+                    Arg.Any<Message<string, byte[]>>(),
+                    Arg.Any<CancellationToken>()
+                )
                 .Returns(call =>
                 {
                     var topic = call.ArgAt<string>(0);
@@ -141,13 +162,19 @@ public sealed class KafkaPublishSubscribeTests
         public List<long> Commits { get; } = [];
 
         public void Enqueue(string topic, long offset, string body) =>
-            _pending.Enqueue(new ConsumeResult<string, byte[]>
-            {
-                Topic = topic,
-                Partition = new Partition(0),
-                Offset = new Offset(offset),
-                Message = new Message<string, byte[]> { Value = Encoding.UTF8.GetBytes(body), Headers = new Headers() }
-            });
+            _pending.Enqueue(
+                new ConsumeResult<string, byte[]>
+                {
+                    Topic = topic,
+                    Partition = new Partition(0),
+                    Offset = new Offset(offset),
+                    Message = new Message<string, byte[]>
+                    {
+                        Value = Encoding.UTF8.GetBytes(body),
+                        Headers = new Headers(),
+                    },
+                }
+            );
 
         public IConsumer<string, byte[]> CreateConsumer(ConsumerConfig config)
         {
@@ -167,23 +194,25 @@ public sealed class KafkaPublishSubscribeTests
                     }
                 });
 
-            consumer.Consume(Arg.Any<CancellationToken>()).Returns(call =>
-            {
-                var token = call.Arg<CancellationToken>();
-                while (true)
+            consumer
+                .Consume(Arg.Any<CancellationToken>())
+                .Returns(call =>
                 {
-                    token.ThrowIfCancellationRequested();
-                    lock (_gate)
+                    var token = call.Arg<CancellationToken>();
+                    while (true)
                     {
-                        if (_pending.TryDequeue(out var record))
+                        token.ThrowIfCancellationRequested();
+                        lock (_gate)
                         {
-                            return record;
+                            if (_pending.TryDequeue(out var record))
+                            {
+                                return record;
+                            }
                         }
-                    }
 
-                    Thread.Sleep(1);
-                }
-            });
+                        Thread.Sleep(1);
+                    }
+                });
 
             consumer
                 .When(c => c.Commit(Arg.Any<ConsumeResult<string, byte[]>>()))

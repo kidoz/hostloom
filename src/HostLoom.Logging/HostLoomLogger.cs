@@ -3,9 +3,14 @@ using Microsoft.Extensions.Logging;
 
 namespace HostLoom.Logging;
 
-internal sealed class HostLoomLogger(string category, LogPipeline pipeline, HostLoomLoggerOptions options) : ILogger
+internal sealed class HostLoomLogger(
+    string category,
+    LogPipeline pipeline,
+    HostLoomLoggerOptions options
+) : ILogger
 {
-    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+    public IDisposable? BeginScope<TState>(TState state)
+        where TState : notnull => null;
 
     public bool IsEnabled(LogLevel logLevel) => logLevel != LogLevel.None;
 
@@ -19,7 +24,8 @@ internal sealed class HostLoomLogger(string category, LogPipeline pipeline, Host
         EventId eventId,
         TState state,
         Exception? exception,
-        Func<TState, Exception?, string> formatter)
+        Func<TState, Exception?, string> formatter
+    )
     {
         if (!IsEnabled(logLevel))
         {

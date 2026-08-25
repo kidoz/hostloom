@@ -7,7 +7,8 @@ internal sealed class RequestEndpointHostedService(
     IRequestBroker broker,
     MessageDispatcher dispatcher,
     EventDispatcher eventDispatcher,
-    EndpointRuntimeState state) : IHostedService, IAsyncDisposable
+    EndpointRuntimeState state
+) : IHostedService, IAsyncDisposable
 {
     private readonly List<IAsyncDisposable> _subscriptions = [];
 
@@ -29,7 +30,8 @@ internal sealed class RequestEndpointHostedService(
                     .ListenAsync(
                         address,
                         (frame, token) => dispatcher.DispatchAsync(address, frame, token),
-                        cancellationToken)
+                        cancellationToken
+                    )
                     .ConfigureAwait(false);
                 _subscriptions.Add(subscription);
             }
@@ -40,7 +42,8 @@ internal sealed class RequestEndpointHostedService(
                 {
                     throw new NotSupportedException(
                         $"The configured transport '{broker.GetType().Name}' supports request/response only, "
-                        + $"but {configuration.Subscriptions.Count} event subscription(s) are registered.");
+                            + $"but {configuration.Subscriptions.Count} event subscription(s) are registered."
+                    );
                 }
 
                 foreach (var topicSubscription in configuration.Subscriptions)
@@ -52,8 +55,15 @@ internal sealed class RequestEndpointHostedService(
                         .SubscribeAsync(
                             target.Topic,
                             target.Name,
-                            (frame, token) => eventDispatcher.DispatchAsync(target.Topic, target.Name, frame, token),
-                            cancellationToken)
+                            (frame, token) =>
+                                eventDispatcher.DispatchAsync(
+                                    target.Topic,
+                                    target.Name,
+                                    frame,
+                                    token
+                                ),
+                            cancellationToken
+                        )
                         .ConfigureAwait(false);
                     _subscriptions.Add(subscription);
                 }
@@ -76,7 +86,8 @@ internal sealed class RequestEndpointHostedService(
         }
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken) => await DisposeAsync().ConfigureAwait(false);
+    public async Task StopAsync(CancellationToken cancellationToken) =>
+        await DisposeAsync().ConfigureAwait(false);
 
     public async ValueTask DisposeAsync() => await UnwindAsync().ConfigureAwait(false);
 
@@ -105,7 +116,10 @@ internal sealed class RequestEndpointHostedService(
 
         if (failures is not null)
         {
-            throw new AggregateException("One or more endpoint subscriptions failed to dispose.", failures);
+            throw new AggregateException(
+                "One or more endpoint subscriptions failed to dispose.",
+                failures
+            );
         }
     }
 }

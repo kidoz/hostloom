@@ -28,18 +28,23 @@ internal sealed class LogPipeline : IAsyncDisposable
         _formatter = formatter;
         _sink = sink;
         _options = options;
-        _queue = Channel.CreateBounded<LogEntry>(new BoundedChannelOptions(options.QueueCapacity)
-        {
-            SingleReader = true,
-            SingleWriter = false,
-            FullMode = BoundedChannelFullMode.Wait
-        });
+        _queue = Channel.CreateBounded<LogEntry>(
+            new BoundedChannelOptions(options.QueueCapacity)
+            {
+                SingleReader = true,
+                SingleWriter = false,
+                FullMode = BoundedChannelFullMode.Wait,
+            }
+        );
 
-        _writer = Task.Factory.StartNew(
-            RunAsync,
-            CancellationToken.None,
-            TaskCreationOptions.LongRunning,
-            TaskScheduler.Default).Unwrap();
+        _writer = Task
+            .Factory.StartNew(
+                RunAsync,
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default
+            )
+            .Unwrap();
     }
 
     /// <summary>Records dropped because the queue was full. Surfaced so overload is visible, not silent.</summary>

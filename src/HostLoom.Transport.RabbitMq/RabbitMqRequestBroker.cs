@@ -12,7 +12,10 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     private readonly Func<CancellationToken, ValueTask<IConnection>> _connectionFactory;
     private readonly SemaphoreSlim _initializationGate = new(1, 1);
     private readonly SemaphoreSlim _publishGate = new(1, 1);
-    private readonly ConcurrentDictionary<Guid, TaskCompletionSource<ReadOnlyMemory<byte>>> _pending = new();
+    private readonly ConcurrentDictionary<
+        Guid,
+        TaskCompletionSource<ReadOnlyMemory<byte>>
+    > _pending = new();
     private readonly ConcurrentDictionary<RequestAddress, bool> _declaredTopics = new();
     private IConnection? _connection;
     private IChannel? _clientChannel;
@@ -20,9 +23,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     private bool _disposed;
 
     public RabbitMqRequestBroker(IOptions<RabbitMqOptions> options)
-        : this(options, connectionFactory: null)
-    {
-    }
+        : this(options, connectionFactory: null) { }
 
     /// <summary>
     /// Takes a connection factory so the request/reply correlation can be driven by fake
@@ -30,7 +31,8 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     /// </summary>
     internal RabbitMqRequestBroker(
         IOptions<RabbitMqOptions> options,
-        Func<CancellationToken, ValueTask<IConnection>>? connectionFactory)
+        Func<CancellationToken, ValueTask<IConnection>>? connectionFactory
+    )
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
@@ -40,54 +42,82 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     public async ValueTask<IAsyncDisposable> ListenAsync(
         RequestAddress address,
         RequestFrameHandler handler,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var connection = await EnsureConnectionAsync(cancellationToken).ConfigureAwait(false);
-        var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        var channel = await connection
+            .CreateChannelAsync(cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
 
         try
         {
-            await channel.QueueDeclareAsync(
-                queue: address.Value,
-                durable: _options.DurableRequestQueues,
-                exclusive: false,
-                autoDelete: false,
-                arguments: null,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-            await channel.BasicQosAsync(0, _options.PrefetchCount, global: false, cancellationToken).ConfigureAwait(false);
+            await channel
+                .QueueDeclareAsync(
+                    queue: address.Value,
+                    durable: _options.DurableRequestQueues,
+                    exclusive: false,
+                    autoDelete: false,
+                    arguments: null,
+                    cancellationToken: cancellationToken
+                )
+                .ConfigureAwait(false);
+            await channel
+                .BasicQosAsync(0, _options.PrefetchCount, global: false, cancellationToken)
+                .ConfigureAwait(false);
 
             var consumer = new AsyncEventingBasicConsumer(channel);
             consumer.ReceivedAsync += async (_, delivery) =>
             {
                 try
                 {
-                    var response = await handler(delivery.Body, delivery.CancellationToken).ConfigureAwait(false);
+                    var response = await handler(delivery.Body, delivery.CancellationToken)
+                        .ConfigureAwait(false);
                     if (string.IsNullOrWhiteSpace(delivery.BasicProperties.ReplyTo))
                     {
-                        throw new InvalidDataException("RabbitMQ request did not specify a reply queue.");
+                        throw new InvalidDataException(
+                            "RabbitMQ request did not specify a reply queue."
+                        );
                     }
 
                     var properties = new BasicProperties
                     {
                         ContentType = ContentType,
-                        CorrelationId = delivery.BasicProperties.CorrelationId
+                        CorrelationId = delivery.BasicProperties.CorrelationId,
                     };
-                    await channel.BasicPublishAsync(
-                        exchange: string.Empty,
-                        routingKey: delivery.BasicProperties.ReplyTo,
-                        mandatory: true,
-                        basicProperties: properties,
-                        body: response,
-                        cancellationToken: delivery.CancellationToken).ConfigureAwait(false);
-                    await channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, delivery.CancellationToken).ConfigureAwait(false);
+                    await channel
+                        .BasicPublishAsync(
+                            exchange: string.Empty,
+                            routingKey: delivery.BasicProperties.ReplyTo,
+                            mandatory: true,
+                            basicProperties: properties,
+                            body: response,
+                            cancellationToken: delivery.CancellationToken
+                        )
+                        .ConfigureAwait(false);
+                    await channel
+                        .BasicAckAsync(
+                            delivery.DeliveryTag,
+                            multiple: false,
+                            delivery.CancellationToken
+                        )
+                        .ConfigureAwait(false);
                 }
                 catch
                 {
-                    await channel.BasicRejectAsync(delivery.DeliveryTag, requeue: false, CancellationToken.None).ConfigureAwait(false);
+                    await channel
+                        .BasicRejectAsync(
+                            delivery.DeliveryTag,
+                            requeue: false,
+                            CancellationToken.None
+                        )
+                        .ConfigureAwait(false);
                 }
             };
 
-            await channel.BasicConsumeAsync(address.Value, autoAck: false, consumer, cancellationToken).ConfigureAwait(false);
+            await channel
+                .BasicConsumeAsync(address.Value, autoAck: false, consumer, cancellationToken)
+                .ConfigureAwait(false);
             return new ChannelSubscription(channel);
         }
         catch
@@ -106,33 +136,44 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         RequestAddress topic,
         string subscription,
         EventFrameHandler handler,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(subscription);
         ArgumentNullException.ThrowIfNull(handler);
 
         var connection = await EnsureConnectionAsync(cancellationToken).ConfigureAwait(false);
-        var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        var channel = await connection
+            .CreateChannelAsync(cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
 
         try
         {
             await DeclareTopicAsync(channel, topic, cancellationToken).ConfigureAwait(false);
 
             var queue = $"{topic.Value}.{subscription}";
-            await channel.QueueDeclareAsync(
-                queue: queue,
-                durable: _options.DurableTopics,
-                exclusive: false,
-                autoDelete: false,
-                arguments: null,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-            await channel.QueueBindAsync(
-                queue: queue,
-                exchange: topic.Value,
-                routingKey: string.Empty,
-                arguments: null,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-            await channel.BasicQosAsync(0, _options.PrefetchCount, global: false, cancellationToken).ConfigureAwait(false);
+            await channel
+                .QueueDeclareAsync(
+                    queue: queue,
+                    durable: _options.DurableTopics,
+                    exclusive: false,
+                    autoDelete: false,
+                    arguments: null,
+                    cancellationToken: cancellationToken
+                )
+                .ConfigureAwait(false);
+            await channel
+                .QueueBindAsync(
+                    queue: queue,
+                    exchange: topic.Value,
+                    routingKey: string.Empty,
+                    arguments: null,
+                    cancellationToken: cancellationToken
+                )
+                .ConfigureAwait(false);
+            await channel
+                .BasicQosAsync(0, _options.PrefetchCount, global: false, cancellationToken)
+                .ConfigureAwait(false);
 
             var consumer = new AsyncEventingBasicConsumer(channel);
             consumer.ReceivedAsync += async (_, delivery) =>
@@ -140,15 +181,29 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                 try
                 {
                     await handler(delivery.Body, delivery.CancellationToken).ConfigureAwait(false);
-                    await channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, delivery.CancellationToken).ConfigureAwait(false);
+                    await channel
+                        .BasicAckAsync(
+                            delivery.DeliveryTag,
+                            multiple: false,
+                            delivery.CancellationToken
+                        )
+                        .ConfigureAwait(false);
                 }
                 catch
                 {
-                    await channel.BasicRejectAsync(delivery.DeliveryTag, requeue: false, CancellationToken.None).ConfigureAwait(false);
+                    await channel
+                        .BasicRejectAsync(
+                            delivery.DeliveryTag,
+                            requeue: false,
+                            CancellationToken.None
+                        )
+                        .ConfigureAwait(false);
                 }
             };
 
-            await channel.BasicConsumeAsync(queue, autoAck: false, consumer, cancellationToken).ConfigureAwait(false);
+            await channel
+                .BasicConsumeAsync(queue, autoAck: false, consumer, cancellationToken)
+                .ConfigureAwait(false);
             return new ChannelSubscription(channel);
         }
         catch
@@ -158,7 +213,11 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         }
     }
 
-    public async ValueTask PublishAsync(RequestAddress topic, ReadOnlyMemory<byte> frame, CancellationToken cancellationToken)
+    public async ValueTask PublishAsync(
+        RequestAddress topic,
+        ReadOnlyMemory<byte> frame,
+        CancellationToken cancellationToken
+    )
     {
         await EnsureClientAsync(cancellationToken).ConfigureAwait(false);
         await DeclareTopicAsync(_clientChannel!, topic, cancellationToken).ConfigureAwait(false);
@@ -171,13 +230,16 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             // Not mandatory: an event with no subscriptions is dropped, which is ordinary
             // publish/subscribe. Returning it unrouted would make publishing fail whenever
             // nobody happens to be listening.
-            await _clientChannel!.BasicPublishAsync(
-                exchange: topic.Value,
-                routingKey: string.Empty,
-                mandatory: false,
-                basicProperties: properties,
-                body: frame,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+            await _clientChannel!
+                .BasicPublishAsync(
+                    exchange: topic.Value,
+                    routingKey: string.Empty,
+                    mandatory: false,
+                    basicProperties: properties,
+                    body: frame,
+                    cancellationToken: cancellationToken
+                )
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -190,10 +252,13 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         ReadOnlyMemory<byte> request,
         Guid requestId,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         await EnsureClientAsync(cancellationToken).ConfigureAwait(false);
-        var completion = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completion = new TaskCompletionSource<ReadOnlyMemory<byte>>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
         if (!_pending.TryAdd(requestId, completion))
         {
             throw new InvalidOperationException($"Request id '{requestId}' is already pending.");
@@ -205,19 +270,22 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             {
                 ContentType = ContentType,
                 CorrelationId = requestId.ToString("N"),
-                ReplyTo = _replyQueue
+                ReplyTo = _replyQueue,
             };
 
             await _publishGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await _clientChannel!.BasicPublishAsync(
-                    exchange: string.Empty,
-                    routingKey: address.Value,
-                    mandatory: true,
-                    basicProperties: properties,
-                    body: request,
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                await _clientChannel!
+                    .BasicPublishAsync(
+                        exchange: string.Empty,
+                        routingKey: address.Value,
+                        mandatory: true,
+                        basicProperties: properties,
+                        body: request,
+                        cancellationToken: cancellationToken
+                    )
+                    .ConfigureAwait(false);
             }
             finally
             {
@@ -226,7 +294,9 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 
             try
             {
-                return await completion.Task.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+                return await completion
+                    .Task.WaitAsync(timeout, cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (TimeoutException exception)
             {
@@ -315,29 +385,38 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             // Build the reply path locally and publish it to the fields only once the consumer
             // is actually running. Assigning earlier lets a failure here leave the client
             // looking initialized while no reply consumer exists, so every request times out.
-            var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            var channel = await connection
+                .CreateChannelAsync(cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
             try
             {
-                var queue = await channel.QueueDeclareAsync(
-                    queue: string.Empty,
-                    durable: false,
-                    exclusive: true,
-                    autoDelete: true,
-                    arguments: null,
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                var queue = await channel
+                    .QueueDeclareAsync(
+                        queue: string.Empty,
+                        durable: false,
+                        exclusive: true,
+                        autoDelete: true,
+                        arguments: null,
+                        cancellationToken: cancellationToken
+                    )
+                    .ConfigureAwait(false);
 
                 var consumer = new AsyncEventingBasicConsumer(channel);
                 consumer.ReceivedAsync += (_, delivery) =>
                 {
-                    if (Guid.TryParseExact(delivery.BasicProperties.CorrelationId, "N", out var id)
-                        && _pending.TryGetValue(id, out var completion))
+                    if (
+                        Guid.TryParseExact(delivery.BasicProperties.CorrelationId, "N", out var id)
+                        && _pending.TryGetValue(id, out var completion)
+                    )
                     {
                         completion.TrySetResult(delivery.Body.ToArray());
                     }
 
                     return Task.CompletedTask;
                 };
-                await channel.BasicConsumeAsync(queue.QueueName, autoAck: true, consumer, cancellationToken).ConfigureAwait(false);
+                await channel
+                    .BasicConsumeAsync(queue.QueueName, autoAck: true, consumer, cancellationToken)
+                    .ConfigureAwait(false);
 
                 _clientChannel = channel;
                 _replyQueue = queue.QueueName;
@@ -358,20 +437,27 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     /// Declares the topic exchange once per broker instance. Declaration is idempotent, so a race
     /// between two publishers costs a redundant frame and nothing else.
     /// </summary>
-    private async ValueTask DeclareTopicAsync(IChannel channel, RequestAddress topic, CancellationToken cancellationToken)
+    private async ValueTask DeclareTopicAsync(
+        IChannel channel,
+        RequestAddress topic,
+        CancellationToken cancellationToken
+    )
     {
         if (_declaredTopics.ContainsKey(topic))
         {
             return;
         }
 
-        await channel.ExchangeDeclareAsync(
-            exchange: topic.Value,
-            type: ExchangeType.Fanout,
-            durable: _options.DurableTopics,
-            autoDelete: false,
-            arguments: null,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+        await channel
+            .ExchangeDeclareAsync(
+                exchange: topic.Value,
+                type: ExchangeType.Fanout,
+                durable: _options.DurableTopics,
+                autoDelete: false,
+                arguments: null,
+                cancellationToken: cancellationToken
+            )
+            .ConfigureAwait(false);
         _declaredTopics[topic] = true;
     }
 
@@ -381,7 +467,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         {
             Uri = _options.Uri,
             ClientProvidedName = _options.ClientProvidedName,
-            AutomaticRecoveryEnabled = true
+            AutomaticRecoveryEnabled = true,
         };
         return await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
     }

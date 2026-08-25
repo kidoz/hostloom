@@ -13,7 +13,8 @@ public sealed class KafkaOptions
     /// </summary>
     public string ResponseTopic { get; set; } = "hostloom.responses";
 
-    public string ClientId { get; set; } = $"{Environment.MachineName}-{Environment.ProcessId}-{Guid.NewGuid():N}";
+    public string ClientId { get; set; } =
+        $"{Environment.MachineName}-{Environment.ProcessId}-{Guid.NewGuid():N}";
 
     public bool EnableIdempotence { get; set; } = true;
 }

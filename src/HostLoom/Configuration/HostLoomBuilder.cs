@@ -26,12 +26,17 @@ public sealed class HostLoomBuilder
                 MessageTypeName.For<TRequest>(),
                 typeof(TRequest),
                 typeof(TResponse),
-                typeof(RequestExecutor<TRequest, TResponse>)),
-            endpoint);
+                typeof(RequestExecutor<TRequest, TResponse>)
+            ),
+            endpoint
+        );
 
         Services.AddScoped<IRequestHandler<TRequest, TResponse>, THandler>();
         Services.AddScoped<RequestExecutor<TRequest, TResponse>>();
-        Services.TryAddTransient<IRequestClient<TRequest, TResponse>, RequestClient<TRequest, TResponse>>();
+        Services.TryAddTransient<
+            IRequestClient<TRequest, TResponse>,
+            RequestClient<TRequest, TResponse>
+        >();
 
         return this;
     }
@@ -41,15 +46,23 @@ public sealed class HostLoomBuilder
     /// <paramref name="topic"/>. Subscriptions are named: two names on one topic each receive every
     /// event, while two handlers under one name share a delivery and a scope.
     /// </summary>
-    public HostLoomBuilder AddSubscriber<TEvent, THandler>(RequestAddress topic, string subscription = "default")
+    public HostLoomBuilder AddSubscriber<TEvent, THandler>(
+        RequestAddress topic,
+        string subscription = "default"
+    )
         where TEvent : class, IEvent
         where THandler : class, IEventHandler<TEvent>
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(subscription);
         Configuration.AddSubscriber(
-            new SubscriberRegistration(MessageTypeName.For<TEvent>(), typeof(TEvent), typeof(EventExecutor<TEvent>)),
+            new SubscriberRegistration(
+                MessageTypeName.For<TEvent>(),
+                typeof(TEvent),
+                typeof(EventExecutor<TEvent>)
+            ),
             new TopicSubscription(topic, subscription),
-            typeof(THandler));
+            typeof(THandler)
+        );
 
         // Registered as the concrete type: the subscription decides which handlers run, so the
         // container must not be able to hand one subscription another's handlers.
@@ -69,7 +82,10 @@ public sealed class HostLoomBuilder
     public HostLoomBuilder AddRequestClient<TRequest, TResponse>()
         where TRequest : class, IRequest<TResponse>
     {
-        Services.TryAddTransient<IRequestClient<TRequest, TResponse>, RequestClient<TRequest, TResponse>>();
+        Services.TryAddTransient<
+            IRequestClient<TRequest, TResponse>,
+            RequestClient<TRequest, TResponse>
+        >();
         return this;
     }
 
@@ -90,9 +106,13 @@ public sealed class HostLoomBuilder
     /// Registers HostLoom's liveness and readiness checks, tagged <c>live</c> and <c>ready</c> so
     /// they can be mapped to separate probe endpoints. Liveness never contacts the broker.
     /// </summary>
-    public HostLoomBuilder AddHealthChecks(string livenessName = "hostloom-live", string readinessName = "hostloom-ready")
+    public HostLoomBuilder AddHealthChecks(
+        string livenessName = "hostloom-live",
+        string readinessName = "hostloom-ready"
+    )
     {
-        Services.AddHealthChecks()
+        Services
+            .AddHealthChecks()
             .AddCheck<HostLoomLivenessCheck>(livenessName, HealthStatus.Unhealthy, ["live"])
             .AddCheck<HostLoomReadinessCheck>(readinessName, HealthStatus.Unhealthy, ["ready"]);
         return this;
@@ -103,7 +123,9 @@ public sealed class HostLoomBuilder
     {
         if (Services.Any(static descriptor => descriptor.ServiceType == typeof(IRequestBroker)))
         {
-            throw new InvalidOperationException("HostLoom already has a request transport. Configure exactly one transport per service provider.");
+            throw new InvalidOperationException(
+                "HostLoom already has a request transport. Configure exactly one transport per service provider."
+            );
         }
 
         Services.AddSingleton<IRequestBroker, TBroker>();

@@ -46,17 +46,21 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
         string topic,
         Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler,
         ILogger logger,
-        TimeSpan backoff)
+        TimeSpan backoff
+    )
     {
         _consumer = consumer;
         _topic = topic;
         _logger = logger;
         _backoff = backoff;
-        _loop = Task.Factory.StartNew(
-            () => RunAsync(handler),
-            CancellationToken.None,
-            TaskCreationOptions.LongRunning,
-            TaskScheduler.Default).Unwrap();
+        _loop = Task
+            .Factory.StartNew(
+                () => RunAsync(handler),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default
+            )
+            .Unwrap();
     }
 
     public static ConsumerSubscription Start(
@@ -64,8 +68,8 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
         string topic,
         Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler,
         ILogger logger,
-        TimeSpan? backoff = null) =>
-        new(consumer, topic, handler, logger, backoff ?? DefaultConsumeFailureBackoff);
+        TimeSpan? backoff = null
+    ) => new(consumer, topic, handler, logger, backoff ?? DefaultConsumeFailureBackoff);
 
     public async ValueTask DisposeAsync()
     {
@@ -79,12 +83,14 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
         {
             await _loop.ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
-        {
-        }
+        catch (OperationCanceledException) { }
         catch (Exception exception)
         {
-            _logger.LogError(exception, "HostLoom Kafka consumer loop for '{Topic}' faulted before shutdown.", _topic);
+            _logger.LogError(
+                exception,
+                "HostLoom Kafka consumer loop for '{Topic}' faulted before shutdown.",
+                _topic
+            );
         }
         finally
         {
@@ -96,7 +102,11 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
             }
             catch (Exception exception)
             {
-                _logger.LogError(exception, "HostLoom Kafka consumer for '{Topic}' failed to close cleanly.", _topic);
+                _logger.LogError(
+                    exception,
+                    "HostLoom Kafka consumer for '{Topic}' failed to close cleanly.",
+                    _topic
+                );
             }
 
             _consumer.Dispose();
@@ -104,7 +114,9 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
         }
     }
 
-    private async Task RunAsync(Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler)
+    private async Task RunAsync(
+        Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler
+    )
     {
         // Delivery attempts for the record currently being retried on each partition. Keyed by
         // partition because an assignment spans several, and each has its own committed offset.
@@ -123,7 +135,11 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
             }
             catch (Exception exception)
             {
-                _logger.LogError(exception, "HostLoom Kafka consume failed on '{Topic}'; retrying.", _topic);
+                _logger.LogError(
+                    exception,
+                    "HostLoom Kafka consume failed on '{Topic}'; retrying.",
+                    _topic
+                );
                 if (!await DelayAsync().ConfigureAwait(false))
                 {
                     break;
@@ -154,7 +170,8 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                     exception,
                     "HostLoom Kafka record at {Offset} on '{Topic}' is malformed; skipping it.",
                     record.TopicPartitionOffset,
-                    _topic);
+                    _topic
+                );
                 TryCommit(record);
                 retries.Remove(record.TopicPartition);
             }
@@ -165,7 +182,8 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                 // the group past this offset and drop it for good. Rewind to this record and
                 // retry it instead of consuming on.
                 var attempts =
-                    retries.TryGetValue(record.TopicPartition, out var state) && state.Offset == record.Offset.Value
+                    retries.TryGetValue(record.TopicPartition, out var state)
+                    && state.Offset == record.Offset.Value
                         ? state.Attempts + 1
                         : 1;
 
@@ -176,7 +194,8 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                         "HostLoom Kafka record at {Offset} on '{Topic}' failed {Attempts} times; skipping it.",
                         record.TopicPartitionOffset,
                         _topic,
-                        attempts);
+                        attempts
+                    );
                     TryCommit(record);
                     retries.Remove(record.TopicPartition);
                     continue;
@@ -187,7 +206,8 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                     "HostLoom Kafka record at {Offset} on '{Topic}' failed on attempt {Attempts}; rewinding to retry it.",
                     record.TopicPartitionOffset,
                     _topic,
-                    attempts);
+                    attempts
+                );
 
                 if (TrySeek(record))
                 {
@@ -221,7 +241,8 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                 exception,
                 "HostLoom Kafka consumer could not rewind to {Offset} on '{Topic}'.",
                 record.TopicPartitionOffset,
-                _topic);
+                _topic
+            );
             return false;
         }
     }
@@ -238,7 +259,8 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                 exception,
                 "HostLoom Kafka commit failed at {Offset} on '{Topic}'.",
                 record.TopicPartitionOffset,
-                _topic);
+                _topic
+            );
         }
     }
 

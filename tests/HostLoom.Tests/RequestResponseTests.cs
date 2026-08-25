@@ -1,6 +1,6 @@
+using HostLoom.Transport.InMemory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using HostLoom.Transport.InMemory;
 using NSubstitute;
 using Xunit;
 
@@ -14,8 +14,8 @@ public sealed class RequestResponseTests
         var calls = new List<string>();
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(calls);
-        builder.Services
-            .AddHostLoom()
+        builder
+            .Services.AddHostLoom()
             .UseInMemory()
             .AddHandler<Greet, Greeting, GreetHandler>("greeter")
             .AddBehavior<Greet, Greeting, RecordingBehavior>();
@@ -27,7 +27,8 @@ public sealed class RequestResponseTests
         var response = await client.GetResponseAsync(
             "greeter",
             new Greet("Ada"),
-            cancellationToken: TestContext.Current.CancellationToken);
+            cancellationToken: TestContext.Current.CancellationToken
+        );
 
         Assert.Equal("Hello, Ada!", response.Text);
         Assert.Equal(["before", "handler", "after"], calls);
@@ -37,8 +38,8 @@ public sealed class RequestResponseTests
     public async Task Handler_exception_is_returned_as_remote_fault()
     {
         var builder = Host.CreateApplicationBuilder();
-        builder.Services
-            .AddHostLoom()
+        builder
+            .Services.AddHostLoom()
             .UseInMemory()
             .AddHandler<Fail, Never, FailingHandler>("failures");
 
@@ -50,7 +51,9 @@ public sealed class RequestResponseTests
             await client.GetResponseAsync(
                 "failures",
                 new Fail(),
-                cancellationToken: TestContext.Current.CancellationToken));
+                cancellationToken: TestContext.Current.CancellationToken
+            )
+        );
 
         Assert.Equal(typeof(InvalidOperationException).FullName, exception.ErrorType);
         Assert.Contains("deliberate", exception.Message, StringComparison.Ordinal);
@@ -66,8 +69,8 @@ public sealed class RequestResponseTests
             .Returns(ValueTask.FromResult(new Greeting("must not run")));
 
         var builder = Host.CreateApplicationBuilder();
-        builder.Services
-            .AddHostLoom()
+        builder
+            .Services.AddHostLoom()
             .UseInMemory()
             .AddHandler<Greet, Greeting, GreetHandler>("greeter")
             .AddHandler<Fail, Never, FailingHandler>("failures");
@@ -82,7 +85,9 @@ public sealed class RequestResponseTests
             await client.GetResponseAsync(
                 "failures",
                 new Greet("Ada"),
-                cancellationToken: TestContext.Current.CancellationToken));
+                cancellationToken: TestContext.Current.CancellationToken
+            )
+        );
 
         Assert.Contains("failures", exception.Message, StringComparison.Ordinal);
         _ = greeter.DidNotReceive().HandleAsync(Arg.Any<Greet>(), Arg.Any<CancellationToken>());
@@ -110,7 +115,8 @@ public sealed class RequestResponseTests
         public async ValueTask<Greeting> HandleAsync(
             Greet request,
             RequestHandlerDelegate<Greeting> next,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             calls.Add("before");
             var response = await next(cancellationToken);

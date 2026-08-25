@@ -4,7 +4,11 @@ namespace HostLoom;
 
 internal interface IEventExecutor
 {
-    ValueTask ExecuteAsync(object @event, IReadOnlyList<Type> handlerTypes, CancellationToken cancellationToken);
+    ValueTask ExecuteAsync(
+        object @event,
+        IReadOnlyList<Type> handlerTypes,
+        CancellationToken cancellationToken
+    );
 }
 
 /// <summary>
@@ -21,7 +25,8 @@ internal sealed class EventExecutor<TEvent>(IServiceProvider provider) : IEventE
     public async ValueTask ExecuteAsync(
         object @event,
         IReadOnlyList<Type> handlerTypes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var typed = (TEvent)@event;
         foreach (var handlerType in handlerTypes)

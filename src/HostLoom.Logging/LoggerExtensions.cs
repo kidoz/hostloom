@@ -13,24 +13,32 @@ public static class LoggerExtensions
     public static void LogFast(
         this ILogger logger,
         LogLevel level,
-        [InterpolatedStringHandlerArgument(nameof(logger), nameof(level))] ref LogMessageHandler message) =>
-        Emit(logger, ref message, default, null);
+        [InterpolatedStringHandlerArgument(nameof(logger), nameof(level))]
+            ref LogMessageHandler message
+    ) => Emit(logger, ref message, default, null);
 
     public static void LogFast(
         this ILogger logger,
         LogLevel level,
         Exception? exception,
-        [InterpolatedStringHandlerArgument(nameof(logger), nameof(level))] ref LogMessageHandler message) =>
-        Emit(logger, ref message, default, exception);
+        [InterpolatedStringHandlerArgument(nameof(logger), nameof(level))]
+            ref LogMessageHandler message
+    ) => Emit(logger, ref message, default, exception);
 
     public static void LogFast(
         this ILogger logger,
         LogLevel level,
         EventId eventId,
-        [InterpolatedStringHandlerArgument(nameof(logger), nameof(level))] ref LogMessageHandler message) =>
-        Emit(logger, ref message, eventId, null);
+        [InterpolatedStringHandlerArgument(nameof(logger), nameof(level))]
+            ref LogMessageHandler message
+    ) => Emit(logger, ref message, eventId, null);
 
-    private static void Emit(ILogger logger, ref LogMessageHandler message, EventId eventId, Exception? exception)
+    private static void Emit(
+        ILogger logger,
+        ref LogMessageHandler message,
+        EventId eventId,
+        Exception? exception
+    )
     {
         if (message.Entry is not { } entry)
         {
@@ -51,7 +59,13 @@ public static class LoggerExtensions
             // CA1873: the handler already proved the level is enabled — an entry only exists when
             // IsEnabled returned true — so this transcoding is not speculative work.
 #pragma warning disable CA1873
-            logger.Log(entry.Level, eventId, System.Text.Encoding.UTF8.GetString(entry.Message), exception, static (state, _) => state);
+            logger.Log(
+                entry.Level,
+                eventId,
+                System.Text.Encoding.UTF8.GetString(entry.Message),
+                exception,
+                static (state, _) => state
+            );
 #pragma warning restore CA1873
         }
         finally

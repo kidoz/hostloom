@@ -17,20 +17,24 @@ public static class HostLoomDiagnostics
     internal static readonly Histogram<double> RequestDuration = Meter.CreateHistogram<double>(
         "hostloom.request.duration",
         "s",
-        "Time spent handling one inbound request, including any receive-pipeline retries.");
+        "Time spent handling one inbound request, including any receive-pipeline retries."
+    );
 
     internal static readonly UpDownCounter<long> ActiveRequests = Meter.CreateUpDownCounter<long>(
         "hostloom.request.active",
         "{request}",
-        "Inbound requests currently being handled.");
+        "Inbound requests currently being handled."
+    );
 
     internal static readonly Counter<long> Faults = Meter.CreateCounter<long>(
         "hostloom.request.faults",
         "{fault}",
-        "Inbound requests answered with a fault envelope instead of a response.");
+        "Inbound requests answered with a fault envelope instead of a response."
+    );
 
     internal static readonly Counter<long> Retries = Meter.CreateCounter<long>(
         "hostloom.request.retries",
         "{retry}",
-        "Handler invocations beyond the first, contributed by the receive pipeline.");
+        "Handler invocations beyond the first, contributed by the receive pipeline."
+    );
 }

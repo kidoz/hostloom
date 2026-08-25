@@ -11,11 +11,15 @@ internal sealed class HostLoomLivenessCheck(EndpointRuntimeState state) : IHealt
 {
     public Task<HealthCheckResult> CheckHealthAsync(
         HealthCheckContext context,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(HealthCheckResult.Healthy(
-            state.Listening
-                ? $"HostLoom is running with {state.EndpointCount} endpoint(s)."
-                : "HostLoom is running."));
+        CancellationToken cancellationToken = default
+    ) =>
+        Task.FromResult(
+            HealthCheckResult.Healthy(
+                state.Listening
+                    ? $"HostLoom is running with {state.EndpointCount} endpoint(s)."
+                    : "HostLoom is running."
+            )
+        );
 }
 
 /// <summary>
@@ -25,16 +29,20 @@ internal sealed class HostLoomLivenessCheck(EndpointRuntimeState state) : IHealt
 internal sealed class HostLoomReadinessCheck(
     HostLoomConfiguration configuration,
     EndpointRuntimeState state,
-    IRequestBroker broker) : IHealthCheck
+    IRequestBroker broker
+) : IHealthCheck
 {
     public async Task<HealthCheckResult> CheckHealthAsync(
         HealthCheckContext context,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         var expected = configuration.Endpoints.Count;
         if (expected > 0 && !state.Listening)
         {
-            return HealthCheckResult.Unhealthy($"HostLoom has {expected} endpoint(s) that are not listening yet.");
+            return HealthCheckResult.Unhealthy(
+                $"HostLoom has {expected} endpoint(s) that are not listening yet."
+            );
         }
 
         if (broker is not IBrokerHealthProbe probe)
@@ -43,7 +51,8 @@ internal sealed class HostLoomReadinessCheck(
             return HealthCheckResult.Healthy(
                 expected == 0
                     ? "HostLoom is client-only; the transport does not report broker health."
-                    : $"HostLoom is listening on {state.EndpointCount} endpoint(s); the transport does not report broker health.");
+                    : $"HostLoom is listening on {state.EndpointCount} endpoint(s); the transport does not report broker health."
+            );
         }
 
         var health = await probe.CheckHealthAsync(cancellationToken).ConfigureAwait(false);

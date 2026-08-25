@@ -29,7 +29,8 @@ public ref struct LogMessageHandler
         int formattedCount,
         ILogger logger,
         LogLevel level,
-        out bool shouldAppend)
+        out bool shouldAppend
+    )
     {
         ArgumentNullException.ThrowIfNull(logger);
         if (!logger.IsEnabled(level))
@@ -46,38 +47,72 @@ public ref struct LogMessageHandler
 
     public void AppendLiteral(string value) => Entry?.AppendLiteral(value);
 
-    public void AppendFormatted(string? value, string? format = null, [CallerArgumentExpression(nameof(value))] string? name = null) =>
-        Entry?.AppendText(value ?? string.Empty, name);
+    public void AppendFormatted(
+        string? value,
+        string? format = null,
+        [CallerArgumentExpression(nameof(value))] string? name = null
+    ) => Entry?.AppendText(value ?? string.Empty, name);
 
-    public void AppendFormatted(ReadOnlySpan<char> value, string? format = null, [CallerArgumentExpression(nameof(value))] string? name = null) =>
-        Entry?.AppendText(value, name);
+    public void AppendFormatted(
+        ReadOnlySpan<char> value,
+        string? format = null,
+        [CallerArgumentExpression(nameof(value))] string? name = null
+    ) => Entry?.AppendText(value, name);
 
-    public void AppendFormatted(int value, string? format = null, [CallerArgumentExpression(nameof(value))] string? name = null) =>
-        Entry?.AppendFormattable(value, format, name);
+    public void AppendFormatted(
+        int value,
+        string? format = null,
+        [CallerArgumentExpression(nameof(value))] string? name = null
+    ) => Entry?.AppendFormattable(value, format, name);
 
-    public void AppendFormatted(long value, string? format = null, [CallerArgumentExpression(nameof(value))] string? name = null) =>
-        Entry?.AppendFormattable(value, format, name);
+    public void AppendFormatted(
+        long value,
+        string? format = null,
+        [CallerArgumentExpression(nameof(value))] string? name = null
+    ) => Entry?.AppendFormattable(value, format, name);
 
-    public void AppendFormatted(double value, string? format = null, [CallerArgumentExpression(nameof(value))] string? name = null) =>
-        Entry?.AppendFormattable(value, format, name);
+    public void AppendFormatted(
+        double value,
+        string? format = null,
+        [CallerArgumentExpression(nameof(value))] string? name = null
+    ) => Entry?.AppendFormattable(value, format, name);
 
-    public void AppendFormatted(decimal value, string? format = null, [CallerArgumentExpression(nameof(value))] string? name = null) =>
-        Entry?.AppendFormattable(value, format, name);
+    public void AppendFormatted(
+        decimal value,
+        string? format = null,
+        [CallerArgumentExpression(nameof(value))] string? name = null
+    ) => Entry?.AppendFormattable(value, format, name);
 
-    public void AppendFormatted(bool value, string? format = null, [CallerArgumentExpression(nameof(value))] string? name = null) =>
-        Entry?.AppendBoolean(value, name);
+    public void AppendFormatted(
+        bool value,
+        string? format = null,
+        [CallerArgumentExpression(nameof(value))] string? name = null
+    ) => Entry?.AppendBoolean(value, name);
 
-    public void AppendFormatted(Guid value, string? format = null, [CallerArgumentExpression(nameof(value))] string? name = null) =>
-        Entry?.AppendFormattable(value, format, name);
+    public void AppendFormatted(
+        Guid value,
+        string? format = null,
+        [CallerArgumentExpression(nameof(value))] string? name = null
+    ) => Entry?.AppendFormattable(value, format, name);
 
-    public void AppendFormatted(DateTimeOffset value, string? format = null, [CallerArgumentExpression(nameof(value))] string? name = null) =>
-        Entry?.AppendFormattable(value, format, name);
+    public void AppendFormatted(
+        DateTimeOffset value,
+        string? format = null,
+        [CallerArgumentExpression(nameof(value))] string? name = null
+    ) => Entry?.AppendFormattable(value, format, name);
 
-    public void AppendFormatted(TimeSpan value, string? format = null, [CallerArgumentExpression(nameof(value))] string? name = null) =>
-        Entry?.AppendFormattable(value, format, name);
+    public void AppendFormatted(
+        TimeSpan value,
+        string? format = null,
+        [CallerArgumentExpression(nameof(value))] string? name = null
+    ) => Entry?.AppendFormattable(value, format, name);
 
     /// <summary>Fallback for types with no UTF-8 formatter. Allocates, and is meant to.</summary>
-    public void AppendFormatted<T>(T value, string? format = null, [CallerArgumentExpression(nameof(value))] string? name = null)
+    public void AppendFormatted<T>(
+        T value,
+        string? format = null,
+        [CallerArgumentExpression(nameof(value))] string? name = null
+    )
     {
         if (Entry is null)
         {

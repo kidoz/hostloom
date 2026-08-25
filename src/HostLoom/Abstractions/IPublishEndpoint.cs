@@ -9,6 +9,10 @@ public interface IPublishEndpoint
     /// subscribers registered for the concrete type.
     /// </summary>
     /// <exception cref="NotSupportedException">The configured transport has no publish/subscribe support.</exception>
-    ValueTask PublishAsync<TEvent>(RequestAddress topic, TEvent @event, CancellationToken cancellationToken = default)
+    ValueTask PublishAsync<TEvent>(
+        RequestAddress topic,
+        TEvent @event,
+        CancellationToken cancellationToken = default
+    )
         where TEvent : class, IEvent;
 }

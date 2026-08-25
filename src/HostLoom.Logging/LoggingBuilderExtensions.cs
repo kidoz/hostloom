@@ -14,7 +14,8 @@ public static class LoggingBuilderExtensions
         this ILoggingBuilder builder,
         ILogSink sink,
         Action<HostLoomLoggerOptions>? configure = null,
-        ILogFormatter? formatter = null)
+        ILogFormatter? formatter = null
+    )
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(sink);
@@ -25,8 +26,11 @@ public static class LoggingBuilderExtensions
         // CA2000: ownership transfers to the container, which disposes registered singletons and so
         // drains the pipeline at shutdown.
 #pragma warning disable CA2000
-        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<ILoggerProvider>(
-            new HostLoomLoggerProvider(formatter ?? new JsonLogFormatter(), sink, options)));
+        builder.Services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<ILoggerProvider>(
+                new HostLoomLoggerProvider(formatter ?? new JsonLogFormatter(), sink, options)
+            )
+        );
 #pragma warning restore CA2000
         return builder;
     }

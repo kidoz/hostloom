@@ -11,14 +11,16 @@ public sealed class PublishSubscribeTests
     public async Task One_published_event_reaches_every_subscription_on_the_topic()
     {
         var received = new Received();
-        using var host = await StartAsync(received, hostLoom => hostLoom
-            .AddSubscriber<OrderPlaced, AuditHandler>("orders", "audit")
-            .AddSubscriber<OrderPlaced, ShippingHandler>("orders", "shipping"));
+        using var host = await StartAsync(
+            received,
+            hostLoom =>
+                hostLoom
+                    .AddSubscriber<OrderPlaced, AuditHandler>("orders", "audit")
+                    .AddSubscriber<OrderPlaced, ShippingHandler>("orders", "shipping")
+        );
 
-        await PublisherOf(host).PublishAsync(
-            "orders",
-            new OrderPlaced("A-1"),
-            TestContext.Current.CancellationToken);
+        await PublisherOf(host)
+            .PublishAsync("orders", new OrderPlaced("A-1"), TestContext.Current.CancellationToken);
 
         Assert.Equal(["audit:A-1", "shipping:A-1"], received.Sorted());
     }
@@ -27,14 +29,16 @@ public sealed class PublishSubscribeTests
     public async Task Handlers_sharing_a_subscription_all_run_for_one_delivery()
     {
         var received = new Received();
-        using var host = await StartAsync(received, hostLoom => hostLoom
-            .AddSubscriber<OrderPlaced, AuditHandler>("orders", "combined")
-            .AddSubscriber<OrderPlaced, ShippingHandler>("orders", "combined"));
+        using var host = await StartAsync(
+            received,
+            hostLoom =>
+                hostLoom
+                    .AddSubscriber<OrderPlaced, AuditHandler>("orders", "combined")
+                    .AddSubscriber<OrderPlaced, ShippingHandler>("orders", "combined")
+        );
 
-        await PublisherOf(host).PublishAsync(
-            "orders",
-            new OrderPlaced("A-2"),
-            TestContext.Current.CancellationToken);
+        await PublisherOf(host)
+            .PublishAsync("orders", new OrderPlaced("A-2"), TestContext.Current.CancellationToken);
 
         Assert.Equal(["audit:A-2", "shipping:A-2"], received.Sorted());
     }
@@ -43,14 +47,18 @@ public sealed class PublishSubscribeTests
     public async Task A_subscription_ignores_event_types_it_did_not_register()
     {
         var received = new Received();
-        using var host = await StartAsync(received, hostLoom => hostLoom
-            .AddSubscriber<OrderPlaced, AuditHandler>("orders", "audit"));
+        using var host = await StartAsync(
+            received,
+            hostLoom => hostLoom.AddSubscriber<OrderPlaced, AuditHandler>("orders", "audit")
+        );
 
         // Published to the same topic, but no subscription handles this contract.
-        await PublisherOf(host).PublishAsync(
-            "orders",
-            new OrderCancelled("A-3"),
-            TestContext.Current.CancellationToken);
+        await PublisherOf(host)
+            .PublishAsync(
+                "orders",
+                new OrderCancelled("A-3"),
+                TestContext.Current.CancellationToken
+            );
 
         Assert.Empty(received.Sorted());
     }
@@ -59,14 +67,16 @@ public sealed class PublishSubscribeTests
     public async Task Subscriptions_on_another_topic_are_not_delivered_to()
     {
         var received = new Received();
-        using var host = await StartAsync(received, hostLoom => hostLoom
-            .AddSubscriber<OrderPlaced, AuditHandler>("orders", "audit")
-            .AddSubscriber<OrderPlaced, ShippingHandler>("invoices", "shipping"));
+        using var host = await StartAsync(
+            received,
+            hostLoom =>
+                hostLoom
+                    .AddSubscriber<OrderPlaced, AuditHandler>("orders", "audit")
+                    .AddSubscriber<OrderPlaced, ShippingHandler>("invoices", "shipping")
+        );
 
-        await PublisherOf(host).PublishAsync(
-            "orders",
-            new OrderPlaced("A-4"),
-            TestContext.Current.CancellationToken);
+        await PublisherOf(host)
+            .PublishAsync("orders", new OrderPlaced("A-4"), TestContext.Current.CancellationToken);
 
         Assert.Equal(["audit:A-4"], received.Sorted());
     }
@@ -75,15 +85,22 @@ public sealed class PublishSubscribeTests
     public async Task A_failing_subscription_does_not_stop_the_others_receiving()
     {
         var received = new Received();
-        using var host = await StartAsync(received, hostLoom => hostLoom
-            .AddSubscriber<OrderPlaced, ExplodingHandler>("orders", "broken")
-            .AddSubscriber<OrderPlaced, AuditHandler>("orders", "audit"));
+        using var host = await StartAsync(
+            received,
+            hostLoom =>
+                hostLoom
+                    .AddSubscriber<OrderPlaced, ExplodingHandler>("orders", "broken")
+                    .AddSubscriber<OrderPlaced, AuditHandler>("orders", "audit")
+        );
 
         var failure = await Assert.ThrowsAsync<AggregateException>(async () =>
-            await PublisherOf(host).PublishAsync(
-                "orders",
-                new OrderPlaced("A-5"),
-                TestContext.Current.CancellationToken));
+            await PublisherOf(host)
+                .PublishAsync(
+                    "orders",
+                    new OrderPlaced("A-5"),
+                    TestContext.Current.CancellationToken
+                )
+        );
 
         // The healthy subscription still saw the event; the broken one is reported, not hidden.
         Assert.Equal(["audit:A-5"], received.Sorted());
@@ -100,10 +117,13 @@ public sealed class PublishSubscribeTests
         await host.StartAsync(TestContext.Current.CancellationToken);
 
         var exception = await Assert.ThrowsAsync<NotSupportedException>(async () =>
-            await PublisherOf(host).PublishAsync(
-                "orders",
-                new OrderPlaced("A-6"),
-                TestContext.Current.CancellationToken));
+            await PublisherOf(host)
+                .PublishAsync(
+                    "orders",
+                    new OrderPlaced("A-6"),
+                    TestContext.Current.CancellationToken
+                )
+        );
 
         Assert.Contains(nameof(IEventBroker), exception.Message, StringComparison.Ordinal);
     }
@@ -113,8 +133,8 @@ public sealed class PublishSubscribeTests
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(new Received());
-        builder.Services
-            .AddHostLoom()
+        builder
+            .Services.AddHostLoom()
             .UseTransport<RequestOnlyBroker>()
             .AddSubscriber<OrderPlaced, AuditHandler>("orders", "audit");
 
@@ -122,7 +142,8 @@ public sealed class PublishSubscribeTests
 
         // Better to fail the host than to start looking subscribed while nothing is delivered.
         await Assert.ThrowsAsync<NotSupportedException>(async () =>
-            await host.StartAsync(TestContext.Current.CancellationToken));
+            await host.StartAsync(TestContext.Current.CancellationToken)
+        );
     }
 
     [Fact]
@@ -132,8 +153,8 @@ public sealed class PublishSubscribeTests
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(received);
         builder.Services.AddSingleton<FlakyHandler.Attempts>();
-        builder.Services
-            .AddHostLoom()
+        builder
+            .Services.AddHostLoom()
             .UseInMemory()
             .ConfigureReceivePipeline(pipe => pipe.UseRetry(Pipelines.RetryPolicy.Immediate(3)))
             .AddSubscriber<OrderPlaced, FlakyHandler>("orders", "flaky");
@@ -141,10 +162,8 @@ public sealed class PublishSubscribeTests
         using var host = builder.Build();
         await host.StartAsync(TestContext.Current.CancellationToken);
 
-        await PublisherOf(host).PublishAsync(
-            "orders",
-            new OrderPlaced("A-7"),
-            TestContext.Current.CancellationToken);
+        await PublisherOf(host)
+            .PublishAsync("orders", new OrderPlaced("A-7"), TestContext.Current.CancellationToken);
 
         // Retry applies to subscribers, not just request handlers: two failures then a success.
         Assert.Equal(["flaky:1", "flaky:2", "flaky:3"], received.Sorted());
@@ -157,32 +176,38 @@ public sealed class PublishSubscribeTests
         var observed = new List<string>();
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(received);
-        builder.Services
-            .AddHostLoom()
+        builder
+            .Services.AddHostLoom()
             .UseInMemory()
-            .ConfigureReceivePipeline(pipe => pipe.Use(
-                async (context, next) =>
-                {
-                    observed.Add(context is EventReceiveContext e
-                        ? $"event {e.Destination.Value}/{e.Subscription}"
-                        : $"request {context.Destination.Value}");
-                    await next.SendAsync(context);
-                },
-                "observer"))
+            .ConfigureReceivePipeline(pipe =>
+                pipe.Use(
+                    async (context, next) =>
+                    {
+                        observed.Add(
+                            context is EventReceiveContext e
+                                ? $"event {e.Destination.Value}/{e.Subscription}"
+                                : $"request {context.Destination.Value}"
+                        );
+                        await next.SendAsync(context);
+                    },
+                    "observer"
+                )
+            )
             .AddSubscriber<OrderPlaced, AuditHandler>("orders", "audit");
 
         using var host = builder.Build();
         await host.StartAsync(TestContext.Current.CancellationToken);
 
-        await PublisherOf(host).PublishAsync(
-            "orders",
-            new OrderPlaced("A-8"),
-            TestContext.Current.CancellationToken);
+        await PublisherOf(host)
+            .PublishAsync("orders", new OrderPlaced("A-8"), TestContext.Current.CancellationToken);
 
         Assert.Equal(["event orders/audit"], observed);
     }
 
-    private static async Task<IHost> StartAsync(Received received, Action<HostLoomBuilder> configure)
+    private static async Task<IHost> StartAsync(
+        Received received,
+        Action<HostLoomBuilder> configure
+    )
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(received);
@@ -241,7 +266,8 @@ public sealed class PublishSubscribeTests
     }
 
     /// <summary>Fails its first two deliveries, so a retry filter is observable.</summary>
-    public sealed class FlakyHandler(Received received, FlakyHandler.Attempts attempts) : IEventHandler<OrderPlaced>
+    public sealed class FlakyHandler(Received received, FlakyHandler.Attempts attempts)
+        : IEventHandler<OrderPlaced>
     {
         public ValueTask HandleAsync(OrderPlaced @event, CancellationToken cancellationToken)
         {
@@ -272,16 +298,16 @@ public sealed class PublishSubscribeTests
         public ValueTask<IAsyncDisposable> ListenAsync(
             RequestAddress address,
             RequestFrameHandler handler,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException("not used in these tests");
+            CancellationToken cancellationToken
+        ) => throw new NotSupportedException("not used in these tests");
 
         public ValueTask<ReadOnlyMemory<byte>> RequestAsync(
             RequestAddress address,
             ReadOnlyMemory<byte> request,
             Guid requestId,
             TimeSpan timeout,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException("not used in these tests");
+            CancellationToken cancellationToken
+        ) => throw new NotSupportedException("not used in these tests");
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

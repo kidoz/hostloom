@@ -1,11 +1,13 @@
 namespace HostLoom;
 
-internal sealed class PublishEndpoint(IRequestBroker broker, IMessageSerializer serializer) : IPublishEndpoint
+internal sealed class PublishEndpoint(IRequestBroker broker, IMessageSerializer serializer)
+    : IPublishEndpoint
 {
     public ValueTask PublishAsync<TEvent>(
         RequestAddress topic,
         TEvent @event,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
         where TEvent : class, IEvent
     {
         ArgumentNullException.ThrowIfNull(@event);
@@ -13,7 +15,8 @@ internal sealed class PublishEndpoint(IRequestBroker broker, IMessageSerializer 
         {
             throw new NotSupportedException(
                 $"The configured transport '{broker.GetType().Name}' supports request/response only. "
-                + $"Publishing to '{topic}' requires a transport that implements {nameof(IEventBroker)}.");
+                    + $"Publishing to '{topic}' requires a transport that implements {nameof(IEventBroker)}."
+            );
         }
 
         // Runtime type, not TEvent: publishing through a base-typed variable must still reach
@@ -26,7 +29,7 @@ internal sealed class PublishEndpoint(IRequestBroker broker, IMessageSerializer 
             MessageType = MessageTypeName.For(eventType),
             ResponseType = string.Empty,
             SentAt = DateTimeOffset.UtcNow,
-            Body = serializer.Serialize(@event, eventType)
+            Body = serializer.Serialize(@event, eventType),
         };
 
         return events.PublishAsync(topic, WireEnvelopeCodec.Encode(envelope), cancellationToken);

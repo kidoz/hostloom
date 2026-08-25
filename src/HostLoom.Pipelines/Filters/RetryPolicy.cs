@@ -17,7 +17,8 @@ public sealed class RetryPolicy
         TimeSpan minInterval,
         TimeSpan maxInterval,
         double factor,
-        double jitterRatio)
+        double jitterRatio
+    )
     {
         Description = description;
         RetryLimit = retryLimit;
@@ -53,7 +54,8 @@ public sealed class RetryPolicy
         int retryLimit,
         TimeSpan minInterval,
         TimeSpan maxInterval,
-        double factor = 2)
+        double factor = 2
+    )
     {
         ArgumentOutOfRangeException.ThrowIfNegative(retryLimit);
         ArgumentOutOfRangeException.ThrowIfLessThan(minInterval, TimeSpan.Zero);
@@ -84,7 +86,10 @@ public sealed class RetryPolicy
 
         // Computed in double ticks and clamped, because a large factor raised to a large attempt
         // overflows TimeSpan multiplication long before the clamp would apply.
-        var ticks = Math.Min(_minInterval.Ticks * Math.Pow(_factor, attempt - 1), _maxInterval.Ticks);
+        var ticks = Math.Min(
+            _minInterval.Ticks * Math.Pow(_factor, attempt - 1),
+            _maxInterval.Ticks
+        );
         var delay = TimeSpan.FromTicks((long)ticks);
         if (_jitterRatio == 0)
         {

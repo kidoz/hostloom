@@ -12,12 +12,17 @@ public sealed class ReceivePipelineTests
     public async Task Retry_filter_reruns_a_failing_handler_until_it_succeeds()
     {
         var attempts = new Attempts { FailUntil = 3 };
-        using var host = await StartAsync(attempts, pipe => pipe.UseRetry(RetryPolicy.Immediate(3)));
+        using var host = await StartAsync(
+            attempts,
+            pipe => pipe.UseRetry(RetryPolicy.Immediate(3))
+        );
 
-        var response = await ClientOf(host).GetResponseAsync(
-            "flaky",
-            new Flaky(),
-            cancellationToken: TestContext.Current.CancellationToken);
+        var response = await ClientOf(host)
+            .GetResponseAsync(
+                "flaky",
+                new Flaky(),
+                cancellationToken: TestContext.Current.CancellationToken
+            );
 
         Assert.Equal("done", response.Value);
         Assert.Equal(3, attempts.Count);
@@ -30,10 +35,13 @@ public sealed class ReceivePipelineTests
         using var host = await StartAsync(attempts, configure: null);
 
         await Assert.ThrowsAsync<RemoteRequestException>(async () =>
-            await ClientOf(host).GetResponseAsync(
-                "flaky",
-                new Flaky(),
-                cancellationToken: TestContext.Current.CancellationToken));
+            await ClientOf(host)
+                .GetResponseAsync(
+                    "flaky",
+                    new Flaky(),
+                    cancellationToken: TestContext.Current.CancellationToken
+                )
+        );
 
         Assert.Equal(1, attempts.Count);
     }
@@ -42,12 +50,17 @@ public sealed class ReceivePipelineTests
     public async Task Every_retry_attempt_runs_in_a_fresh_dependency_injection_scope()
     {
         var attempts = new Attempts { FailUntil = 3 };
-        using var host = await StartAsync(attempts, pipe => pipe.UseRetry(RetryPolicy.Immediate(3)));
+        using var host = await StartAsync(
+            attempts,
+            pipe => pipe.UseRetry(RetryPolicy.Immediate(3))
+        );
 
-        await ClientOf(host).GetResponseAsync(
-            "flaky",
-            new Flaky(),
-            cancellationToken: TestContext.Current.CancellationToken);
+        await ClientOf(host)
+            .GetResponseAsync(
+                "flaky",
+                new Flaky(),
+                cancellationToken: TestContext.Current.CancellationToken
+            );
 
         Assert.Equal(3, attempts.ScopeIds.Count);
         Assert.Equal(3, attempts.ScopeIds.Distinct().Count());
@@ -57,13 +70,19 @@ public sealed class ReceivePipelineTests
     public async Task Retry_exhaustion_still_returns_the_handler_fault_to_the_caller()
     {
         var attempts = new Attempts();
-        using var host = await StartAsync(attempts, pipe => pipe.UseRetry(RetryPolicy.Immediate(2)));
+        using var host = await StartAsync(
+            attempts,
+            pipe => pipe.UseRetry(RetryPolicy.Immediate(2))
+        );
 
         var exception = await Assert.ThrowsAsync<RemoteRequestException>(async () =>
-            await ClientOf(host).GetResponseAsync(
-                "flaky",
-                new Flaky(),
-                cancellationToken: TestContext.Current.CancellationToken));
+            await ClientOf(host)
+                .GetResponseAsync(
+                    "flaky",
+                    new Flaky(),
+                    cancellationToken: TestContext.Current.CancellationToken
+                )
+        );
 
         Assert.Equal(typeof(InvalidOperationException).FullName, exception.ErrorType);
         Assert.Equal(3, attempts.Count);
@@ -75,13 +94,20 @@ public sealed class ReceivePipelineTests
         var attempts = new Attempts();
         using var host = await StartAsync(
             attempts,
-            pipe => pipe.UseCircuitBreaker(failureThreshold: 2, resetInterval: TimeSpan.FromMinutes(5)));
+            pipe =>
+                pipe.UseCircuitBreaker(failureThreshold: 2, resetInterval: TimeSpan.FromMinutes(5))
+        );
         var client = ClientOf(host);
 
         for (var i = 0; i < 2; i++)
         {
             await Assert.ThrowsAsync<RemoteRequestException>(async () =>
-                await client.GetResponseAsync("flaky", new Flaky(), cancellationToken: TestContext.Current.CancellationToken));
+                await client.GetResponseAsync(
+                    "flaky",
+                    new Flaky(),
+                    cancellationToken: TestContext.Current.CancellationToken
+                )
+            );
         }
 
         Assert.Equal(2, attempts.Count);
@@ -89,7 +115,12 @@ public sealed class ReceivePipelineTests
         // The breaker is open: this delivery is rejected before the handler runs, and the
         // rejection travels back to the caller as an ordinary remote fault.
         var exception = await Assert.ThrowsAsync<RemoteRequestException>(async () =>
-            await client.GetResponseAsync("flaky", new Flaky(), cancellationToken: TestContext.Current.CancellationToken));
+            await client.GetResponseAsync(
+                "flaky",
+                new Flaky(),
+                cancellationToken: TestContext.Current.CancellationToken
+            )
+        );
 
         Assert.Equal(typeof(CircuitBreakerOpenException).FullName, exception.ErrorType);
         Assert.Equal(2, attempts.Count);
@@ -100,25 +131,37 @@ public sealed class ReceivePipelineTests
     {
         var observed = new List<string>();
         var attempts = new Attempts { FailUntil = 1 };
-        using var host = await StartAsync(attempts, pipe => pipe.Use(
-            async (context, next) =>
-            {
-                observed.Add($"{context.Destination.Value}|{context.MessageType}|{context.Message.GetType().Name}");
-                await next.SendAsync(context);
-            },
-            "observer"));
+        using var host = await StartAsync(
+            attempts,
+            pipe =>
+                pipe.Use(
+                    async (context, next) =>
+                    {
+                        observed.Add(
+                            $"{context.Destination.Value}|{context.MessageType}|{context.Message.GetType().Name}"
+                        );
+                        await next.SendAsync(context);
+                    },
+                    "observer"
+                )
+        );
 
-        await ClientOf(host).GetResponseAsync(
-            "flaky",
-            new Flaky(),
-            cancellationToken: TestContext.Current.CancellationToken);
+        await ClientOf(host)
+            .GetResponseAsync(
+                "flaky",
+                new Flaky(),
+                cancellationToken: TestContext.Current.CancellationToken
+            );
 
         var entry = Assert.Single(observed);
         Assert.StartsWith("flaky|", entry, StringComparison.Ordinal);
         Assert.Contains("Flaky", entry, StringComparison.Ordinal);
     }
 
-    private static async Task<IHost> StartAsync(Attempts attempts, Action<PipeBuilder<ReceiveContext>>? configure)
+    private static async Task<IHost> StartAsync(
+        Attempts attempts,
+        Action<PipeBuilder<ReceiveContext>>? configure
+    )
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(attempts);
@@ -165,7 +208,8 @@ public sealed class ReceivePipelineTests
         public Guid Id { get; } = Guid.NewGuid();
     }
 
-    public sealed class FlakyHandler(Attempts attempts, ScopeMarker marker) : IRequestHandler<Flaky, Done>
+    public sealed class FlakyHandler(Attempts attempts, ScopeMarker marker)
+        : IRequestHandler<Flaky, Done>
     {
         public ValueTask<Done> HandleAsync(Flaky request, CancellationToken cancellationToken)
         {

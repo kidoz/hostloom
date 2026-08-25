@@ -4,7 +4,10 @@ namespace HostLoom.Transport.RabbitMq;
 
 public static class HostLoomBuilderExtensions
 {
-    public static HostLoomBuilder UseRabbitMq(this HostLoomBuilder builder, Action<RabbitMqOptions>? configure = null)
+    public static HostLoomBuilder UseRabbitMq(
+        this HostLoomBuilder builder,
+        Action<RabbitMqOptions>? configure = null
+    )
     {
         ArgumentNullException.ThrowIfNull(builder);
         builder.Services.AddOptions<RabbitMqOptions>();

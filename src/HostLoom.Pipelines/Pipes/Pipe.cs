@@ -11,5 +11,6 @@ public static class Pipe
         return builder.Build();
     }
 
-    public static IPipe<TContext> Empty<TContext>() where TContext : class, IPipeContext => EmptyPipe<TContext>.Instance;
+    public static IPipe<TContext> Empty<TContext>()
+        where TContext : class, IPipeContext => EmptyPipe<TContext>.Instance;
 }

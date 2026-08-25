@@ -30,10 +30,11 @@ public class LoggingBenchmarks
     [GlobalSetup]
     public void Setup()
     {
-        _provider = new HostLoomLoggerProvider(new JsonLogFormatter(), new NullSink(), new HostLoomLoggerOptions
-        {
-            QueueCapacity = 1 << 16
-        });
+        _provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            new NullSink(),
+            new HostLoomLoggerOptions { QueueCapacity = 1 << 16 }
+        );
         _hostLoom = _provider.CreateLogger("Bench");
         _hostLoomViaInterface = _hostLoom;
         _serilog = new LoggerConfiguration()
@@ -76,9 +77,7 @@ public class LoggingBenchmarks
 
     private sealed class NullSink : ILogSink
     {
-        public void Write(ReadOnlySpan<byte> payload)
-        {
-        }
+        public void Write(ReadOnlySpan<byte> payload) { }
 
         public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 

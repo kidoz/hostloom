@@ -15,7 +15,7 @@ public sealed class JsonLogFormatter : ILogFormatter
     private static readonly JsonWriterOptions WriterOptions = new()
     {
         Indented = false,
-        SkipValidation = true
+        SkipValidation = true,
     };
 
     private readonly Utf8JsonWriter _writer = new(Stream.Null, WriterOptions);
@@ -54,7 +54,10 @@ public sealed class JsonLogFormatter : ILogFormatter
 
         if (record.Exception is { } exception)
         {
-            _writer.WriteString("error.type"u8, exception.GetType().FullName ?? exception.GetType().Name);
+            _writer.WriteString(
+                "error.type"u8,
+                exception.GetType().FullName ?? exception.GetType().Name
+            );
             _writer.WriteString("error.message"u8, exception.Message);
             if (exception.StackTrace is { } stack)
             {
@@ -67,14 +70,15 @@ public sealed class JsonLogFormatter : ILogFormatter
         writer.Write(NewLine);
     }
 
-    private static ReadOnlySpan<byte> ToLevel(LogLevel level) => level switch
-    {
-        LogLevel.Trace => "TRACE"u8,
-        LogLevel.Debug => "DEBUG"u8,
-        LogLevel.Information => "INFO"u8,
-        LogLevel.Warning => "WARN"u8,
-        LogLevel.Error => "ERROR"u8,
-        LogLevel.Critical => "FATAL"u8,
-        _ => "NONE"u8
-    };
+    private static ReadOnlySpan<byte> ToLevel(LogLevel level) =>
+        level switch
+        {
+            LogLevel.Trace => "TRACE"u8,
+            LogLevel.Debug => "DEBUG"u8,
+            LogLevel.Information => "INFO"u8,
+            LogLevel.Warning => "WARN"u8,
+            LogLevel.Error => "ERROR"u8,
+            LogLevel.Critical => "FATAL"u8,
+            _ => "NONE"u8,
+        };
 }

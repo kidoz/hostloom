@@ -4,7 +4,10 @@ namespace HostLoom.Transport.Kafka;
 
 public static class HostLoomBuilderExtensions
 {
-    public static HostLoomBuilder UseKafka(this HostLoomBuilder builder, Action<KafkaOptions>? configure = null)
+    public static HostLoomBuilder UseKafka(
+        this HostLoomBuilder builder,
+        Action<KafkaOptions>? configure = null
+    )
     {
         ArgumentNullException.ThrowIfNull(builder);
         builder.Services.AddOptions<KafkaOptions>();

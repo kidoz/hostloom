@@ -25,18 +25,23 @@ public sealed class KafkaConsumerLoopTests
         var handled = new List<long>();
         var failed = false;
 
-        await using (Start(log, (record, _) =>
-        {
-            handled.Add(record.Offset.Value);
-            if (record.Offset.Value == 0 && !failed)
-            {
-                failed = true;
-                throw new InvalidOperationException("transient");
-            }
+        await using (
+            Start(
+                log,
+                (record, _) =>
+                {
+                    handled.Add(record.Offset.Value);
+                    if (record.Offset.Value == 0 && !failed)
+                    {
+                        failed = true;
+                        throw new InvalidOperationException("transient");
+                    }
 
-            log.Commit(record);
-            return ValueTask.CompletedTask;
-        }))
+                    log.Commit(record);
+                    return ValueTask.CompletedTask;
+                }
+            )
+        )
         {
             await WaitUntilAsync(() => log.Commits.Count == 2, "both records commit");
         }
@@ -54,17 +59,22 @@ public sealed class KafkaConsumerLoopTests
         var log = new PartitionLog("requests", 2);
         var handled = new List<long>();
 
-        await using (Start(log, (record, _) =>
-        {
-            handled.Add(record.Offset.Value);
-            if (record.Offset.Value == 0)
-            {
-                throw new InvalidDataException("undecodable");
-            }
+        await using (
+            Start(
+                log,
+                (record, _) =>
+                {
+                    handled.Add(record.Offset.Value);
+                    if (record.Offset.Value == 0)
+                    {
+                        throw new InvalidDataException("undecodable");
+                    }
 
-            log.Commit(record);
-            return ValueTask.CompletedTask;
-        }))
+                    log.Commit(record);
+                    return ValueTask.CompletedTask;
+                }
+            )
+        )
         {
             await WaitUntilAsync(() => log.Commits.Count == 2, "both records commit");
         }
@@ -81,11 +91,16 @@ public sealed class KafkaConsumerLoopTests
         var log = new PartitionLog("requests", 1);
         var handled = 0;
 
-        await using (Start(log, (_, _) =>
-        {
-            handled++;
-            throw new InvalidOperationException("always");
-        }))
+        await using (
+            Start(
+                log,
+                (_, _) =>
+                {
+                    handled++;
+                    throw new InvalidOperationException("always");
+                }
+            )
+        )
         {
             await WaitUntilAsync(() => log.Commits.Count == 1, "the record is skipped");
         }
@@ -101,18 +116,24 @@ public sealed class KafkaConsumerLoopTests
         var log = new PartitionLog("requests", 1, 1);
         var handledByPartition = new Dictionary<int, int>();
 
-        await using (Start(log, (record, _) =>
-        {
-            var partition = record.Partition.Value;
-            handledByPartition[partition] = handledByPartition.GetValueOrDefault(partition) + 1;
-            if (partition == 0)
-            {
-                throw new InvalidOperationException("partition 0 is down");
-            }
+        await using (
+            Start(
+                log,
+                (record, _) =>
+                {
+                    var partition = record.Partition.Value;
+                    handledByPartition[partition] =
+                        handledByPartition.GetValueOrDefault(partition) + 1;
+                    if (partition == 0)
+                    {
+                        throw new InvalidOperationException("partition 0 is down");
+                    }
 
-            log.Commit(record);
-            return ValueTask.CompletedTask;
-        }))
+                    log.Commit(record);
+                    return ValueTask.CompletedTask;
+                }
+            )
+        )
         {
             await WaitUntilAsync(() => log.Commits.Count == 2, "both partitions commit");
         }
@@ -122,16 +143,25 @@ public sealed class KafkaConsumerLoopTests
         Assert.Equal(ConsumerSubscription.MaxRedeliveryAttempts, handledByPartition[0]);
         Assert.Equal(1, handledByPartition[1]);
         Assert.All(log.Seeks, seek => Assert.Equal(0, seek.Partition.Value));
-        Assert.Equal([1], log.Commits.Where(c => c.Partition.Value == 0).Select(c => c.Offset.Value));
-        Assert.Equal([1], log.Commits.Where(c => c.Partition.Value == 1).Select(c => c.Offset.Value));
+        Assert.Equal(
+            [1],
+            log.Commits.Where(c => c.Partition.Value == 0).Select(c => c.Offset.Value)
+        );
+        Assert.Equal(
+            [1],
+            log.Commits.Where(c => c.Partition.Value == 1).Select(c => c.Offset.Value)
+        );
     }
 
     private static ConsumerSubscription Start(
         PartitionLog log,
-        Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler)
+        Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler
+    )
     {
         var consumer = Substitute.For<IConsumer<string, byte[]>>();
-        consumer.Consume(Arg.Any<CancellationToken>()).Returns(call => log.Next(call.Arg<CancellationToken>()));
+        consumer
+            .Consume(Arg.Any<CancellationToken>())
+            .Returns(call => log.Next(call.Arg<CancellationToken>()));
         consumer
             .When(c => c.Commit(Arg.Any<ConsumeResult<string, byte[]>>()))
             .Do(call => log.Commit(call.Arg<ConsumeResult<string, byte[]>>()));
@@ -144,7 +174,8 @@ public sealed class KafkaConsumerLoopTests
             log.Topic,
             handler,
             NullLogger.Instance,
-            TimeSpan.FromMilliseconds(1));
+            TimeSpan.FromMilliseconds(1)
+        );
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, string because)
@@ -222,7 +253,12 @@ public sealed class KafkaConsumerLoopTests
         {
             lock (_gate)
             {
-                Commits.Add(new TopicPartitionOffset(record.TopicPartition, new Offset(record.Offset.Value + 1)));
+                Commits.Add(
+                    new TopicPartitionOffset(
+                        record.TopicPartition,
+                        new Offset(record.Offset.Value + 1)
+                    )
+                );
             }
         }
 
@@ -235,17 +271,18 @@ public sealed class KafkaConsumerLoopTests
             }
         }
 
-        private ConsumeResult<string, byte[]> Record(int partition, long offset) => new()
-        {
-            Topic = Topic,
-            Partition = new Partition(partition),
-            Offset = new Offset(offset),
-            Message = new Message<string, byte[]>
+        private ConsumeResult<string, byte[]> Record(int partition, long offset) =>
+            new()
             {
-                Key = $"{partition}-{offset}",
-                Value = [],
-                Headers = new Headers()
-            }
-        };
+                Topic = Topic,
+                Partition = new Partition(partition),
+                Offset = new Offset(offset),
+                Message = new Message<string, byte[]>
+                {
+                    Key = $"{partition}-{offset}",
+                    Value = [],
+                    Headers = new Headers(),
+                },
+            };
     }
 }

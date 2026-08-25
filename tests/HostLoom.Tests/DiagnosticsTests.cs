@@ -14,11 +14,18 @@ public sealed class DiagnosticsTests
     public async Task Liveness_stays_healthy_while_readiness_fails_on_an_unreachable_broker()
     {
         using var host = await StartAsync("live-probe");
-        ((InMemoryRequestBroker)host.Services.GetRequiredService<IRequestBroker>()).IsReachable = false;
+        ((InMemoryRequestBroker)host.Services.GetRequiredService<IRequestBroker>()).IsReachable =
+            false;
         var health = host.Services.GetRequiredService<HealthCheckService>();
 
-        var live = await health.CheckHealthAsync(r => r.Tags.Contains("live"), TestContext.Current.CancellationToken);
-        var ready = await health.CheckHealthAsync(r => r.Tags.Contains("ready"), TestContext.Current.CancellationToken);
+        var live = await health.CheckHealthAsync(
+            r => r.Tags.Contains("live"),
+            TestContext.Current.CancellationToken
+        );
+        var ready = await health.CheckHealthAsync(
+            r => r.Tags.Contains("ready"),
+            TestContext.Current.CancellationToken
+        );
 
         // The whole point of the split: a broker outage must not tell Kubernetes to restart the
         // pod, or one broker outage becomes a cluster-wide restart storm.
@@ -32,7 +39,10 @@ public sealed class DiagnosticsTests
         using var host = await StartAsync("ready-probe");
         var health = host.Services.GetRequiredService<HealthCheckService>();
 
-        var ready = await health.CheckHealthAsync(r => r.Tags.Contains("ready"), TestContext.Current.CancellationToken);
+        var ready = await health.CheckHealthAsync(
+            r => r.Tags.Contains("ready"),
+            TestContext.Current.CancellationToken
+        );
 
         Assert.Equal(HealthStatus.Healthy, ready.Status);
     }
@@ -41,8 +51,8 @@ public sealed class DiagnosticsTests
     public async Task Readiness_is_unhealthy_before_the_host_starts()
     {
         var builder = Host.CreateApplicationBuilder();
-        builder.Services
-            .AddHostLoom()
+        builder
+            .Services.AddHostLoom()
             .UseInMemory()
             .AddHealthChecks()
             .AddHandler<Ping, Pong, PingHandler>("not-started");
@@ -51,18 +61,25 @@ public sealed class DiagnosticsTests
         var health = host.Services.GetRequiredService<HealthCheckService>();
 
         // Never started, so the endpoint is registered but nothing is listening on it.
-        var ready = await health.CheckHealthAsync(r => r.Tags.Contains("ready"), TestContext.Current.CancellationToken);
+        var ready = await health.CheckHealthAsync(
+            r => r.Tags.Contains("ready"),
+            TestContext.Current.CancellationToken
+        );
 
         Assert.Equal(HealthStatus.Unhealthy, ready.Status);
-        Assert.Contains("not listening", ready.Entries.Values.Single().Description, StringComparison.Ordinal);
+        Assert.Contains(
+            "not listening",
+            ready.Entries.Values.Single().Description,
+            StringComparison.Ordinal
+        );
     }
 
     [Fact]
     public async Task A_client_only_application_is_ready_without_any_endpoint()
     {
         var builder = Host.CreateApplicationBuilder();
-        builder.Services
-            .AddHostLoom()
+        builder
+            .Services.AddHostLoom()
             .UseInMemory()
             .AddHealthChecks()
             .AddRequestClient<Ping, Pong>();
@@ -71,7 +88,10 @@ public sealed class DiagnosticsTests
         await host.StartAsync(TestContext.Current.CancellationToken);
         var health = host.Services.GetRequiredService<HealthCheckService>();
 
-        var ready = await health.CheckHealthAsync(r => r.Tags.Contains("ready"), TestContext.Current.CancellationToken);
+        var ready = await health.CheckHealthAsync(
+            r => r.Tags.Contains("ready"),
+            TestContext.Current.CancellationToken
+        );
 
         Assert.Equal(HealthStatus.Healthy, ready.Status);
     }
@@ -83,7 +103,12 @@ public sealed class DiagnosticsTests
         using var recorder = new MetricRecorder(endpoint);
         using var host = await StartAsync(endpoint);
 
-        await ClientOf(host).GetResponseAsync(endpoint, new Ping(), cancellationToken: TestContext.Current.CancellationToken);
+        await ClientOf(host)
+            .GetResponseAsync(
+                endpoint,
+                new Ping(),
+                cancellationToken: TestContext.Current.CancellationToken
+            );
 
         Assert.Single(recorder.Values("hostloom.request.duration"));
         Assert.All(recorder.Values("hostloom.request.duration"), value => Assert.True(value >= 0));
@@ -100,7 +125,13 @@ public sealed class DiagnosticsTests
         using var host = await StartAsync(endpoint, failUntil: int.MaxValue);
 
         await Assert.ThrowsAsync<RemoteRequestException>(async () =>
-            await ClientOf(host).GetResponseAsync(endpoint, new Ping(), cancellationToken: TestContext.Current.CancellationToken));
+            await ClientOf(host)
+                .GetResponseAsync(
+                    endpoint,
+                    new Ping(),
+                    cancellationToken: TestContext.Current.CancellationToken
+                )
+        );
 
         Assert.Equal([1], recorder.Values("hostloom.request.faults"));
         Assert.Single(recorder.Values("hostloom.request.duration"));
@@ -114,9 +145,15 @@ public sealed class DiagnosticsTests
         using var host = await StartAsync(
             endpoint,
             failUntil: 3,
-            configure: pipe => pipe.UseRetry(RetryPolicy.Immediate(3)));
+            configure: pipe => pipe.UseRetry(RetryPolicy.Immediate(3))
+        );
 
-        await ClientOf(host).GetResponseAsync(endpoint, new Ping(), cancellationToken: TestContext.Current.CancellationToken);
+        await ClientOf(host)
+            .GetResponseAsync(
+                endpoint,
+                new Ping(),
+                cancellationToken: TestContext.Current.CancellationToken
+            );
 
         // Three handler invocations is two retries.
         Assert.Equal([2], recorder.Values("hostloom.request.retries"));
@@ -132,14 +169,16 @@ public sealed class DiagnosticsTests
             {
                 pipe.UseRetry(RetryPolicy.Immediate(2));
                 pipe.UseCircuitBreaker(3, TimeSpan.FromSeconds(30));
-            });
+            }
+        );
 
         var probe = host.Services.GetRequiredService<HostLoomProbe>();
         var result = probe.ReceivePipeline(TestContext.Current.CancellationToken);
 
         Assert.Equal(
             ["retry", "circuitBreaker", "executeReceive", "empty"],
-            result.Children.Select(child => child.Name));
+            result.Children.Select(child => child.Name)
+        );
         Assert.Equal(2, result.Children[0].Properties["retryLimit"]);
         Assert.Equal("Closed", result.Children[1].Properties["state"]);
     }
@@ -147,7 +186,8 @@ public sealed class DiagnosticsTests
     private static async Task<IHost> StartAsync(
         string endpoint,
         int failUntil = 1,
-        Action<PipeBuilder<ReceiveContext>>? configure = null)
+        Action<PipeBuilder<ReceiveContext>>? configure = null
+    )
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(new Attempts { FailUntil = failUntil });
@@ -210,8 +250,12 @@ public sealed class DiagnosticsTests
                     listener.EnableMeasurementEvents(instrument);
                 }
             };
-            _listener.SetMeasurementEventCallback<double>((instrument, value, tags, _) => Record(instrument, value, tags));
-            _listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) => Record(instrument, value, tags));
+            _listener.SetMeasurementEventCallback<double>(
+                (instrument, value, tags, _) => Record(instrument, value, tags)
+            );
+            _listener.SetMeasurementEventCallback<long>(
+                (instrument, value, tags, _) => Record(instrument, value, tags)
+            );
             _listener.Start();
         }
 
@@ -219,13 +263,20 @@ public sealed class DiagnosticsTests
         {
             lock (_gate)
             {
-                return _measurements.Where(m => m.Name == instrumentName).Select(m => m.Value).ToList();
+                return _measurements
+                    .Where(m => m.Name == instrumentName)
+                    .Select(m => m.Value)
+                    .ToList();
             }
         }
 
         public void Dispose() => _listener.Dispose();
 
-        private void Record(Instrument instrument, double value, ReadOnlySpan<KeyValuePair<string, object?>> tags)
+        private void Record(
+            Instrument instrument,
+            double value,
+            ReadOnlySpan<KeyValuePair<string, object?>> tags
+        )
         {
             foreach (var tag in tags)
             {

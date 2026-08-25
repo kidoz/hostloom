@@ -27,7 +27,7 @@ public enum QueueFullPolicy
     DropNewest,
 
     /// <summary>Drop the incoming record unless it is at least <see cref="LogLevel.Warning"/>.</summary>
-    DropBelowWarning
+    DropBelowWarning,
 }
 
 public sealed class HostLoomLoggerOptions

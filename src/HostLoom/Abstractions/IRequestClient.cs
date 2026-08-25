@@ -7,5 +7,6 @@ public interface IRequestClient<in TRequest, TResponse>
         RequestAddress destination,
         TRequest request,
         TimeSpan? timeout = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

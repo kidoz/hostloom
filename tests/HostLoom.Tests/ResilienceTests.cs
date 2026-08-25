@@ -15,7 +15,8 @@ public sealed class ResilienceTests
             builder.UseRetry(RetryPolicy.Immediate(3));
             builder.UseExecute(_ =>
             {
-                if (++calls < 3) throw new InvalidOperationException("transient");
+                if (++calls < 3)
+                    throw new InvalidOperationException("transient");
                 return ValueTask.CompletedTask;
             });
         });
@@ -39,7 +40,8 @@ public sealed class ResilienceTests
         });
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-            await pipe.SendAsync(new TestContext()));
+            await pipe.SendAsync(new TestContext())
+        );
 
         Assert.Equal("always", exception.Message);
         Assert.Equal(3, calls); // the original attempt plus two retries
@@ -59,7 +61,9 @@ public sealed class ResilienceTests
             });
         });
 
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await pipe.SendAsync(new TestContext()));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
         Assert.Equal(1, calls);
     }
 
@@ -73,8 +77,11 @@ public sealed class ResilienceTests
             builder.UseRetry(RetryPolicy.Immediate(3));
             builder.UseExecute(context =>
             {
-                observed.Add(context.TryGetPayload<RetryAttempt>(out var attempt) ? attempt!.Number : null);
-                if (++calls < 3) throw new InvalidOperationException("transient");
+                observed.Add(
+                    context.TryGetPayload<RetryAttempt>(out var attempt) ? attempt!.Number : null
+                );
+                if (++calls < 3)
+                    throw new InvalidOperationException("transient");
                 return ValueTask.CompletedTask;
             });
         });
@@ -97,7 +104,9 @@ public sealed class ResilienceTests
             });
         });
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await pipe.SendAsync(new TestContext()));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
         Assert.Equal(1, calls);
     }
 
@@ -107,7 +116,10 @@ public sealed class ResilienceTests
         var calls = 0;
         var pipe = Pipe.Create<TestContext>(builder =>
         {
-            builder.UseRetry(RetryPolicy.Immediate(5), exception => exception is InvalidOperationException);
+            builder.UseRetry(
+                RetryPolicy.Immediate(5),
+                exception => exception is InvalidOperationException
+            );
             builder.UseExecute(_ =>
             {
                 calls++;
@@ -115,7 +127,9 @@ public sealed class ResilienceTests
             });
         });
 
-        await Assert.ThrowsAsync<InvalidDataException>(async () => await pipe.SendAsync(new TestContext()));
+        await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
         Assert.Equal(1, calls);
     }
 
@@ -141,7 +155,8 @@ public sealed class ResilienceTests
         var policy = RetryPolicy.Exponential(
             retryLimit: 5,
             minInterval: TimeSpan.FromMilliseconds(100),
-            maxInterval: TimeSpan.FromMilliseconds(800));
+            maxInterval: TimeSpan.FromMilliseconds(800)
+        );
 
         Assert.Equal(TimeSpan.FromMilliseconds(100), policy.GetDelay(1));
         Assert.Equal(TimeSpan.FromMilliseconds(200), policy.GetDelay(2));
@@ -156,7 +171,8 @@ public sealed class ResilienceTests
         var policy = RetryPolicy.Exponential(
             retryLimit: 2000,
             minInterval: TimeSpan.FromSeconds(1),
-            maxInterval: TimeSpan.FromSeconds(30));
+            maxInterval: TimeSpan.FromSeconds(30)
+        );
 
         // 2^1000 seconds overflows TimeSpan multiplication; the clamp must be applied first.
         Assert.Equal(TimeSpan.FromSeconds(30), policy.GetDelay(1000));
@@ -168,10 +184,17 @@ public sealed class ResilienceTests
         var policy = RetryPolicy.Interval(3, TimeSpan.FromSeconds(1)).WithJitter(0.2);
         var delays = Enumerable.Range(0, 200).Select(_ => policy.GetDelay(1)).ToList();
 
-        Assert.All(delays, delay =>
-        {
-            Assert.InRange(delay, TimeSpan.FromMilliseconds(800), TimeSpan.FromMilliseconds(1200));
-        });
+        Assert.All(
+            delays,
+            delay =>
+            {
+                Assert.InRange(
+                    delay,
+                    TimeSpan.FromMilliseconds(800),
+                    TimeSpan.FromMilliseconds(1200)
+                );
+            }
+        );
         Assert.True(delays.Distinct().Count() > 1, "jitter should vary the delay between calls");
     }
 
@@ -180,13 +203,26 @@ public sealed class ResilienceTests
     {
         var time = new TestTimeProvider();
         var calls = 0;
-        var pipe = BuildBreaker(time, () => { calls++; throw new InvalidOperationException("down"); });
+        var pipe = BuildBreaker(
+            time,
+            () =>
+            {
+                calls++;
+                throw new InvalidOperationException("down");
+            }
+        );
 
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await pipe.SendAsync(new TestContext()));
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await pipe.SendAsync(new TestContext()));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
 
         // Third call is rejected without reaching the pipeline.
-        await Assert.ThrowsAsync<CircuitBreakerOpenException>(async () => await pipe.SendAsync(new TestContext()));
+        await Assert.ThrowsAsync<CircuitBreakerOpenException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
         Assert.Equal(2, calls);
     }
 
@@ -195,18 +231,35 @@ public sealed class ResilienceTests
     {
         var time = new TestTimeProvider();
         var calls = 0;
-        var pipe = BuildBreaker(time, () => { calls++; throw new InvalidOperationException("down"); });
+        var pipe = BuildBreaker(
+            time,
+            () =>
+            {
+                calls++;
+                throw new InvalidOperationException("down");
+            }
+        );
 
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await pipe.SendAsync(new TestContext()));
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await pipe.SendAsync(new TestContext()));
-        await Assert.ThrowsAsync<CircuitBreakerOpenException>(async () => await pipe.SendAsync(new TestContext()));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
+        await Assert.ThrowsAsync<CircuitBreakerOpenException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
 
         time.Advance(TimeSpan.FromSeconds(30));
 
         // The trial reaches the pipeline, fails, and reopens the circuit.
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await pipe.SendAsync(new TestContext()));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
         Assert.Equal(3, calls);
-        await Assert.ThrowsAsync<CircuitBreakerOpenException>(async () => await pipe.SendAsync(new TestContext()));
+        await Assert.ThrowsAsync<CircuitBreakerOpenException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
         Assert.Equal(3, calls);
     }
 
@@ -215,14 +268,24 @@ public sealed class ResilienceTests
     {
         var time = new TestTimeProvider();
         var fail = true;
-        var pipe = BuildBreaker(time, () =>
-        {
-            if (fail) throw new InvalidOperationException("down");
-        });
+        var pipe = BuildBreaker(
+            time,
+            () =>
+            {
+                if (fail)
+                    throw new InvalidOperationException("down");
+            }
+        );
 
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await pipe.SendAsync(new TestContext()));
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await pipe.SendAsync(new TestContext()));
-        await Assert.ThrowsAsync<CircuitBreakerOpenException>(async () => await pipe.SendAsync(new TestContext()));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
+        await Assert.ThrowsAsync<CircuitBreakerOpenException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
 
         time.Advance(TimeSpan.FromSeconds(30));
         fail = false;
@@ -236,20 +299,32 @@ public sealed class ResilienceTests
     {
         var time = new TestTimeProvider();
         var fail = true;
-        var pipe = BuildBreaker(time, () =>
-        {
-            if (fail) throw new InvalidOperationException("down");
-        });
+        var pipe = BuildBreaker(
+            time,
+            () =>
+            {
+                if (fail)
+                    throw new InvalidOperationException("down");
+            }
+        );
 
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await pipe.SendAsync(new TestContext()));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
         fail = false;
         await pipe.SendAsync(new TestContext());
         fail = true;
 
         // The earlier failure was cleared, so this one alone must not trip the two-failure threshold.
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await pipe.SendAsync(new TestContext()));
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await pipe.SendAsync(new TestContext()));
-        await Assert.ThrowsAsync<CircuitBreakerOpenException>(async () => await pipe.SendAsync(new TestContext()));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
+        await Assert.ThrowsAsync<CircuitBreakerOpenException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
     }
 
     [Fact]
@@ -261,8 +336,12 @@ public sealed class ResilienceTests
         var before = PipelineProbe.Inspect(pipe, Xunit.TestContext.Current.CancellationToken);
         Assert.Equal("Closed", before.Children[0].Properties["state"]);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await pipe.SendAsync(new TestContext()));
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await pipe.SendAsync(new TestContext()));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await pipe.SendAsync(new TestContext())
+        );
 
         var after = PipelineProbe.Inspect(pipe, Xunit.TestContext.Current.CancellationToken);
         Assert.Equal("circuitBreaker", after.Children[0].Name);
@@ -277,7 +356,11 @@ public sealed class ResilienceTests
         var pipe = Pipe.Create<TestContext>(builder =>
         {
             builder.UseRateLimit(2, interval);
-            builder.UseExecute(_ => { calls++; return ValueTask.CompletedTask; });
+            builder.UseExecute(_ =>
+            {
+                calls++;
+                return ValueTask.CompletedTask;
+            });
         });
 
         var stopwatch = Stopwatch.StartNew();
@@ -291,17 +374,23 @@ public sealed class ResilienceTests
         Assert.True(burst < interval, $"the first two calls should not be delayed, took {burst}");
         Assert.True(
             stopwatch.Elapsed >= TimeSpan.FromMilliseconds(200),
-            $"the third call should have waited for the next window, total {stopwatch.Elapsed}");
+            $"the third call should have waited for the next window, total {stopwatch.Elapsed}"
+        );
     }
 
     private static IPipe<TestContext> BuildBreaker(TimeProvider timeProvider, Action body) =>
         Pipe.Create<TestContext>(builder =>
         {
             builder.UseCircuitBreaker(2, TimeSpan.FromSeconds(30), timeProvider);
-            builder.UseExecute(_ => { body(); return ValueTask.CompletedTask; });
+            builder.UseExecute(_ =>
+            {
+                body();
+                return ValueTask.CompletedTask;
+            });
         });
 
-    private sealed class TestContext(CancellationToken cancellationToken = default) : PipeContext(cancellationToken);
+    private sealed class TestContext(CancellationToken cancellationToken = default)
+        : PipeContext(cancellationToken);
 
     /// <summary>Advances only when the test says so, so breaker timing needs no real waiting.</summary>
     private sealed class TestTimeProvider : TimeProvider

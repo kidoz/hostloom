@@ -15,7 +15,8 @@ public abstract class ReceiveContext : PipeContext
         Guid messageId,
         string messageType,
         object message,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
         : base(cancellationToken)
     {
         Destination = destination;
@@ -37,10 +38,15 @@ public abstract class ReceiveContext : PipeContext
     public object Message { get; }
 
     /// <summary>Runs the handlers this delivery targets. Called by the pipeline's terminal filter.</summary>
-    private protected abstract ValueTask ExecuteAsync(IServiceProvider provider, CancellationToken cancellationToken);
+    private protected abstract ValueTask ExecuteAsync(
+        IServiceProvider provider,
+        CancellationToken cancellationToken
+    );
 
-    internal ValueTask InvokeAsync(IServiceProvider provider, CancellationToken cancellationToken) =>
-        ExecuteAsync(provider, cancellationToken);
+    internal ValueTask InvokeAsync(
+        IServiceProvider provider,
+        CancellationToken cancellationToken
+    ) => ExecuteAsync(provider, cancellationToken);
 }
 
 /// <summary>One inbound request, which produces exactly one response.</summary>
@@ -54,13 +60,17 @@ public sealed class RequestReceiveContext : ReceiveContext
         string messageType,
         Type executorType,
         object message,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
         : base(endpoint, messageId, messageType, message, cancellationToken) =>
         _executorType = executorType;
 
     internal object? Response { get; private set; }
 
-    private protected override async ValueTask ExecuteAsync(IServiceProvider provider, CancellationToken cancellationToken)
+    private protected override async ValueTask ExecuteAsync(
+        IServiceProvider provider,
+        CancellationToken cancellationToken
+    )
     {
         var executor = (IRequestExecutor)provider.GetRequiredService(_executorType);
         Response = await executor.ExecuteAsync(Message, cancellationToken).ConfigureAwait(false);
@@ -81,7 +91,8 @@ public sealed class EventReceiveContext : ReceiveContext
         Type executorType,
         IReadOnlyList<Type> handlerTypes,
         object message,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
         : base(topic, messageId, messageType, message, cancellationToken)
     {
         Subscription = subscription;
@@ -92,7 +103,10 @@ public sealed class EventReceiveContext : ReceiveContext
     /// <summary>Name of the subscription this delivery belongs to.</summary>
     public string Subscription { get; }
 
-    private protected override ValueTask ExecuteAsync(IServiceProvider provider, CancellationToken cancellationToken)
+    private protected override ValueTask ExecuteAsync(
+        IServiceProvider provider,
+        CancellationToken cancellationToken
+    )
     {
         var executor = (IEventExecutor)provider.GetRequiredService(_executorType);
         return executor.ExecuteAsync(Message, _handlerTypes, cancellationToken);

@@ -10,5 +10,5 @@ public enum CircuitState
     Open,
 
     /// <summary>A single trial call is allowed through to test whether the downstream recovered.</summary>
-    HalfOpen
+    HalfOpen,
 }

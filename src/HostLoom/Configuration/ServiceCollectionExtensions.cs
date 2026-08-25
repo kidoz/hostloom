@@ -5,13 +5,19 @@ namespace HostLoom;
 
 public static class ServiceCollectionExtensions
 {
-    public static HostLoomBuilder AddHostLoom(this IServiceCollection services, Action<HostLoomOptions>? configure = null)
+    public static HostLoomBuilder AddHostLoom(
+        this IServiceCollection services,
+        Action<HostLoomOptions>? configure = null
+    )
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        var configuration = services
-            .FirstOrDefault(static descriptor => descriptor.ServiceType == typeof(HostLoomConfiguration))
-            ?.ImplementationInstance as HostLoomConfiguration;
+        var configuration =
+            services
+                .FirstOrDefault(static descriptor =>
+                    descriptor.ServiceType == typeof(HostLoomConfiguration)
+                )
+                ?.ImplementationInstance as HostLoomConfiguration;
 
         if (configuration is null)
         {
@@ -25,8 +31,15 @@ public static class ServiceCollectionExtensions
             services.TryAddSingleton<EventDispatcher>();
             services.TryAddTransient<IPublishEndpoint, PublishEndpoint>();
             // Constructed by hand because HostLoomProbe keeps an internal constructor.
-            services.TryAddSingleton(provider => new HostLoomProbe(provider.GetRequiredService<ReceivePipeline>()));
-            services.TryAddEnumerable(ServiceDescriptor.Singleton<Microsoft.Extensions.Hosting.IHostedService, RequestEndpointHostedService>());
+            services.TryAddSingleton(provider => new HostLoomProbe(
+                provider.GetRequiredService<ReceivePipeline>()
+            ));
+            services.TryAddEnumerable(
+                ServiceDescriptor.Singleton<
+                    Microsoft.Extensions.Hosting.IHostedService,
+                    RequestEndpointHostedService
+                >()
+            );
         }
 
         if (configure is not null)

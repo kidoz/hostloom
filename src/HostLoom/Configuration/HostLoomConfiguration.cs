@@ -5,8 +5,14 @@ namespace HostLoom;
 
 internal sealed class HostLoomConfiguration
 {
-    private readonly Dictionary<RequestAddress, Dictionary<string, HandlerRegistration>> _endpoints = [];
-    private readonly Dictionary<TopicSubscription, Dictionary<string, SubscriberRegistration>> _subscriptions = [];
+    private readonly Dictionary<
+        RequestAddress,
+        Dictionary<string, HandlerRegistration>
+    > _endpoints = [];
+    private readonly Dictionary<
+        TopicSubscription,
+        Dictionary<string, SubscriberRegistration>
+    > _subscriptions = [];
     private readonly HashSet<string> _messageTypes = new(StringComparer.Ordinal);
 
     public IReadOnlyCollection<RequestAddress> Endpoints => _endpoints.Keys;
@@ -24,7 +30,9 @@ internal sealed class HostLoomConfiguration
     {
         if (!_messageTypes.Add(registration.MessageType))
         {
-            throw new InvalidOperationException($"A handler for '{registration.MessageType}' is already registered.");
+            throw new InvalidOperationException(
+                $"A handler for '{registration.MessageType}' is already registered."
+            );
         }
 
         if (!_endpoints.TryGetValue(endpoint, out var handlers))
@@ -44,7 +52,11 @@ internal sealed class HostLoomConfiguration
     /// handlers may consume it within one subscription. Only the (topic, subscription, type) triple
     /// is unique, and the handlers themselves are resolved as a set from the container.
     /// </summary>
-    public void AddSubscriber(SubscriberRegistration registration, TopicSubscription subscription, Type handlerType)
+    public void AddSubscriber(
+        SubscriberRegistration registration,
+        TopicSubscription subscription,
+        Type handlerType
+    )
     {
         if (!_subscriptions.TryGetValue(subscription, out var subscribers))
         {
@@ -68,11 +80,14 @@ internal sealed class HostLoomConfiguration
         RequestAddress topic,
         string subscription,
         string messageType,
-        [NotNullWhen(true)] out SubscriberRegistration? registration)
+        [NotNullWhen(true)] out SubscriberRegistration? registration
+    )
     {
         registration = null;
-        return _subscriptions.TryGetValue(new TopicSubscription(topic, subscription), out var subscribers)
-            && subscribers.TryGetValue(messageType, out registration);
+        return _subscriptions.TryGetValue(
+                new TopicSubscription(topic, subscription),
+                out var subscribers
+            ) && subscribers.TryGetValue(messageType, out registration);
     }
 
     /// <summary>
@@ -82,7 +97,8 @@ internal sealed class HostLoomConfiguration
     public bool TryGetHandler(
         RequestAddress endpoint,
         string messageType,
-        [NotNullWhen(true)] out HandlerRegistration? registration)
+        [NotNullWhen(true)] out HandlerRegistration? registration
+    )
     {
         registration = null;
         return _endpoints.TryGetValue(endpoint, out var handlers)
@@ -94,12 +110,10 @@ internal sealed record HandlerRegistration(
     string MessageType,
     Type RequestType,
     Type ResponseType,
-    Type ExecutorType);
+    Type ExecutorType
+);
 
-internal sealed record SubscriberRegistration(
-    string MessageType,
-    Type EventType,
-    Type ExecutorType)
+internal sealed record SubscriberRegistration(string MessageType, Type EventType, Type ExecutorType)
 {
     /// <summary>Handlers for this event type within one subscription, in registration order.</summary>
     public List<Type> HandlerTypes { get; } = [];

@@ -13,7 +13,11 @@ public sealed class LoggingTests
     public async Task A_logged_message_is_written_as_one_json_object_per_line()
     {
         var sink = NewBufferSink();
-        await using var provider = new HostLoomLoggerProvider(new JsonLogFormatter(), sink, new HostLoomLoggerOptions());
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
         var logger = provider.CreateLogger("Orders");
 
         logger.LogFast(LogLevel.Information, $"placed order {42} for {"ada"}");
@@ -31,7 +35,11 @@ public sealed class LoggingTests
     public async Task Interpolation_holes_become_named_structured_fields()
     {
         var sink = NewBufferSink();
-        await using var provider = new HostLoomLoggerProvider(new JsonLogFormatter(), sink, new HostLoomLoggerOptions());
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
         var logger = provider.CreateLogger("Orders");
         var orderId = 7;
         var customer = "ada";
@@ -50,7 +58,11 @@ public sealed class LoggingTests
     public async Task A_disabled_level_never_evaluates_its_arguments()
     {
         var sink = NewBufferSink();
-        await using var provider = new HostLoomLoggerProvider(new JsonLogFormatter(), sink, new HostLoomLoggerOptions());
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
         var logger = new LevelFilteringLogger(provider.CreateLogger("Orders"), LogLevel.Warning);
         var evaluated = 0;
 
@@ -67,7 +79,11 @@ public sealed class LoggingTests
     public async Task The_hot_path_allocates_nothing_once_the_pool_is_warm()
     {
         var sink = NewBufferSink();
-        await using var provider = new HostLoomLoggerProvider(new JsonLogFormatter(), sink, new HostLoomLoggerOptions());
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
         var logger = provider.CreateLogger("Bench");
 
         // Warm the entry pool and the buffers it retains; steady state is what the claim is about.
@@ -97,15 +113,26 @@ public sealed class LoggingTests
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await provider.DisposeAsync();
 
-        Assert.True(allocated == 0, $"expected zero allocation on the calling thread, saw {allocated} bytes");
+        Assert.True(
+            allocated == 0,
+            $"expected zero allocation on the calling thread, saw {allocated} bytes"
+        );
     }
 
     [Fact]
     public async Task A_full_queue_drops_below_warning_and_keeps_the_warnings()
     {
         var sink = NewBlockingSink();
-        var options = new HostLoomLoggerOptions { QueueCapacity = 4, QueueFullPolicy = QueueFullPolicy.DropNewest };
-        await using var provider = new HostLoomLoggerProvider(new JsonLogFormatter(), sink, options);
+        var options = new HostLoomLoggerOptions
+        {
+            QueueCapacity = 4,
+            QueueFullPolicy = QueueFullPolicy.DropNewest,
+        };
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            options
+        );
         var logger = provider.CreateLogger("Flood");
 
         for (var i = 0; i < 500; i++)
@@ -126,12 +153,17 @@ public sealed class LoggingTests
         using var listener = new ActivityListener
         {
             ShouldListenTo = s => s.Name == "HostLoom.Tests.Logging",
-            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) =>
+                ActivitySamplingResult.AllDataAndRecorded,
         };
         ActivitySource.AddActivityListener(listener);
 
         var sink = NewBufferSink();
-        await using var provider = new HostLoomLoggerProvider(new JsonLogFormatter(), sink, new HostLoomLoggerOptions());
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
         var logger = provider.CreateLogger("Traced");
 
         string expected;
@@ -152,7 +184,11 @@ public sealed class LoggingTests
     public async Task Logging_through_the_plain_ILogger_interface_still_works()
     {
         var sink = NewBufferSink();
-        await using var provider = new HostLoomLoggerProvider(new JsonLogFormatter(), sink, new HostLoomLoggerOptions());
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
         var logger = provider.CreateLogger("Interop");
 
         // What every third-party library calls. It boxes, and that is the point of the comparison.
@@ -169,15 +205,29 @@ public sealed class LoggingTests
     public async Task An_exception_is_recorded_without_losing_the_message()
     {
         var sink = NewBufferSink();
-        await using var provider = new HostLoomLoggerProvider(new JsonLogFormatter(), sink, new HostLoomLoggerOptions());
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
         var logger = provider.CreateLogger("Faults");
 
-        logger.LogFast(LogLevel.Error, new InvalidOperationException("boom"), $"failed after {3} attempts");
+        logger.LogFast(
+            LogLevel.Error,
+            new InvalidOperationException("boom"),
+            $"failed after {3} attempts"
+        );
         await provider.DisposeAsync();
 
         using var json = JsonDocument.Parse(Assert.Single(sink.Lines()));
-        Assert.Equal("failed after 3 attempts", json.RootElement.GetProperty("message").GetString());
-        Assert.Equal("System.InvalidOperationException", json.RootElement.GetProperty("error.type").GetString());
+        Assert.Equal(
+            "failed after 3 attempts",
+            json.RootElement.GetProperty("message").GetString()
+        );
+        Assert.Equal(
+            "System.InvalidOperationException",
+            json.RootElement.GetProperty("error.type").GetString()
+        );
         Assert.Equal("boom", json.RootElement.GetProperty("error.message").GetString());
     }
 
@@ -215,7 +265,8 @@ public sealed class LoggingTests
         {
             lock (_gate)
             {
-                return Encoding.UTF8.GetString(_stream.ToArray())
+                return Encoding
+                    .UTF8.GetString(_stream.ToArray())
                     .Split('\n', StringSplitOptions.RemoveEmptyEntries);
             }
         }
@@ -242,7 +293,8 @@ public sealed class LoggingTests
 
     private sealed class LevelFilteringLogger(ILogger inner, LogLevel minimum) : ILogger
     {
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => inner.BeginScope(state);
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => inner.BeginScope(state);
 
         public bool IsEnabled(LogLevel logLevel) => logLevel >= minimum;
 
@@ -251,7 +303,7 @@ public sealed class LoggingTests
             EventId eventId,
             TState state,
             Exception? exception,
-            Func<TState, Exception?, string> formatter) =>
-            inner.Log(logLevel, eventId, state, exception, formatter);
+            Func<TState, Exception?, string> formatter
+        ) => inner.Log(logLevel, eventId, state, exception, formatter);
     }
 }

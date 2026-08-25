@@ -7,10 +7,11 @@ internal static class WireEnvelopeCodec
 {
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
     {
-        Converters = { new JsonStringEnumConverter<MessageKind>() }
+        Converters = { new JsonStringEnumConverter<MessageKind>() },
     };
 
-    public static byte[] Encode(MessageEnvelope envelope) => JsonSerializer.SerializeToUtf8Bytes(envelope, Options);
+    public static byte[] Encode(MessageEnvelope envelope) =>
+        JsonSerializer.SerializeToUtf8Bytes(envelope, Options);
 
     public static MessageEnvelope Decode(ReadOnlySpan<byte> frame) =>
         JsonSerializer.Deserialize<MessageEnvelope>(frame, Options)

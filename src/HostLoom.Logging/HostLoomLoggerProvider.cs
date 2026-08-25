@@ -6,11 +6,17 @@ namespace HostLoom.Logging;
 [ProviderAlias("HostLoom")]
 public sealed class HostLoomLoggerProvider : ILoggerProvider, IAsyncDisposable
 {
-    private readonly ConcurrentDictionary<string, HostLoomLogger> _loggers = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, HostLoomLogger> _loggers = new(
+        StringComparer.Ordinal
+    );
     private readonly LogPipeline _pipeline;
     private readonly HostLoomLoggerOptions _options;
 
-    public HostLoomLoggerProvider(ILogFormatter formatter, ILogSink sink, HostLoomLoggerOptions options)
+    public HostLoomLoggerProvider(
+        ILogFormatter formatter,
+        ILogSink sink,
+        HostLoomLoggerOptions options
+    )
     {
         ArgumentNullException.ThrowIfNull(formatter);
         ArgumentNullException.ThrowIfNull(sink);
@@ -23,8 +29,11 @@ public sealed class HostLoomLoggerProvider : ILoggerProvider, IAsyncDisposable
     public long Dropped => _pipeline.Dropped;
 
     public ILogger CreateLogger(string categoryName) =>
-        _loggers.GetOrAdd(categoryName, static (name, state) =>
-            new HostLoomLogger(name, state.Pipeline, state.Options), (Pipeline: _pipeline, Options: _options));
+        _loggers.GetOrAdd(
+            categoryName,
+            static (name, state) => new HostLoomLogger(name, state.Pipeline, state.Options),
+            (Pipeline: _pipeline, Options: _options)
+        );
 
     public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 

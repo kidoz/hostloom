@@ -6,7 +6,8 @@ namespace HostLoom;
 /// <summary>
 /// Terminal filter of the receive pipeline. Opens the scope and runs the delivery's handlers.
 /// </summary>
-internal sealed class ExecuteReceiveFilter(IServiceScopeFactory scopeFactory) : IFilter<ReceiveContext>
+internal sealed class ExecuteReceiveFilter(IServiceScopeFactory scopeFactory)
+    : IFilter<ReceiveContext>
 {
     public async ValueTask SendAsync(ReceiveContext context, IPipe<ReceiveContext> next)
     {
@@ -15,7 +16,9 @@ internal sealed class ExecuteReceiveFilter(IServiceScopeFactory scopeFactory) : 
         var scope = scopeFactory.CreateAsyncScope();
         await using (scope.ConfigureAwait(false))
         {
-            await context.InvokeAsync(scope.ServiceProvider, context.CancellationToken).ConfigureAwait(false);
+            await context
+                .InvokeAsync(scope.ServiceProvider, context.CancellationToken)
+                .ConfigureAwait(false);
         }
     }
 

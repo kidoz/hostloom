@@ -7,7 +7,7 @@ internal enum MessageKind
     Fault,
 
     /// <summary>Published to a topic with no reply. Carries an empty <c>ResponseType</c>.</summary>
-    Event
+    Event,
 }
 
 /// <summary>

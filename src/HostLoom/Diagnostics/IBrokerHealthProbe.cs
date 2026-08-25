@@ -19,7 +19,8 @@ public interface IBrokerHealthProbe
 /// <param name="Description">Human-readable detail, surfaced in the health report.</param>
 public sealed record BrokerHealth(bool IsHealthy, string Description)
 {
-    public static BrokerHealth Healthy(string description = "Broker is reachable.") => new(true, description);
+    public static BrokerHealth Healthy(string description = "Broker is reachable.") =>
+        new(true, description);
 
     public static BrokerHealth Unhealthy(string description) => new(false, description);
 }

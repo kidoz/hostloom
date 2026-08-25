@@ -1,6 +1,7 @@
 namespace HostLoom.Pipelines;
 
-internal sealed class RateLimitFilter<TContext> : IFilter<TContext> where TContext : class, IPipeContext
+internal sealed class RateLimitFilter<TContext> : IFilter<TContext>
+    where TContext : class, IPipeContext
 {
     private readonly int _limit;
     private readonly TimeSpan _interval;

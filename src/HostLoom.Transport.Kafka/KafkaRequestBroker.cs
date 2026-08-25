@@ -13,7 +13,10 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
     private const string ReplyToHeader = "hostloom-reply-to";
     private readonly KafkaOptions _options;
     private readonly IProducer<string, byte[]> _producer;
-    private readonly ConcurrentDictionary<Guid, TaskCompletionSource<ReadOnlyMemory<byte>>> _pending = new();
+    private readonly ConcurrentDictionary<
+        Guid,
+        TaskCompletionSource<ReadOnlyMemory<byte>>
+    > _pending = new();
     private readonly ConcurrentBag<ConsumerSubscription> _subscriptions = [];
     private readonly SemaphoreSlim _replyConsumerGate = new(1, 1);
     private readonly ILogger<KafkaRequestBroker> _logger;
@@ -21,10 +24,11 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
     private ConsumerSubscription? _replySubscription;
     private bool _disposed;
 
-    public KafkaRequestBroker(IOptions<KafkaOptions> options, ILogger<KafkaRequestBroker>? logger = null)
-        : this(options, logger, producer: null, consumerFactory: null)
-    {
-    }
+    public KafkaRequestBroker(
+        IOptions<KafkaOptions> options,
+        ILogger<KafkaRequestBroker>? logger = null
+    )
+        : this(options, logger, producer: null, consumerFactory: null) { }
 
     /// <summary>
     /// Takes the producer and a consumer factory so topology and delivery can be driven by fakes in
@@ -34,7 +38,8 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
         IOptions<KafkaOptions> options,
         ILogger<KafkaRequestBroker>? logger,
         IProducer<string, byte[]>? producer,
-        Func<ConsumerConfig, IConsumer<string, byte[]>>? consumerFactory)
+        Func<ConsumerConfig, IConsumer<string, byte[]>>? consumerFactory
+    )
     {
         ArgumentNullException.ThrowIfNull(options);
         _logger = logger ?? NullLogger<KafkaRequestBroker>.Instance;
@@ -44,48 +49,70 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.ResponseTopic);
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.ClientId);
 
-        _consumerFactory = consumerFactory ?? (config => new ConsumerBuilder<string, byte[]>(config).Build());
-        _producer = producer ?? new ProducerBuilder<string, byte[]>(new ProducerConfig
-        {
-            BootstrapServers = _options.BootstrapServers,
-            ClientId = _options.ClientId,
-            EnableIdempotence = _options.EnableIdempotence,
-            Acks = Acks.All
-        }).Build();
+        _consumerFactory =
+            consumerFactory ?? (config => new ConsumerBuilder<string, byte[]>(config).Build());
+        _producer =
+            producer
+            ?? new ProducerBuilder<string, byte[]>(
+                new ProducerConfig
+                {
+                    BootstrapServers = _options.BootstrapServers,
+                    ClientId = _options.ClientId,
+                    EnableIdempotence = _options.EnableIdempotence,
+                    Acks = Acks.All,
+                }
+            ).Build();
     }
 
     public ValueTask<IAsyncDisposable> ListenAsync(
         RequestAddress address,
         RequestFrameHandler handler,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var consumer = _consumerFactory(new ConsumerConfig
-        {
-            BootstrapServers = _options.BootstrapServers,
-            ClientId = $"{_options.ClientId}-{address.Value}",
-            GroupId = $"{_options.ConsumerGroup}.{address.Value}",
-            EnableAutoCommit = false,
-            AutoOffsetReset = AutoOffsetReset.Earliest
-        });
+        var consumer = _consumerFactory(
+            new ConsumerConfig
+            {
+                BootstrapServers = _options.BootstrapServers,
+                ClientId = $"{_options.ClientId}-{address.Value}",
+                GroupId = $"{_options.ConsumerGroup}.{address.Value}",
+                EnableAutoCommit = false,
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+            }
+        );
         consumer.Subscribe(address.Value);
 
-        var subscription = ConsumerSubscription.Start(consumer, address.Value, async (record, token) =>
-        {
-            var correlationId = GetRequiredHeader(record.Message.Headers, CorrelationHeader);
-            var replyTo = GetRequiredHeader(record.Message.Headers, ReplyToHeader);
-            var response = await handler(record.Message.Value, token).ConfigureAwait(false);
-
-            await _producer.ProduceAsync(replyTo, new Message<string, byte[]>
+        var subscription = ConsumerSubscription.Start(
+            consumer,
+            address.Value,
+            async (record, token) =>
             {
-                Key = correlationId,
-                Value = response.ToArray(),
-                Headers = new Headers { { CorrelationHeader, Encoding.UTF8.GetBytes(correlationId) } }
-            }, token).ConfigureAwait(false);
-            consumer.Commit(record);
-        }, _logger);
+                var correlationId = GetRequiredHeader(record.Message.Headers, CorrelationHeader);
+                var replyTo = GetRequiredHeader(record.Message.Headers, ReplyToHeader);
+                var response = await handler(record.Message.Value, token).ConfigureAwait(false);
+
+                await _producer
+                    .ProduceAsync(
+                        replyTo,
+                        new Message<string, byte[]>
+                        {
+                            Key = correlationId,
+                            Value = response.ToArray(),
+                            Headers = new Headers
+                            {
+                                { CorrelationHeader, Encoding.UTF8.GetBytes(correlationId) },
+                            },
+                        },
+                        token
+                    )
+                    .ConfigureAwait(false);
+                consumer.Commit(record);
+            },
+            _logger
+        );
         _subscriptions.Add(subscription);
         return ValueTask.FromResult<IAsyncDisposable>(subscription);
     }
@@ -98,59 +125,80 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
         RequestAddress topic,
         string subscription,
         EventFrameHandler handler,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(subscription);
         ArgumentNullException.ThrowIfNull(handler);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var consumer = _consumerFactory(new ConsumerConfig
-        {
-            BootstrapServers = _options.BootstrapServers,
-            ClientId = $"{_options.ClientId}-{topic.Value}-{subscription}",
-            GroupId = SubscriptionGroup(_options.ConsumerGroup, topic, subscription),
-            EnableAutoCommit = false,
-            AutoOffsetReset = AutoOffsetReset.Earliest
-        });
+        var consumer = _consumerFactory(
+            new ConsumerConfig
+            {
+                BootstrapServers = _options.BootstrapServers,
+                ClientId = $"{_options.ClientId}-{topic.Value}-{subscription}",
+                GroupId = SubscriptionGroup(_options.ConsumerGroup, topic, subscription),
+                EnableAutoCommit = false,
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+            }
+        );
         consumer.Subscribe(topic.Value);
 
-        var handled = ConsumerSubscription.Start(consumer, topic.Value, async (record, token) =>
-        {
-            await handler(record.Message.Value, token).ConfigureAwait(false);
-            consumer.Commit(record);
-        }, _logger);
+        var handled = ConsumerSubscription.Start(
+            consumer,
+            topic.Value,
+            async (record, token) =>
+            {
+                await handler(record.Message.Value, token).ConfigureAwait(false);
+                consumer.Commit(record);
+            },
+            _logger
+        );
         _subscriptions.Add(handled);
         return ValueTask.FromResult<IAsyncDisposable>(handled);
     }
 
-    public async ValueTask PublishAsync(RequestAddress topic, ReadOnlyMemory<byte> frame, CancellationToken cancellationToken)
+    public async ValueTask PublishAsync(
+        RequestAddress topic,
+        ReadOnlyMemory<byte> frame,
+        CancellationToken cancellationToken
+    )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         // No key, so records round-robin across partitions. Ordering therefore holds within a
         // partition only; key-based partitioning is a contract-level concern the broker cannot infer.
-        await _producer.ProduceAsync(topic.Value, new Message<string, byte[]>
-        {
-            Value = frame.ToArray()
-        }, cancellationToken).ConfigureAwait(false);
+        await _producer
+            .ProduceAsync(
+                topic.Value,
+                new Message<string, byte[]> { Value = frame.ToArray() },
+                cancellationToken
+            )
+            .ConfigureAwait(false);
     }
 
     /// <summary>Consumer group backing one subscription, scoped by the service's group prefix.</summary>
-    internal static string SubscriptionGroup(string prefix, RequestAddress topic, string subscription) =>
-        $"{prefix}.{topic.Value}.{subscription}";
+    internal static string SubscriptionGroup(
+        string prefix,
+        RequestAddress topic,
+        string subscription
+    ) => $"{prefix}.{topic.Value}.{subscription}";
 
     public async ValueTask<ReadOnlyMemory<byte>> RequestAsync(
         RequestAddress address,
         ReadOnlyMemory<byte> request,
         Guid requestId,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         await EnsureReplyConsumerAsync(cancellationToken).ConfigureAwait(false);
 
-        var completion = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completion = new TaskCompletionSource<ReadOnlyMemory<byte>>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
         if (!_pending.TryAdd(requestId, completion))
         {
             throw new InvalidOperationException($"Request id '{requestId}' is already pending.");
@@ -159,20 +207,28 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
         try
         {
             var id = requestId.ToString("N");
-            await _producer.ProduceAsync(address.Value, new Message<string, byte[]>
-            {
-                Key = id,
-                Value = request.ToArray(),
-                Headers = new Headers
-                {
-                    { CorrelationHeader, Encoding.UTF8.GetBytes(id) },
-                    { ReplyToHeader, Encoding.UTF8.GetBytes(_options.ResponseTopic) }
-                }
-            }, cancellationToken).ConfigureAwait(false);
+            await _producer
+                .ProduceAsync(
+                    address.Value,
+                    new Message<string, byte[]>
+                    {
+                        Key = id,
+                        Value = request.ToArray(),
+                        Headers = new Headers
+                        {
+                            { CorrelationHeader, Encoding.UTF8.GetBytes(id) },
+                            { ReplyToHeader, Encoding.UTF8.GetBytes(_options.ResponseTopic) },
+                        },
+                    },
+                    cancellationToken
+                )
+                .ConfigureAwait(false);
 
             try
             {
-                return await completion.Task.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+                return await completion
+                    .Task.WaitAsync(timeout, cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (TimeoutException exception)
             {
@@ -232,27 +288,37 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
                 return;
             }
 
-            var consumer = _consumerFactory(new ConsumerConfig
-            {
-                BootstrapServers = _options.BootstrapServers,
-                ClientId = $"{_options.ClientId}-replies",
-                GroupId = $"{_options.ConsumerGroup}.replies.{_options.ClientId}",
-                EnableAutoCommit = true,
-                // The unique group may not be assigned before the first response is produced.
-                // Earliest avoids losing that race; retained unrelated responses are filtered below.
-                AutoOffsetReset = AutoOffsetReset.Earliest
-            });
-            consumer.Subscribe(_options.ResponseTopic);
-            _replySubscription = ConsumerSubscription.Start(consumer, _options.ResponseTopic, (record, _) =>
-            {
-                var value = GetRequiredHeader(record.Message.Headers, CorrelationHeader);
-                if (Guid.TryParseExact(value, "N", out var id) && _pending.TryGetValue(id, out var completion))
+            var consumer = _consumerFactory(
+                new ConsumerConfig
                 {
-                    completion.TrySetResult(record.Message.Value);
+                    BootstrapServers = _options.BootstrapServers,
+                    ClientId = $"{_options.ClientId}-replies",
+                    GroupId = $"{_options.ConsumerGroup}.replies.{_options.ClientId}",
+                    EnableAutoCommit = true,
+                    // The unique group may not be assigned before the first response is produced.
+                    // Earliest avoids losing that race; retained unrelated responses are filtered below.
+                    AutoOffsetReset = AutoOffsetReset.Earliest,
                 }
+            );
+            consumer.Subscribe(_options.ResponseTopic);
+            _replySubscription = ConsumerSubscription.Start(
+                consumer,
+                _options.ResponseTopic,
+                (record, _) =>
+                {
+                    var value = GetRequiredHeader(record.Message.Headers, CorrelationHeader);
+                    if (
+                        Guid.TryParseExact(value, "N", out var id)
+                        && _pending.TryGetValue(id, out var completion)
+                    )
+                    {
+                        completion.TrySetResult(record.Message.Value);
+                    }
 
-                return ValueTask.CompletedTask;
-            }, _logger);
+                    return ValueTask.CompletedTask;
+                },
+                _logger
+            );
         }
         finally
         {
@@ -262,8 +328,11 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
 
     private static string GetRequiredHeader(Headers headers, string name)
     {
-        var value = headers.GetLastBytes(name)
-            ?? throw new InvalidDataException($"Kafka message is missing required header '{name}'.");
+        var value =
+            headers.GetLastBytes(name)
+            ?? throw new InvalidDataException(
+                $"Kafka message is missing required header '{name}'."
+            );
         return Encoding.UTF8.GetString(value);
     }
 }

@@ -1,6 +1,7 @@
 namespace HostLoom.Pipelines;
 
-internal sealed class FilterPipe<TContext>(IFilter<TContext> filter, IPipe<TContext> next) : IPipe<TContext>
+internal sealed class FilterPipe<TContext>(IFilter<TContext> filter, IPipe<TContext> next)
+    : IPipe<TContext>
     where TContext : class, IPipeContext
 {
     public ValueTask SendAsync(TContext context)

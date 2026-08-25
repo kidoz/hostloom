@@ -6,28 +6,41 @@ namespace HostLoom;
 internal sealed class EventDispatcher(
     HostLoomConfiguration configuration,
     IMessageSerializer serializer,
-    ReceivePipeline receivePipeline)
+    ReceivePipeline receivePipeline
+)
 {
     public async ValueTask DispatchAsync(
         RequestAddress topic,
         string subscription,
         ReadOnlyMemory<byte> frame,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var envelope = WireEnvelopeCodec.Decode(frame.Span);
         if (envelope.Kind is not MessageKind.Event)
         {
-            throw new InvalidDataException($"Expected an event envelope, received '{envelope.Kind}'.");
+            throw new InvalidDataException(
+                $"Expected an event envelope, received '{envelope.Kind}'."
+            );
         }
 
         // A topic carries every event type published to it. A subscription that has no handler for
         // this one is not misconfigured, it is simply uninterested.
-        if (!configuration.TryGetSubscriber(topic, subscription, envelope.MessageType, out var registration))
+        if (
+            !configuration.TryGetSubscriber(
+                topic,
+                subscription,
+                envelope.MessageType,
+                out var registration
+            )
+        )
         {
             return;
         }
 
-        using var activity = HostLoomDiagnostics.ActivitySource.StartActivity("hostloom handle event");
+        using var activity = HostLoomDiagnostics.ActivitySource.StartActivity(
+            "hostloom handle event"
+        );
         activity?.SetTag("messaging.operation.type", "process");
         activity?.SetTag("messaging.destination.name", topic.Value);
         activity?.SetTag("messaging.consumer.group.name", subscription);
@@ -37,10 +50,11 @@ internal sealed class EventDispatcher(
         var tags = new TagList
         {
             { "messaging.destination.name", topic.Value },
-            { "messaging.message.type", envelope.MessageType }
+            { "messaging.message.type", envelope.MessageType },
         };
 
-        var message = serializer.Deserialize(envelope.Body, registration.EventType)
+        var message =
+            serializer.Deserialize(envelope.Body, registration.EventType)
             ?? throw new InvalidDataException($"Event body for '{envelope.MessageType}' was null.");
 
         var context = new EventReceiveContext(
@@ -51,7 +65,8 @@ internal sealed class EventDispatcher(
             registration.ExecutorType,
             registration.HandlerTypes,
             message,
-            cancellationToken);
+            cancellationToken
+        );
 
         var start = Stopwatch.GetTimestamp();
         HostLoomDiagnostics.ActiveRequests.Add(1, tags);
@@ -74,7 +89,10 @@ internal sealed class EventDispatcher(
         finally
         {
             HostLoomDiagnostics.ActiveRequests.Add(-1, tags);
-            HostLoomDiagnostics.RequestDuration.Record(Stopwatch.GetElapsedTime(start).TotalSeconds, tags);
+            HostLoomDiagnostics.RequestDuration.Record(
+                Stopwatch.GetElapsedTime(start).TotalSeconds,
+                tags
+            );
         }
     }
 }

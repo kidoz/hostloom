@@ -7,7 +7,12 @@ using Microsoft.Extensions.Logging;
 namespace HostLoom.Logging;
 
 /// <summary>Offsets of one structured field. Values are slices of the rendered message.</summary>
-internal readonly record struct LogField(int NameStart, int NameLength, int ValueStart, int ValueLength);
+internal readonly record struct LogField(
+    int NameStart,
+    int NameLength,
+    int ValueStart,
+    int ValueLength
+);
 
 /// <summary>
 /// One log record, rendered straight to UTF-8. Pooled and reused, so a steady-state write allocates
@@ -74,7 +79,14 @@ internal sealed class LogEntry
     {
         var start = _messageLength;
         int written;
-        while (!value.TryFormat(_message.AsSpan(_messageLength), out written, format, CultureInfo.InvariantCulture))
+        while (
+            !value.TryFormat(
+                _message.AsSpan(_messageLength),
+                out written,
+                format,
+                CultureInfo.InvariantCulture
+            )
+        )
         {
             EnsureMessage(Math.Max(64, _message.Length));
         }
@@ -133,7 +145,12 @@ internal sealed class LogEntry
         }
 
         _namesLength += Encoding.UTF8.GetBytes(name, _names.AsSpan(_namesLength));
-        _fields[_fieldCount++] = new LogField(nameStart, _namesLength - nameStart, valueStart, valueLength);
+        _fields[_fieldCount++] = new LogField(
+            nameStart,
+            _namesLength - nameStart,
+            valueStart,
+            valueLength
+        );
     }
 
     private void EnsureMessage(int additional)

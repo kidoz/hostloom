@@ -1,7 +1,8 @@
 namespace HostLoom.Pipelines;
 
 internal sealed class ExecuteFilter<TContext>(string name, Func<TContext, ValueTask> action)
-    : IFilter<TContext> where TContext : class, IPipeContext
+    : IFilter<TContext>
+    where TContext : class, IPipeContext
 {
     public async ValueTask SendAsync(TContext context, IPipe<TContext> next)
     {

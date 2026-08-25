@@ -5,10 +5,16 @@ namespace HostLoom.Pipelines;
 /// <summary>An immutable snapshot of pipeline structure and filter metadata.</summary>
 public sealed class ProbeResult
 {
-    internal ProbeResult(string name, Dictionary<string, object?> properties, List<ProbeResult> children)
+    internal ProbeResult(
+        string name,
+        Dictionary<string, object?> properties,
+        List<ProbeResult> children
+    )
     {
         Name = name;
-        Properties = new ReadOnlyDictionary<string, object?>(new Dictionary<string, object?>(properties));
+        Properties = new ReadOnlyDictionary<string, object?>(
+            new Dictionary<string, object?>(properties)
+        );
         Children = children.AsReadOnly();
     }
 

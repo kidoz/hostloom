@@ -1,7 +1,10 @@
 namespace HostLoom;
 
 /// <summary>Delivers one published frame to a subscription. Unlike a request, it returns nothing.</summary>
-public delegate ValueTask EventFrameHandler(ReadOnlyMemory<byte> frame, CancellationToken cancellationToken);
+public delegate ValueTask EventFrameHandler(
+    ReadOnlyMemory<byte> frame,
+    CancellationToken cancellationToken
+);
 
 /// <summary>
 /// Optional transport capability for publish/subscribe, kept separate from
@@ -19,7 +22,12 @@ public interface IEventBroker
         RequestAddress topic,
         string subscription,
         EventFrameHandler handler,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken
+    );
 
-    ValueTask PublishAsync(RequestAddress topic, ReadOnlyMemory<byte> frame, CancellationToken cancellationToken);
+    ValueTask PublishAsync(
+        RequestAddress topic,
+        ReadOnlyMemory<byte> frame,
+        CancellationToken cancellationToken
+    );
 }

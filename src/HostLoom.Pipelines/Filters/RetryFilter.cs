@@ -1,12 +1,17 @@
 namespace HostLoom.Pipelines;
 
-internal sealed class RetryFilter<TContext> : IFilter<TContext> where TContext : class, IPipeContext
+internal sealed class RetryFilter<TContext> : IFilter<TContext>
+    where TContext : class, IPipeContext
 {
     private readonly RetryPolicy _policy;
     private readonly Func<Exception, bool> _shouldRetry;
     private readonly TimeProvider _timeProvider;
 
-    public RetryFilter(RetryPolicy policy, Func<Exception, bool>? shouldRetry, TimeProvider timeProvider)
+    public RetryFilter(
+        RetryPolicy policy,
+        Func<Exception, bool>? shouldRetry,
+        TimeProvider timeProvider
+    )
     {
         ArgumentNullException.ThrowIfNull(policy);
         ArgumentNullException.ThrowIfNull(timeProvider);
@@ -27,12 +32,16 @@ internal sealed class RetryFilter<TContext> : IFilter<TContext> where TContext :
             catch (Exception exception) when (CanRetry(exception, attempt, context))
             {
                 var number = attempt + 1;
-                context.AddOrUpdatePayload(() => new RetryAttempt(number), _ => new RetryAttempt(number));
+                context.AddOrUpdatePayload(
+                    () => new RetryAttempt(number),
+                    _ => new RetryAttempt(number)
+                );
 
                 var delay = _policy.GetDelay(number);
                 if (delay > TimeSpan.Zero)
                 {
-                    await Task.Delay(delay, _timeProvider, context.CancellationToken).ConfigureAwait(false);
+                    await Task.Delay(delay, _timeProvider, context.CancellationToken)
+                        .ConfigureAwait(false);
                 }
             }
         }
