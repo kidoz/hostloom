@@ -11,18 +11,24 @@ public sealed class PipelineTests
         var calls = new List<string>();
         var pipe = Pipe.Create<TestContext>(builder =>
         {
-            builder.Use(async (context, next) =>
-            {
-                calls.Add("first-before");
-                await next.SendAsync(context);
-                calls.Add("first-after");
-            }, "first");
-            builder.Use(async (context, next) =>
-            {
-                calls.Add("second-before");
-                await next.SendAsync(context);
-                calls.Add("second-after");
-            }, "second");
+            builder.Use(
+                async (context, next) =>
+                {
+                    calls.Add("first-before");
+                    await next.SendAsync(context);
+                    calls.Add("first-after");
+                },
+                "first"
+            );
+            builder.Use(
+                async (context, next) =>
+                {
+                    calls.Add("second-before");
+                    await next.SendAsync(context);
+                    calls.Add("second-after");
+                },
+                "second"
+            );
         });
 
         await pipe.SendAsync(new TestContext());
@@ -35,8 +41,16 @@ public sealed class PipelineTests
         var calls = new List<string>();
         var pipe = Pipe.Create<TestContext>(builder =>
         {
-            builder.UseTerminal(_ => { calls.Add("terminal"); return ValueTask.CompletedTask; });
-            builder.UseExecute(_ => { calls.Add("unreachable"); return ValueTask.CompletedTask; });
+            builder.UseTerminal(_ =>
+            {
+                calls.Add("terminal");
+                return ValueTask.CompletedTask;
+            });
+            builder.UseExecute(_ =>
+            {
+                calls.Add("unreachable");
+                return ValueTask.CompletedTask;
+            });
         });
 
         await pipe.SendAsync(new TestContext());
@@ -51,8 +65,18 @@ public sealed class PipelineTests
         {
             builder.UseWhen(
                 context => context.Enabled,
-                branch => branch.UseExecute(_ => { calls.Add("conditional"); return ValueTask.CompletedTask; }));
-            builder.UseExecute(_ => { calls.Add("tail"); return ValueTask.CompletedTask; });
+                branch =>
+                    branch.UseExecute(_ =>
+                    {
+                        calls.Add("conditional");
+                        return ValueTask.CompletedTask;
+                    })
+            );
+            builder.UseExecute(_ =>
+            {
+                calls.Add("tail");
+                return ValueTask.CompletedTask;
+            });
         });
 
         await pipe.SendAsync(new TestContext { Enabled = true });
@@ -64,18 +88,24 @@ public sealed class PipelineTests
     {
         var context = new TestContext();
         var factoryCalls = 0;
-        Parallel.For(0, 32, _ => context.GetOrAddPayload(() =>
-        {
-            Interlocked.Increment(ref factoryCalls);
-            return new Marker("created");
-        }));
+        Parallel.For(
+            0,
+            32,
+            _ =>
+                context.GetOrAddPayload(() =>
+                {
+                    Interlocked.Increment(ref factoryCalls);
+                    return new Marker("created");
+                })
+        );
 
         Assert.Equal(1, factoryCalls);
         Assert.True(context.TryGetPayload<IMarker>(out var marker));
         Assert.Equal("created", marker!.Value);
         var updated = context.AddOrUpdatePayload(
             () => new Marker("added"),
-            existing => existing with { Value = "updated" });
+            existing => existing with { Value = "updated" }
+        );
         Assert.Equal("updated", updated.Value);
     }
 
@@ -95,24 +125,52 @@ public sealed class PipelineTests
     }
 
     [Fact]
+    public void Probe_reports_the_type_name_when_a_filter_does_not_describe_itself()
+    {
+        var pipe = Pipe.Create<TestContext>(builder => builder.Use(new SilentFilter()));
+
+        var probe = PipelineProbe.Inspect(pipe, Xunit.TestContext.Current.CancellationToken);
+
+        Assert.Equal(["SilentFilter", "empty"], probe.Children.Select(x => x.Name));
+    }
+
+    [Fact]
     public async Task Cancellation_is_observed_before_a_filter_executes()
     {
         using var source = new CancellationTokenSource();
         await source.CancelAsync();
         var executed = false;
         var pipe = Pipe.Create<TestContext>(builder =>
-            builder.UseExecute(_ => { executed = true; return ValueTask.CompletedTask; }));
+            builder.UseExecute(_ =>
+            {
+                executed = true;
+                return ValueTask.CompletedTask;
+            })
+        );
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-            await pipe.SendAsync(new TestContext(source.Token)));
+            await pipe.SendAsync(new TestContext(source.Token))
+        );
         Assert.False(executed);
     }
 
-    private sealed class TestContext(CancellationToken cancellationToken = default) : PipeContext(cancellationToken)
+    private sealed class TestContext(CancellationToken cancellationToken = default)
+        : PipeContext(cancellationToken)
     {
         public bool Enabled { get; init; }
     }
 
-    private interface IMarker { string Value { get; } }
+    private interface IMarker
+    {
+        string Value { get; }
+    }
+
     private sealed record Marker(string Value) : IMarker;
+
+    /// <summary>Implements no Probe of its own, so the default implementation must describe it.</summary>
+    private sealed class SilentFilter : IFilter<TestContext>
+    {
+        public ValueTask SendAsync(TestContext context, IPipe<TestContext> next) =>
+            next.SendAsync(context);
+    }
 }
