@@ -11,7 +11,11 @@ middleware pipeline. The current slice implements:
 
 - generic `IPipe<TContext>` and `IFilter<TContext>` composition, with typed
   context payloads, conditional branches, retry, circuit breaking, rate and
-  concurrency limits, intentional short-circuits, and immutable pipeline probes;
+  concurrency limits, timeouts, intentional short-circuits, and immutable
+  pipeline probes;
+- dependency-injection pipeline registration with named stages, per-run filter
+  resolution, feature toggles, startup validation, built-in per-filter metrics
+  and tracing, and a deterministic test harness;
 - typed `IRequest<TResponse>` contracts with handler, behavior, and client
   abstractions;
 - typed `IEvent` contracts published to a topic and fanned out to named
@@ -297,8 +301,67 @@ pipe.UseRateLimit(limit: 100, interval: TimeSpan.FromSeconds(1));
 throws `CircuitBreakerOpenException` once the downstream has failed
 `failureThreshold` times in a row, then admits one trial call per
 `resetInterval`. `UseRateLimit` shapes throughput by waiting rather than
-throwing. All three accept a `TimeProvider`, so their timing is testable
+throwing. All of them accept a `TimeProvider`, so their timing is testable
 without real waiting.
+
+`UseTimeout` bounds the remainder of the pipeline for contexts deriving from
+`PipeContext` — a compile-time constraint, because the filter swaps a linked
+token into the context for the duration of the downstream call. Filters that
+honour `context.CancellationToken` stop promptly, the run fails with
+`PipelineTimeoutException`, and caller cancellation is always rethrown as
+cancellation, never misreported as a timeout:
+
+```csharp
+pipe.UseTimeout(TimeSpan.FromMinutes(5));
+```
+
+### Registered pipelines with stages
+
+`HostLoom.Pipelines.DependencyInjection` turns a pipeline into a first-class
+registration: named stages in declared order, filters resolved transient from a
+per-run scope so they take repositories and loggers through constructors, and
+per-filter feature toggles evaluated on every run:
+
+```csharp
+using HostLoom.Pipelines.DependencyInjection;
+
+builder.Services.AddPipeline<IndexingContext>("document-indexing", pipeline => pipeline
+    .WithTimeout(TimeSpan.FromMinutes(5))
+    .WithRetry(RetryPolicy.Exponential(2, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(30)))
+    .Stage("analyze", stage => stage
+        .AddFilter<WordCountFilter>(filter => filter.WithName("word_count"))
+        .AddFilter<SentenceCountFilter>(filter => filter
+            .EnabledWhen(sp => sp.GetRequiredService<IOptionsMonitor<Flags>>().CurrentValue.SentenceCount)))
+    .Stage("summarize", stage => stage.AddFilter<ReadingTimeFilter>())
+    .Stage("store", stage => stage.AddFilter<StoreDocumentFilter>()));
+
+var runner = provider.GetRequiredKeyedService<IPipelineRunner<IndexingContext>>("document-indexing");
+await runner.RunAsync(new IndexingContext(batch, cancellationToken: stoppingToken));
+```
+
+Every pipeline is validated when the host starts — duplicate names and filters
+with missing constructor dependencies fail startup instead of the first run —
+and its resolved topology is logged and exposed as `runner.Topology`. Each
+filter is automatically wrapped with a duration histogram, a failure counter,
+and a tracing span (meter and `ActivitySource` both named
+`HostLoom.Pipelines`); the recorded duration is the filter's own work with
+downstream time subtracted, so the slow filter is visible wherever it sits.
+`WithoutInstrumentation()` opts a pipeline out.
+
+`HostLoom.Pipelines.Testing` completes the loop with `CapturePipe` (a recording
+stand-in for `next`), `RecordingFilter`, `FaultFilter`, and harnesses that
+capture the outcome of a send instead of throwing:
+
+```csharp
+await using var harness = PipelineHarness.Create<IndexingContext>("document-indexing", services =>
+{
+    services.AddSingleton<IDocumentStore>(fakeStore);
+    services.AddPipeline<IndexingContext>("document-indexing", Configure);
+});
+
+var result = await harness.RunAsync(new IndexingContext(batch));
+Assert.True(result.Completed);
+```
 
 ## Requirements
 
@@ -346,14 +409,17 @@ src/HostLoom/                    messaging kernel
   Wire/                          envelope, logical type names, codec
 src/HostLoom.Pipelines/          transport-neutral middleware pipelines
   Contexts/                      pipe context and thread-safe typed payloads
-  Filters/                       delegate, execute, conditional, concurrency, terminal
+  Filters/                       delegate, execute, conditional, concurrency, timeout, instrumented, terminal
   Pipes/                         composition, builder, composer
-  Diagnostics/                   immutable pipeline probes
+  Diagnostics/                   immutable pipeline probes, pipeline meter and activity source
+src/HostLoom.Pipelines.DependencyInjection/ named-stage pipeline registration, runner, startup validation
+src/HostLoom.Pipelines.Testing/  capture pipe, recording and fault filters, harnesses
 src/HostLoom.Transport.InMemory/ deterministic in-process broker
 src/HostLoom.Transport.RabbitMq/ request queues and exclusive reply queues
 src/HostLoom.Transport.Kafka/    request/response topics with header correlation
 src/HostLoom.AspNetCore.WebSockets/ raw Kestrel WebSocket RPC and subscriptions
 benchmarks/HostLoom.Benchmarks/    JSON, MessagePack, and Protobuf codec benchmarks
+examples/HostLoom.Examples.Pipelines/ runnable pipeline tour: DI stages, manual and standalone composition
 tests/HostLoom.Tests/            pipeline, round-trip, behavior, and fault tests
 ```
 

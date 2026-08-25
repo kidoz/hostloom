@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Dependency-injection registration, named stages, and run instrumentation for HostLoom pipelines.</Description>
+    <PackageId>HostLoom.Pipelines.DependencyInjection</PackageId>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <ProjectReference Include="../HostLoom.Pipelines/HostLoom.Pipelines.csproj" />
+  </ItemGroup>
+</Project>
