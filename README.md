@@ -41,6 +41,28 @@ pipeline becomes the transport-neutral `HostLoom.Pipelines` package, and
 MassTransit's typed contracts, scoped consumers, correlation, faults, and
 hosted transport lifecycle become a compact request runtime.
 
+## Packages
+
+All packages target .NET 10 and are versioned together:
+
+| Package | Purpose |
+| --- | --- |
+| `HostLoom` | Typed request/response and event runtime |
+| `HostLoom.Pipelines` | Transport-neutral asynchronous pipelines |
+| `HostLoom.Pipelines.DependencyInjection` | Named stages, per-run resolution, and instrumentation |
+| `HostLoom.Pipelines.Testing` | Deterministic pipeline test doubles and harnesses |
+| `HostLoom.Transport.InMemory` | In-process request and event transport |
+| `HostLoom.Transport.RabbitMq` | RabbitMQ request and fan-out event transport |
+| `HostLoom.Transport.Kafka` | Kafka request and consumer-group event transport |
+| `HostLoom.AspNetCore.WebSockets` | Authenticated WebSocket RPC and subscriptions |
+| `HostLoom.Logging` | Allocation-free UTF-8 logging provider |
+
+Install only the runtime and transport needed by the application, for example:
+
+```text
+dotnet add package HostLoom.Transport.RabbitMq --version 0.1.0
+```
+
 ## Quick start
 
 ```csharp
@@ -353,7 +375,7 @@ stand-in for `next`), `RecordingFilter`, `FaultFilter`, and harnesses that
 capture the outcome of a send instead of throwing:
 
 ```csharp
-await using var harness = PipelineHarness.Create<IndexingContext>("document-indexing", services =>
+await using var harness = await PipelineHarness.CreateAsync<IndexingContext>("document-indexing", services =>
 {
     services.AddSingleton<IDocumentStore>(fakeStore);
     services.AddPipeline<IndexingContext>("document-indexing", Configure);

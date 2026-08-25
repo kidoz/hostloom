@@ -1,0 +1,41 @@
+# Changelog
+
+All notable changes to HostLoom are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
+project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Package versions
+are derived from release tags at publish time.
+
+## [Unreleased]
+
+## [0.1.0] - 2026-08-25
+
+### Added
+
+- A transport-neutral request/response runtime with typed contracts, behaviors, scoped handlers,
+  correlation, remote faults, JSON wire envelopes, host lifecycle integration, diagnostics, health
+  checks, and an execution-free pipeline probe.
+- Typed event publishing and named subscriptions, with fan-out semantics implemented by the
+  in-memory, RabbitMQ, and Kafka transports.
+- A composable asynchronous pipeline package with conditional branches, retry, circuit breaking,
+  rate and concurrency limits, cooperative timeouts, short-circuits, immutable probes, metrics,
+  and tracing.
+- Dependency-injection pipeline registration with named stages, private transient filter
+  registrations, per-run scopes and feature toggles, startup validation, topology reporting, and
+  per-filter instrumentation.
+- Deterministic pipeline testing helpers and harnesses, including asynchronous validation and
+  disposal support, plus a runnable document-indexing example.
+- An authenticated raw WebSocket RPC and live-subscription gateway with JSON, MessagePack, and
+  Protocol Buffers subprotocols, bounded per-connection memory, and explicit subscription credit.
+- Allocation-free UTF-8 logging compatible with `Microsoft.Extensions.Logging`, with bounded
+  buffering, drop accounting, trace capture, and benchmarks.
+
+### Compatibility
+
+- Targets .NET 10 and C# 14. This is the first public release; the API is experimental and may
+  change before 1.0.
+- RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
+  do not require an external broker.
+
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/kidoz/hostloom/releases/tag/v0.1.0

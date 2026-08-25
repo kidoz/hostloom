@@ -7,5 +7,22 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AnalysisLevel>latest-all</AnalysisLevel>
     <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+  <PropertyGroup Label="Package metadata">
+    <Product>HostLoom</Product>
+    <Company>Aleksandr Pavlov</Company>
+    <Authors>Aleksandr Pavlov</Authors>
+    <Copyright>Copyright (c) Aleksandr Pavlov</Copyright>
+    <PackageProjectUrl>https://github.com/kidoz/hostloom</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/kidoz/hostloom</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageTags>hostloom;messaging;pipelines;request-response</PackageTags>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
   </PropertyGroup>
 </Project>

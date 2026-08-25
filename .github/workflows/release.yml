@@ -1,0 +1,148 @@
+name: Release
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+
+permissions:
+  attestations: write
+  contents: read
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Validate release tag and changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" != "release" ]; then
+            echo "Manual dispatch: skipping tag validation; packages are versioned 0.0.0-manual and never published."
+            exit 0
+          fi
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag '${tag}' is not strict semver. Expected vMAJOR.MINOR.PATCH with an optional -prerelease suffix."
+            exit 1
+          fi
+          version="${tag#v}"
+          if ! grep -qF "## [${version}]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [${version}]' section for release tag '${tag}'."
+            exit 1
+          fi
+          echo "Release tag '${tag}' is well-formed and CHANGELOG.md documents ${version}."
+
+  nuget:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: nuget
+
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+      DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER: 1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Restore tools
+        run: dotnet tool restore
+
+      - name: Restore packages
+        run: dotnet restore HostLoom.slnx
+
+      - name: Resolve package version from release tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.0.0-manual"
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check formatting
+        run: dotnet csharpier check .
+
+      - name: Build
+        run: dotnet build HostLoom.slnx --configuration Release --no-restore -p:Version=${{ steps.version.outputs.version }}
+
+      - name: Test
+        run: dotnet test HostLoom.slnx --configuration Release --no-build --no-restore
+
+      - name: Pack
+        run: dotnet pack HostLoom.slnx --configuration Release --no-build --no-restore --output artifacts/packages -p:Version=${{ steps.version.outputs.version }}
+
+      - name: Attest package provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+        with:
+          subject-path: |
+            artifacts/packages/*.nupkg
+            artifacts/packages/*.snupkg
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hostloom-release-packages
+          path: |
+            artifacts/packages/*.nupkg
+            artifacts/packages/*.snupkg
+          if-no-files-found: error
+
+      - name: NuGet login
+        id: nuget-login
+        if: github.event_name == 'release'
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Publish to NuGet
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(
+            HostLoom.Pipelines
+            HostLoom.Logging
+            HostLoom
+            HostLoom.Pipelines.DependencyInjection
+            HostLoom.Pipelines.Testing
+            HostLoom.Transport.InMemory
+            HostLoom.Transport.RabbitMq
+            HostLoom.Transport.Kafka
+            HostLoom.AspNetCore.WebSockets
+          )
+          for package_id in "${packages[@]}"; do
+            package="artifacts/packages/${package_id}.${{ steps.version.outputs.version }}.nupkg"
+            dotnet nuget push "${package}" \
+              --api-key "${NUGET_API_KEY}" \
+              --source https://api.nuget.org/v3/index.json
+          done
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
