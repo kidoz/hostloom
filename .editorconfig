@@ -65,6 +65,12 @@ dotnet_diagnostic.CA1515.severity = none
 # Tracked deliberately: the semaphore's wait handle is never allocated, so nothing leaks.
 dotnet_diagnostic.CA1001.severity = suggestion
 
+[examples/**.cs]
+
+# CA1873: example programs exist to print what happened; their console logger is always
+# enabled, so guarding every call with IsEnabled would only obscure the API being shown.
+dotnet_diagnostic.CA1873.severity = none
+
 [tests/**.cs]
 
 # CA1707: Subject_ExpectedBehaviour is the test naming convention in this repository.
