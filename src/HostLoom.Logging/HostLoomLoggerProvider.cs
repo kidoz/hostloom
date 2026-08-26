@@ -25,8 +25,11 @@ public sealed class HostLoomLoggerProvider : ILoggerProvider, IAsyncDisposable
         _pipeline = new LogPipeline(formatter, sink, options);
     }
 
-    /// <summary>Records dropped because the queue was full.</summary>
+    /// <summary>Records dropped for any reason: overload, timeout, fault, or shutdown.</summary>
     public long Dropped => _pipeline.Dropped;
+
+    /// <summary>The failure that faulted the background writer, if any. Null while healthy.</summary>
+    public Exception? WriterFault => _pipeline.WriterFault;
 
     public ILogger CreateLogger(string categoryName) =>
         _loggers.GetOrAdd(

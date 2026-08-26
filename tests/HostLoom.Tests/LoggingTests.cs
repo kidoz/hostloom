@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Text;
 using System.Text.Json;
 using HostLoom.Logging;
@@ -235,6 +236,161 @@ public sealed class LoggingTests
     }
 
     [Fact]
+    public async Task A_formatter_failure_faults_the_pipeline_and_never_strands_a_caller()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new ThrowingFormatter(),
+            sink,
+            new HostLoomLoggerOptions { QueueFullPolicy = QueueFullPolicy.Block }
+        );
+        var logger = provider.CreateLogger("Faulty");
+
+        logger.LogFast(LogLevel.Information, $"first entry breaks the formatter");
+
+        var deadline = Stopwatch.StartNew();
+        while (provider.WriterFault is null && deadline.Elapsed < TimeSpan.FromSeconds(10))
+        {
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+
+        Assert.IsType<InvalidOperationException>(provider.WriterFault);
+
+        // Block would normally wait on a full queue forever. A faulted pipeline must instead turn
+        // every later call into a counted, non-blocking no-op — a dead writer that still accepts
+        // blocking callers is a service-wide deadlock.
+        var before = provider.Dropped;
+        logger.LogFast(LogLevel.Error, $"after the fault");
+        Assert.Equal(before + 1, provider.Dropped);
+
+        await provider.DisposeAsync();
+        Assert.Empty(sink.Lines());
+    }
+
+    [Fact]
+    public async Task Disposal_returns_at_the_deadline_when_the_sink_is_stuck()
+    {
+        var sink = NewStuckSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions { ShutdownTimeout = TimeSpan.FromMilliseconds(200) }
+        );
+        var logger = provider.CreateLogger("Stuck");
+
+        logger.LogFast(LogLevel.Information, $"taken into the stuck batch");
+        sink.WaitUntilWriting();
+        for (var i = 0; i < 5; i++)
+        {
+            logger.LogFast(LogLevel.Information, $"stranded {i}");
+        }
+
+        var elapsed = Stopwatch.StartNew();
+        await provider.DisposeAsync();
+
+        // The sink ignores cancellation entirely, so this is the worst case: disposal must still
+        // return at the deadline (plus the cooperative grace) and count what it left behind.
+        Assert.True(
+            elapsed.Elapsed < TimeSpan.FromSeconds(5),
+            $"disposal took {elapsed.Elapsed} against a 200 ms deadline"
+        );
+        Assert.Equal(5, provider.Dropped);
+        sink.Release();
+    }
+
+    [Fact]
+    public async Task A_blocking_enqueue_times_out_instead_of_waiting_forever()
+    {
+        var sink = NewStuckSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions
+            {
+                QueueCapacity = 1,
+                QueueFullPolicy = QueueFullPolicy.Block,
+                EnqueueTimeout = TimeSpan.FromMilliseconds(100),
+            }
+        );
+        var logger = provider.CreateLogger("Bounded");
+
+        logger.LogFast(LogLevel.Information, $"taken by the writer");
+        sink.WaitUntilWriting();
+        logger.LogFast(LogLevel.Information, $"fills the queue");
+
+        var wait = Stopwatch.StartNew();
+        logger.LogFast(LogLevel.Information, $"times out");
+
+        Assert.True(
+            wait.Elapsed < TimeSpan.FromSeconds(5),
+            $"the bounded wait took {wait.Elapsed} against a 100 ms limit"
+        );
+        Assert.Equal(1, provider.Dropped);
+        sink.Release();
+    }
+
+    [Fact]
+    public async Task Dropped_records_surface_through_the_meter()
+    {
+        long observed = 0;
+        var reasons = new HashSet<string>();
+        var gate = new Lock();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (
+                instrument.Meter.Name == "HostLoom.Logging"
+                && instrument.Name == "hostloom.logging.records.dropped"
+            )
+            {
+                l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>(
+            (instrument, measurement, tags, state) =>
+            {
+                lock (gate)
+                {
+                    observed += measurement;
+                    foreach (var tag in tags)
+                    {
+                        if (tag.Key == "reason" && tag.Value is string reason)
+                        {
+                            reasons.Add(reason);
+                        }
+                    }
+                }
+            }
+        );
+        listener.Start();
+
+        var sink = NewBlockingSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions
+            {
+                QueueCapacity = 4,
+                QueueFullPolicy = QueueFullPolicy.DropNewest,
+            }
+        );
+        var logger = provider.CreateLogger("Metered");
+        for (var i = 0; i < 200; i++)
+        {
+            logger.LogFast(LogLevel.Information, $"flood {i}");
+        }
+
+        sink.Release();
+        await provider.DisposeAsync();
+
+        lock (gate)
+        {
+            Assert.True(observed > 0, "expected the meter to observe dropped records");
+            Assert.Contains("queue_full", reasons);
+        }
+    }
+
+    [Fact]
     public async Task The_current_activity_is_captured_on_the_calling_thread()
     {
         using var source = new ActivitySource("HostLoom.Tests.Logging");
@@ -359,6 +515,8 @@ public sealed class LoggingTests
     private static BufferSink NewBufferSink() => new();
 
     private static BlockingSink NewBlockingSink() => new();
+
+    private static StuckSink NewStuckSink() => new();
 #pragma warning restore CA2000
 
     private static int Expensive(ref int counter)
@@ -372,7 +530,7 @@ public sealed class LoggingTests
         private readonly MemoryStream _stream = new();
         private readonly Lock _gate = new();
 
-        public void Write(ReadOnlySpan<byte> payload)
+        public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken)
         {
             lock (_gate)
             {
@@ -400,7 +558,11 @@ public sealed class LoggingTests
     {
         private readonly ManualResetEventSlim _gate = new(false);
 
-        public void Write(ReadOnlySpan<byte> payload) => _gate.Wait(TimeSpan.FromSeconds(5));
+        // CA2016: deliberately token-deaf — the test controls release through the gate alone.
+#pragma warning disable CA2016
+        public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken) =>
+            _gate.Wait(TimeSpan.FromSeconds(5));
+#pragma warning restore CA2016
 
         public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
@@ -410,6 +572,47 @@ public sealed class LoggingTests
         {
             _gate.Set();
             _gate.Dispose();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class ThrowingFormatter : ILogFormatter
+    {
+        public void Format(in LogRecord record, System.Buffers.IBufferWriter<byte> writer) =>
+            throw new InvalidOperationException("the formatter broke");
+    }
+
+    /// <summary>
+    /// Blocks inside Write and deliberately ignores the cancellation token — the worst-case sink
+    /// the bounded-shutdown guarantees are written against.
+    /// </summary>
+    private sealed class StuckSink : ILogSink
+    {
+        private readonly ManualResetEventSlim _entered = new(false);
+        private readonly ManualResetEventSlim _release = new(false);
+
+        // CA2016: ignoring the token is the entire point of this double — it models the sink the
+        // bounded-shutdown guarantees are written against.
+#pragma warning disable CA2016
+        public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken)
+        {
+            _entered.Set();
+            _release.Wait(TimeSpan.FromSeconds(30));
+        }
+#pragma warning restore CA2016
+
+        public ValueTask FlushAsync(CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+
+        public void WaitUntilWriting() => _entered.Wait(TimeSpan.FromSeconds(10));
+
+        public void Release() => _release.Set();
+
+        public ValueTask DisposeAsync()
+        {
+            _release.Set();
+            _entered.Dispose();
+            _release.Dispose();
             return ValueTask.CompletedTask;
         }
     }

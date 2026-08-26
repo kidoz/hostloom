@@ -77,7 +77,7 @@ public class LoggingBenchmarks
 
     private sealed class NullSink : ILogSink
     {
-        public void Write(ReadOnlySpan<byte> payload) { }
+        public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken) { }
 
         public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 

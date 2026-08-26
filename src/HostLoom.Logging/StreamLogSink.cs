@@ -13,7 +13,13 @@ public sealed class StreamLogSink(Stream stream, bool leaveOpen = false) : ILogS
     public static StreamLogSink Console() => new(System.Console.OpenStandardOutput());
 #pragma warning restore CA2000
 
-    public void Write(ReadOnlySpan<byte> payload) => _stream.Write(payload);
+    public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken)
+    {
+        // Cooperative only: a synchronous stream write in flight cannot be interrupted, but no
+        // new batch starts once shutdown has given up on the sink.
+        cancellationToken.ThrowIfCancellationRequested();
+        _stream.Write(payload);
+    }
 
     public async ValueTask FlushAsync(CancellationToken cancellationToken) =>
         await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
