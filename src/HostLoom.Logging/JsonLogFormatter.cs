@@ -19,6 +19,15 @@ public sealed class JsonLogFormatter : ILogFormatter
     };
 
     private readonly Utf8JsonWriter _writer = new(Stream.Null, WriterOptions);
+    private readonly int _maxExceptionLength;
+
+    /// <param name="maxExceptionLength">Cap on the encoded exception text; longer chains are
+    /// truncated with an explicit marker.</param>
+    public JsonLogFormatter(int maxExceptionLength = 32 * 1024)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxExceptionLength, 1);
+        _maxExceptionLength = maxExceptionLength;
+    }
 
     public void Format(in LogRecord record, IBufferWriter<byte> writer)
     {
@@ -76,10 +85,12 @@ public sealed class JsonLogFormatter : ILogFormatter
                 exception.GetType().FullName ?? exception.GetType().Name
             );
             _writer.WriteString("error.message"u8, exception.Message);
-            if (exception.StackTrace is { } stack)
-            {
-                _writer.WriteString("error.stack_trace"u8, stack);
-            }
+            // The full ToString chain — inner exceptions and aggregate children included — not
+            // just the top frame's stack; chain analysis is routine incident work.
+            _writer.WriteString(
+                "error.stack_trace"u8,
+                ExceptionText.Render(exception, _maxExceptionLength)
+            );
         }
 
         _writer.WriteEndObject();

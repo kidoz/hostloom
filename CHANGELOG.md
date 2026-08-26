@@ -36,6 +36,15 @@ are derived from release tags at publish time.
   length, and encoded bytes per record — every cap cut marked with an explicit sentinel, and any
   getter or serializer failure emitting `"[DestructuringFailed]"` instead of ever falling back
   to `ToString()`.
+- A `ClefLogFormatter` emitting Compact Log Event Format shaped after Serilog's
+  `CompactJsonFormatter`: `@t`, `@mt` when a template exists (`@m` only when none does), `@r`
+  renderings for formatted fast-path holes, `@l` omitted for Information with Serilog level
+  names otherwise, `@x` as the complete exception chain, `@tr`/`@sp`, `SourceContext`,
+  `ThreadId`, `EventId` in the Serilog provider's property shape, and every captured field as a
+  top-level typed property. `@i` is deliberately not emitted.
+- Full exception chains in both formatters: `Exception.ToString()` semantics (inner exceptions
+  and aggregate children included), bounded by a configurable cap with an explicit truncation
+  marker, and guarded so an exception whose own `ToString` throws cannot fault the writer.
 - MEL scope support: the provider implements `ISupportExternalScope` (with a standalone fallback
   so `BeginScope` works without a logger factory), scopes are snapshotted on the calling thread,
   structured scope pairs flatten into typed fields where inner scopes override outer ones and
