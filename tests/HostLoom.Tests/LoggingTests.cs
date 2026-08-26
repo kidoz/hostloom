@@ -763,6 +763,159 @@ public sealed class LoggingTests
 
         using var json = JsonDocument.Parse(Assert.Single(sink.Lines()));
         Assert.Equal("plain 3 message", json.RootElement.GetProperty("message").GetString());
+        // The template hole is a queryable typed field — the platform's ~6000 ordinary call
+        // sites depend on exactly this.
+        Assert.Equal(3, json.RootElement.GetProperty("Count").GetInt32());
+    }
+
+    [Fact]
+    public async Task LoggerMessage_define_call_sites_keep_their_fields()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("Defined");
+        var log = LoggerMessage.Define<int, string>(
+            LogLevel.Warning,
+            new EventId(7, "order-rejected"),
+            "order {OrderId} rejected for {Customer}"
+        );
+
+        log(logger, 42, "ada", null);
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        Assert.Equal("order 42 rejected for ada", root.GetProperty("message").GetString());
+        Assert.Equal(42, root.GetProperty("OrderId").GetInt32());
+        Assert.Equal("ada", root.GetProperty("Customer").GetString());
+        Assert.Equal(7, root.GetProperty("event.code").GetInt32());
+    }
+
+    [Fact]
+    public async Task The_template_is_preserved_and_never_emitted_as_a_field()
+    {
+        var formatter = new TemplateCapturingFormatter();
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            formatter,
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("Templates");
+
+#pragma warning disable CA1873
+        logger.LogInformation("plain {Count} message", 3);
+#pragma warning restore CA1873
+        await provider.DisposeAsync();
+
+        Assert.Equal("plain {Count} message", formatter.Template);
+        // {OriginalFormat} is template metadata for CLEF @mt, not an ordinary property.
+        Assert.DoesNotContain("OriginalFormat", formatter.FieldNames);
+        Assert.Contains("Count", formatter.FieldNames);
+    }
+
+    [Fact]
+    public async Task Standard_path_values_keep_their_json_kinds()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("TypedInterop");
+        var when = new DateTimeOffset(2026, 8, 26, 10, 30, 0, TimeSpan.Zero);
+
+#pragma warning disable CA1873
+        logger.LogInformation(
+            "state {Missing} {Flag} {Price} {When} {Day}",
+            null,
+            true,
+            19.99m,
+            when,
+            DayOfWeek.Tuesday
+        );
+#pragma warning restore CA1873
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("Missing").ValueKind);
+        Assert.Equal(JsonValueKind.True, root.GetProperty("Flag").ValueKind);
+        Assert.Equal(19.99m, root.GetProperty("Price").GetDecimal());
+        Assert.Equal(when, root.GetProperty("When").GetDateTimeOffset());
+        Assert.Equal("Tuesday", root.GetProperty("Day").GetString());
+    }
+
+    [Fact]
+    public async Task Template_operators_strip_their_prefix_from_the_emitted_name()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("Operators");
+
+#pragma warning disable CA1873
+        logger.LogInformation("thing {@Thing} num {$Num}", new Version(1, 2), 5);
+#pragma warning restore CA1873
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        // '@' strips to Thing (invariant string until the destructurer lands); '$' forces the
+        // invariant string even for a scalar.
+        Assert.Equal("1.2", root.GetProperty("Thing").GetString());
+        Assert.Equal("5", root.GetProperty("Num").GetString());
+        Assert.False(root.TryGetProperty("@Thing", out _));
+        Assert.False(root.TryGetProperty("$Num", out _));
+    }
+
+    [Fact]
+    public async Task Custom_enumerable_state_is_captured()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("CustomState");
+        var state = new Dictionary<string, object?> { ["UserId"] = 7, ["Region"] = "eu" };
+
+        logger.Log(LogLevel.Information, default, state, null, static (_, _) => "custom state");
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        Assert.Equal("custom state", root.GetProperty("message").GetString());
+        Assert.Equal(7, root.GetProperty("UserId").GetInt32());
+        Assert.Equal("eu", root.GetProperty("Region").GetString());
+    }
+
+    [Fact]
+    public async Task LogFast_through_a_wrapped_logger_preserves_field_names()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        // The shape of every dependency-injected ILogger<T>: a wrapper, not HostLoom's logger.
+        var logger = new LevelFilteringLogger(provider.CreateLogger("Wrapped"), LogLevel.Trace);
+        var orderId = 7;
+
+        logger.LogFast(LogLevel.Information, $"order {orderId} shipped");
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        Assert.Equal("order 7 shipped", root.GetProperty("message").GetString());
+        // Through the fallback the value travels as a string, but the name survives — before,
+        // the field vanished entirely.
+        Assert.Equal("7", root.GetProperty("orderId").GetString());
     }
 
     [Fact]
@@ -867,6 +1020,39 @@ public sealed class LoggingTests
     {
         public void Format(in LogRecord record, System.Buffers.IBufferWriter<byte> writer) =>
             throw new InvalidOperationException("the formatter broke");
+    }
+
+    /// <summary>Records what the pipeline handed it, so template plumbing is observable.</summary>
+    private sealed class TemplateCapturingFormatter : ILogFormatter
+    {
+        private readonly Lock _gate = new();
+        private readonly List<string> _fieldNames = [];
+
+        public string? Template { get; private set; }
+
+        public IReadOnlyList<string> FieldNames
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _fieldNames];
+                }
+            }
+        }
+
+        public void Format(in LogRecord record, System.Buffers.IBufferWriter<byte> writer)
+        {
+            lock (_gate)
+            {
+                Template = record.Template;
+                for (var i = 0; i < record.FieldCount; i++)
+                {
+                    record.GetField(i, out var name, out _, out _);
+                    _fieldNames.Add(Encoding.UTF8.GetString(name));
+                }
+            }
+        }
     }
 
     /// <summary>Throws a cancellation nobody requested — must fault, not stop silently.</summary>

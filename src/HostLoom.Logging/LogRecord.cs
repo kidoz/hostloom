@@ -67,6 +67,11 @@ public readonly ref struct LogRecord
     /// <summary>The rendered message, already UTF-8. Never transcoded from a string.</summary>
     public ReadOnlySpan<byte> Message => _entry.Message;
 
+    /// <summary>The <c>{OriginalFormat}</c> message template when the event came through the
+    /// standard <c>ILogger</c> path with structured state; null otherwise. Template-aware
+    /// formatters (CLEF <c>@mt</c>) emit it; others are free to ignore it.</summary>
+    public string? Template => _entry.Template;
+
     public int FieldCount => _entry.FieldCount;
 
     /// <summary>

@@ -58,6 +58,10 @@ internal sealed class LogEntry
 
     public string Category { get; set; } = string.Empty;
 
+    /// <summary>The <c>{OriginalFormat}</c> message template when the standard path supplied one.
+    /// Stored for template-aware formatters (CLEF <c>@mt</c>); never emitted as a field.</summary>
+    public string? Template { get; set; }
+
     public EventId EventId { get; set; }
 
     public Exception? Exception { get; set; }
@@ -211,8 +215,69 @@ internal sealed class LogEntry
         _fieldCount = 0;
         Exception = null;
         Category = string.Empty;
+        Template = null;
         EventId = default;
         HasActivity = false;
+    }
+
+    /// <summary>
+    /// Field writers for values that are not part of the rendered message — the standard
+    /// <c>ILogger</c> path captures its state pairs through these. Values land in the value
+    /// buffer; the message stays exactly what the caller's formatter rendered.
+    /// </summary>
+    public void AddFieldText(string name, ReadOnlySpan<char> value)
+    {
+        var start = _valuesLength;
+        EnsureValues(Encoding.UTF8.GetMaxByteCount(value.Length));
+        _valuesLength += Encoding.UTF8.GetBytes(value, _values.AsSpan(_valuesLength));
+        RecordField(
+            name,
+            LogFieldKind.Text,
+            valueInMessage: false,
+            start,
+            _valuesLength - start,
+            0,
+            -1
+        );
+    }
+
+    public void AddFieldBoolean(string name, bool value)
+    {
+        var start = _valuesLength;
+        var text = value ? "true"u8 : "false"u8;
+        EnsureValues(text.Length);
+        text.CopyTo(_values.AsSpan(_valuesLength));
+        _valuesLength += text.Length;
+        RecordField(name, LogFieldKind.Boolean, valueInMessage: false, start, text.Length, 0, -1);
+    }
+
+    public void AddFieldNull(string name) =>
+        RecordField(name, LogFieldKind.Null, valueInMessage: false, _valuesLength, 0, 0, -1);
+
+    public void AddFieldFormattable<T>(
+        string name,
+        T value,
+        LogFieldKind kind,
+        string? format = null
+    )
+        where T : IUtf8SpanFormattable
+    {
+        var start = _valuesLength;
+        int written;
+        while (
+            !value.TryFormat(
+                _values.AsSpan(_valuesLength),
+                out written,
+                format,
+                CultureInfo.InvariantCulture
+            )
+        )
+        {
+            EnsureValues(Math.Max(64, _values.Length));
+        }
+
+        _valuesLength += written;
+        RecordField(name, kind, valueInMessage: false, start, written, 0, -1);
     }
 
     private void RecordField(

@@ -26,11 +26,20 @@ are derived from release tags at publish time.
   and per-record field caps apply — every dropped field counted in
   `hostloom.logging.fields.dropped`.
 
+- Structured fields from the standard `ILogger` path: template holes from `LogInformation`-style
+  calls, `LoggerMessage.Define`, source-generated logger methods, and custom key/value state are
+  captured as typed fields with no call-site changes; `{OriginalFormat}` is preserved as the
+  message template for template-aware formatters, and Serilog-style `@`/`$` operator prefixes
+  are stripped from emitted names.
+
 ### Changed
 
 - Structured log fields keep their JSON value kinds: numeric and boolean interpolation holes are
   emitted as JSON numbers and booleans, a formatted hole keeps its rendering in the message while
   the field stays typed, and `DateTimeOffset` holes default to ISO-8601.
+- `LogFast` through a wrapped (dependency-injected) logger now hands structured key/value state
+  to the standard interface, so captured hole names survive into any structured provider instead
+  of being flattened away with the rendered string.
 - `ILogSink.Write` now receives a `CancellationToken` so shutdown can abandon a stalled sink.
 - An unexpected formatter or sink failure faults the logging pipeline instead of silently killing
   the writer: queued and later records are counted as dropped, and no caller can block on a dead
