@@ -63,25 +63,32 @@ public ref struct LogMessageHandler
         int value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendFormattable(value, format, name);
+    ) => Entry?.AppendFormattable(value, format, name, LogFieldKind.Number);
 
     public void AppendFormatted(
         long value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendFormattable(value, format, name);
+    ) => Entry?.AppendFormattable(value, format, name, LogFieldKind.Number);
 
+    /// <summary>NaN and the infinities are not JSON numbers, so they degrade to text fields.</summary>
     public void AppendFormatted(
         double value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendFormattable(value, format, name);
+    ) =>
+        Entry?.AppendFormattable(
+            value,
+            format,
+            name,
+            double.IsFinite(value) ? LogFieldKind.Number : LogFieldKind.Text
+        );
 
     public void AppendFormatted(
         decimal value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendFormattable(value, format, name);
+    ) => Entry?.AppendFormattable(value, format, name, LogFieldKind.Number);
 
     public void AppendFormatted(
         bool value,
@@ -93,19 +100,20 @@ public ref struct LogMessageHandler
         Guid value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendFormattable(value, format, name);
+    ) => Entry?.AppendFormattable(value, format, name, LogFieldKind.Text);
 
+    /// <summary>Defaults to ISO-8601 ("O"), the canonical timestamp shape for JSON consumers.</summary>
     public void AppendFormatted(
         DateTimeOffset value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendFormattable(value, format, name);
+    ) => Entry?.AppendFormattable(value, format, name, LogFieldKind.Text, "O");
 
     public void AppendFormatted(
         TimeSpan value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendFormattable(value, format, name);
+    ) => Entry?.AppendFormattable(value, format, name, LogFieldKind.Text);
 
     /// <summary>Fallback for types with no UTF-8 formatter. Allocates, and is meant to.</summary>
     public void AppendFormatted<T>(
@@ -132,5 +140,7 @@ public ref struct LogMessageHandler
     }
 
     private readonly void AppendBoxedFormattable<T>(T value, string? format, string? name) =>
-        Entry!.AppendFormattable((IUtf8SpanFormattable)value!, format, name);
+        // The static type is unknown here, so the safe kind is text: a numeric token would need
+        // proof the rendering is valid JSON, and only the concrete overloads can promise that.
+        Entry!.AppendFormattable((IUtf8SpanFormattable)value!, format, name, LogFieldKind.Text);
 }

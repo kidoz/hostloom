@@ -49,9 +49,97 @@ public sealed class LoggingTests
 
         using var json = JsonDocument.Parse(Assert.Single(sink.Lines()));
         // The field names come from the expressions at the call site, so the message stays readable
-        // and the payload stays queryable without repeating yourself.
-        Assert.Equal("7", json.RootElement.GetProperty("orderId").GetString());
+        // and the payload stays queryable without repeating yourself. Values keep their JSON types:
+        // a numeric hole is a number a dashboard can range-query, not a quoted string.
+        Assert.Equal(7, json.RootElement.GetProperty("orderId").GetInt32());
         Assert.Equal("ada", json.RootElement.GetProperty("customer").GetString());
+    }
+
+    [Fact]
+    public async Task Holes_keep_their_json_value_kinds()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("Typed");
+        var count = 42L;
+        var ratio = 0.25;
+        var active = true;
+        var price = 19.99m;
+
+        logger.LogFast(LogLevel.Information, $"state {count} {ratio} {active} {price}");
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        Assert.Equal(JsonValueKind.Number, root.GetProperty("count").ValueKind);
+        Assert.Equal(42L, root.GetProperty("count").GetInt64());
+        Assert.Equal(0.25, root.GetProperty("ratio").GetDouble());
+        Assert.Equal(JsonValueKind.True, root.GetProperty("active").ValueKind);
+        Assert.Equal(19.99m, root.GetProperty("price").GetDecimal());
+    }
+
+    [Fact]
+    public async Task A_formatted_hole_renders_in_the_message_but_stays_typed()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("Typed");
+        var orderId = 42;
+
+        logger.LogFast(LogLevel.Information, $"order {orderId:00000} shipped");
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        // The message keeps the human formatting; the field keeps the machine value. "00042" is
+        // not a JSON number, so emitting the rendering as the value would corrupt the type.
+        Assert.Equal("order 00042 shipped", root.GetProperty("message").GetString());
+        Assert.Equal(42, root.GetProperty("orderId").GetInt32());
+    }
+
+    [Fact]
+    public async Task A_non_finite_double_degrades_to_text_and_the_line_stays_valid_json()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("Typed");
+        var bad = double.NaN;
+
+        logger.LogFast(LogLevel.Information, $"ratio {bad}");
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        Assert.Equal("NaN", root.GetProperty("bad").GetString());
+    }
+
+    [Fact]
+    public async Task A_datetimeoffset_hole_defaults_to_iso8601()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("Typed");
+        var when = new DateTimeOffset(2026, 8, 26, 10, 30, 0, TimeSpan.Zero);
+
+        logger.LogFast(LogLevel.Information, $"seen at {when}");
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        Assert.Equal("2026-08-26T10:30:00.0000000+00:00", root.GetProperty("when").GetString());
+        Assert.Equal(when, root.GetProperty("when").GetDateTimeOffset());
     }
 
     [Fact]

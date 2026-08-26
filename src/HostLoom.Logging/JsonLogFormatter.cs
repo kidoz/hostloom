@@ -48,8 +48,25 @@ public sealed class JsonLogFormatter : ILogFormatter
 
         for (var i = 0; i < record.FieldCount; i++)
         {
-            record.GetField(i, out var name, out var value);
-            _writer.WriteString(name, value);
+            record.GetField(i, out var name, out var value, out var kind);
+            switch (kind)
+            {
+                case LogFieldKind.Number:
+                case LogFieldKind.Json:
+                    // Tokens the library itself produced; re-validating them would be pure cost.
+                    _writer.WritePropertyName(name);
+                    _writer.WriteRawValue(value, skipInputValidation: true);
+                    break;
+                case LogFieldKind.Boolean:
+                    _writer.WriteBoolean(name, value[0] == (byte)'t');
+                    break;
+                case LogFieldKind.Null:
+                    _writer.WriteNull(name);
+                    break;
+                default:
+                    _writer.WriteString(name, value);
+                    break;
+            }
         }
 
         if (record.Exception is { } exception)
