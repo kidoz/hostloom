@@ -7,11 +7,12 @@ namespace HostLoom.Logging;
 internal sealed class HostLoomLogger(
     string category,
     LogPipeline pipeline,
-    HostLoomLoggerOptions options
+    HostLoomLoggerOptions options,
+    HostLoomLoggerProvider provider
 ) : ILogger
 {
     public IDisposable? BeginScope<TState>(TState state)
-        where TState : notnull => null;
+        where TState : notnull => provider.ScopeProvider.Push(state);
 
     public bool IsEnabled(LogLevel logLevel) => logLevel != LogLevel.None;
 
@@ -55,6 +56,81 @@ internal sealed class HostLoomLogger(
 
         Emit(entry, eventId, exception);
     }
+
+    /// <summary>
+    /// One active scope, outermost first. Structured pairs flatten into Scope-rank fields, so an
+    /// inner scope's value beats an outer one and any event hole beats them both. A scope that
+    /// carried a message template additionally contributes its rendered text to the
+    /// <c>Scope</c> array, as does every non-structured scope — nothing is silently dropped.
+    /// </summary>
+    private void CaptureScope(object? scope, LogEntry entry)
+    {
+        try
+        {
+            if (scope is IEnumerable<KeyValuePair<string, object?>> pairs)
+            {
+                var templated = false;
+                foreach (var pair in pairs)
+                {
+                    if (pair.Key == "{OriginalFormat}")
+                    {
+                        templated = true;
+                        continue;
+                    }
+
+                    var name = pair.Key;
+                    if (name.Length > 0 && (name[0] == '@' || name[0] == '$'))
+                    {
+                        name = name[1..];
+                    }
+
+                    CaptureValue(entry, name, pair.Value, LogFieldSource.Scope);
+                }
+
+                if (templated)
+                {
+                    entry.EnsureScopeTexts().Add(scope.ToString() ?? string.Empty);
+                }
+
+                return;
+            }
+
+            entry.EnsureScopeTexts().Add(ToInvariantText(scope));
+        }
+        catch (Exception)
+        {
+            // One unreadable scope must not cost the event or the scopes around it.
+            pipeline.Metrics.RecordFailure(LoggingMetrics.ComponentScope);
+        }
+    }
+
+    private static void AddScopeArray(LogEntry entry, List<string> scopeTexts)
+    {
+        var buffer = new ArrayBufferWriter<byte>(128);
+        using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartArray();
+            for (var i = 0; i < scopeTexts.Count; i++)
+            {
+                writer.WriteStringValue(scopeTexts[i]);
+            }
+
+            writer.WriteEndArray();
+        }
+
+        entry.AddFieldJson("Scope", buffer.WrittenSpan, LogFieldSource.Scope);
+    }
+
+    private static string ToInvariantText(object? value) =>
+        value switch
+        {
+            null => string.Empty,
+            IFormattable formattable => formattable.ToString(
+                null,
+                System.Globalization.CultureInfo.InvariantCulture
+            ),
+            _ => value.ToString() ?? string.Empty,
+        };
 
     private bool CaptureState<TState>(LogEntry entry, TState state)
     {
@@ -212,92 +288,106 @@ internal sealed class HostLoomLogger(
         entry.AddFieldJson(name, buffer.WrittenSpan);
     }
 
-    private static void CaptureValue(LogEntry entry, string name, object? value)
+    private static void CaptureValue(
+        LogEntry entry,
+        string name,
+        object? value,
+        LogFieldSource source = LogFieldSource.Hole
+    )
     {
-        if (!TryCaptureScalar(entry, name, value))
+        if (!TryCaptureScalar(entry, name, value, source))
         {
-            CaptureStringified(entry, name, value);
+            CaptureStringified(entry, name, value, source);
         }
     }
 
-    private static bool TryCaptureScalar(LogEntry entry, string name, object? value)
+    private static bool TryCaptureScalar(
+        LogEntry entry,
+        string name,
+        object? value,
+        LogFieldSource source = LogFieldSource.Hole
+    )
     {
         switch (value)
         {
             case null:
-                entry.AddFieldNull(name);
+                entry.AddFieldNull(name, source);
                 return true;
             case string text:
-                entry.AddFieldText(name, text);
+                entry.AddFieldText(name, text, source);
                 return true;
             case bool flag:
-                entry.AddFieldBoolean(name, flag);
+                entry.AddFieldBoolean(name, flag, source);
                 return true;
             case int number:
-                entry.AddFieldFormattable(name, number, LogFieldKind.Number);
+                entry.AddFieldFormattable(name, number, LogFieldKind.Number, null, source);
                 return true;
             case long number:
-                entry.AddFieldFormattable(name, number, LogFieldKind.Number);
+                entry.AddFieldFormattable(name, number, LogFieldKind.Number, null, source);
                 return true;
             case double number:
                 entry.AddFieldFormattable(
                     name,
                     number,
-                    double.IsFinite(number) ? LogFieldKind.Number : LogFieldKind.Text
+                    double.IsFinite(number) ? LogFieldKind.Number : LogFieldKind.Text,
+                    null,
+                    source
                 );
                 return true;
             case float number:
                 entry.AddFieldFormattable(
                     name,
                     number,
-                    float.IsFinite(number) ? LogFieldKind.Number : LogFieldKind.Text
+                    float.IsFinite(number) ? LogFieldKind.Number : LogFieldKind.Text,
+                    null,
+                    source
                 );
                 return true;
             case decimal number:
-                entry.AddFieldFormattable(name, number, LogFieldKind.Number);
+                entry.AddFieldFormattable(name, number, LogFieldKind.Number, null, source);
                 return true;
             case short number:
-                entry.AddFieldFormattable(name, number, LogFieldKind.Number);
+                entry.AddFieldFormattable(name, number, LogFieldKind.Number, null, source);
                 return true;
             case ushort number:
-                entry.AddFieldFormattable(name, number, LogFieldKind.Number);
+                entry.AddFieldFormattable(name, number, LogFieldKind.Number, null, source);
                 return true;
             case byte number:
-                entry.AddFieldFormattable(name, number, LogFieldKind.Number);
+                entry.AddFieldFormattable(name, number, LogFieldKind.Number, null, source);
                 return true;
             case sbyte number:
-                entry.AddFieldFormattable(name, number, LogFieldKind.Number);
+                entry.AddFieldFormattable(name, number, LogFieldKind.Number, null, source);
                 return true;
             case uint number:
-                entry.AddFieldFormattable(name, number, LogFieldKind.Number);
+                entry.AddFieldFormattable(name, number, LogFieldKind.Number, null, source);
                 return true;
             case ulong number:
-                entry.AddFieldFormattable(name, number, LogFieldKind.Number);
+                entry.AddFieldFormattable(name, number, LogFieldKind.Number, null, source);
                 return true;
             case Guid id:
-                entry.AddFieldFormattable(name, id, LogFieldKind.Text);
+                entry.AddFieldFormattable(name, id, LogFieldKind.Text, null, source);
                 return true;
             case DateTimeOffset when1:
-                entry.AddFieldFormattable(name, when1, LogFieldKind.Text, "O");
+                entry.AddFieldFormattable(name, when1, LogFieldKind.Text, "O", source);
                 return true;
             case DateTime when1:
-                entry.AddFieldFormattable(name, when1, LogFieldKind.Text, "O");
+                entry.AddFieldFormattable(name, when1, LogFieldKind.Text, "O", source);
                 return true;
             case TimeSpan duration:
-                entry.AddFieldFormattable(name, duration, LogFieldKind.Text);
+                entry.AddFieldFormattable(name, duration, LogFieldKind.Text, null, source);
                 return true;
             case DateOnly day:
-                entry.AddFieldFormattable(name, day, LogFieldKind.Text, "O");
+                entry.AddFieldFormattable(name, day, LogFieldKind.Text, "O", source);
                 return true;
             case TimeOnly time:
-                entry.AddFieldFormattable(name, time, LogFieldKind.Text, "O");
+                entry.AddFieldFormattable(name, time, LogFieldKind.Text, "O", source);
                 return true;
             case char letter:
-                entry.AddFieldText(name, new ReadOnlySpan<char>(in letter));
+                entry.AddFieldText(name, new ReadOnlySpan<char>(in letter), source);
                 return true;
             case Enum:
                 // The name, matching Serilog's scalar enum rendering, not the numeric value.
-                entry.AddFieldText(name, value.ToString() ?? string.Empty);
+                entry.AddFieldText(name, value.ToString() ?? string.Empty, source);
                 return true;
             default:
                 return false;
@@ -306,19 +396,12 @@ internal sealed class HostLoomLogger(
 
     /// <summary>A non-scalar (or '$'-forced) value: the invariant string representation. Full
     /// object destructuring for '@' holes is the destructurer's job, not this path's.</summary>
-    private static void CaptureStringified(LogEntry entry, string name, object? value)
-    {
-        var text = value switch
-        {
-            null => string.Empty,
-            IFormattable formattable => formattable.ToString(
-                null,
-                System.Globalization.CultureInfo.InvariantCulture
-            ),
-            _ => value.ToString() ?? string.Empty,
-        };
-        entry.AddFieldText(name, text);
-    }
+    private static void CaptureStringified(
+        LogEntry entry,
+        string name,
+        object? value,
+        LogFieldSource source = LogFieldSource.Hole
+    ) => entry.AddFieldText(name, ToInvariantText(value), source);
 
     /// <summary>Fast path: the entry is already rendered, so only the ambient metadata is added.</summary>
     internal void Emit(LogEntry entry, EventId eventId, Exception? exception)
@@ -338,6 +421,26 @@ internal sealed class HostLoomLogger(
             entry.TraceId = activity.TraceId;
             entry.SpanId = activity.SpanId;
             entry.HasActivity = true;
+        }
+
+        // Scopes are snapshotted here, on the producer thread, for the same reason as
+        // Activity.Current: the ambient scope chain is gone once the entry crosses the queue.
+        try
+        {
+            provider.ScopeProvider.ForEachScope(
+                static (scope, state) => state.Logger.CaptureScope(scope, state.Entry),
+                (Logger: this, Entry: entry)
+            );
+        }
+        catch (Exception)
+        {
+            // A scope provider that throws mid-walk costs the remaining scopes, never the event.
+            pipeline.Metrics.RecordFailure(LoggingMetrics.ComponentScope);
+        }
+
+        if (entry.ScopeTexts is { Count: > 0 } scopeTexts)
+        {
+            AddScopeArray(entry, scopeTexts);
         }
 
         // Enrichers run here for the same reason: AsyncLocal context is gone after the hand-off.

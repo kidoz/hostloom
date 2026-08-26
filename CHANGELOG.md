@@ -36,6 +36,11 @@ are derived from release tags at publish time.
   length, and encoded bytes per record — every cap cut marked with an explicit sentinel, and any
   getter or serializer failure emitting `"[DestructuringFailed]"` instead of ever falling back
   to `ToString()`.
+- MEL scope support: the provider implements `ISupportExternalScope` (with a standalone fallback
+  so `BeginScope` works without a logger factory), scopes are snapshotted on the calling thread,
+  structured scope pairs flatten into typed fields where inner scopes override outer ones and
+  event holes override both, and templated or non-structured scopes keep their rendered text in
+  a `Scope` array in outer-to-inner order. A throwing scope is counted, never thrown.
 - Producer-side enrichment: `ILogEnricher` implementations registered on the options run on the
   calling thread before queueing — where `AsyncLocal` ambient context is still visible — writing
   typed fields through `LogEntryWriter` (no raw JSON injection possible). Enrichers run in

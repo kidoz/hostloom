@@ -4,13 +4,17 @@ using Microsoft.Extensions.Logging;
 namespace HostLoom.Logging;
 
 [ProviderAlias("HostLoom")]
-public sealed class HostLoomLoggerProvider : ILoggerProvider, IAsyncDisposable
+public sealed class HostLoomLoggerProvider : ILoggerProvider, ISupportExternalScope, IAsyncDisposable
 {
     private readonly ConcurrentDictionary<string, HostLoomLogger> _loggers = new(
         StringComparer.Ordinal
     );
     private readonly LogPipeline _pipeline;
     private readonly HostLoomLoggerOptions _options;
+
+    // A real scope provider from the start, so BeginScope works standalone; the logger factory
+    // replaces it through ISupportExternalScope when this provider runs under one.
+    private volatile IExternalScopeProvider _scopeProvider = new LoggerExternalScopeProvider();
 
     public HostLoomLoggerProvider(
         ILogFormatter formatter,
@@ -31,11 +35,20 @@ public sealed class HostLoomLoggerProvider : ILoggerProvider, IAsyncDisposable
     /// <summary>The failure that faulted the background writer, if any. Null while healthy.</summary>
     public Exception? WriterFault => _pipeline.WriterFault;
 
+    internal IExternalScopeProvider ScopeProvider => _scopeProvider;
+
+    public void SetScopeProvider(IExternalScopeProvider scopeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(scopeProvider);
+        _scopeProvider = scopeProvider;
+    }
+
     public ILogger CreateLogger(string categoryName) =>
         _loggers.GetOrAdd(
             categoryName,
-            static (name, state) => new HostLoomLogger(name, state.Pipeline, state.Options),
-            (Pipeline: _pipeline, Options: _options)
+            static (name, provider) =>
+                new HostLoomLogger(name, provider._pipeline, provider._options, provider),
+            this
         );
 
     public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();

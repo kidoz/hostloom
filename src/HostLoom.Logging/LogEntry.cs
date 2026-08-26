@@ -218,6 +218,7 @@ internal sealed class LogEntry
         Template = null;
         EventId = default;
         HasActivity = false;
+        ScopeTexts?.Clear();
     }
 
     /// <summary>
@@ -336,8 +337,12 @@ internal sealed class LogEntry
         return false;
     }
 
-    /// <summary>A complete, pre-validated JSON fragment produced by the destructurer.</summary>
-    public void AddFieldJson(string name, ReadOnlySpan<byte> json)
+    /// <summary>A complete, pre-validated JSON fragment produced by the library itself.</summary>
+    public void AddFieldJson(
+        string name,
+        ReadOnlySpan<byte> json,
+        LogFieldSource source = LogFieldSource.Hole
+    )
     {
         var start = _valuesLength;
         EnsureValues(json.Length);
@@ -351,9 +356,15 @@ internal sealed class LogEntry
             json.Length,
             0,
             -1,
-            LogFieldSource.Hole
+            source
         );
     }
+
+    /// <summary>Rendered texts of active scopes, outer-to-inner, gathered during the producer-side
+    /// scope walk and emitted as the <c>Scope</c> array. Retained with the pooled entry.</summary>
+    public List<string>? ScopeTexts { get; private set; }
+
+    public List<string> EnsureScopeTexts() => ScopeTexts ??= [];
 
     public void AddFieldFormattable<T>(
         string name,
@@ -610,6 +621,11 @@ internal sealed class LogEntry
         if (_values.Length > MaxRetainedBuffer)
         {
             _values = new byte[256];
+        }
+
+        if (ScopeTexts is { Capacity: > 64 })
+        {
+            ScopeTexts = null;
         }
     }
 }
