@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <IsPackable>true</IsPackable>
+    <PackageId>HostLoom.Analyzers</PackageId>
+    <Title>HostLoom.Analyzers</Title>
+    <Description>Roslyn analyzers for correct asynchronous and dependency-injection usage of HostLoom.</Description>
+    <PackageTags>hostloom;roslyn;analyzers;messaging;pipelines</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <IncludeSymbols>false</IncludeSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+    <None
+      Include="$(OutputPath)$(AssemblyName).dll"
+      Pack="true"
+      PackagePath="analyzers/dotnet/cs"
+      Visible="false"
+    />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AdditionalFiles Include="ReleaseTracking/AnalyzerReleases.Shipped.md" />
+    <AdditionalFiles Include="ReleaseTracking/AnalyzerReleases.Unshipped.md" />
+  </ItemGroup>
+</Project>
