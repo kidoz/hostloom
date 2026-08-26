@@ -43,10 +43,12 @@ hosted transport lifecycle become a compact request runtime.
 
 ## Packages
 
-All packages target .NET 10 and are versioned together:
+Runtime packages target .NET 10, the compiler-hosted analyzer targets `netstandard2.0`, and all
+packages are versioned together:
 
 | Package | Purpose |
 | --- | --- |
+| `HostLoom.Analyzers` | Compile-time checks for asynchronous and DI usage |
 | `HostLoom` | Typed request/response and event runtime |
 | `HostLoom.Pipelines` | Transport-neutral asynchronous pipelines |
 | `HostLoom.Pipelines.DependencyInjection` | Named stages, per-run resolution, and instrumentation |
@@ -62,6 +64,17 @@ Install only the runtime and transport needed by the application, for example:
 ```text
 dotnet add package HostLoom.Transport.RabbitMq --version 0.1.0
 ```
+
+The analyzer package is optional and has no runtime dependency:
+
+```text
+dotnet add package HostLoom.Analyzers
+```
+
+It reports an omitted available cancellation token (`HLM0001`), synchronous blocking over a
+HostLoom async operation (`HLM0002`), and singleton registration of handlers or behaviors that
+should follow HostLoom's per-delivery scope (`HLM0003`). See the
+[analyzer rule reference](src/HostLoom.Analyzers/README.md).
 
 ## Quick start
 
@@ -429,6 +442,7 @@ src/HostLoom/                    messaging kernel
   Runtime/                       dispatcher, receive pipeline, executor, client, endpoint
   Serialization/                 System.Text.Json serialization boundary
   Wire/                          envelope, logical type names, codec
+src/HostLoom.Analyzers/          Roslyn usage analyzers and rule documentation
 src/HostLoom.Pipelines/          transport-neutral middleware pipelines
   Contexts/                      pipe context and thread-safe typed payloads
   Filters/                       delegate, execute, conditional, concurrency, timeout, instrumented, terminal
@@ -443,6 +457,7 @@ src/HostLoom.AspNetCore.WebSockets/ raw Kestrel WebSocket RPC and subscriptions
 benchmarks/HostLoom.Benchmarks/    JSON, MessagePack, and Protobuf codec benchmarks
 examples/HostLoom.Examples.Pipelines/ runnable pipeline tour: DI stages, manual and standalone composition
 tests/HostLoom.Tests/            pipeline, round-trip, behavior, and fault tests
+tests/HostLoom.Analyzers.Tests/  compiler-level analyzer tests
 ```
 
 ## Roadmap toward a Spring-like framework

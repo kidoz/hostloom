@@ -8,6 +8,13 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- `HostLoom.Analyzers`, an opt-in Roslyn analyzer package that reports omitted available
+  cancellation tokens on HostLoom async calls (`HLM0001`), synchronous blocking over HostLoom
+  `Task` and `ValueTask` operations (`HLM0002`), and singleton dependency-injection registration
+  of request handlers, event handlers, or request behaviors (`HLM0003`).
+
 ## [0.1.0] - 2026-08-25
 
 ### Added
