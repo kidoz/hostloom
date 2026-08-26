@@ -87,6 +87,24 @@ public sealed class JsonLogFormatter : ILogFormatter
         writer.Write(NewLine);
     }
 
+    /// <summary>
+    /// The ECS names this formatter reifies itself. Reserved unconditionally — even when a
+    /// particular record would omit one (no exception, no activity) — because a name that means
+    /// "error.type" only on quiet records is worse for a parser than no name at all.
+    /// </summary>
+    public bool OwnsFieldName(ReadOnlySpan<byte> name) =>
+        name.SequenceEqual("@timestamp"u8)
+        || name.SequenceEqual("log.level"u8)
+        || name.SequenceEqual("log.logger"u8)
+        || name.SequenceEqual("message"u8)
+        || name.SequenceEqual("process.thread.id"u8)
+        || name.SequenceEqual("event.code"u8)
+        || name.SequenceEqual("trace.id"u8)
+        || name.SequenceEqual("span.id"u8)
+        || name.SequenceEqual("error.type"u8)
+        || name.SequenceEqual("error.message"u8)
+        || name.SequenceEqual("error.stack_trace"u8);
+
     private static ReadOnlySpan<byte> ToLevel(LogLevel level) =>
         level switch
         {

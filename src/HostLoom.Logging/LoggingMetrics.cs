@@ -22,8 +22,14 @@ internal sealed class LoggingMetrics : IDisposable
     public const string ComponentFormatter = "formatter";
     public const string ComponentSink = "sink";
 
+    public const string FieldReasonEmptyName = "empty_name";
+    public const string FieldReasonNameTooLong = "name_too_long";
+    public const string FieldReasonRecordCap = "record_field_cap";
+    public const string FieldReasonReserved = "reserved_name";
+
     private readonly Meter _meter;
     private readonly Counter<long> _dropped;
+    private readonly Counter<long> _fieldsDropped;
     private readonly Counter<long> _blocked;
     private readonly Histogram<double> _blockedDuration;
     private readonly Counter<long> _failures;
@@ -35,6 +41,11 @@ internal sealed class LoggingMetrics : IDisposable
             "hostloom.logging.records.dropped",
             unit: "{record}",
             description: "Log records dropped instead of written."
+        );
+        _fieldsDropped = _meter.CreateCounter<long>(
+            "hostloom.logging.fields.dropped",
+            unit: "{field}",
+            description: "Structured fields dropped from otherwise-shipped records."
         );
         _blocked = _meter.CreateCounter<long>(
             "hostloom.logging.enqueue.blocked",
@@ -74,6 +85,13 @@ internal sealed class LoggingMetrics : IDisposable
             count,
             new KeyValuePair<string, object?>("reason", reason),
             new KeyValuePair<string, object?>("level", LevelName(level))
+        );
+
+    public void RecordFieldDropped(string reason, string source) =>
+        _fieldsDropped.Add(
+            1,
+            new KeyValuePair<string, object?>("reason", reason),
+            new KeyValuePair<string, object?>("source", source)
         );
 
     public void RecordBlocked(LogLevel level) =>

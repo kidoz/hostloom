@@ -7,6 +7,14 @@ namespace HostLoom.Logging;
 public interface ILogFormatter
 {
     void Format(in LogRecord record, IBufferWriter<byte> writer);
+
+    /// <summary>
+    /// Whether the formatter itself emits a property with this name (its reified schema fields).
+    /// A captured field carrying a reserved name is dropped and counted before formatting, so a
+    /// record can never emit the same key twice. Names arrive here after <c>@@</c> escaping, so
+    /// an escaped user name never matches. The default reserves nothing.
+    /// </summary>
+    bool OwnsFieldName(ReadOnlySpan<byte> name) => false;
 }
 
 /// <summary>Consumes formatted bytes. Called only from the single writer thread.</summary>
@@ -68,6 +76,18 @@ public sealed class HostLoomLoggerOptions
     /// completeness for liveness.
     /// </summary>
     public TimeSpan? EnqueueTimeout { get; set; }
+
+    /// <summary>
+    /// Longest accepted field name, in UTF-8 bytes before escaping. A longer name drops the
+    /// field (never the record), counted in <c>hostloom.logging.fields.dropped</c>.
+    /// </summary>
+    public int MaxFieldNameLength { get; set; } = 128;
+
+    /// <summary>
+    /// Most fields one record may carry after deduplication. Overflow fields are dropped and
+    /// counted; the record itself still ships.
+    /// </summary>
+    public int MaxFieldsPerRecord { get; set; } = 64;
 
     public bool CaptureActivity { get; set; } = true;
 

@@ -359,6 +359,20 @@ public sealed class LoggingTests
                 new HostLoomLoggerOptions { TimeProvider = null! }
             )
         );
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new HostLoomLoggerProvider(
+                formatter,
+                sink,
+                new HostLoomLoggerOptions { MaxFieldNameLength = 0 }
+            )
+        );
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new HostLoomLoggerProvider(
+                formatter,
+                sink,
+                new HostLoomLoggerOptions { MaxFieldsPerRecord = 0 }
+            )
+        );
     }
 
     [Fact]
@@ -517,6 +531,182 @@ public sealed class LoggingTests
         // Read on the writer thread this would be empty: Activity.Current is ambient per thread.
         using var json = JsonDocument.Parse(Assert.Single(sink.Lines()));
         Assert.Equal(expected, json.RootElement.GetProperty("trace.id").GetString());
+    }
+
+    [Fact]
+    public async Task Duplicate_field_names_collapse_to_the_last_occurrence()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("Collisions");
+
+        // Two holes carrying the same name with different values — buildable through the handler
+        // directly, which is also how scope and enricher fields will arrive later.
+        var handler = new LogMessageHandler(0, 2, logger, LogLevel.Information, out var enabled);
+        Assert.True(enabled);
+        handler.AppendFormatted(1, name: "n");
+        handler.AppendLiteral(" then ");
+        handler.AppendFormatted(2, name: "n");
+        logger.LogFast(LogLevel.Information, ref handler);
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        // Exactly one key survives — a SkipValidation writer would happily emit both otherwise —
+        // and it is the later occurrence, matching Serilog's last-wins discipline.
+        Assert.Equal(1, root.EnumerateObject().Count(p => p.NameEquals("n")));
+        Assert.Equal(2, root.GetProperty("n").GetInt32());
+    }
+
+    [Fact]
+    public async Task A_field_matching_a_formatter_reserved_name_is_dropped_not_duplicated()
+    {
+        var reasons = new HashSet<string>();
+        var gate = new Lock();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (
+                instrument.Meter.Name == "HostLoom.Logging"
+                && instrument.Name == "hostloom.logging.fields.dropped"
+            )
+            {
+                l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>(
+            (instrument, measurement, tags, state) =>
+            {
+                lock (gate)
+                {
+                    foreach (var tag in tags)
+                    {
+                        if (tag.Key == "reason" && tag.Value is string reason)
+                        {
+                            reasons.Add(reason);
+                        }
+                    }
+                }
+            }
+        );
+        listener.Start();
+
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("Reserved");
+        var message = "sneaky";
+
+        logger.LogFast(LogLevel.Information, $"hello {message}");
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        // The hole was named "message" by its variable. The formatter owns that key; the field is
+        // dropped and counted rather than shadowing the rendered message for some parsers.
+        Assert.Equal(1, root.EnumerateObject().Count(p => p.NameEquals("message")));
+        Assert.Equal("hello sneaky", root.GetProperty("message").GetString());
+        lock (gate)
+        {
+            Assert.Contains("reserved_name", reasons);
+        }
+    }
+
+    [Fact]
+    public async Task A_leading_at_field_name_is_escaped_instead_of_colliding()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("Escaped");
+        var @timestamp = 5;
+
+        logger.LogFast(LogLevel.Information, $"value {@timestamp}");
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        // CLEF-style escaping: the user name doubles its first @, so the real @timestamp is
+        // untouchable and the user value still ships under a recoverable name.
+        Assert.Equal(1, root.EnumerateObject().Count(p => p.NameEquals("@timestamp")));
+        Assert.True(root.GetProperty("@timestamp").TryGetDateTimeOffset(out _));
+        Assert.Equal(5, root.GetProperty("@@timestamp").GetInt32());
+    }
+
+    [Fact]
+    public async Task Fields_beyond_the_record_cap_are_dropped_but_the_record_ships()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions { MaxFieldsPerRecord = 2 }
+        );
+        var logger = provider.CreateLogger("Capped");
+        var first = 1;
+        var second = 2;
+        var third = 3;
+
+        logger.LogFast(LogLevel.Information, $"caps {first} {second} {third}");
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        Assert.Equal("caps 1 2 3", root.GetProperty("message").GetString());
+        Assert.Equal(1, root.GetProperty("first").GetInt32());
+        Assert.Equal(2, root.GetProperty("second").GetInt32());
+        Assert.False(root.TryGetProperty("third", out _));
+    }
+
+    [Fact]
+    public async Task An_oversized_field_name_drops_the_field_not_the_record()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions { MaxFieldNameLength = 4 }
+        );
+        var logger = provider.CreateLogger("LongNames");
+        var id = 7;
+        var protracted = 8;
+
+        logger.LogFast(LogLevel.Information, $"kept {id} dropped {protracted}");
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        Assert.Equal("kept 7 dropped 8", root.GetProperty("message").GetString());
+        Assert.Equal(7, root.GetProperty("id").GetInt32());
+        Assert.False(root.TryGetProperty("protracted", out _));
+    }
+
+    [Fact]
+    public async Task An_empty_field_name_is_dropped()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("EmptyName");
+
+        var handler = new LogMessageHandler(0, 1, logger, LogLevel.Information, out var enabled);
+        Assert.True(enabled);
+        handler.AppendLiteral("value ");
+        handler.AppendFormatted(5, name: "");
+        logger.LogFast(LogLevel.Information, ref handler);
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        Assert.Equal("value 5", root.GetProperty("message").GetString());
+        Assert.DoesNotContain(root.EnumerateObject(), p => p.Name.Length == 0);
     }
 
     [Fact]

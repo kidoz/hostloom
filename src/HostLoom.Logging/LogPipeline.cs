@@ -132,6 +132,24 @@ internal sealed class LogPipeline : IAsyncDisposable
         {
             throw new ArgumentException("TimeProvider must not be null.", nameof(options));
         }
+
+        if (options.MaxFieldNameLength < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.MaxFieldNameLength,
+                "MaxFieldNameLength must be at least 1."
+            );
+        }
+
+        if (options.MaxFieldsPerRecord < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.MaxFieldsPerRecord,
+                "MaxFieldsPerRecord must be at least 1."
+            );
+        }
     }
 
     public void Enqueue(LogEntry entry)
@@ -279,6 +297,12 @@ internal sealed class LogPipeline : IAsyncDisposable
         {
             // Added before formatting: if the formatter throws, the entry is still accounted.
             _batch.Add(entry);
+            entry.NormalizeFields(
+                _options.MaxFieldNameLength,
+                _options.MaxFieldsPerRecord,
+                _formatter,
+                _metrics
+            );
             _formatter.Format(new LogRecord(entry), buffer);
         }
     }

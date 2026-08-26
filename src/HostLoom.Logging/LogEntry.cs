@@ -7,9 +7,23 @@ using Microsoft.Extensions.Logging;
 namespace HostLoom.Logging;
 
 /// <summary>
+/// Where a field came from. Lower values win name collisions: an event hole beats a scope value,
+/// which beats an enricher, which beats a static field. Within one source the last occurrence
+/// wins. Only holes exist today; scopes, enrichers, and statics plug into the same ranking.
+/// </summary>
+internal enum LogFieldSource : byte
+{
+    Hole = 0,
+    Scope = 1,
+    Enricher = 2,
+    Static = 3,
+}
+
+/// <summary>
 /// Offsets of one structured field. The value slices the message buffer when the rendered text is
 /// already a canonical token, and the value buffer when an explicit format made the two diverge.
-/// A rendering length of -1 means the message text and the value are the same bytes.
+/// A rendering length of -1 means the message text and the value are the same bytes. A name
+/// length of -1 marks a field suppressed during normalization.
 /// </summary>
 internal readonly record struct LogField(
     int NameStart,
@@ -17,6 +31,7 @@ internal readonly record struct LogField(
     int ValueStart,
     int ValueLength,
     LogFieldKind Kind,
+    LogFieldSource Source,
     bool ValueInMessage,
     int RenderingStart,
     int RenderingLength
@@ -234,11 +249,162 @@ internal sealed class LogEntry
             valueStart,
             valueLength,
             kind,
+            LogFieldSource.Hole,
             valueInMessage,
             renderingStart,
             renderingLength
         );
     }
+
+    /// <summary>
+    /// Applies the collision policy on the writer thread, before formatting: validates names,
+    /// escapes a leading <c>@</c> to <c>@@</c>, resolves duplicates by source rank (last
+    /// occurrence wins within a source), drops names the formatter reserves for itself, and
+    /// enforces the caps. After this runs, the fields a formatter sees contain no duplicate and
+    /// no reserved names, so even a <c>SkipValidation</c> writer cannot emit duplicate keys.
+    /// Precedence losers are replaced silently — that is documented semantics; only invalid,
+    /// reserved, and over-cap fields are counted as dropped.
+    /// </summary>
+    public void NormalizeFields(
+        int maxNameLength,
+        int maxFields,
+        ILogFormatter formatter,
+        LoggingMetrics? metrics
+    )
+    {
+        if (_fieldCount == 0)
+        {
+            return;
+        }
+
+        for (var i = 0; i < _fieldCount; i++)
+        {
+            var field = _fields[i];
+            if (field.NameLength == 0)
+            {
+                DropField(i, metrics, LoggingMetrics.FieldReasonEmptyName);
+                continue;
+            }
+
+            if (field.NameLength > maxNameLength)
+            {
+                DropField(i, metrics, LoggingMetrics.FieldReasonNameTooLong);
+                continue;
+            }
+
+            if (_names[field.NameStart] == (byte)'@')
+            {
+                EscapeName(i);
+            }
+        }
+
+        for (var i = 0; i < _fieldCount; i++)
+        {
+            var field = _fields[i];
+            if (field.NameLength < 0)
+            {
+                continue;
+            }
+
+            for (var j = 0; j < _fieldCount; j++)
+            {
+                if (j == i)
+                {
+                    continue;
+                }
+
+                var other = _fields[j];
+                if (other.NameLength < 0 || !SameName(field, other))
+                {
+                    continue;
+                }
+
+                var beaten =
+                    other.Source < field.Source || (other.Source == field.Source && j > i);
+                if (beaten)
+                {
+                    _fields[i] = field with { NameLength = -1 };
+                    break;
+                }
+            }
+        }
+
+        for (var i = 0; i < _fieldCount; i++)
+        {
+            var field = _fields[i];
+            if (field.NameLength < 0)
+            {
+                continue;
+            }
+
+            if (formatter.OwnsFieldName(_names.AsSpan(field.NameStart, field.NameLength)))
+            {
+                DropField(i, metrics, LoggingMetrics.FieldReasonReserved);
+            }
+        }
+
+        var write = 0;
+        for (var i = 0; i < _fieldCount; i++)
+        {
+            var field = _fields[i];
+            if (field.NameLength < 0)
+            {
+                continue;
+            }
+
+            if (write == maxFields)
+            {
+                metrics?.RecordFieldDropped(
+                    LoggingMetrics.FieldReasonRecordCap,
+                    SourceName(field.Source)
+                );
+                continue;
+            }
+
+            _fields[write++] = field;
+        }
+
+        _fieldCount = write;
+    }
+
+    private void DropField(int index, LoggingMetrics? metrics, string reason)
+    {
+        var field = _fields[index];
+        metrics?.RecordFieldDropped(reason, SourceName(field.Source));
+        _fields[index] = field with { NameLength = -1 };
+    }
+
+    /// <summary>CLEF-style escape: a user name beginning with <c>@</c> doubles the first
+    /// <c>@</c>, so it can never impersonate a formatter-reified property.</summary>
+    private void EscapeName(int index)
+    {
+        var field = _fields[index];
+        var length = field.NameLength + 1;
+        if (_namesLength + length > _names.Length)
+        {
+            Array.Resize(ref _names, Math.Max(_names.Length * 2, _namesLength + length));
+        }
+
+        var start = _namesLength;
+        _names[start] = (byte)'@';
+        _names.AsSpan(field.NameStart, field.NameLength).CopyTo(_names.AsSpan(start + 1));
+        _namesLength += length;
+        _fields[index] = field with { NameStart = start, NameLength = length };
+    }
+
+    private bool SameName(in LogField a, in LogField b) =>
+        _names
+            .AsSpan(a.NameStart, a.NameLength)
+            .SequenceEqual(_names.AsSpan(b.NameStart, b.NameLength));
+
+    private static string SourceName(LogFieldSource source) =>
+        source switch
+        {
+            LogFieldSource.Scope => "scope",
+            LogFieldSource.Enricher => "enricher",
+            LogFieldSource.Static => "static",
+            _ => "hole",
+        };
 
     private void EnsureMessage(int additional)
     {

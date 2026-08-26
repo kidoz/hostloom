@@ -19,6 +19,12 @@ are derived from release tags at publish time.
 - A bounded logging shutdown deadline (`ShutdownTimeout`, default 5 seconds) and an optional
   bound on blocking enqueues (`EnqueueTimeout`), both counted rather than silent when they expire.
 - A configurable `TimeProvider` for log timestamps, read per event on the calling thread.
+- A deterministic field-name collision policy: duplicate names collapse by source precedence
+  (event holes over scopes over enrichers over static fields, last occurrence wins within a
+  source), user names beginning with `@` are escaped CLEF-style to `@@`, names a formatter
+  reserves for its own schema are dropped rather than duplicated, and configurable name-length
+  and per-record field caps apply — every dropped field counted in
+  `hostloom.logging.fields.dropped`.
 
 ### Changed
 
