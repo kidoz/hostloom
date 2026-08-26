@@ -31,6 +31,17 @@ are derived from release tags at publish time.
   captured as typed fields with no call-site changes; `{OriginalFormat}` is preserved as the
   message template for template-aware formatters, and Serilog-style `@`/`$` operator prefixes
   are stripped from emitted names.
+- Bounded `{@...}` destructuring: object graphs serialize into nested typed JSON on the calling
+  thread, cycle-safe, with configurable caps on depth, collection items, object members, string
+  length, and encoded bytes per record — every cap cut marked with an explicit sentinel, and any
+  getter or serializer failure emitting `"[DestructuringFailed]"` instead of ever falling back
+  to `ToString()`.
+- Fail-closed PII protection: `[NotLogged]` omits a property or field entirely at every nesting
+  level (never read, including inherited members), `[LogMasked]` replaces or deterministically
+  part-reveals values, a registration-time per-type policy covers unannotatable types, and
+  legacy `Destructurama.Attributed` annotations are honored by name without the dependency.
+  Events with `@` holes render their message from the protected representations, so a record
+  type's generated `ToString()` cannot leak excluded members through the message text.
 
 ### Changed
 

@@ -254,6 +254,51 @@ internal sealed class LogEntry
     public void AddFieldNull(string name) =>
         RecordField(name, LogFieldKind.Null, valueInMessage: false, _valuesLength, 0, 0, -1);
 
+    /// <summary>
+    /// Appends a captured field's value bytes to the message — the safe-render path for events
+    /// with '@' holes, whose message must come from the masked representations rather than from
+    /// a ToString() that may print excluded members. First matching name wins.
+    /// </summary>
+    public bool AppendFieldValueToMessage(ReadOnlySpan<byte> utf8Name)
+    {
+        for (var i = 0; i < _fieldCount; i++)
+        {
+            var field = _fields[i];
+            if (!_names.AsSpan(field.NameStart, field.NameLength).SequenceEqual(utf8Name))
+            {
+                continue;
+            }
+
+            if (field.Kind == LogFieldKind.Null)
+            {
+                EnsureMessage(4);
+                "null"u8.CopyTo(_message.AsSpan(_messageLength));
+                _messageLength += 4;
+                return true;
+            }
+
+            EnsureMessage(field.ValueLength);
+            var source = field.ValueInMessage ? _message : _values;
+            source
+                .AsSpan(field.ValueStart, field.ValueLength)
+                .CopyTo(_message.AsSpan(_messageLength));
+            _messageLength += field.ValueLength;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>A complete, pre-validated JSON fragment produced by the destructurer.</summary>
+    public void AddFieldJson(string name, ReadOnlySpan<byte> json)
+    {
+        var start = _valuesLength;
+        EnsureValues(json.Length);
+        json.CopyTo(_values.AsSpan(_valuesLength));
+        _valuesLength += json.Length;
+        RecordField(name, LogFieldKind.Json, valueInMessage: false, start, json.Length, 0, -1);
+    }
+
     public void AddFieldFormattable<T>(
         string name,
         T value,

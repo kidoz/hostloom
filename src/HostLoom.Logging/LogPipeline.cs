@@ -66,6 +66,7 @@ internal sealed class LogPipeline : IAsyncDisposable
             () => _state == StateRunning,
             StateName
         );
+        Destructurer = new Destructurer(options.Destructuring, _metrics);
 
         // A real dedicated thread, not a long-running task: an async method leaves its
         // LongRunning thread at the first incomplete await, and this writer must be able to sit
@@ -80,6 +81,9 @@ internal sealed class LogPipeline : IAsyncDisposable
 
     /// <summary>The failure that faulted the background writer. Null while it is healthy.</summary>
     public Exception? WriterFault => _writerFault;
+
+    /// <summary>Serializes '@' hole values on the producer thread; shared by every logger.</summary>
+    public Destructurer Destructurer { get; }
 
     private static void Validate(HostLoomLoggerOptions options)
     {
@@ -148,6 +152,21 @@ internal sealed class LogPipeline : IAsyncDisposable
                 nameof(options),
                 options.MaxFieldsPerRecord,
                 "MaxFieldsPerRecord must be at least 1."
+            );
+        }
+
+        var destructuring = options.Destructuring;
+        if (
+            destructuring.MaxDepth < 1
+            || destructuring.MaxCollectionItems < 1
+            || destructuring.MaxObjectMembers < 1
+            || destructuring.MaxStringLength < 1
+            || destructuring.MaxEncodedBytesPerRecord < 1
+        )
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                "Destructuring caps must all be at least 1."
             );
         }
     }

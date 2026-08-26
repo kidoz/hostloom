@@ -89,6 +89,9 @@ public sealed class HostLoomLoggerOptions
     /// </summary>
     public int MaxFieldsPerRecord { get; set; } = 64;
 
+    /// <summary>Caps and protection policy for <c>{@...}</c> object destructuring.</summary>
+    public DestructuringOptions Destructuring { get; } = new();
+
     public bool CaptureActivity { get; set; } = true;
 
     /// <summary>

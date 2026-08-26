@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 
@@ -37,144 +38,269 @@ internal sealed class HostLoomLogger(
         ArgumentNullException.ThrowIfNull(formatter);
         var entry = LogEntryPool.Rent();
         entry.Level = logLevel;
-        // Rendered exactly once, through the caller's own formatter.
-        entry.AppendLiteral(formatter(state, exception));
-        CaptureState(entry, state);
+        var destructured = CaptureState(entry, state);
+        if (destructured && entry.Template is { } template)
+        {
+            // Safe rendering for '@' events: the MEL formatter would stringify the hole through
+            // the value's ToString(), and a record type's generated ToString prints every member
+            // — including what [NotLogged] and [LogMasked] just excluded. Render the message
+            // from the captured, protected representations instead, the way Serilog does.
+            RenderTemplate(entry, template);
+        }
+        else
+        {
+            // Rendered exactly once, through the caller's own formatter.
+            entry.AppendLiteral(formatter(state, exception));
+        }
+
         Emit(entry, eventId, exception);
     }
 
-    private static void CaptureState<TState>(LogEntry entry, TState state)
+    private bool CaptureState<TState>(LogEntry entry, TState state)
     {
+        // One destructuring byte budget per record, shared across all its '@' holes.
+        var remaining = options.Destructuring.MaxEncodedBytesPerRecord;
+        var destructured = false;
+
         if (state is IReadOnlyList<KeyValuePair<string, object?>> list)
         {
             for (var i = 0; i < list.Count; i++)
             {
-                CapturePair(entry, list[i]);
+                destructured |= CapturePair(entry, list[i], ref remaining);
             }
 
-            return;
+            return destructured;
         }
 
         if (state is IEnumerable<KeyValuePair<string, object?>> pairs)
         {
             foreach (var pair in pairs)
             {
-                CapturePair(entry, pair);
+                destructured |= CapturePair(entry, pair, ref remaining);
             }
         }
+
+        return destructured;
     }
 
-    private static void CapturePair(LogEntry entry, KeyValuePair<string, object?> pair)
+    private bool CapturePair(
+        LogEntry entry,
+        KeyValuePair<string, object?> pair,
+        ref int remaining
+    )
     {
         var name = pair.Key;
         if (name == "{OriginalFormat}")
         {
             // The template is metadata, not a field: stored for template-aware formatters.
             entry.Template = pair.Value as string;
-            return;
+            return false;
         }
 
         if (name.Length > 0 && (name[0] == '@' || name[0] == '$'))
         {
             // Serilog-compatible template operators: both strip their prefix from the emitted
-            // name. '$' forces the invariant string; '@' asks for destructuring — until the
-            // destructurer lands, a non-scalar '@' value degrades to the same invariant string.
+            // name. '$' forces the invariant string; '@' destructures a non-scalar into nested
+            // JSON while a scalar keeps its typed value.
             var stripped = name[1..];
             if (name[0] == '$')
             {
                 CaptureStringified(entry, stripped, pair.Value);
-                return;
+                return false;
             }
 
-            CaptureValue(entry, stripped, pair.Value);
-            return;
+            CaptureDestructured(entry, stripped, pair.Value, ref remaining);
+            return true;
         }
 
         CaptureValue(entry, name, pair.Value);
+        return false;
+    }
+
+    /// <summary>
+    /// Renders the message from the template and the captured field representations. Holes
+    /// resolve to canonical tokens (ISO dates, lowercase booleans, destructured JSON), so the
+    /// text can differ cosmetically from MEL's rendering — the price of never echoing what the
+    /// protection policy excluded. Format and alignment specifiers are ignored on this path.
+    /// </summary>
+    private static void RenderTemplate(LogEntry entry, string template)
+    {
+        var text = template.AsSpan();
+        while (!text.IsEmpty)
+        {
+            var open = text.IndexOf('{');
+            if (open < 0)
+            {
+                entry.AppendText(text, null);
+                return;
+            }
+
+            if (open + 1 < text.Length && text[open + 1] == '{')
+            {
+                entry.AppendText(text[..(open + 1)], null);
+                text = text[(open + 2)..];
+                continue;
+            }
+
+            entry.AppendText(text[..open], null);
+            text = text[(open + 1)..];
+            var close = text.IndexOf('}');
+            if (close < 0)
+            {
+                entry.AppendText("{", null);
+                entry.AppendText(text, null);
+                return;
+            }
+
+            var token = text[..close];
+            text = text[(close + 1)..];
+            var name = token;
+            var separator = name.IndexOfAny(',', ':');
+            if (separator >= 0)
+            {
+                name = name[..separator];
+            }
+
+            if (name.Length > 0 && (name[0] == '@' || name[0] == '$'))
+            {
+                name = name[1..];
+            }
+
+            if (!AppendField(entry, name))
+            {
+                entry.AppendText("{", null);
+                entry.AppendText(token, null);
+                entry.AppendText("}", null);
+            }
+        }
+    }
+
+    private static bool AppendField(LogEntry entry, ReadOnlySpan<char> name)
+    {
+        if (name.Length is 0 or > 128)
+        {
+            return false;
+        }
+
+        Span<byte> utf8 = stackalloc byte[512];
+        var length = System.Text.Encoding.UTF8.GetBytes(name, utf8);
+        return entry.AppendFieldValueToMessage(utf8[..length]);
+    }
+
+    private void CaptureDestructured(
+        LogEntry entry,
+        string name,
+        object? value,
+        ref int remaining
+    )
+    {
+        if (TryCaptureScalar(entry, name, value))
+        {
+            return;
+        }
+
+        if (remaining <= 0)
+        {
+            // The record's destructuring budget is spent: an explicit sentinel, never silence.
+            entry.AddFieldText(name, "…");
+            return;
+        }
+
+        var buffer = new ArrayBufferWriter<byte>(256);
+        pipeline.Destructurer.Destructure(value!, buffer, remaining);
+        remaining -= buffer.WrittenCount;
+        entry.AddFieldJson(name, buffer.WrittenSpan);
     }
 
     private static void CaptureValue(LogEntry entry, string name, object? value)
+    {
+        if (!TryCaptureScalar(entry, name, value))
+        {
+            CaptureStringified(entry, name, value);
+        }
+    }
+
+    private static bool TryCaptureScalar(LogEntry entry, string name, object? value)
     {
         switch (value)
         {
             case null:
                 entry.AddFieldNull(name);
-                break;
+                return true;
             case string text:
                 entry.AddFieldText(name, text);
-                break;
+                return true;
             case bool flag:
                 entry.AddFieldBoolean(name, flag);
-                break;
+                return true;
             case int number:
                 entry.AddFieldFormattable(name, number, LogFieldKind.Number);
-                break;
+                return true;
             case long number:
                 entry.AddFieldFormattable(name, number, LogFieldKind.Number);
-                break;
+                return true;
             case double number:
                 entry.AddFieldFormattable(
                     name,
                     number,
                     double.IsFinite(number) ? LogFieldKind.Number : LogFieldKind.Text
                 );
-                break;
+                return true;
             case float number:
                 entry.AddFieldFormattable(
                     name,
                     number,
                     float.IsFinite(number) ? LogFieldKind.Number : LogFieldKind.Text
                 );
-                break;
+                return true;
             case decimal number:
                 entry.AddFieldFormattable(name, number, LogFieldKind.Number);
-                break;
+                return true;
             case short number:
                 entry.AddFieldFormattable(name, number, LogFieldKind.Number);
-                break;
+                return true;
             case ushort number:
                 entry.AddFieldFormattable(name, number, LogFieldKind.Number);
-                break;
+                return true;
             case byte number:
                 entry.AddFieldFormattable(name, number, LogFieldKind.Number);
-                break;
+                return true;
             case sbyte number:
                 entry.AddFieldFormattable(name, number, LogFieldKind.Number);
-                break;
+                return true;
             case uint number:
                 entry.AddFieldFormattable(name, number, LogFieldKind.Number);
-                break;
+                return true;
             case ulong number:
                 entry.AddFieldFormattable(name, number, LogFieldKind.Number);
-                break;
+                return true;
             case Guid id:
                 entry.AddFieldFormattable(name, id, LogFieldKind.Text);
-                break;
+                return true;
             case DateTimeOffset when1:
                 entry.AddFieldFormattable(name, when1, LogFieldKind.Text, "O");
-                break;
+                return true;
             case DateTime when1:
                 entry.AddFieldFormattable(name, when1, LogFieldKind.Text, "O");
-                break;
+                return true;
             case TimeSpan duration:
                 entry.AddFieldFormattable(name, duration, LogFieldKind.Text);
-                break;
+                return true;
             case DateOnly day:
                 entry.AddFieldFormattable(name, day, LogFieldKind.Text, "O");
-                break;
+                return true;
             case TimeOnly time:
                 entry.AddFieldFormattable(name, time, LogFieldKind.Text, "O");
-                break;
+                return true;
             case char letter:
                 entry.AddFieldText(name, new ReadOnlySpan<char>(in letter));
-                break;
+                return true;
             case Enum:
                 // The name, matching Serilog's scalar enum rendering, not the numeric value.
                 entry.AddFieldText(name, value.ToString() ?? string.Empty);
-                break;
+                return true;
             default:
-                CaptureStringified(entry, name, value);
-                break;
+                return false;
         }
     }
 

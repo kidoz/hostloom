@@ -866,9 +866,11 @@ public sealed class LoggingTests
         await provider.DisposeAsync();
 
         var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
-        // '@' strips to Thing (invariant string until the destructurer lands); '$' forces the
+        // '@' strips to Thing and destructures the non-scalar into nested JSON; '$' forces the
         // invariant string even for a scalar.
-        Assert.Equal("1.2", root.GetProperty("Thing").GetString());
+        Assert.Equal(JsonValueKind.Object, root.GetProperty("Thing").ValueKind);
+        Assert.Equal(1, root.GetProperty("Thing").GetProperty("Major").GetInt32());
+        Assert.Equal(2, root.GetProperty("Thing").GetProperty("Minor").GetInt32());
         Assert.Equal("5", root.GetProperty("Num").GetString());
         Assert.False(root.TryGetProperty("@Thing", out _));
         Assert.False(root.TryGetProperty("$Num", out _));
