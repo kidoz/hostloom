@@ -137,6 +137,7 @@ jobs:
             HostLoom.Transport.RabbitMq
             HostLoom.Transport.Kafka
             HostLoom.AspNetCore.WebSockets
+            HostLoom.Analyzers
           )
           for package_id in "${packages[@]}"; do
             package="artifacts/packages/${package_id}.${{ steps.version.outputs.version }}.nupkg"
