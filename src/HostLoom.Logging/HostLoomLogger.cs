@@ -340,6 +340,29 @@ internal sealed class HostLoomLogger(
             entry.HasActivity = true;
         }
 
+        // Enrichers run here for the same reason: AsyncLocal context is gone after the hand-off.
+        var enrichers = options.Enrichers;
+        for (var i = 0; i < enrichers.Count; i++)
+        {
+            var writer = new LogEntryWriter(entry);
+            try
+            {
+                enrichers[i].Enrich(ref writer);
+            }
+            catch (Exception)
+            {
+                // One broken enricher costs neither the event, the remaining enrichers, nor the
+                // caller; the failure is counted instead of thrown.
+                pipeline.Metrics.RecordFailure(LoggingMetrics.ComponentEnricher);
+            }
+        }
+
+        var statics = pipeline.StaticFields;
+        for (var i = 0; i < statics.Length; i++)
+        {
+            entry.AddFieldUtf8Text(statics[i].Name, statics[i].Value, LogFieldSource.Static);
+        }
+
         pipeline.Enqueue(entry);
     }
 }

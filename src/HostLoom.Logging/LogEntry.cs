@@ -225,7 +225,11 @@ internal sealed class LogEntry
     /// <c>ILogger</c> path captures its state pairs through these. Values land in the value
     /// buffer; the message stays exactly what the caller's formatter rendered.
     /// </summary>
-    public void AddFieldText(string name, ReadOnlySpan<char> value)
+    public void AddFieldText(
+        string name,
+        ReadOnlySpan<char> value,
+        LogFieldSource source = LogFieldSource.Hole
+    )
     {
         var start = _valuesLength;
         EnsureValues(Encoding.UTF8.GetMaxByteCount(value.Length));
@@ -237,22 +241,65 @@ internal sealed class LogEntry
             start,
             _valuesLength - start,
             0,
-            -1
+            -1,
+            source
         );
     }
 
-    public void AddFieldBoolean(string name, bool value)
+    /// <summary>Copies an already-encoded UTF-8 value — the static-field path, where the value
+    /// bytes were encoded once at provider start.</summary>
+    public void AddFieldUtf8Text(string name, ReadOnlySpan<byte> utf8Value, LogFieldSource source)
+    {
+        var start = _valuesLength;
+        EnsureValues(utf8Value.Length);
+        utf8Value.CopyTo(_values.AsSpan(_valuesLength));
+        _valuesLength += utf8Value.Length;
+        RecordField(
+            name,
+            LogFieldKind.Text,
+            valueInMessage: false,
+            start,
+            utf8Value.Length,
+            0,
+            -1,
+            source
+        );
+    }
+
+    public void AddFieldBoolean(
+        string name,
+        bool value,
+        LogFieldSource source = LogFieldSource.Hole
+    )
     {
         var start = _valuesLength;
         var text = value ? "true"u8 : "false"u8;
         EnsureValues(text.Length);
         text.CopyTo(_values.AsSpan(_valuesLength));
         _valuesLength += text.Length;
-        RecordField(name, LogFieldKind.Boolean, valueInMessage: false, start, text.Length, 0, -1);
+        RecordField(
+            name,
+            LogFieldKind.Boolean,
+            valueInMessage: false,
+            start,
+            text.Length,
+            0,
+            -1,
+            source
+        );
     }
 
-    public void AddFieldNull(string name) =>
-        RecordField(name, LogFieldKind.Null, valueInMessage: false, _valuesLength, 0, 0, -1);
+    public void AddFieldNull(string name, LogFieldSource source = LogFieldSource.Hole) =>
+        RecordField(
+            name,
+            LogFieldKind.Null,
+            valueInMessage: false,
+            _valuesLength,
+            0,
+            0,
+            -1,
+            source
+        );
 
     /// <summary>
     /// Appends a captured field's value bytes to the message — the safe-render path for events
@@ -296,14 +343,24 @@ internal sealed class LogEntry
         EnsureValues(json.Length);
         json.CopyTo(_values.AsSpan(_valuesLength));
         _valuesLength += json.Length;
-        RecordField(name, LogFieldKind.Json, valueInMessage: false, start, json.Length, 0, -1);
+        RecordField(
+            name,
+            LogFieldKind.Json,
+            valueInMessage: false,
+            start,
+            json.Length,
+            0,
+            -1,
+            LogFieldSource.Hole
+        );
     }
 
     public void AddFieldFormattable<T>(
         string name,
         T value,
         LogFieldKind kind,
-        string? format = null
+        string? format = null,
+        LogFieldSource source = LogFieldSource.Hole
     )
         where T : IUtf8SpanFormattable
     {
@@ -322,7 +379,7 @@ internal sealed class LogEntry
         }
 
         _valuesLength += written;
-        RecordField(name, kind, valueInMessage: false, start, written, 0, -1);
+        RecordField(name, kind, valueInMessage: false, start, written, 0, -1, source);
     }
 
     private void RecordField(
@@ -332,7 +389,8 @@ internal sealed class LogEntry
         int valueStart,
         int valueLength,
         int renderingStart,
-        int renderingLength
+        int renderingLength,
+        LogFieldSource source = LogFieldSource.Hole
     )
     {
         if (name is null)
@@ -359,7 +417,7 @@ internal sealed class LogEntry
             valueStart,
             valueLength,
             kind,
-            LogFieldSource.Hole,
+            source,
             valueInMessage,
             renderingStart,
             renderingLength

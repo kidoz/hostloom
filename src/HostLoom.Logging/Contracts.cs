@@ -92,6 +92,23 @@ public sealed class HostLoomLoggerOptions
     /// <summary>Caps and protection policy for <c>{@...}</c> object destructuring.</summary>
     public DestructuringOptions Destructuring { get; } = new();
 
+    /// <summary>
+    /// Producer-side enrichers, run in registration order on every event before it is queued —
+    /// the point where <c>AsyncLocal</c> ambient context is still visible. Later enrichers win
+    /// name collisions within the enricher rank; event holes outrank them all.
+    /// </summary>
+    public IList<ILogEnricher> Enrichers { get; } = [];
+
+    /// <summary>
+    /// Attach <see cref="Environment.MachineName"/> once at provider start as a static field
+    /// named <c>MachineName</c> — Serilog's <c>WithMachineName</c> parity. Static fields have
+    /// the lowest collision precedence.
+    /// </summary>
+    public bool AttachMachineName { get; set; } = true;
+
+    /// <summary>Logical service name, attached as a static <c>ServiceName</c> field when set.</summary>
+    public string? ServiceName { get; set; }
+
     public bool CaptureActivity { get; set; } = true;
 
     /// <summary>

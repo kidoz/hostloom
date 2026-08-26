@@ -12,6 +12,9 @@ namespace HostLoom.Logging;
 /// silently killing the writer: the channel closes, queued and in-flight records are counted as
 /// dropped, and no caller is ever left waiting on a writer that has stopped reading.
 /// </summary>
+/// <summary>One static enrichment field, its value encoded once for the provider's lifetime.</summary>
+internal readonly record struct StaticField(string Name, byte[] Value);
+
 internal sealed class LogPipeline : IAsyncDisposable
 {
     private const int StateRunning = 0;
@@ -67,6 +70,7 @@ internal sealed class LogPipeline : IAsyncDisposable
             StateName
         );
         Destructurer = new Destructurer(options.Destructuring, _metrics);
+        StaticFields = BuildStaticFields(options);
 
         // A real dedicated thread, not a long-running task: an async method leaves its
         // LongRunning thread at the first incomplete await, and this writer must be able to sit
@@ -84,6 +88,33 @@ internal sealed class LogPipeline : IAsyncDisposable
 
     /// <summary>Serializes '@' hole values on the producer thread; shared by every logger.</summary>
     public Destructurer Destructurer { get; }
+
+    /// <summary>Fields attached to every event, values UTF-8-encoded once at provider start.</summary>
+    public StaticField[] StaticFields { get; }
+
+    /// <summary>Producer-side counters for enricher and destructurer failures.</summary>
+    public LoggingMetrics Metrics => _metrics;
+
+    private static StaticField[] BuildStaticFields(HostLoomLoggerOptions options)
+    {
+        var fields = new List<StaticField>(2);
+        if (options.AttachMachineName)
+        {
+            fields.Add(
+                new StaticField(
+                    "MachineName",
+                    System.Text.Encoding.UTF8.GetBytes(Environment.MachineName)
+                )
+            );
+        }
+
+        if (options.ServiceName is { Length: > 0 } service)
+        {
+            fields.Add(new StaticField("ServiceName", System.Text.Encoding.UTF8.GetBytes(service)));
+        }
+
+        return [.. fields];
+    }
 
     private static void Validate(HostLoomLoggerOptions options)
     {

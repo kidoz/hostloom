@@ -36,6 +36,14 @@ are derived from release tags at publish time.
   length, and encoded bytes per record — every cap cut marked with an explicit sentinel, and any
   getter or serializer failure emitting `"[DestructuringFailed]"` instead of ever falling back
   to `ToString()`.
+- Producer-side enrichment: `ILogEnricher` implementations registered on the options run on the
+  calling thread before queueing — where `AsyncLocal` ambient context is still visible — writing
+  typed fields through `LogEntryWriter` (no raw JSON injection possible). Enrichers run in
+  registration order, a throwing enricher is counted and skipped without costing the event, and
+  event holes outrank enricher fields.
+- Static enrichment fields: `Environment.MachineName` attached by default (Serilog
+  `WithMachineName` parity, opt-out via `AttachMachineName`) and a configurable `ServiceName`,
+  both UTF-8-encoded once at provider start and carrying the lowest collision precedence.
 - Fail-closed PII protection: `[NotLogged]` omits a property or field entirely at every nesting
   level (never read, including inherited members), `[LogMasked]` replaces or deterministically
   part-reveals values, a registration-time per-type policy covers unannotatable types, and
