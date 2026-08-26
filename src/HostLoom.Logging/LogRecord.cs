@@ -40,13 +40,13 @@ public readonly ref struct LogRecord
 {
     private readonly LogEntry _entry;
 
-    internal LogRecord(LogEntry entry, DateTimeOffset timestamp)
+    internal LogRecord(LogEntry entry)
     {
         _entry = entry;
-        Timestamp = timestamp;
     }
 
-    public DateTimeOffset Timestamp { get; }
+    /// <summary>Wall-clock time read on the calling thread when the event was captured.</summary>
+    public DateTimeOffset Timestamp => _entry.Timestamp;
 
     public LogLevel Level => _entry.Level;
 

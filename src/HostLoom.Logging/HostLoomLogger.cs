@@ -45,7 +45,9 @@ internal sealed class HostLoomLogger(
         entry.Category = category;
         entry.EventId = eventId;
         entry.Exception = exception;
-        entry.Timestamp = Stopwatch.GetTimestamp();
+        // The wall clock, not a Stopwatch anchor: an anchor set at startup never sees an NTP
+        // correction, and over weeks of uptime the drift breaks cross-service correlation.
+        entry.Timestamp = options.TimeProvider.GetUtcNow();
         entry.ThreadId = Environment.CurrentManagedThreadId;
 
         // Captured here, never on the writer thread: Activity.Current is ambient to this thread, so

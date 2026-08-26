@@ -11,9 +11,6 @@ namespace HostLoom.Logging;
 /// </summary>
 internal sealed class LogPipeline : IAsyncDisposable
 {
-    private static readonly long StartTimestamp = Stopwatch.GetTimestamp();
-    private static readonly DateTimeOffset StartWallClock = DateTimeOffset.UtcNow;
-
     private readonly Channel<LogEntry> _queue;
     private readonly ILogFormatter _formatter;
     private readonly ILogSink _sink;
@@ -93,8 +90,7 @@ internal sealed class LogPipeline : IAsyncDisposable
                 {
                     try
                     {
-                        var record = new LogRecord(entry, ToWallClock(entry.Timestamp));
-                        _formatter.Format(record, buffer);
+                        _formatter.Format(new LogRecord(entry), buffer);
                         batched++;
                     }
                     finally
@@ -124,7 +120,7 @@ internal sealed class LogPipeline : IAsyncDisposable
         {
             try
             {
-                _formatter.Format(new LogRecord(entry, ToWallClock(entry.Timestamp)), buffer);
+                _formatter.Format(new LogRecord(entry), buffer);
             }
             finally
             {
@@ -140,13 +136,6 @@ internal sealed class LogPipeline : IAsyncDisposable
 
         await _sink.FlushAsync(CancellationToken.None).ConfigureAwait(false);
     }
-
-    /// <summary>
-    /// Timestamps are taken as raw ticks on the hot path and converted here, because
-    /// <see cref="Stopwatch.GetTimestamp"/> is markedly cheaper than reading wall-clock time.
-    /// </summary>
-    private static DateTimeOffset ToWallClock(long timestamp) =>
-        StartWallClock + Stopwatch.GetElapsedTime(StartTimestamp, timestamp);
 
     /// <summary>
     /// Idempotent: a provider is routinely disposed by the container and again by a using block,

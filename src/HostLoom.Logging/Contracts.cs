@@ -41,4 +41,11 @@ public sealed class HostLoomLoggerOptions
     public int BatchSize { get; set; } = 256;
 
     public bool CaptureActivity { get; set; } = true;
+
+    /// <summary>
+    /// The clock each event's timestamp is read from, on the calling thread at capture time.
+    /// Reading the wall clock per event follows operating-system clock corrections, so timestamps
+    /// stay comparable across services; a backward step after a correction is intentional.
+    /// </summary>
+    public TimeProvider TimeProvider { get; set; } = TimeProvider.System;
 }

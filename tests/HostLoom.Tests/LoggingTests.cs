@@ -269,6 +269,41 @@ public sealed class LoggingTests
     }
 
     [Fact]
+    public async Task Timestamps_follow_the_clock_through_forward_and_backward_steps()
+    {
+        var clock = new ManualTimeProvider
+        {
+            Now = new DateTimeOffset(2026, 8, 26, 12, 0, 0, TimeSpan.Zero),
+        };
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions { TimeProvider = clock }
+        );
+        var logger = provider.CreateLogger("Clock");
+
+        logger.LogFast(LogLevel.Information, $"first");
+        clock.Now = clock.Now.AddDays(7);
+        logger.LogFast(LogLevel.Information, $"after a week");
+        // An NTP correction stepping the clock back must show up as-is: a synthesized monotonic
+        // timestamp would disagree with every other service on the box.
+        clock.Now = clock.Now.AddSeconds(-30);
+        logger.LogFast(LogLevel.Information, $"after a backward step");
+        await provider.DisposeAsync();
+
+        var stamps = sink
+            .Lines()
+            .Select(line =>
+                JsonDocument.Parse(line).RootElement.GetProperty("@timestamp").GetDateTimeOffset()
+            )
+            .ToArray();
+        Assert.Equal(new DateTimeOffset(2026, 8, 26, 12, 0, 0, TimeSpan.Zero), stamps[0]);
+        Assert.Equal(new DateTimeOffset(2026, 9, 2, 12, 0, 0, TimeSpan.Zero), stamps[1]);
+        Assert.Equal(new DateTimeOffset(2026, 9, 2, 11, 59, 30, TimeSpan.Zero), stamps[2]);
+    }
+
+    [Fact]
     public async Task Logging_through_the_plain_ILogger_interface_still_works()
     {
         var sink = NewBufferSink();
@@ -377,6 +412,13 @@ public sealed class LoggingTests
             _gate.Dispose();
             return ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; }
+
+        public override DateTimeOffset GetUtcNow() => Now;
     }
 
     private sealed class LevelFilteringLogger(ILogger inner, LogLevel minimum) : ILogger

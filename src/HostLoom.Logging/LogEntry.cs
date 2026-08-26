@@ -47,8 +47,8 @@ internal sealed class LogEntry
 
     public Exception? Exception { get; set; }
 
-    /// <summary>Raw ticks, converted to wall-clock on the writer thread. Cheaper than DateTime.UtcNow.</summary>
-    public long Timestamp { get; set; }
+    /// <summary>Wall-clock time read at capture on the calling thread, never reconstructed later.</summary>
+    public DateTimeOffset Timestamp { get; set; }
 
     public int ThreadId { get; set; }
 
