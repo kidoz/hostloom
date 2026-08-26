@@ -36,6 +36,14 @@ are derived from release tags at publish time.
   length, and encoded bytes per record — every cap cut marked with an explicit sentinel, and any
   getter or serializer failure emitting `"[DestructuringFailed]"` instead of ever falling back
   to `ToString()`.
+- Configuration binding for the logging provider: an `AddHostLoomLogging` overload binds
+  `HostLoomLoggerOptions` from a configuration section (canonically `HostLoom:Logging`), with
+  the code callback applying after configuration and unknown or invalid keys failing at host
+  startup. Level filtering remains standard MEL `Logging` configuration.
+- `HostLoomBootstrapLogger`, a synchronous pre-DI logger emitting the same event shape as the
+  hosted provider — same formatter, typed fields, masking policy, timestamps, static fields,
+  and enrichers — written to stdout on the calling thread with a construction-time minimum
+  level, explicit flush/disposal, and failures swallowed unless fail-fast is opted into.
 - A `ClefLogFormatter` emitting Compact Log Event Format shaped after Serilog's
   `CompactJsonFormatter`: `@t`, `@mt` when a template exists (`@m` only when none does), `@r`
   renderings for formatted fast-path holes, `@l` omitted for Information with Serilog level

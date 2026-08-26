@@ -70,6 +70,7 @@ internal sealed class LogPipeline : IAsyncDisposable
             StateName
         );
         Destructurer = new Destructurer(options.Destructuring, _metrics);
+        Capture = new EventCapture(options, Destructurer, _metrics);
         StaticFields = BuildStaticFields(options);
 
         // A real dedicated thread, not a long-running task: an async method leaves its
@@ -89,13 +90,16 @@ internal sealed class LogPipeline : IAsyncDisposable
     /// <summary>Serializes '@' hole values on the producer thread; shared by every logger.</summary>
     public Destructurer Destructurer { get; }
 
+    /// <summary>The shared producer-side capture engine for state, scopes, and rendering.</summary>
+    public EventCapture Capture { get; }
+
     /// <summary>Fields attached to every event, values UTF-8-encoded once at provider start.</summary>
     public StaticField[] StaticFields { get; }
 
     /// <summary>Producer-side counters for enricher and destructurer failures.</summary>
     public LoggingMetrics Metrics => _metrics;
 
-    private static StaticField[] BuildStaticFields(HostLoomLoggerOptions options)
+    internal static StaticField[] BuildStaticFields(HostLoomLoggerOptions options)
     {
         var fields = new List<StaticField>(2);
         if (options.AttachMachineName)
@@ -116,7 +120,7 @@ internal sealed class LogPipeline : IAsyncDisposable
         return [.. fields];
     }
 
-    private static void Validate(HostLoomLoggerOptions options)
+    internal static void Validate(HostLoomLoggerOptions options)
     {
         if (options.QueueCapacity < 1)
         {

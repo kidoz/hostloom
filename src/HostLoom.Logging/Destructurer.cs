@@ -16,7 +16,7 @@ namespace HostLoom.Logging;
 /// member simply does not exist to this walker, and any getter or serializer failure emits
 /// <c>"[DestructuringFailed]"</c> — never the value's <c>ToString()</c>.
 /// </summary>
-internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics metrics)
+internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics? metrics)
 {
     private static readonly JsonWriterOptions WriterOptions = new()
     {
@@ -39,7 +39,7 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics 
         {
             // The writer's using-dispose already flushed whatever partial output existed; throw
             // it away and emit the sentinel so the fragment is always valid JSON.
-            metrics.RecordFailure(LoggingMetrics.ComponentDestructurer);
+            metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
             buffer.ResetWrittenCount();
             buffer.Write("\"[DestructuringFailed]\""u8);
         }
@@ -228,7 +228,7 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics 
                 }
                 catch (Exception)
                 {
-                    metrics.RecordFailure(LoggingMetrics.ComponentDestructurer);
+                    metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
                     writer.WriteStringValue("[DestructuringFailed]");
                     written++;
                     continue;
@@ -259,7 +259,7 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics 
         }
         catch (Exception)
         {
-            metrics.RecordFailure(LoggingMetrics.ComponentDestructurer);
+            metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
             writer.WriteStringValue("[DestructuringFailed]");
             return;
         }
@@ -292,7 +292,7 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics 
         catch (Exception)
         {
             // A lazy sequence threw mid-enumeration; the array closes valid either way.
-            metrics.RecordFailure(LoggingMetrics.ComponentDestructurer);
+            metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
             writer.WriteStringValue("[DestructuringFailed]");
         }
 
@@ -320,7 +320,7 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics 
         }
         catch (Exception)
         {
-            metrics.RecordFailure(LoggingMetrics.ComponentDestructurer);
+            metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
             writer.WriteString("…"u8, "[DestructuringFailed]");
         }
 

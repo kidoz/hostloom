@@ -258,6 +258,48 @@ a debug endpoint:
 app.MapGet("/diagnostics/pipeline", (HostLoomProbe probe) => probe.ReceivePipeline());
 ```
 
+## Logging
+
+`HostLoom.Logging` is a structured `Microsoft.Extensions.Logging` provider: a bounded queue
+with a dedicated background writer, typed JSON fields from ordinary `ILogger` template holes
+and from the allocation-free `LogFast` interpolated path, Serilog-compatible `{@...}`
+destructuring with fail-closed `[NotLogged]`/`[LogMasked]` protection, scopes, enrichers,
+and health metrics on the `HostLoom.Logging` meter.
+
+```csharp
+builder.Logging.AddHostLoomLogging(
+    StreamLogSink.Console(),
+    builder.Configuration.GetSection("HostLoom:Logging"),
+    formatter: new ClefLogFormatter());
+```
+
+Level filtering is standard MEL configuration and runs before the provider — HostLoom does
+no level filtering of its own. Migrating from Serilog's section, `MinimumLevel:Default`
+becomes `Logging:LogLevel:Default` and each `MinimumLevel:Override:<prefix>` becomes
+`Logging:LogLevel:<prefix>`. Provider options bind from `HostLoom:Logging`; a code callback,
+when supplied, applies after configuration, and invalid values fail at host startup:
+
+```json
+{
+  "Logging": { "LogLevel": { "Default": "Information", "Npgsql": "Warning" } },
+  "HostLoom": {
+    "Logging": {
+      "QueueCapacity": 8192,
+      "QueueFullPolicy": "DropBelowWarning",
+      "EnqueueTimeout": "00:00:02",
+      "ShutdownTimeout": "00:00:05",
+      "ServiceName": "checkout",
+      "Destructuring": { "MaxDepth": 5, "MaxStringLength": 4096 }
+    }
+  }
+}
+```
+
+Before the host exists, `HostLoomBootstrapLogger` writes the same event shape synchronously
+to stdout — same formatter, masking policy, timestamps, and static fields — with a minimum
+level supplied at construction. Dispose it once the hosted provider is up; it retains
+nothing, so the hand-off neither replays nor duplicates events.
+
 ## Transports
 
 A request address is a logical name; each adapter maps it onto its own honest
