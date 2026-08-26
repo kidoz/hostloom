@@ -14,6 +14,23 @@ are derived from release tags at publish time.
   cancellation tokens on HostLoom async calls (`HLM0001`), synchronous blocking over HostLoom
   `Task` and `ValueTask` operations (`HLM0002`), and singleton dependency-injection registration
   of request handlers, event handlers, or request behaviors (`HLM0003`).
+- Logging pipeline health metrics on the `HostLoom.Logging` meter: dropped records with reasons,
+  queue depth, blocked enqueues and their duration, component failures, and writer state.
+- A bounded logging shutdown deadline (`ShutdownTimeout`, default 5 seconds) and an optional
+  bound on blocking enqueues (`EnqueueTimeout`), both counted rather than silent when they expire.
+- A configurable `TimeProvider` for log timestamps, read per event on the calling thread.
+
+### Changed
+
+- Structured log fields keep their JSON value kinds: numeric and boolean interpolation holes are
+  emitted as JSON numbers and booleans, a formatted hole keeps its rendering in the message while
+  the field stays typed, and `DateTimeOffset` holes default to ISO-8601.
+- `ILogSink.Write` now receives a `CancellationToken` so shutdown can abandon a stalled sink.
+- An unexpected formatter or sink failure faults the logging pipeline instead of silently killing
+  the writer: queued and later records are counted as dropped, and no caller can block on a dead
+  writer.
+- Log timestamps follow operating-system clock corrections instead of drifting from a Stopwatch
+  anchor captured at startup.
 
 ## [0.1.0] - 2026-08-25
 
