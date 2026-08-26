@@ -8,6 +8,14 @@ namespace HostLoom.Logging;
 /// <see cref="ILogger.Log{TState}"/> overloads still works, it just pays the boxing the interface
 /// mandates — including logs from third-party libraries, which these extensions cannot reach.
 /// </summary>
+/// <remarks>
+/// The no-box fast path engages only when the logger is HostLoom's own, obtained from
+/// <see cref="HostLoomLoggerProvider.CreateLogger"/>. A dependency-injected
+/// <c>ILogger&lt;T&gt;</c> is the framework's aggregating wrapper, so these extensions render
+/// once and hand the string through the standard interface: correct output, but without the
+/// zero-allocation guarantee, and captured hole names are not preserved as fields until the
+/// standard path learns to carry structured state.
+/// </remarks>
 public static class LoggerExtensions
 {
     public static void LogFast(

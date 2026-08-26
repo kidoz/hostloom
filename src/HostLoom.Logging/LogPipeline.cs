@@ -6,11 +6,11 @@ using Microsoft.Extensions.Logging;
 namespace HostLoom.Logging;
 
 /// <summary>
-/// Single-reader queue plus a background writer. The calling thread renders and enqueues; all
-/// formatting and I/O happens off it, which is what keeps a log call off the tail latency path.
-/// An unexpected formatter or sink failure faults the pipeline instead of silently killing the
-/// writer: the channel closes, queued and later records are counted as dropped, and no caller is
-/// ever left waiting on a writer that has stopped reading.
+/// Single-reader queue plus a background writer on a dedicated thread. The calling thread renders
+/// and enqueues; all formatting and I/O happens off it, which is what keeps a log call off the
+/// tail latency path. An unexpected formatter or sink failure faults the pipeline instead of
+/// silently killing the writer: the channel closes, queued and in-flight records are counted as
+/// dropped, and no caller is ever left waiting on a writer that has stopped reading.
 /// </summary>
 internal sealed class LogPipeline : IAsyncDisposable
 {
@@ -27,11 +27,19 @@ internal sealed class LogPipeline : IAsyncDisposable
     private readonly HostLoomLoggerOptions _options;
     private readonly LoggingMetrics _metrics;
     private readonly CancellationTokenSource _shutdown = new();
-    private readonly Task _writer;
+    private readonly TaskCompletionSource _completion = new(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    );
+
+    /// <summary>Entries of the batch being formatted or written, held until the sink accepted
+    /// them so a fault or abandonment can still count them.</summary>
+    private readonly List<LogEntry> _batch;
+
     private long _dropped;
     private int _state;
     private int _disposeStarted;
     private volatile bool _abandoned;
+    private volatile int _inFlight;
     private volatile Exception? _writerFault;
 
     /// <summary>Which component the writer thread is currently calling. Writer-thread only.</summary>
@@ -39,6 +47,60 @@ internal sealed class LogPipeline : IAsyncDisposable
 
     public LogPipeline(ILogFormatter formatter, ILogSink sink, HostLoomLoggerOptions options)
     {
+        Validate(options);
+
+        _formatter = formatter;
+        _sink = sink;
+        _options = options;
+        _batch = new List<LogEntry>(options.BatchSize);
+        _queue = Channel.CreateBounded<LogEntry>(
+            new BoundedChannelOptions(options.QueueCapacity)
+            {
+                SingleReader = true,
+                SingleWriter = false,
+                FullMode = BoundedChannelFullMode.Wait,
+            }
+        );
+        _metrics = new LoggingMetrics(
+            () => _queue.Reader.Count,
+            () => _state == StateRunning,
+            StateName
+        );
+
+        // A real dedicated thread, not a long-running task: an async method leaves its
+        // LongRunning thread at the first incomplete await, and this writer must be able to sit
+        // in a synchronous sink write without occupying a thread-pool worker. Background, so an
+        // abandoned writer can never keep the process alive.
+        var writer = new Thread(Run) { IsBackground = true, Name = "HostLoom Logging Writer" };
+        writer.Start();
+    }
+
+    /// <summary>Records dropped for any reason. Surfaced so overload is visible, not silent.</summary>
+    public long Dropped => Interlocked.Read(ref _dropped);
+
+    /// <summary>The failure that faulted the background writer. Null while it is healthy.</summary>
+    public Exception? WriterFault => _writerFault;
+
+    private static void Validate(HostLoomLoggerOptions options)
+    {
+        if (options.QueueCapacity < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.QueueCapacity,
+                "QueueCapacity must be at least 1."
+            );
+        }
+
+        if (options.BatchSize < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.BatchSize,
+                "BatchSize must be at least 1."
+            );
+        }
+
         if (options.ShutdownTimeout <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(
@@ -57,38 +119,20 @@ internal sealed class LogPipeline : IAsyncDisposable
             );
         }
 
-        _formatter = formatter;
-        _sink = sink;
-        _options = options;
-        _queue = Channel.CreateBounded<LogEntry>(
-            new BoundedChannelOptions(options.QueueCapacity)
-            {
-                SingleReader = true,
-                SingleWriter = false,
-                FullMode = BoundedChannelFullMode.Wait,
-            }
-        );
-        _metrics = new LoggingMetrics(
-            () => _queue.Reader.Count,
-            () => _state == StateRunning,
-            StateName
-        );
+        if (!Enum.IsDefined(options.QueueFullPolicy))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.QueueFullPolicy,
+                "QueueFullPolicy must be a defined policy."
+            );
+        }
 
-        _writer = Task
-            .Factory.StartNew(
-                RunAsync,
-                CancellationToken.None,
-                TaskCreationOptions.LongRunning,
-                TaskScheduler.Default
-            )
-            .Unwrap();
+        if (options.TimeProvider is null)
+        {
+            throw new ArgumentException("TimeProvider must not be null.", nameof(options));
+        }
     }
-
-    /// <summary>Records dropped for any reason. Surfaced so overload is visible, not silent.</summary>
-    public long Dropped => Interlocked.Read(ref _dropped);
-
-    /// <summary>The failure that faulted the background writer. Null while it is healthy.</summary>
-    public Exception? WriterFault => _writerFault;
 
     public void Enqueue(LogEntry entry)
     {
@@ -173,26 +217,45 @@ internal sealed class LogPipeline : IAsyncDisposable
         }
     }
 
-    private async Task RunAsync()
+    private void Run()
+    {
+        try
+        {
+            RunLoop();
+        }
+        finally
+        {
+            _completion.TrySetResult();
+        }
+    }
+
+    private void RunLoop()
     {
         var buffer = new ArrayBufferWriter<byte>(64 * 1024);
         var reader = _queue.Reader;
 
         try
         {
-            while (await reader.WaitToReadAsync(CancellationToken.None).ConfigureAwait(false))
+            while (WaitToRead(reader))
             {
                 FormatBatch(reader, buffer);
                 WriteBuffer(buffer);
             }
 
-            // False from WaitToReadAsync means completed and empty: every accepted record is out.
+            // False from WaitToRead means completed and empty: every accepted record is out.
             _component = LoggingMetrics.ComponentSink;
-            await _sink.FlushAsync(_shutdown.Token).ConfigureAwait(false);
+            var flush = _sink.FlushAsync(_shutdown.Token);
+            if (!flush.IsCompletedSuccessfully)
+            {
+                flush.AsTask().GetAwaiter().GetResult();
+            }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
         {
-            // The shutdown deadline expired and disposal cancelled the sink mid-batch.
+            // The shutdown deadline expired and disposal cancelled the sink mid-batch. Any other
+            // OperationCanceledException is a component failure and faults the pipeline below —
+            // treating it as shutdown would leave producers facing an open channel nobody reads.
+            DiscardBatch(LoggingMetrics.ReasonShutdownTimeout);
             DiscardQueued(LoggingMetrics.ReasonShutdownTimeout);
         }
         catch (Exception failure)
@@ -201,34 +264,47 @@ internal sealed class LogPipeline : IAsyncDisposable
         }
     }
 
+    private static bool WaitToRead(ChannelReader<LogEntry> reader)
+    {
+        var pending = reader.WaitToReadAsync(CancellationToken.None);
+        return pending.IsCompleted
+            ? pending.GetAwaiter().GetResult()
+            : pending.AsTask().GetAwaiter().GetResult();
+    }
+
     private void FormatBatch(ChannelReader<LogEntry> reader, ArrayBufferWriter<byte> buffer)
     {
         _component = LoggingMetrics.ComponentFormatter;
-        var batched = 0;
-        while (batched < _options.BatchSize && reader.TryRead(out var entry))
+        while (_batch.Count < _options.BatchSize && reader.TryRead(out var entry))
         {
-            try
-            {
-                _formatter.Format(new LogRecord(entry), buffer);
-                batched++;
-            }
-            finally
-            {
-                LogEntryPool.Return(entry);
-            }
+            // Added before formatting: if the formatter throws, the entry is still accounted.
+            _batch.Add(entry);
+            _formatter.Format(new LogRecord(entry), buffer);
         }
     }
 
     private void WriteBuffer(ArrayBufferWriter<byte> buffer)
     {
-        if (buffer.WrittenCount == 0)
+        if (buffer.WrittenCount > 0)
         {
-            return;
+            _component = LoggingMetrics.ComponentSink;
+            _inFlight = _batch.Count;
+            _sink.Write(buffer.WrittenSpan, _shutdown.Token);
+            buffer.ResetWrittenCount();
+            _inFlight = 0;
         }
 
-        _component = LoggingMetrics.ComponentSink;
-        _sink.Write(buffer.WrittenSpan, _shutdown.Token);
-        buffer.ResetWrittenCount();
+        ReleaseBatch();
+    }
+
+    private void ReleaseBatch()
+    {
+        for (var i = 0; i < _batch.Count; i++)
+        {
+            LogEntryPool.Return(_batch[i]);
+        }
+
+        _batch.Clear();
     }
 
     private void Fault(Exception failure)
@@ -238,10 +314,31 @@ internal sealed class LogPipeline : IAsyncDisposable
         // in ChannelClosedException, which Enqueue counts as writer-fault drops.
         _queue.Writer.TryComplete();
         _metrics.RecordFailure(_component);
+        DiscardBatch(LoggingMetrics.ReasonWriterFault);
         DiscardQueued(LoggingMetrics.ReasonWriterFault);
         // Published last: anyone who observes the fault is guaranteed to find the pipeline
         // already faulted and the channel already closed.
         _writerFault = failure;
+    }
+
+    /// <summary>Counts and releases the formatted-but-unwritten batch, with real levels.</summary>
+    private void DiscardBatch(string reason)
+    {
+        for (var i = 0; i < _batch.Count; i++)
+        {
+            if (_abandoned)
+            {
+                // Disposal already counted these in aggregate when it gave the writer up.
+                LogEntryPool.Return(_batch[i]);
+            }
+            else
+            {
+                Discard(_batch[i], reason);
+            }
+        }
+
+        _batch.Clear();
+        _inFlight = 0;
     }
 
     private void DiscardQueued(string reason)
@@ -250,7 +347,6 @@ internal sealed class LogPipeline : IAsyncDisposable
         {
             if (_abandoned)
             {
-                // Disposal already counted these in aggregate when it gave the writer up.
                 LogEntryPool.Return(entry);
             }
             else
@@ -276,9 +372,9 @@ internal sealed class LogPipeline : IAsyncDisposable
         };
 
     /// <summary>
-    /// Idempotent and bounded: disposal never waits longer than the shutdown timeout plus a short
-    /// grace, even when the sink has stopped making progress. Flushing logs must never be the
-    /// thing that hangs or throws on the way down.
+    /// Idempotent and bounded: disposal never waits longer than the shutdown timeout per phase
+    /// (drain, then sink disposal) plus a short grace, even when the sink has stopped making
+    /// progress. Flushing logs must never be the thing that hangs or throws on the way down.
     /// </summary>
     public async ValueTask DisposeAsync()
     {
@@ -302,11 +398,16 @@ internal sealed class LogPipeline : IAsyncDisposable
         {
             try
             {
-                await _sink.DisposeAsync().ConfigureAwait(false);
+                // Bounded like the drain: a sink that hangs inside its own flush-on-dispose must
+                // not be able to hang application shutdown.
+                await _sink.DisposeAsync()
+                    .AsTask()
+                    .WaitAsync(_options.ShutdownTimeout)
+                    .ConfigureAwait(false);
             }
             catch (Exception)
             {
-                // A sink that fails on the way down must not break application shutdown.
+                // A sink that fails or times out on the way down must not break shutdown.
                 _metrics.RecordFailure(LoggingMetrics.ComponentSink);
             }
 
@@ -315,13 +416,14 @@ internal sealed class LogPipeline : IAsyncDisposable
         else
         {
             // The writer is stuck inside a sink call that ignores cancellation. Abandon it: the
-            // records it will never write are counted here in aggregate, the sink is not disposed
-            // because the abandoned thread may still be inside Write, and the cancellation source
-            // stays undisposed for the same reason. The abandoned thread is the pipeline's own
-            // long-running writer, never a caller's.
+            // records it will never write — still queued plus the batch in flight — are counted
+            // here in aggregate, the sink is not disposed because the abandoned thread may still
+            // be inside Write, and the cancellation source stays undisposed for the same reason.
+            // The abandoned thread is the pipeline's own dedicated background writer, never a
+            // caller's, and it cannot keep the process alive.
             _abandoned = true;
             _metrics.RecordFailure(LoggingMetrics.ComponentSink);
-            var stranded = _queue.Reader.Count;
+            var stranded = _queue.Reader.Count + _inFlight;
             if (stranded > 0)
             {
                 Interlocked.Add(ref _dropped, stranded);
@@ -340,7 +442,7 @@ internal sealed class LogPipeline : IAsyncDisposable
     {
         try
         {
-            await _writer.WaitAsync(timeout).ConfigureAwait(false);
+            await _completion.Task.WaitAsync(timeout).ConfigureAwait(false);
             return true;
         }
         catch (TimeoutException)

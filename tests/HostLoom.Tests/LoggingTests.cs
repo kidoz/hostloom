@@ -268,6 +268,100 @@ public sealed class LoggingTests
     }
 
     [Fact]
+    public async Task A_stray_cancellation_faults_the_pipeline_instead_of_vanishing()
+    {
+        var sink = NewBufferSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new CancellingFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("Cancelled");
+
+        logger.LogFast(LogLevel.Information, $"triggers a stray cancellation");
+
+        var deadline = Stopwatch.StartNew();
+        while (provider.WriterFault is null && deadline.Elapsed < TimeSpan.FromSeconds(10))
+        {
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+
+        // An OperationCanceledException nobody asked for is a component failure, not a shutdown.
+        // Swallowing it would leave the writer dead while producers still see a running pipeline.
+        Assert.IsType<OperationCanceledException>(provider.WriterFault);
+
+        var before = provider.Dropped;
+        logger.LogFast(LogLevel.Warning, $"after the stray cancellation");
+        Assert.Equal(before + 1, provider.Dropped);
+    }
+
+    [Fact]
+    public async Task Disposal_bounds_a_sink_that_hangs_while_disposing()
+    {
+        var sink = NewHangingDisposeSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions { ShutdownTimeout = TimeSpan.FromMilliseconds(200) }
+        );
+        var logger = provider.CreateLogger("HangingDispose");
+
+        logger.LogFast(LogLevel.Information, $"written cleanly before disposal");
+
+        var elapsed = Stopwatch.StartNew();
+        await provider.DisposeAsync();
+
+        Assert.True(
+            elapsed.Elapsed < TimeSpan.FromSeconds(5),
+            $"disposal took {elapsed.Elapsed} against a 200 ms sink-disposal bound"
+        );
+        sink.Release();
+    }
+
+    [Fact]
+    public void Invalid_options_fail_at_provider_construction()
+    {
+        var formatter = new JsonLogFormatter();
+        var sink = NewBufferSink();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new HostLoomLoggerProvider(
+                formatter,
+                sink,
+                new HostLoomLoggerOptions { BatchSize = 0 }
+            )
+        );
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new HostLoomLoggerProvider(
+                formatter,
+                sink,
+                new HostLoomLoggerOptions { QueueCapacity = 0 }
+            )
+        );
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new HostLoomLoggerProvider(
+                formatter,
+                sink,
+                new HostLoomLoggerOptions { EnqueueTimeout = TimeSpan.Zero }
+            )
+        );
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new HostLoomLoggerProvider(
+                formatter,
+                sink,
+                new HostLoomLoggerOptions { QueueFullPolicy = (QueueFullPolicy)99 }
+            )
+        );
+        Assert.Throws<ArgumentException>(() =>
+            new HostLoomLoggerProvider(
+                formatter,
+                sink,
+                new HostLoomLoggerOptions { TimeProvider = null! }
+            )
+        );
+    }
+
+    [Fact]
     public async Task Disposal_returns_at_the_deadline_when_the_sink_is_stuck()
     {
         var sink = NewStuckSink();
@@ -289,12 +383,13 @@ public sealed class LoggingTests
         await provider.DisposeAsync();
 
         // The sink ignores cancellation entirely, so this is the worst case: disposal must still
-        // return at the deadline (plus the cooperative grace) and count what it left behind.
+        // return at the deadline (plus the cooperative grace) and count what it left behind —
+        // the five queued records plus the one in flight inside the stuck Write.
         Assert.True(
             elapsed.Elapsed < TimeSpan.FromSeconds(5),
             $"disposal took {elapsed.Elapsed} against a 200 ms deadline"
         );
-        Assert.Equal(5, provider.Dropped);
+        Assert.Equal(6, provider.Dropped);
         sink.Release();
     }
 
@@ -517,6 +612,8 @@ public sealed class LoggingTests
     private static BlockingSink NewBlockingSink() => new();
 
     private static StuckSink NewStuckSink() => new();
+
+    private static HangingDisposeSink NewHangingDisposeSink() => new();
 #pragma warning restore CA2000
 
     private static int Expensive(ref int counter)
@@ -580,6 +677,31 @@ public sealed class LoggingTests
     {
         public void Format(in LogRecord record, System.Buffers.IBufferWriter<byte> writer) =>
             throw new InvalidOperationException("the formatter broke");
+    }
+
+    /// <summary>Throws a cancellation nobody requested — must fault, not stop silently.</summary>
+    private sealed class CancellingFormatter : ILogFormatter
+    {
+        public void Format(in LogRecord record, System.Buffers.IBufferWriter<byte> writer) =>
+            throw new OperationCanceledException("a stray cancellation");
+    }
+
+    /// <summary>Writes and flushes cleanly, then hangs inside DisposeAsync.</summary>
+    private sealed class HangingDisposeSink : ILogSink
+    {
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+
+        public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken) { }
+
+        public ValueTask FlushAsync(CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+
+        public void Release() => _release.TrySetResult();
+
+        public async ValueTask DisposeAsync() =>
+            await _release.Task.WaitAsync(TimeSpan.FromSeconds(30));
     }
 
     /// <summary>

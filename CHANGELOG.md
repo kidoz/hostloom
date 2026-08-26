@@ -32,6 +32,19 @@ are derived from release tags at publish time.
 - Log timestamps follow operating-system clock corrections instead of drifting from a Stopwatch
   anchor captured at startup.
 
+### Fixed
+
+- A stray `OperationCanceledException` from a formatter or sink faults the logging pipeline
+  instead of silently stopping the writer while producers still see it as running.
+- Sink disposal is bounded by the logging shutdown timeout, so a sink that hangs inside its own
+  flush-on-dispose cannot hang application shutdown.
+- The logging writer runs on a dedicated background thread, so a stalled synchronous sink write
+  no longer occupies a thread-pool worker.
+- Records formatted but not yet accepted by the sink are counted when the pipeline faults or
+  shutdown abandons the writer.
+- Logging options are validated at provider construction: queue capacity, batch size, queue-full
+  policy, time provider, and both timeouts fail fast with actionable errors.
+
 ## [0.1.0] - 2026-08-25
 
 ### Added
