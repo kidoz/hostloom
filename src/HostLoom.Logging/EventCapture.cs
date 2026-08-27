@@ -88,10 +88,10 @@ internal sealed class EventCapture(
             return;
         }
 
-        var buffer = new ArrayBufferWriter<byte>(256);
-        destructurer.Destructure(value!, buffer, remaining);
-        remaining -= buffer.WrittenCount;
-        entry.AddFieldJson(name, buffer.WrittenSpan);
+        // The span points into thread-local scratch; AddFieldJson copies it out immediately.
+        var json = destructurer.Destructure(value!, remaining);
+        remaining -= json.Length;
+        entry.AddFieldJson(name, json);
     }
 
     /// <summary>

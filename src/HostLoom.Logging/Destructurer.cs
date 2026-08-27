@@ -26,26 +26,98 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
 
     private readonly ConcurrentDictionary<Type, TypePlan> _plans = new();
 
-    public void Destructure(object value, ArrayBufferWriter<byte> buffer, int byteBudget)
+    /// <summary>
+    /// Per-thread scratch: Utf8JsonWriter demands multi-kilobyte chunks from its buffer writer,
+    /// so a fresh small buffer per event costs ~5 KB of garbage. Reusing buffer, writer, and
+    /// ancestors per thread leaves only the unavoidable work (getter boxing, date strings).
+    /// </summary>
+    [ThreadStatic]
+    private static Scratch? _scratch;
+
+    private sealed class Scratch
     {
+        public ArrayBufferWriter<byte> Buffer = new(4 * 1024);
+        public Utf8JsonWriter? Writer;
+        public object?[] Ancestors = [];
+        public bool Busy;
+    }
+
+    /// <summary>
+    /// Serializes one value into a complete JSON fragment and returns it as a span over
+    /// thread-local scratch. The caller must copy the span before the next call on this thread —
+    /// the entry writers do, immediately.
+    /// </summary>
+    public ReadOnlySpan<byte> Destructure(object value, int byteBudget)
+    {
+        var scratch = _scratch ??= new Scratch();
+        if (scratch.Busy)
+        {
+            // Reentrancy: a property getter is logging while being destructured. Rare enough
+            // that a throwaway buffer is fine; the thread-local one is mid-walk above us.
+            var local = new ArrayBufferWriter<byte>(1024);
+            using var localWriter = new Utf8JsonWriter(local, WriterOptions);
+            DestructureInto(localWriter, local, value, byteBudget, new object?[options.MaxDepth]);
+            return local.WrittenSpan;
+        }
+
+        if (scratch.Buffer.Capacity > 128 * 1024)
+        {
+            // A burst grew the retained buffer past reason; a fresh one caps the retention.
+            scratch.Buffer = new ArrayBufferWriter<byte>(4 * 1024);
+            scratch.Writer = null;
+        }
+
+        if (scratch.Ancestors.Length < options.MaxDepth)
+        {
+            scratch.Ancestors = new object?[options.MaxDepth];
+        }
+
+        scratch.Busy = true;
         try
         {
-            using var writer = new Utf8JsonWriter(buffer, WriterOptions);
-            var walk = new Walk(new object?[options.MaxDepth], byteBudget);
-            WriteValue(writer, value, 0, walk);
-            writer.Flush();
+            scratch.Buffer.ResetWrittenCount();
+            var writer = scratch.Writer ??= new Utf8JsonWriter(Stream.Null, WriterOptions);
+            writer.Reset(scratch.Buffer);
+            if (!DestructureInto(writer, scratch.Buffer, value, byteBudget, scratch.Ancestors))
+            {
+                // The writer's state is unknown after a mid-write failure; rebuild it lazily.
+                scratch.Writer = null;
+            }
+
+            return scratch.Buffer.WrittenSpan;
         }
-        catch (Exception)
+        finally
         {
-            // The writer's using-dispose already flushed whatever partial output existed; throw
-            // it away and emit the sentinel so the fragment is always valid JSON.
-            metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
-            buffer.ResetWrittenCount();
-            buffer.Write("\"[DestructuringFailed]\""u8);
+            scratch.Busy = false;
         }
     }
 
-    private sealed record Walk(object?[] Ancestors, int ByteLimit)
+    private bool DestructureInto(
+        Utf8JsonWriter writer,
+        ArrayBufferWriter<byte> buffer,
+        object value,
+        int byteBudget,
+        object?[] ancestors
+    )
+    {
+        try
+        {
+            WriteValue(writer, value, 0, new Walk(ancestors, byteBudget));
+            writer.Flush();
+            return true;
+        }
+        catch (Exception)
+        {
+            // Throw away whatever partial output exists and emit the sentinel, so the
+            // fragment is always valid JSON.
+            metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
+            buffer.ResetWrittenCount();
+            buffer.Write("\"[DestructuringFailed]\""u8);
+            return false;
+        }
+    }
+
+    private readonly record struct Walk(object?[] Ancestors, int ByteLimit)
     {
         public bool OverBudget(Utf8JsonWriter writer) =>
             writer.BytesCommitted + writer.BytesPending >= ByteLimit;
