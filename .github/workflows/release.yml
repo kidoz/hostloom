@@ -138,6 +138,9 @@ jobs:
             HostLoom.Transport.Kafka
             HostLoom.AspNetCore.WebSockets
             HostLoom.Analyzers
+            HostLoom.Diagnostics
+            HostLoom.Mapping
+            HostLoom.Mapping.DependencyInjection
           )
           for package_id in "${packages[@]}"; do
             package="artifacts/packages/${package_id}.${{ steps.version.outputs.version }}.nupkg"
