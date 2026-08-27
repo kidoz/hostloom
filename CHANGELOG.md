@@ -8,6 +8,8 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-27
+
 ### Added
 
 - `HostLoom.Diagnostics`, a composition ledger that records what each registration decided —
@@ -168,5 +170,6 @@ are derived from release tags at publish time.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/kidoz/hostloom/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kidoz/hostloom/releases/tag/v0.1.0
