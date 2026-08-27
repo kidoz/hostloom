@@ -36,6 +36,10 @@ are derived from release tags at publish time.
   length, and encoded bytes per record — every cap cut marked with an explicit sentinel, and any
   getter or serializer failure emitting `"[DestructuringFailed]"` instead of ever falling back
   to `ToString()`.
+- Logging benchmarks against the deployed Serilog shape (`CompactJsonFormatter` on the calling
+  thread): template with two scalar holes on the fast and interface paths, a destructured
+  mid-size contract, an event enriched with eleven trace properties, a scoped event, a disabled
+  level, and formatter-only throughput for the background half.
 - Configuration binding for the logging provider: an `AddHostLoomLogging` overload binds
   `HostLoomLoggerOptions` from a configuration section (canonically `HostLoom:Logging`), with
   the code callback applying after configuration and unknown or invalid keys failing at host
