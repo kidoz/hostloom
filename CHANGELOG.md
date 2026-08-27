@@ -20,6 +20,24 @@ are derived from release tags at publish time.
   `AddCompositionDiagnostics`, and that opt-in may come after the decisions it reports. The
   package is a standalone leaf that nothing else depends on, so an application that does not
   reference it carries nothing.
+- `HostLoom.Mapping` and `HostLoom.Mapping.DependencyInjection`, explicit object mapping that keeps
+  renames, required members, constructor changes, conversions, and nullability visible to the C#
+  compiler and to code review, instead of deferring them to startup or to production. A map is an
+  ordinary class implementing the closed generic `IMapper<TSource, TDestination>` and is invoked
+  directly: nothing scans assemblies, inspects members for mapping, compiles expressions, emits
+  code, or dispatches from `object` to `Type`, so both projects opt into the .NET SDK trimming and
+  Native AOT analyzers without reflection annotations on mapped members.
+- `AddHostLoomMapping` registers one map class per source and destination pair, transient by
+  default so a map can take scoped dependencies through its constructor, with an overload that
+  registers a prebuilt stateless map as a singleton. The non-generic `IMapper` dispatcher is
+  scoped, so a scoped dependency cannot be promoted through the normal registration path;
+  orchestration code coordinating several pairs writes `mapper.From(source).To<Destination>()`
+  through an allocation-free source wrapper. A duplicate pair fails at registration rather than
+  resolving ambiguously, and a missing pair throws `MappingNotFoundException` naming both types.
+  Mapping stays synchronous and performs no I/O, and this first release deliberately omits
+  reverse-map inference, flattening conventions, lifecycle callbacks, runtime dictionaries,
+  polymorphic `object` dispatch, and provider-specific projections — query projections remain
+  explicit `IQueryable.Select` expressions so a provider still receives the whole expression tree.
 - `HostLoom.Analyzers`, an opt-in Roslyn analyzer package that reports omitted available
   cancellation tokens on HostLoom async calls (`HLM0001`), synchronous blocking over HostLoom
   `Task` and `ValueTask` operations (`HLM0002`), and singleton dependency-injection registration

@@ -16,6 +16,8 @@ middleware pipeline. The current slice implements:
 - dependency-injection pipeline registration with named stages, per-run filter
   resolution, feature toggles, startup validation, built-in per-filter metrics
   and tracing, and a deterministic test harness;
+- explicit, compile-time-safe object maps with scoped dependency-injection dispatch and
+  reflection-free, Native AOT-compatible map dispatch;
 - typed `IRequest<TResponse>` contracts with handler, behavior, and client
   abstractions;
 - typed `IEvent` contracts published to a topic and fanned out to named
@@ -59,6 +61,8 @@ packages are versioned together:
 | `HostLoom.AspNetCore.WebSockets` | Authenticated WebSocket RPC and subscriptions |
 | `HostLoom.Logging` | Allocation-free UTF-8 logging provider |
 | `HostLoom.Diagnostics` | Composition ledger and startup report of registration decisions |
+| `HostLoom.Mapping` | Explicit, compile-time-safe, AOT-friendly object mapping |
+| `HostLoom.Mapping.DependencyInjection` | Scoped mapper dispatch and explicit map registration |
 
 Install only the runtime and transport needed by the application, for example:
 
@@ -258,6 +262,37 @@ a debug endpoint:
 ```csharp
 app.MapGet("/diagnostics/pipeline", (HostLoomProbe probe) => probe.ReceivePipeline());
 ```
+
+## Explicit object mapping
+
+`HostLoom.Mapping` is a compile-time-safe alternative to runtime convention mapping. Each map is
+an ordinary class, so constructors, required members, conversions, and nullability remain visible
+to C# and code review. The core package is dependency-free; the DI adapter uses closed generic
+registrations without assembly scanning, reflection-based member mapping, expression compilation,
+or runtime code generation:
+
+```csharp
+using HostLoom.Mapping;
+using HostLoom.Mapping.DependencyInjection;
+
+builder.Services.AddHostLoomMapping(mapping =>
+    mapping.Add<Customer, CustomerDto, CustomerMapper>());
+
+public sealed class CustomerMapper : IMapper<Customer, CustomerDto>
+{
+    public CustomerDto Map(Customer source) => new(source.Id, source.Name.Trim());
+}
+```
+
+Inject `IMapper<Customer, CustomerDto>` into a component that needs one pair. Orchestration code
+that coordinates several pairs can inject the scoped `IMapper` dispatcher and write
+`mapper.From(customer).To<CustomerDto>()`. Map classes are transient by default, duplicate pairs
+fail at registration, and missing pairs throw `MappingNotFoundException` with both types.
+
+Mapping is deliberately synchronous and performs no I/O. Fetch and enrich data outside a map, use
+distinct destination types for distinct semantic views, and write database projections directly
+as `IQueryable.Select` expressions. Both mapping packages enable the .NET SDK Native AOT and
+trimming analyzers.
 
 ## Logging
 
@@ -569,6 +604,8 @@ src/HostLoom/                    messaging kernel
   Wire/                          envelope, logical type names, codec
 src/HostLoom.Analyzers/          Roslyn usage analyzers and rule documentation
 src/HostLoom.Diagnostics/        composition ledger, report, and startup reporter
+src/HostLoom.Mapping/            dependency-free explicit mapping contracts
+src/HostLoom.Mapping.DependencyInjection/ scoped dispatch and closed map registration
 src/HostLoom.Pipelines/          transport-neutral middleware pipelines
   Contexts/                      pipe context and thread-safe typed payloads
   Filters/                       delegate, execute, conditional, concurrency, timeout, instrumented, terminal
