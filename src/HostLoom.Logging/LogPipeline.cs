@@ -478,7 +478,8 @@ internal sealed class LogPipeline : IAsyncDisposable
             {
                 // Bounded like the drain: a sink that hangs inside its own flush-on-dispose must
                 // not be able to hang application shutdown.
-                await _sink.DisposeAsync()
+                await _sink
+                    .DisposeAsync()
                     .AsTask()
                     .WaitAsync(_options.ShutdownTimeout)
                     .ConfigureAwait(false);

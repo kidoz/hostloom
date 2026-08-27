@@ -153,9 +153,7 @@ public sealed class LoggingClefFormatterTests
         await provider.DisposeAsync();
 
         var lines = sink.Lines();
-        var roots = lines
-            .Select(line => JsonDocument.Parse(line).RootElement.Clone())
-            .ToArray();
+        var roots = lines.Select(line => JsonDocument.Parse(line).RootElement.Clone()).ToArray();
         return (roots, lines);
     }
 
@@ -172,8 +170,7 @@ public sealed class LoggingClefFormatterTests
             }
         }
 
-        public ValueTask FlushAsync(CancellationToken cancellationToken) =>
-            ValueTask.CompletedTask;
+        public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 

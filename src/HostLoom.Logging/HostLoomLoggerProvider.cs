@@ -4,7 +4,10 @@ using Microsoft.Extensions.Logging;
 namespace HostLoom.Logging;
 
 [ProviderAlias("HostLoom")]
-public sealed class HostLoomLoggerProvider : ILoggerProvider, ISupportExternalScope, IAsyncDisposable
+public sealed class HostLoomLoggerProvider
+    : ILoggerProvider,
+        ISupportExternalScope,
+        IAsyncDisposable
 {
     private readonly ConcurrentDictionary<string, HostLoomLogger> _loggers = new(
         StringComparer.Ordinal

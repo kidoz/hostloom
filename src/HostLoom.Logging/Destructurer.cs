@@ -371,7 +371,12 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         writer.WriteEndArray();
     }
 
-    private void WriteDictionary(Utf8JsonWriter writer, IDictionary dictionary, int depth, Walk walk)
+    private void WriteDictionary(
+        Utf8JsonWriter writer,
+        IDictionary dictionary,
+        int depth,
+        Walk walk
+    )
     {
         writer.WriteStartObject();
         var members = 0;

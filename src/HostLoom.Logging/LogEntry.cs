@@ -159,7 +159,15 @@ internal sealed class LogEntry
 
         if (format is null)
         {
-            RecordField(name, kind, valueInMessage: true, renderingStart, _messageLength - renderingStart, 0, -1);
+            RecordField(
+                name,
+                kind,
+                valueInMessage: true,
+                renderingStart,
+                _messageLength - renderingStart,
+                0,
+                -1
+            );
             return;
         }
 
@@ -196,7 +204,15 @@ internal sealed class LogEntry
         EnsureMessage(text.Length);
         text.CopyTo(_message.AsSpan(_messageLength));
         _messageLength += text.Length;
-        RecordField(name, LogFieldKind.Boolean, valueInMessage: true, start, _messageLength - start, 0, -1);
+        RecordField(
+            name,
+            LogFieldKind.Boolean,
+            valueInMessage: true,
+            start,
+            _messageLength - start,
+            0,
+            -1
+        );
     }
 
     public void AppendText(ReadOnlySpan<char> value, string? name)
@@ -204,7 +220,15 @@ internal sealed class LogEntry
         var start = _messageLength;
         EnsureMessage(Encoding.UTF8.GetMaxByteCount(value.Length));
         _messageLength += Encoding.UTF8.GetBytes(value, _message.AsSpan(_messageLength));
-        RecordField(name, LogFieldKind.Text, valueInMessage: true, start, _messageLength - start, 0, -1);
+        RecordField(
+            name,
+            LogFieldKind.Text,
+            valueInMessage: true,
+            start,
+            _messageLength - start,
+            0,
+            -1
+        );
     }
 
     public void Reset()
@@ -498,8 +522,7 @@ internal sealed class LogEntry
                     continue;
                 }
 
-                var beaten =
-                    other.Source < field.Source || (other.Source == field.Source && j > i);
+                var beaten = other.Source < field.Source || (other.Source == field.Source && j > i);
                 if (beaten)
                 {
                     _fields[i] = field with { NameLength = -1 };

@@ -20,8 +20,6 @@ internal static class ExceptionText
             text = exception.GetType().FullName ?? "Exception";
         }
 
-        return text.Length <= maxLength
-            ? text
-            : string.Concat(text.AsSpan(0, maxLength), "…");
+        return text.Length <= maxLength ? text : string.Concat(text.AsSpan(0, maxLength), "…");
     }
 }

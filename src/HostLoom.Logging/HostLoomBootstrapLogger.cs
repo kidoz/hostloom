@@ -55,11 +55,7 @@ public sealed class HostLoomBootstrapLogger : ILogger, IDisposable
         _minimumLevel = minimumLevel;
         _category = category;
         _failFast = failFast;
-        _capture = new EventCapture(
-            _options,
-            new Destructurer(_options.Destructuring, null),
-            null
-        );
+        _capture = new EventCapture(_options, new Destructurer(_options.Destructuring, null), null);
         _staticFields = LogPipeline.BuildStaticFields(_options);
     }
 

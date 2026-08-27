@@ -50,7 +50,11 @@ public sealed class LoggingScopeTests
         var logger = provider.CreateLogger("Ranked");
         var orderId = 7;
 
-        using (logger.BeginScope(new Dictionary<string, object?> { ["TenantId"] = 1, ["orderId"] = "outer" }))
+        using (
+            logger.BeginScope(
+                new Dictionary<string, object?> { ["TenantId"] = 1, ["orderId"] = "outer" }
+            )
+        )
         using (logger.BeginScope(new Dictionary<string, object?> { ["TenantId"] = 2 }))
         {
             logger.LogFast(LogLevel.Information, $"order {orderId}");
@@ -203,8 +207,7 @@ public sealed class LoggingScopeTests
             }
         }
 
-        public ValueTask FlushAsync(CancellationToken cancellationToken) =>
-            ValueTask.CompletedTask;
+        public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 

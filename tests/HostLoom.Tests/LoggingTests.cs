@@ -325,11 +325,7 @@ public sealed class LoggingTests
         var sink = NewBufferSink();
 
         Assert.Throws<ArgumentOutOfRangeException>(() =>
-            new HostLoomLoggerProvider(
-                formatter,
-                sink,
-                new HostLoomLoggerOptions { BatchSize = 0 }
-            )
+            new HostLoomLoggerProvider(formatter, sink, new HostLoomLoggerOptions { BatchSize = 0 })
         );
         Assert.Throws<ArgumentOutOfRangeException>(() =>
             new HostLoomLoggerProvider(
@@ -733,8 +729,7 @@ public sealed class LoggingTests
         logger.LogFast(LogLevel.Information, $"after a backward step");
         await provider.DisposeAsync();
 
-        var stamps = sink
-            .Lines()
+        var stamps = sink.Lines()
             .Select(line =>
                 JsonDocument.Parse(line).RootElement.GetProperty("@timestamp").GetDateTimeOffset()
             )
@@ -1073,8 +1068,7 @@ public sealed class LoggingTests
 
         public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken) { }
 
-        public ValueTask FlushAsync(CancellationToken cancellationToken) =>
-            ValueTask.CompletedTask;
+        public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
         public void Release() => _release.TrySetResult();
 
@@ -1101,8 +1095,7 @@ public sealed class LoggingTests
         }
 #pragma warning restore CA2016
 
-        public ValueTask FlushAsync(CancellationToken cancellationToken) =>
-            ValueTask.CompletedTask;
+        public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
         public void WaitUntilWriting() => _entered.Wait(TimeSpan.FromSeconds(10));
 

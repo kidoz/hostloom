@@ -31,9 +31,7 @@ public sealed class LoggingEnrichmentTests
                             writer.Add("Sampled", true);
                         }
                     ),
-                    new DelegateEnricher(
-                        (ref LogEntryWriter writer) => writer.Add("Stage", 2)
-                    ),
+                    new DelegateEnricher((ref LogEntryWriter writer) => writer.Add("Stage", 2)),
                 },
             }
         );
@@ -215,8 +213,7 @@ public sealed class LoggingEnrichmentTests
             }
         }
 
-        public ValueTask FlushAsync(CancellationToken cancellationToken) =>
-            ValueTask.CompletedTask;
+        public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 

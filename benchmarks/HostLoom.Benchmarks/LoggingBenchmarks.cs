@@ -248,8 +248,7 @@ public class LoggingBenchmarks
 
         public bool Express { get; set; } = true;
 
-        public DateTimeOffset PlacedAt { get; set; } =
-            new(2026, 8, 26, 10, 0, 0, TimeSpan.Zero);
+        public DateTimeOffset PlacedAt { get; set; } = new(2026, 8, 26, 10, 0, 0, TimeSpan.Zero);
 
         public IReadOnlyList<string> Tags { get; } = ["priority", "gift", "eu"];
     }
@@ -314,9 +313,7 @@ public class LoggingBenchmarks
             logEvent.AddPropertyIfAbsent(
                 propertyFactory.CreateProperty("TraceId", Ambient.TraceId)
             );
-            logEvent.AddPropertyIfAbsent(
-                propertyFactory.CreateProperty("SpanId", Ambient.SpanId)
-            );
+            logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty("SpanId", Ambient.SpanId));
             logEvent.AddPropertyIfAbsent(
                 propertyFactory.CreateProperty("SourceType", Ambient.SourceType)
             );
@@ -342,8 +339,7 @@ public class LoggingBenchmarks
     {
         public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken) { }
 
-        public ValueTask FlushAsync(CancellationToken cancellationToken) =>
-            ValueTask.CompletedTask;
+        public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

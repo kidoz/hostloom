@@ -22,8 +22,8 @@ namespace HostLoom.Tests
         [Fact]
         public async Task A_destructured_object_becomes_nested_typed_json()
         {
-            var (root, _) = await LogAsync(
-                logger => logger.LogInformation("got {@Order}", new Order())
+            var (root, _) = await LogAsync(logger =>
+                logger.LogInformation("got {@Order}", new Order())
             );
 
             var order = root.GetProperty("Order");
@@ -44,8 +44,8 @@ namespace HostLoom.Tests
                 Password = "hunter2",
                 Nested = new Account { Password = "hunter3" },
             };
-            var (root, line) = await LogAsync(
-                logger => logger.LogInformation("login {@Account}", account)
+            var (root, line) = await LogAsync(logger =>
+                logger.LogInformation("login {@Account}", account)
             );
 
             var logged = root.GetProperty("Account");
@@ -61,8 +61,8 @@ namespace HostLoom.Tests
         public async Task LogMasked_replaces_or_deterministically_reveals()
         {
             var card = new Payment { Token = "secret-token", Card = "1234567890123456" };
-            var (root, line) = await LogAsync(
-                logger => logger.LogInformation("pay {@Payment}", card)
+            var (root, line) = await LogAsync(logger =>
+                logger.LogInformation("pay {@Payment}", card)
             );
 
             var logged = root.GetProperty("Payment");
@@ -75,9 +75,8 @@ namespace HostLoom.Tests
         [Fact]
         public async Task NotLogged_wins_when_both_attributes_are_present()
         {
-            var (root, line) = await LogAsync(
-                logger =>
-                    logger.LogInformation("both {@Value}", new Contested { Secret = "tricky" })
+            var (root, line) = await LogAsync(logger =>
+                logger.LogInformation("both {@Value}", new Contested { Secret = "tricky" })
             );
 
             Assert.False(root.GetProperty("Value").TryGetProperty("Secret", out _));
@@ -92,8 +91,8 @@ namespace HostLoom.Tests
         [Fact]
         public async Task A_throwing_getter_yields_the_sentinel_and_never_tostring()
         {
-            var (root, line) = await LogAsync(
-                logger => logger.LogInformation("broken {@Thing}", new Volatile())
+            var (root, line) = await LogAsync(logger =>
+                logger.LogInformation("broken {@Thing}", new Volatile())
             );
 
             var thing = root.GetProperty("Thing");
@@ -108,9 +107,7 @@ namespace HostLoom.Tests
         {
             var node = new Node { Name = "a" };
             node.Next = node;
-            var (root, _) = await LogAsync(
-                logger => logger.LogInformation("looped {@Node}", node)
-            );
+            var (root, _) = await LogAsync(logger => logger.LogInformation("looped {@Node}", node));
 
             Assert.Equal("[Cycle]", root.GetProperty("Node").GetProperty("Next").GetString());
         }
@@ -156,8 +153,8 @@ namespace HostLoom.Tests
                 Blob = new byte[] { 1, 2, 3 },
                 When = new DateTimeOffset(2026, 8, 26, 10, 0, 0, TimeSpan.Zero),
             };
-            var (root, _) = await LogAsync(
-                logger => logger.LogInformation("shapes {@Value}", value)
+            var (root, _) = await LogAsync(logger =>
+                logger.LogInformation("shapes {@Value}", value)
             );
 
             var logged = root.GetProperty("Value");
@@ -183,9 +180,7 @@ namespace HostLoom.Tests
                 logger => logger.LogInformation("3p {@Dto}", dto),
                 options =>
                 {
-                    options.Destructuring.NotLogged<ThirdPartyDto>(
-                        nameof(ThirdPartyDto.ApiKey)
-                    );
+                    options.Destructuring.NotLogged<ThirdPartyDto>(nameof(ThirdPartyDto.ApiKey));
                     options.Destructuring.Mask<ThirdPartyDto>(
                         nameof(ThirdPartyDto.Card),
                         showLast: 4
@@ -204,8 +199,8 @@ namespace HostLoom.Tests
         public async Task Legacy_destructurama_attributes_are_honored_by_name()
         {
             var dto = new LegacyDto { Name = "ada", ApiKey = "legacy-secret" };
-            var (root, line) = await LogAsync(
-                logger => logger.LogInformation("legacy {@Dto}", dto)
+            var (root, line) = await LogAsync(logger =>
+                logger.LogInformation("legacy {@Dto}", dto)
             );
 
             Assert.Equal("ada", root.GetProperty("Dto").GetProperty("Name").GetString());

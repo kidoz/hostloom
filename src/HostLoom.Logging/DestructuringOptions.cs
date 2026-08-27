@@ -68,7 +68,10 @@ public sealed class DestructuringOptions
     {
         ArgumentNullException.ThrowIfNull(member);
         ArgumentNullException.ThrowIfNull(text);
-        RulesFor(typeof(T))[member] = new MemberRule(false, new MaskRule(text, showFirst, showLast));
+        RulesFor(typeof(T))[member] = new MemberRule(
+            false,
+            new MaskRule(text, showFirst, showLast)
+        );
         return this;
     }
 
