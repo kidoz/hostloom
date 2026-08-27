@@ -8,6 +8,7 @@
   <Folder Name="/src/">
     <Project Path="src/HostLoom.Analyzers/HostLoom.Analyzers.csproj" />
     <Project Path="src/HostLoom.AspNetCore.WebSockets/HostLoom.AspNetCore.WebSockets.csproj" />
+    <Project Path="src/HostLoom.Diagnostics/HostLoom.Diagnostics.csproj" />
     <Project Path="src/HostLoom.Logging/HostLoom.Logging.csproj" />
     <Project Path="src/HostLoom.Pipelines.DependencyInjection/HostLoom.Pipelines.DependencyInjection.csproj" />
     <Project Path="src/HostLoom.Pipelines.Testing/HostLoom.Pipelines.Testing.csproj" />

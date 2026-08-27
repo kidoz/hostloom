@@ -58,6 +58,7 @@ packages are versioned together:
 | `HostLoom.Transport.Kafka` | Kafka request and consumer-group event transport |
 | `HostLoom.AspNetCore.WebSockets` | Authenticated WebSocket RPC and subscriptions |
 | `HostLoom.Logging` | Allocation-free UTF-8 logging provider |
+| `HostLoom.Diagnostics` | Composition ledger and startup report of registration decisions |
 
 Install only the runtime and transport needed by the application, for example:
 
@@ -300,6 +301,88 @@ to stdout — same formatter, masking policy, timestamps, and static fields — 
 level supplied at construction. Dispose it once the hosted provider is up; it retains
 nothing, so the hand-off neither replays nor duplicates events.
 
+## Composition diagnostics
+
+Registration builds a plan and executes nothing, so the moment a branch is taken is the
+one moment with no logger, no bound options, and no filter configuration — which is why
+composition logging so often ends up as a static `Log.Debug` call that fires before the
+real sinks and levels exist. `HostLoom.Diagnostics` inverts that: registration records
+its decisions into a ledger, and the whole plan is reported once at startup, through the
+application's own logging stack.
+
+```csharp
+using HostLoom.Diagnostics;
+
+public static IServiceCollection AddOrderPublishing(
+    this IServiceCollection services, OrderOptions options)
+{
+    if (options.Kafka.Enabled)
+    {
+        services.AddSingleton<IOrderPublisher, KafkaOrderPublisher>();
+        services.RecordComposition("OrderPublisher", "Kafka", "Orders:Kafka:Enabled=true");
+    }
+    else
+    {
+        services.AddSingleton<IOrderPublisher, InProcessOrderPublisher>();
+        services.RecordComposition("OrderPublisher", "InProcess", "Orders:Kafka:Enabled=false");
+    }
+
+    if (options.Outbox is null)
+    {
+        services.RecordSkippedComposition("Outbox", "no Orders:Outbox section bound");
+    }
+
+    return services;
+}
+```
+
+`AddCompositionDiagnostics()` turns on the report; without it nothing is written, so a
+library can record unconditionally. The opt-in may appear anywhere in the composition
+root, because the report is taken when the host starts rather than when diagnostics are
+switched on:
+
+```csharp
+builder.Services.AddCompositionDiagnostics();
+```
+
+```text
+info: HostLoom.Diagnostics.Composition
+      HostLoom composition: OrderPublisher=Kafka | Outbox=(skipped) | Scheduler=Quartz
+```
+
+One `Information` line carries the whole manifest, because a composition question is
+asked when production misbehaves — exactly when a `Debug` line has already been filtered
+out. `Debug` adds one line per decision with its reason and the registration method that
+recorded it, captured automatically from the call site. A component recorded twice with
+choices that disagree raises a `Warning` naming both, without guessing which one the
+container resolved. Everything is written under the
+`HostLoom.Diagnostics.Composition` category, so standard `Logging` configuration raises,
+lowers, or silences it.
+
+Recording a component that was skipped is the part worth the discipline: a log that only
+reports what was registered cannot answer "what is missing", because the branch that did
+nothing wrote nothing. Nothing else recovers that.
+
+Use it selectively. A branch whose input is already visible in configuration rarely earns
+an entry; the ones that do are components deliberately left out, and branches whose
+mapping from configuration to registration is not a direct toggle. Nothing enforces the
+calls, so an entry left behind by a branch that changed will misreport — keep each one
+next to the registration it describes, and prefer no entry to a stale one.
+
+The report is a plan, not a validation, and it is not the cheapest tool for every
+question. Keep `ValidateOnBuild` and `ValidateScopes` on in development for unresolvable
+dependencies, `ValidateOnStart` on options for settings that are absent or invalid, and
+`((IConfigurationRoot)builder.Configuration).GetDebugView(…)` for which provider supplied
+which value. Each of those is one line and stays correct on its own; the ledger is the
+one that asks something of you in return.
+
+The package stands alone and no other package depends on it, so an application that never
+references it carries nothing. Pipeline topology is not recorded here — pipeline
+registration logs each resolved topology itself when the host starts.
+
+`CompositionLedger` and its `Snapshot()` are public, so a test can assert on what
+registration decided instead of capturing log output to observe it.
+
 ## Transports
 
 A request address is a logical name; each adapter maps it onto its own honest
@@ -485,6 +568,7 @@ src/HostLoom/                    messaging kernel
   Serialization/                 System.Text.Json serialization boundary
   Wire/                          envelope, logical type names, codec
 src/HostLoom.Analyzers/          Roslyn usage analyzers and rule documentation
+src/HostLoom.Diagnostics/        composition ledger, report, and startup reporter
 src/HostLoom.Pipelines/          transport-neutral middleware pipelines
   Contexts/                      pipe context and thread-safe typed payloads
   Filters/                       delegate, execute, conditional, concurrency, timeout, instrumented, terminal

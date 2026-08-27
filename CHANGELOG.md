@@ -10,6 +10,16 @@ are derived from release tags at publish time.
 
 ### Added
 
+- `HostLoom.Diagnostics`, a composition ledger that records what each registration decided —
+  which branch activated, why, and what was deliberately skipped — and reports the whole plan
+  once at host start under the `HostLoom.Diagnostics.Composition` category: one `Information`
+  manifest line for the composition, one `Debug` line per decision carrying its reason and the
+  registration method that recorded it, and a `Warning` naming both choices whenever one
+  component was recorded with choices that disagree. Collection is unconditional and passive, so
+  a library can record without imposing anything: nothing is written until an application calls
+  `AddCompositionDiagnostics`, and that opt-in may come after the decisions it reports. The
+  package is a standalone leaf that nothing else depends on, so an application that does not
+  reference it carries nothing.
 - `HostLoom.Analyzers`, an opt-in Roslyn analyzer package that reports omitted available
   cancellation tokens on HostLoom async calls (`HLM0001`), synchronous blocking over HostLoom
   `Task` and `ValueTask` operations (`HLM0002`), and singleton dependency-injection registration
