@@ -10,6 +10,23 @@ are derived from release tags at publish time.
 
 ### Fixed
 
+- A singleton mapping dispatcher now requires every map to be a singleton, and rejects anything
+  else at registration. A singleton dispatcher resolves from the root provider, which never goes
+  out of scope: a disposable map, or any disposable in its graph, was retained for the life of the
+  process instead of released per unit of work, and a scoped dependency reached through a transient
+  map was captured. Both were invisible at the call site. The documentation claiming a closed
+  transient map "carries no restriction" in a singleton was wrong for the same reason — such a map
+  is promoted to a singleton, so a scoped service inside it reproduces the Development-throws,
+  Production-succeeds asymmetry `HLM0006` exists to prevent. `HLM0006`'s wording is corrected to
+  say so.
+- The factory registration overload is documented as the exception rather than the rule for closing
+  a generic map. `Add<TEntity, TModel, EntityMapper<TEntity, TModel, TTranslation>>()` already
+  closes a constructed generic from a generic helper, and being an implementation type it stays
+  covered by `ValidateOnBuild`, where a factory body is opaque until the map is first resolved.
+  Factories are for construction the container cannot perform.
+- `MappedPairRegistry.Pairs` returns a read-only wrapper rather than the backing list, which could
+  be downcast and appended to with pairs the container would never resolve.
+
 - RabbitMQ no longer replaces a connection that automatic recovery owns. Observing `IsOpen: false`
   during a broker drop used to dispose the connection and build a new one, which cancelled the
   recovery that would have restored the channels, queues, and consumers created on it — leaving
@@ -54,12 +71,12 @@ are derived from release tags at publish time.
   miss is usually the diagnosis — a destination named one letter differently, or the pair registered
   in the other direction — so listing them turns reading the message into the fix.
 - `AddHostLoomMapping` takes the dispatcher's `ServiceLifetime`. Scoped remains the default and the
-  safe choice; singleton lets an `IHostedService` take the dispatcher directly and is sound only
-  when every registered map is itself singleton or transient with no scoped dependency, because a
-  singleton dispatcher resolves from the root provider. Injecting a closed
-  `IMapper<TSource, TDestination>` is still preferable and carries neither restriction — a
-  singleton dispatcher does not silence `HLM0006`, which reports the shape rather than the lifetime
-  it was registered with.
+  safe choice. Singleton lets an `IHostedService` take the dispatcher directly, and then every map
+  must be registered singleton too — anything else is rejected at registration, because a singleton
+  dispatcher resolves from the root provider and would retain each disposable map for the life of
+  the process. Injecting a closed `IMapper<TSource, TDestination>` is still preferable, provided
+  that map's own graph is singleton-safe. A singleton dispatcher does not silence `HLM0006`, which
+  reports the shape rather than the lifetime it was registered with.
 
 - `HLM0004` and `HLM0005`, completeness analysis for explicit maps, closing the one axis on which
   an explicit map is weaker than the convention mapping it replaces: a destination member that is
