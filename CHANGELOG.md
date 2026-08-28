@@ -10,6 +10,13 @@ are derived from release tags at publish time.
 
 ### Added
 
+- `HostLoom.Mapping.Testing`, composing an `IMapper` dispatcher from explicit maps with no
+  container, so a unit test does not have to build an `IServiceCollection` to obtain one. Maps are
+  added as instances or as inline delegates. Duplicate pairs are rejected exactly as
+  `MappingBuilder` rejects them, so a test cannot pass against a composition the container would
+  refuse, and `Build` takes a snapshot so a dispatcher already handed to a test is unaffected by
+  later additions. Substituting the dispatcher remains the worse option: it needs one substitute per
+  pair, and each returns what the test told it to rather than what a map would.
 - `MappedPairRegistry` and `IServiceCollection.GetMappedPairs()`, exposing the registered source and
   destination pairs so a service can assert its expectations while the container is still being
   composed, rather than discovering a missing pair on the first code path that needs it. One
