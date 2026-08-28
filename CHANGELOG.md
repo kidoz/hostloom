@@ -19,6 +19,19 @@ are derived from release tags at publish time.
 
 ### Added
 
+- Sequence and null-tolerant mapping in the core package, as extension methods on the closed
+  mapper: `MapMany` and `MapManyOrEmpty` return `IReadOnlyList<TDestination>` sized in one
+  allocation when the source reports a count, `MapManyDeferred` maps lazily for scans too large to
+  materialize, and `MapOrNull` maps one value through null. The null policy is carried by the
+  method name instead of by configuration, so unlike a convention mapper's global switch every
+  call site that depends on null tolerance stays greppable. `MapManyDeferred` validates its
+  arguments eagerly and only the mapping is deferred, so a null argument is reported at the call
+  that passed it rather than at the first enumeration. The `HostLoom.Mapping` README documents the
+  three ways AutoMapper's defaults differ, verified against AutoMapper 14 — including that
+  `AllowNullCollections = false` rewrites null collection *members* to empty during ordinary object
+  mapping, not only top-level collection maps, which is the case most likely to change behaviour
+  silently during a migration.
+
 - Mapping benchmarks against AutoMapper across four suites: one map in steady state for a flat
   eight-scalar contract and a nested one with a child object and child collection; a batch of 100
   and 1000; a scope-resolve-map unit of work through the container; and cold start through the

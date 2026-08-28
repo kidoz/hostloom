@@ -45,6 +45,45 @@ instance can also be registered explicitly. Container-created map classes expose
 constructor. Duplicate type pairs fail during registration, and a missing pair throws
 `MappingNotFoundException` with both requested types.
 
+## Sequences and null
+
+A map handles one value. Sequences are extension methods on the closed mapper, and the null policy
+is in the method name rather than in configuration:
+
+```csharp
+IReadOnlyList<CustomerDto> all   = customerMapper.MapMany(customers);          // null source throws
+IReadOnlyList<CustomerDto> safe  = customerMapper.MapManyOrEmpty(maybeNull);   // null source -> []
+IEnumerable<CustomerDto>   lazy  = customerMapper.MapManyDeferred(hugeScan);   // one at a time
+CustomerDto?               maybe = customerMapper.MapOrNull(maybeNullCustomer);
+```
+
+`MapMany` and `MapManyOrEmpty` return `IReadOnlyList<TDestination>` and are sized in one allocation
+when the source can report a count. `IReadOnlyList<T>` rather than `List<T>` keeps the signature
+clear of CA1002; the knock-on in a repository running all analyzers is that `.First()` on the
+result then trips CA1826, so index it with `[0]`. `MapManyDeferred` validates its arguments eagerly but maps
+lazily — do not let its result outlive the scope that resolved the mapper, or a map class holding
+scoped dependencies will be enumerated after they are disposed.
+
+### Migrating from a convention mapper
+
+AutoMapper's null handling differs from these contracts in three places, all verified against
+AutoMapper 14 rather than assumed:
+
+| Source                          | AutoMapper (default)   | HostLoom `Map` / `MapMany` | Behaviour-preserving |
+| ------------------------------- | ---------------------- | -------------------------- | -------------------- |
+| null scalar                     | `null`                 | `ArgumentNullException`    | `MapOrNull`          |
+| null collection                 | **empty** collection   | `ArgumentNullException`    | `MapManyOrEmpty`     |
+| null collection *member*        | **empty** collection   | whatever the map writes    | `MapManyOrEmpty`     |
+
+The third row is the one that surprises. `AllowNullCollections = false` is not only a top-level
+rule — it also rewrites null collection members to empty during ordinary object mapping. So a
+destination whose collection member came back empty may have had a null source all along, and a
+hand-written map that forwards the null is a behaviour change even though no call site changed.
+
+Translate to the `OrEmpty` and `OrNull` forms first, which preserves behaviour exactly, then treat
+each one as its own decision. Because the tolerance is named at the call site rather than set
+globally, every place that depends on it stays greppable — which a configuration flag does not.
+
 ## Design rules
 
 - Use different destination types for semantically different views instead of selecting a hidden

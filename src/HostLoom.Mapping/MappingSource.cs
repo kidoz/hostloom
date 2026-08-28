@@ -30,19 +30,3 @@ public readonly record struct MappingSource<TSource>
             )
             : _mapper.Map<TSource, TDestination>(_source);
 }
-
-/// <summary>Ergonomic extensions over the strongly typed mapper dispatcher.</summary>
-public static class MapperExtensions
-{
-    /// <summary>
-    /// Captures a source so callers can write <c>mapper.From(source).To&lt;Destination&gt;()</c>
-    /// without repeating the inferred source type.
-    /// </summary>
-    public static MappingSource<TSource> From<TSource>(this IMapper mapper, TSource source)
-        where TSource : notnull
-    {
-        ArgumentNullException.ThrowIfNull(mapper);
-        ArgumentNullException.ThrowIfNull(source);
-        return new MappingSource<TSource>(mapper, source);
-    }
-}

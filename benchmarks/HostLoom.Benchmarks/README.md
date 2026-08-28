@@ -42,9 +42,11 @@ the two libraries are not doing the same thing:
 - **AutoMapper is fully warm in the steady-state suites.** `CompileMappings()` runs during
   `GlobalSetup`, so expression compilation never lands inside a measured iteration. It is measured
   on purpose, and only, in `MappingStartupBenchmarks`.
-- **HostLoom has no collection feature.** Its side of the collection suite is the hand-written loop
-  an application actually writes, against AutoMapper's built-in array map. Both produce a
-  `CustomerDto[]` of the same length.
+- **The collection suite carries three rows, not two.** `HostLoom_Loop` is the hand-written loop an
+  application writes by hand, `HostLoom_MapMany` is the shipped helper that exists to replace it,
+  and `AutoMapper_Collection` is AutoMapper's built-in array map. All three produce the same number
+  of destination objects. The row that matters is `MapMany` against `Loop`: the helper is only
+  worth adopting if deleting a consumer's own extension class costs nothing.
 - **The nested destinations differ by one allocation.** AutoMapper materialises a `List<T>` for the
   `IReadOnlyList<T>` child collection; the hand-written map allocates an exact-sized array. That is
   AutoMapper's own choice of destination type, not a handicap imposed by the benchmark, but it is
