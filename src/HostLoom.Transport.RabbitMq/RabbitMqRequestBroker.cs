@@ -376,12 +376,36 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             }
 
             _connection = await _connectionFactory(cancellationToken).ConfigureAwait(false);
+            _connection.QueueNameChangedAfterRecoveryAsync += OnQueueNameChangedAfterRecoveryAsync;
             return _connection;
         }
         finally
         {
             _initializationGate.Release();
         }
+    }
+
+    /// <summary>
+    /// Follows the reply queue across a recovery that renames it.
+    /// </summary>
+    /// <remarks>
+    /// The reply queue is server-named and exclusive, so topology recovery re-declares it under a
+    /// new name. Keeping the connection through a drop is what makes this reachable: the recovered
+    /// channel reports itself open, so nothing re-declares the reply path, and the cached name
+    /// would keep addressing a queue that no longer exists — every request timing out afterwards,
+    /// permanently, on a connection that looks healthy.
+    /// </remarks>
+    private Task OnQueueNameChangedAfterRecoveryAsync(
+        object? sender,
+        QueueNameChangedAfterRecoveryEventArgs eventArgs
+    )
+    {
+        if (string.Equals(_replyQueue, eventArgs.NameBefore, StringComparison.Ordinal))
+        {
+            _replyQueue = eventArgs.NameAfter;
+        }
+
+        return Task.CompletedTask;
     }
 
     /// <summary>
