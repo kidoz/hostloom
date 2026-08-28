@@ -1,7 +1,12 @@
 using HostLoom.Mapping;
 using HostLoom.Mapping.DependencyInjection;
+using HostLoom.Tests.MappingInference.Maps;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
+
+// Note for future edits: this file deliberately does NOT import
+// HostLoom.Tests.MappingInference.Contracts. Adding that using would silently void
+// A_registration_never_names_the_contract_types, which exists to prove it is unnecessary.
 
 namespace HostLoom.Tests;
 
@@ -258,6 +263,120 @@ public sealed class MappingTests
     }
 
     [Fact]
+    public void A_map_registers_from_the_pair_its_interface_already_declares()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(new NamePolicy("Customer: "));
+        services.AddHostLoomMapping(mapping => mapping.Add<CustomerMapper>());
+        using var provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true }
+        );
+        using var scope = provider.CreateScope();
+
+        // The inferred registration is the same closed service type the explicit triple produces.
+        var mapper = scope.ServiceProvider.GetRequiredService<IMapper<Customer, CustomerDto>>();
+        Assert.Equal("Customer: Ada", mapper.Map(new Customer("Ada")).DisplayName);
+        Assert.Equal(
+            "Customer: Ada",
+            scope
+                .ServiceProvider.GetRequiredService<IMapper>()
+                .From(new Customer("Ada"))
+                .To<CustomerDto>()
+                .DisplayName
+        );
+    }
+
+    [Fact]
+    public void An_inferred_map_composes_another_map_and_honours_an_explicit_lifetime()
+    {
+        var services = new ServiceCollection();
+        services.AddHostLoomMapping(mapping =>
+            mapping.Add<AddressMapper>(ServiceLifetime.Singleton).Add<CustomerWithAddressMapper>()
+        );
+        using var provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true }
+        );
+
+        var result = provider
+            .GetRequiredService<IMapper<CustomerWithAddress, CustomerWithAddressDto>>()
+            .Map(new CustomerWithAddress("Lin", new Address("Paris", "75001")));
+
+        Assert.Equal("Lin", result.Name);
+        Assert.Equal(new AddressDto("Paris", "75001"), result.Address);
+        Assert.Same(
+            provider.GetRequiredService<IMapper<Address, AddressDto>>(),
+            provider.GetRequiredService<IMapper<Address, AddressDto>>()
+        );
+    }
+
+    [Fact]
+    public void A_type_that_implements_no_map_cannot_have_a_pair_inferred()
+    {
+        var services = new ServiceCollection();
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            services.AddHostLoomMapping(mapping => mapping.Add<NotAMapper>())
+        );
+
+        Assert.Contains(typeof(NotAMapper).FullName!, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_map_implementing_several_pairs_names_them_and_points_at_the_explicit_overload()
+    {
+        var services = new ServiceCollection();
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            services.AddHostLoomMapping(mapping => mapping.Add<DualMapper>())
+        );
+
+        // Both pairs are named so the caller can see which registrations to write.
+        Assert.Contains(typeof(Customer).FullName!, exception.Message, StringComparison.Ordinal);
+        Assert.Contains(typeof(CustomerDto).FullName!, exception.Message, StringComparison.Ordinal);
+        Assert.Contains(typeof(Address).FullName!, exception.Message, StringComparison.Ordinal);
+        Assert.Contains(typeof(AddressDto).FullName!, exception.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            "Add<TSource, TDestination, TMapper>",
+            exception.Message,
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
+    public void A_registration_never_names_the_contract_types()
+    {
+        var services = new ServiceCollection();
+
+        // Only the map class is named. The source and destination live in a namespace this file
+        // does not import, so this compiling at all is the property under test: a registration
+        // restates nothing the map class has already declared on its interface.
+        services.AddHostLoomMapping(mapping => mapping.Add<RegistrationRequestMapper>());
+
+        var descriptor = Assert.Single(
+            services,
+            candidate => candidate.ImplementationType == typeof(RegistrationRequestMapper)
+        );
+        Assert.Equal(typeof(IMapper<,>), descriptor.ServiceType!.GetGenericTypeDefinition());
+        Assert.Equal(ServiceLifetime.Transient, descriptor.Lifetime);
+    }
+
+    [Fact]
+    public void Duplicate_detection_spans_the_inferred_and_explicit_overloads()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(new NamePolicy(string.Empty));
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            services.AddHostLoomMapping(mapping =>
+                mapping.Add<Customer, CustomerDto, CustomerMapper>().Add<AlternateCustomerMapper>()
+            )
+        );
+
+        Assert.Contains(typeof(Customer).FullName!, exception.Message, StringComparison.Ordinal);
+        Assert.Contains(typeof(CustomerDto).FullName!, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void The_builder_overload_registers_the_dispatcher_once_across_repeated_calls()
     {
         var services = new ServiceCollection();
@@ -434,5 +553,16 @@ public sealed class MappingTests
         : IMapper<Customer, StampedCustomerDto>
     {
         public StampedCustomerDto Map(Customer source) => new(source.Name, stamp.Value);
+    }
+
+    /// <summary>A plain class, so inference has no pair to read.</summary>
+    public sealed class NotAMapper;
+
+    /// <summary>Two pairs on one class, which inference must refuse rather than pick between.</summary>
+    public sealed class DualMapper : IMapper<Customer, CustomerDto>, IMapper<Address, AddressDto>
+    {
+        public CustomerDto Map(Customer source) => new(source.Name);
+
+        public AddressDto Map(Address source) => new(source.City, source.PostalCode);
     }
 }
