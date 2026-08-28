@@ -32,6 +32,34 @@ Two contract shapes run through the first suite: a flat record of eight scalars,
 record with a child object and a three-element child collection. Both are grouped by category, so
 each shape gets its own baseline and ratio column.
 
+### Strategy suites
+
+Three further suites exist to choose between implementations rather than to compare libraries, and
+they are kept so the choices stay falsifiable:
+
+| Suite                            | Choice it settles                                            |
+| -------------------------------- | ------------------------------------------------------------ |
+| `MapManyStrategyBenchmarks`      | How `MapMany` should reach each element                       |
+| `MappingInferenceBenchmarks`     | Whether an inferred pair should be cached per map class       |
+| `MappingLifetimeBenchmarks`      | What the dispatcher's extra allocation is, and how to remove it |
+
+What they concluded, on an M4 Max:
+
+- **`MapMany` indexes through `IReadOnlyList<T>`.** A span fast path over `T[]` and
+  `List<T>` — via `CollectionsMarshal.AsSpan` — was 2% faster at both 100 and 1000 elements with
+  identical allocations. That is real but small, because the map calls dominate: 1000 maps at
+  7.5 ns is 7.5 µs of an 8.1 µs total, so the access strategy is about 6% of the work. Two extra
+  type checks and a span over `List<T>`'s internals are not worth 2%. Enumerating into a pre-sized
+  `List<T>` was 3–5% slower and allocated marginally more.
+- **An inferred pair is cached per map class.** Walking `GetInterfaces()` costs 8 ns and 32 B every
+  registration; a static field on a generic type costs neither. That took registration of four maps
+  from 111 ns and 680 B to 63 ns and 552 B — identical to restating the triple, so the ergonomic
+  form is now free rather than merely cheap.
+- **A stateless map used through the dispatcher should be a singleton.** The dispatcher's 112 B
+  against an injected closed map's 88 B is the transient map class being constructed on every
+  dispatch. Registering it singleton returns the allocation to 88 B exactly. It saves only 0.7 ns,
+  though — the dispatch cost is the container lookup, not the construction.
+
 ### How the comparison is set up
 
 The suites are meant to be read as an honest comparison, which means being explicit about where
