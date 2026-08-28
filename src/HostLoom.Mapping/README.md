@@ -133,6 +133,26 @@ Translate to the `OrEmpty` and `OrNull` forms first, which preserves behaviour e
 each one as its own decision. Because the tolerance is named at the call site rather than set
 globally, every place that depends on it stays greppable — which a configuration flag does not.
 
+## Completeness
+
+The compiler catches a rename, a changed constructor, and a nullability mismatch. It does not catch
+a member you simply never assigned — on a destination with settable properties, forgetting
+`destination.ImageUrl = source.ImageUrl` compiles, passes review, and ships. That is the one axis on
+which an explicit map is weaker than the convention mapping it replaces, which got the member right
+by accident.
+
+`HostLoom.Analyzers` closes it. HLM0004 reports a destination member a map never assigns; HLM0005
+reports a map body it cannot check, so silence always means checked rather than skipped. Deliberate
+omissions are named, which keeps a member added later from being excused along with them:
+
+```csharp
+[UnmappedMembers(nameof(CfaTransfer.CardMask))]
+public sealed class TransferModelToCfaTransferMapper : IMapper<TransferModel, CfaTransfer>
+```
+
+`UnmappedMembersAttribute` ships in this package, so applying it adds no dependency beyond the one
+already present. The analyzer package itself is compiler-only and carries no runtime assembly.
+
 ## Design rules
 
 - Use different destination types for semantically different views instead of selecting a hidden
