@@ -19,6 +19,38 @@ namespace HostLoom.Tests;
 public sealed class KafkaConsumerLoopTests
 {
     [Fact]
+    public void A_record_with_no_headers_is_malformed_rather_than_a_transient_fault()
+    {
+        // A record produced without headers — by an operations tool or a replay — carries a null
+        // collection, not an empty one. Dereferencing it would classify the record as a transient
+        // fault and cost it the full redelivery and backoff budget before being discarded, where
+        // the loop commits and skips a malformed envelope immediately.
+        var exception = Assert.Throws<MalformedEnvelopeException>(() =>
+            KafkaRequestBroker.GetRequiredHeader(null, "hostloom-correlation-id")
+        );
+
+        Assert.Contains("hostloom-correlation-id", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_record_missing_one_header_is_malformed()
+    {
+        var exception = Assert.Throws<MalformedEnvelopeException>(() =>
+            KafkaRequestBroker.GetRequiredHeader(new Headers(), "hostloom-reply-to")
+        );
+
+        Assert.Contains("hostloom-reply-to", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_present_header_is_decoded_as_utf8()
+    {
+        var headers = new Headers { { "hostloom-reply-to", "replies"u8.ToArray() } };
+
+        Assert.Equal("replies", KafkaRequestBroker.GetRequiredHeader(headers, "hostloom-reply-to"));
+    }
+
+    [Fact]
     public async Task Failed_record_is_redelivered_before_any_later_record_commits()
     {
         var log = new PartitionLog("requests", 2);
