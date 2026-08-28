@@ -39,6 +39,20 @@ same reason it cannot be constructor-injected into a singleton; inject the close
 `IMapper<TSource, TDestination>` there, or take `IServiceScopeFactory` and resolve per unit of
 work. Closed maps registered with the default transient lifetime have neither restriction.
 
+Both of those failures, and a map whose constructor asks for a pair nobody registered, are caught
+by the container's own validation — which `Host.CreateDefaultBuilder` enables only in Development.
+That is the wrong way round: it means the environment least like production is the only one that
+checks. Turn both on everywhere, so a missing inner map fails at host build rather than inside the
+first message that needs it:
+
+```csharp
+builder.Host.UseDefaultServiceProvider(options =>
+{
+    options.ValidateScopes = true;
+    options.ValidateOnBuild = true;
+});
+```
+
 `Add<TMapper>()` reads the pair from the single closed `IMapper<TSource, TDestination>` the map
 class implements, so a registration does not restate a type triple the class already declares —
 and the file that registers a map needs no `using` for the contracts it maps between. Inference
@@ -122,7 +136,11 @@ globally, every place that depends on it stays greppable — which a configurati
 ## Design rules
 
 - Use different destination types for semantically different views instead of selecting a hidden
-  named profile for the same pair.
+  named profile for the same pair. The *pair* is the key, so several sources mapping to one shared
+  destination is fine and expected — what this rule forbids is one pair with two meanings.
+- When a source member is nullable and the destination contract is not, forward the null with `!`
+  and record the mismatch as its own change. Substituting a default inside an unrelated refactor
+  buries a contract defect in a diff nobody is reviewing for it.
 - Keep mapping synchronous and deterministic. Fetch or enrich data outside the map.
 - Inject a closed `IMapper<TSource, TDestination>` into focused consumers. Use `IMapper` only when
   coordinating multiple pairs.
