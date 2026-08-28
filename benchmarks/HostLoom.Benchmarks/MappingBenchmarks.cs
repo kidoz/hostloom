@@ -14,8 +14,10 @@ namespace HostLoom.Benchmarks;
 /// One map, steady state, for a flat contract and a nested one. Both libraries are fully warm:
 /// AutoMapper's execution plans are compiled in <see cref="Setup"/>, so these numbers are the
 /// per-call cost after startup, not the cost of getting there — <see cref="MappingStartupBenchmarks"/>
-/// measures that separately. Neither side touches the container here; that hop is
-/// <see cref="MappingResolutionBenchmarks"/>.
+/// measures that separately. The closed-map and AutoMapper rows call a mapper resolved once in
+/// setup; the dispatcher rows resolve the pair from an already-entered scope on every call, which
+/// is what the dispatcher does by design and part of what these rows measure. Entering a scope per
+/// unit of work is the separate cost, in <see cref="MappingResolutionBenchmarks"/>.
 /// </summary>
 [MemoryDiagnoser]
 [CategoriesColumn]

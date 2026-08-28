@@ -14,11 +14,14 @@ public static class ServiceCollectionExtensions
     /// <param name="dispatcherLifetime">
     /// The lifetime of the non-generic <see cref="IMapper"/> dispatcher. Scoped is the default and
     /// the safe choice: it resolves each pair from the current scope, so a map class may take
-    /// scoped dependencies. <see cref="ServiceLifetime.Singleton"/> lets an
-    /// <c>IHostedService</c> take the dispatcher directly, and is sound only when every registered
-    /// map is itself singleton or transient with no scoped dependency — a singleton dispatcher
-    /// resolves from the root provider, where a scoped map cannot be created. Prefer injecting a
-    /// closed <see cref="IMapper{TSource, TDestination}"/>, which has neither restriction.
+    /// scoped dependencies and anything disposable is released with the scope.
+    /// <see cref="ServiceLifetime.Singleton"/> lets an <c>IHostedService</c> take the dispatcher
+    /// directly, and then every registered map must itself be registered
+    /// <see cref="ServiceLifetime.Singleton"/> — a non-singleton map is rejected at registration.
+    /// A singleton dispatcher resolves from the root provider, which retains every disposable it
+    /// creates for the life of the process and captures any scoped dependency reached through the
+    /// map. Prefer injecting a closed <see cref="IMapper{TSource, TDestination}"/> whose own graph
+    /// is singleton-safe.
     /// </param>
     public static IServiceCollection AddHostLoomMapping(
         this IServiceCollection services,
@@ -29,7 +32,13 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configure);
 
-        configure(new MappingBuilder(services, AddDispatcher(services, dispatcherLifetime)));
+        configure(
+            new MappingBuilder(
+                services,
+                AddDispatcher(services, dispatcherLifetime),
+                dispatcherLifetime
+            )
+        );
         return services;
     }
 
@@ -38,7 +47,7 @@ public static class ServiceCollectionExtensions
     /// </summary>
     /// <param name="services">The container being composed.</param>
     /// <param name="dispatcherLifetime">
-    /// The dispatcher's lifetime; see the other overload for when anything but scoped is sound.
+    /// The dispatcher's lifetime; see the other overload for what a singleton one requires.
     /// </param>
     public static MappingBuilder AddHostLoomMapping(
         this IServiceCollection services,
@@ -46,7 +55,11 @@ public static class ServiceCollectionExtensions
     )
     {
         ArgumentNullException.ThrowIfNull(services);
-        return new MappingBuilder(services, AddDispatcher(services, dispatcherLifetime));
+        return new MappingBuilder(
+            services,
+            AddDispatcher(services, dispatcherLifetime),
+            dispatcherLifetime
+        );
     }
 
     /// <summary>

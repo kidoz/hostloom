@@ -1,3 +1,5 @@
+using System.Collections.ObjectModel;
+
 namespace HostLoom.Mapping.DependencyInjection;
 
 /// <summary>One registered source and destination pair.</summary>
@@ -16,9 +18,18 @@ public readonly record struct MappedTypePair(Type Source, Type Destination);
 public sealed class MappedPairRegistry
 {
     private readonly List<MappedTypePair> _pairs = [];
+    private readonly ReadOnlyCollection<MappedTypePair> _view;
+
+    /// <summary>Creates an empty registry.</summary>
+    public MappedPairRegistry() => _view = _pairs.AsReadOnly();
 
     /// <summary>Every registered pair, in registration order.</summary>
-    public IReadOnlyList<MappedTypePair> Pairs => _pairs;
+    /// <remarks>
+    /// A wrapper rather than the backing list, so a caller cannot downcast it and add a pair the
+    /// container will never resolve. It stays a live view of registration, which is the point:
+    /// reading it mid-registration shows what has been added so far.
+    /// </remarks>
+    public IReadOnlyList<MappedTypePair> Pairs => _view;
 
     /// <summary>The destinations registered for one source type.</summary>
     public IReadOnlyList<Type> DestinationsFor(Type source)

@@ -7,11 +7,17 @@ namespace HostLoom.Mapping.DependencyInjection;
 public sealed class MappingBuilder
 {
     private readonly MappedPairRegistry _registry;
+    private readonly ServiceLifetime _dispatcherLifetime;
 
-    internal MappingBuilder(IServiceCollection services, MappedPairRegistry registry)
+    internal MappingBuilder(
+        IServiceCollection services,
+        MappedPairRegistry registry,
+        ServiceLifetime dispatcherLifetime
+    )
     {
         Services = services;
         _registry = registry;
+        _dispatcherLifetime = dispatcherLifetime;
     }
 
     /// <summary>The service collection receiving mapping registrations.</summary>
@@ -50,6 +56,7 @@ public sealed class MappingBuilder
             MappedPair<TMapper>.ServiceType
             ?? throw new InvalidOperationException(MappedPair<TMapper>.Diagnostic);
         EnsureNotRegistered(serviceType);
+        EnsureLifetimeMatchesDispatcher(lifetime, typeof(TMapper).Name);
         Services.Add(new ServiceDescriptor(serviceType, typeof(TMapper), lifetime));
         _registry.Record(serviceType.GenericTypeArguments[0], serviceType.GenericTypeArguments[1]);
         return this;
@@ -71,6 +78,7 @@ public sealed class MappingBuilder
         where TMapper : class, IMapper<TSource, TDestination>
     {
         EnsureNotRegistered(typeof(IMapper<TSource, TDestination>));
+        EnsureLifetimeMatchesDispatcher(lifetime, typeof(TMapper).Name);
         Services.Add(
             new ServiceDescriptor(typeof(IMapper<TSource, TDestination>), typeof(TMapper), lifetime)
         );
@@ -82,24 +90,16 @@ public sealed class MappingBuilder
     /// Registers one pair through a factory, which is how a generic map class is closed.
     /// </summary>
     /// <remarks>
-    /// The container cannot register a generic map as an open generic: it requires the open
-    /// service type and open implementation type to have equal arity, and a map generic in more
-    /// than its source and destination — <c>Mapper&lt;TEntity, TModel, TTranslation&gt;</c>
-    /// implementing <c>IMapper&lt;TEntity, TModel&gt;</c> — does not. Closing it at the call site
-    /// instead keeps every type argument visible to the compiler, so this stays free of
-    /// <see cref="Type.MakeGenericType"/> and the trimming and Native AOT analyzers stay clean.
+    /// Reserve this for construction the container cannot perform — a map needing a value rather
+    /// than a service. A factory body is opaque to <c>ValidateOnBuild</c>: whatever it resolves is
+    /// unchecked until the map is first resolved, which turns a startup failure into a first-use
+    /// one. When the container can build the map, including a closed generic one, prefer
+    /// <see cref="Add{TSource, TDestination, TMapper}(ServiceLifetime)"/> —
+    /// <c>Add&lt;TEntity, TModel, EntityMapper&lt;TEntity, TModel, TTranslation&gt;&gt;()</c> from a
+    /// generic helper closes the same map and keeps startup validation over it.
     /// Each registration is still one closed descriptor, so the registered pairs remain
-    /// enumerable. Call it from a generic helper to produce many pairs from one map class.
+    /// enumerable.
     /// </remarks>
-    /// <example>
-    /// <code>
-    /// static void AddEntityMap&lt;TEntity, TModel, TTranslation&gt;(MappingBuilder mapping)
-    ///     where TEntity : notnull where TModel : notnull =&gt;
-    ///     mapping
-    ///         .Add&lt;TEntity, TModel&gt;(_ =&gt; new EntityMapper&lt;TEntity, TModel, TTranslation&gt;())
-    ///         .Add&lt;TModel, TEntity&gt;(_ =&gt; new ModelMapper&lt;TEntity, TModel, TTranslation&gt;());
-    /// </code>
-    /// </example>
     public MappingBuilder Add<TSource, TDestination>(
         Func<IServiceProvider, IMapper<TSource, TDestination>> factory,
         ServiceLifetime lifetime = ServiceLifetime.Transient
@@ -109,6 +109,10 @@ public sealed class MappingBuilder
     {
         ArgumentNullException.ThrowIfNull(factory);
         EnsureNotRegistered(typeof(IMapper<TSource, TDestination>));
+        EnsureLifetimeMatchesDispatcher(
+            lifetime,
+            $"the factory for '{typeof(TSource).Name}' to '{typeof(TDestination).Name}'"
+        );
         Services.Add(
             new ServiceDescriptor(
                 typeof(IMapper<TSource, TDestination>),
@@ -221,6 +225,38 @@ public sealed class MappingBuilder
                         + "interface for the pair it maps."
                 )
                 : (mapped, null);
+        }
+    }
+
+    /// <summary>
+    /// Rejects a map that would outlive its own resolution when the dispatcher is a singleton.
+    /// </summary>
+    /// <remarks>
+    /// A singleton dispatcher resolves each pair from the root provider, which never goes out of
+    /// scope. Two consequences follow and neither is visible at the call site: a disposable map, or
+    /// any disposable in its graph, is retained by the root container for the life of the process
+    /// rather than released per unit of work; and a scoped dependency reached through a transient
+    /// map is captured, which scope validation reports in Development and silently permits where it
+    /// is disabled. Requiring every map to be a singleton removes both — the instance is created
+    /// once and retained once, deliberately.
+    /// </remarks>
+    private void EnsureLifetimeMatchesDispatcher(ServiceLifetime lifetime, string what)
+    {
+        if (_dispatcherLifetime != ServiceLifetime.Singleton)
+        {
+            return;
+        }
+
+        if (lifetime != ServiceLifetime.Singleton)
+        {
+            throw new InvalidOperationException(
+                $"The mapping dispatcher is registered as a singleton, so {what} must be "
+                    + $"registered with {nameof(ServiceLifetime)}.{nameof(ServiceLifetime.Singleton)} "
+                    + $"rather than {nameof(ServiceLifetime)}.{lifetime}. A singleton dispatcher "
+                    + "resolves from the root provider, which retains every disposable it creates "
+                    + "for the life of the process and captures any scoped dependency reached "
+                    + "through the map. Keep the dispatcher scoped, or make every map a singleton."
+            );
         }
     }
 

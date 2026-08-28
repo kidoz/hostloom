@@ -75,11 +75,11 @@ public static class HostLoomDiagnosticDescriptors
     internal static readonly DiagnosticDescriptor SingletonMapperInjection = new(
         SingletonMapperInjectionDiagnosticId,
         "Do not capture the scoped mapping dispatcher in a singleton",
-        "'{0}' is registered as a singleton but takes the scoped IMapper dispatcher; inject a closed IMapper<TSource, TDestination> instead",
+        "'{0}' is registered as a singleton but takes the scoped IMapper dispatcher; inject a closed IMapper<TSource, TDestination> whose graph is singleton-safe instead",
         "Usage",
         DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
-        description: "The non-generic IMapper dispatcher is registered scoped. Capturing it in a singleton throws at host build where scope validation is enabled and succeeds where it is not, so the failure appears in Development and hides in Production. A closed IMapper<TSource, TDestination> is transient and carries no such restriction.",
+        description: "The non-generic IMapper dispatcher is registered scoped. Capturing it in a singleton throws at host build where scope validation is enabled and succeeds where it is not, so the failure appears in Development and hides in Production. Inject a closed IMapper<TSource, TDestination> instead, provided that map's own graph is singleton-safe: a transient map captured by a singleton is promoted to one, so a scoped dependency inside it reproduces the same asymmetry.",
         helpLinkUri: "https://github.com/kidoz/hostloom/tree/main/src/HostLoom.Analyzers#hlm0006"
     );
 }

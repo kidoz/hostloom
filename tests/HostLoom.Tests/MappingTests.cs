@@ -721,6 +721,73 @@ public sealed class MappingTests
         );
     }
 
+    [Fact]
+    public void A_singleton_dispatcher_rejects_a_map_it_would_resolve_from_the_root()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(new NamePolicy(string.Empty));
+
+        // Transient is the default, and under a singleton dispatcher it is exactly the unsound
+        // combination: the root provider would create a map per call and — when anything in the
+        // graph is disposable — hold every one of them until the process ends.
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            services.AddHostLoomMapping(
+                mapping => mapping.Add<CustomerMapper>(),
+                ServiceLifetime.Singleton
+            )
+        );
+
+        Assert.Contains("Singleton", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("root provider", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_scoped_dispatcher_releases_a_disposable_map_with_its_scope()
+    {
+        var services = new ServiceCollection();
+        services.AddHostLoomMapping(mapping => mapping.Add<DisposableCustomerMapper>());
+        using var provider = services.BuildServiceProvider();
+        DisposableCustomerMapper.Reset();
+
+        using (var scope = provider.CreateScope())
+        {
+            var mapper = scope.ServiceProvider.GetRequiredService<IMapper>();
+            for (var index = 0; index < 50; index++)
+            {
+                mapper.Map<Customer, CustomerDto>(new Customer("Ada"));
+            }
+
+            // Every dispatch constructs a transient map, and the container holds each disposable
+            // one until the scope ends. That retention is the reason the dispatcher is scoped.
+            Assert.Equal(50, DisposableCustomerMapper.Created);
+            Assert.Equal(0, DisposableCustomerMapper.Disposed);
+        }
+
+        Assert.Equal(50, DisposableCustomerMapper.Disposed);
+    }
+
+    [Fact]
+    public void The_explicit_overload_closes_a_constructed_generic_map()
+    {
+        var services = new ServiceCollection();
+        services.AddHostLoomMapping(mapping =>
+            AddEntityMap<Customer, CustomerDto, NamePolicy>(mapping)
+        );
+
+        // The container constructs it, so ValidateOnBuild covers its dependencies — which a
+        // factory registration cannot offer, because its body is opaque until first resolve.
+        using var provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true }
+        );
+
+        Assert.NotNull(provider.GetRequiredService<IMapper<Customer, CustomerDto>>());
+    }
+
+    private static void AddEntityMap<TEntity, TModel, TTranslation>(MappingBuilder mapping)
+        where TEntity : notnull
+        where TModel : notnull =>
+        mapping.Add<TEntity, TModel, GenericMapper<TEntity, TModel, TTranslation>>();
+
     public sealed class SingletonNeedingMapper(IMapper mapper)
     {
         public IMapper Mapper { get; } = mapper;
@@ -777,6 +844,38 @@ public sealed class MappingTests
 
     /// <summary>A plain class, so inference has no pair to read.</summary>
     public sealed class NotAMapper;
+
+    /// <summary>Counts construction and disposal, so retention is observable rather than argued.</summary>
+    public sealed class DisposableCustomerMapper : IMapper<Customer, CustomerDto>, IDisposable
+    {
+        private static int _created;
+        private static int _disposed;
+
+        public DisposableCustomerMapper() => Interlocked.Increment(ref _created);
+
+        public static int Created => Volatile.Read(ref _created);
+
+        public static int Disposed => Volatile.Read(ref _disposed);
+
+        public static void Reset()
+        {
+            Volatile.Write(ref _created, 0);
+            Volatile.Write(ref _disposed, 0);
+        }
+
+        public CustomerDto Map(Customer source) => new(source.Name);
+
+        public void Dispose() => Interlocked.Increment(ref _disposed);
+    }
+
+    /// <summary>Generic in a third parameter, closed by the caller rather than by the container.</summary>
+    public sealed class GenericMapper<TEntity, TModel, TTranslation> : IMapper<TEntity, TModel>
+        where TEntity : notnull
+        where TModel : notnull
+    {
+        public TModel Map(TEntity source) =>
+            throw new NotSupportedException("registration-only fixture");
+    }
 
     public sealed record ProductEntity(string Name);
 
