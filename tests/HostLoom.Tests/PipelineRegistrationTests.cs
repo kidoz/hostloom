@@ -194,6 +194,50 @@ public sealed class PipelineRegistrationTests
     }
 
     [Fact]
+    public async Task Startup_validation_skips_a_filter_that_is_switched_off()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        // ExecutionLog is deliberately not registered, exactly as in the failing case above. The
+        // difference is that this filter is switched off, so the runner would never construct it —
+        // and refusing to start over a filter that never executes defeats the point of the switch.
+        builder.Services.AddPipeline<RunContext>(
+            "environment-gated",
+            pipeline =>
+                pipeline.Stage(
+                    "only",
+                    stage => stage.AddFilter<EnrichFilter>(filter => filter.EnabledWhen(_ => false))
+                )
+        );
+        using var host = builder.Build();
+
+        await host.StartAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+        await host.StopAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+    }
+
+    [Fact]
+    public async Task Startup_validation_reports_a_constructor_failure_that_is_not_a_missing_service()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(new ExecutionLog());
+        builder.Services.AddPipeline<RunContext>(
+            "throwing",
+            pipeline => pipeline.Stage("only", stage => stage.AddFilter<ThrowingFilter>())
+        );
+        using var host = builder.Build();
+
+        // The container reports a missing dependency as InvalidOperationException; anything else a
+        // constructor throws is the same startup problem and should carry the same guidance rather
+        // than escaping raw.
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await host.StartAsync(TestContext.Current.CancellationToken)
+        );
+
+        Assert.Contains("throwing", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("ThrowingFilter", exception.Message, StringComparison.Ordinal);
+        Assert.IsType<NotSupportedException>(exception.InnerException, exactMatch: false);
+    }
+
+    [Fact]
     public void Topology_reports_stages_filters_and_conditional_flags()
     {
         var services = new ServiceCollection();
@@ -341,6 +385,16 @@ public sealed class PipelineRegistrationTests
             log.Record("enrich");
             return next.SendAsync(context);
         }
+    }
+
+    /// <summary>Fails construction with something other than a missing-service error.</summary>
+    public sealed class ThrowingFilter : IFilter<RunContext>
+    {
+        public ThrowingFilter() =>
+            throw new NotSupportedException("this filter cannot be constructed");
+
+        public ValueTask SendAsync(RunContext context, IPipe<RunContext> next) =>
+            next.SendAsync(context);
     }
 
     public sealed class SecondEnrichFilter(ExecutionLog log) : IFilter<RunContext>

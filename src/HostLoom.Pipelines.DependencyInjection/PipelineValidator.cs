@@ -39,6 +39,19 @@ public static class PipelineValidator
                 foreach (var filter in definition.Filters)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+
+                    // Validate exactly what a run would construct. A filter switched off for this
+                    // environment is never resolved by the runner, so demanding that it be
+                    // constructible here would refuse to start the host over a filter that would
+                    // never execute — which is the whole point of turning it off.
+                    if (
+                        filter.EnabledWhen is not null
+                        && !filter.EnabledWhen(scope.ServiceProvider)
+                    )
+                    {
+                        continue;
+                    }
+
                     try
                     {
                         _ = scope.ServiceProvider.GetRequiredKeyedService(
@@ -46,8 +59,10 @@ public static class PipelineValidator
                             filter.ServiceKey
                         );
                     }
-                    catch (InvalidOperationException exception)
+                    catch (Exception exception) when (exception is not OperationCanceledException)
                     {
+                        // Any constructor failure is the same startup problem, not only the
+                        // container's own InvalidOperationException for a missing dependency.
                         throw new InvalidOperationException(
                             $"Pipeline '{definition.Name}' cannot construct filter '{filter.Name}' "
                                 + $"of type '{filter.FilterType.Name}'. "
