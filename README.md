@@ -50,7 +50,7 @@ packages are versioned together:
 
 | Package | Purpose |
 | --- | --- |
-| `HostLoom.Analyzers` | Compile-time checks for asynchronous and DI usage |
+| `HostLoom.Analyzers` | Compile-time checks for asynchronous, DI, and mapping usage |
 | `HostLoom` | Typed request/response and event runtime |
 | `HostLoom.Pipelines` | Transport-neutral asynchronous pipelines |
 | `HostLoom.Pipelines.DependencyInjection` | Named stages, per-run resolution, and instrumentation |
@@ -63,6 +63,7 @@ packages are versioned together:
 | `HostLoom.Diagnostics` | Composition ledger and startup report of registration decisions |
 | `HostLoom.Mapping` | Explicit, compile-time-safe, AOT-friendly object mapping |
 | `HostLoom.Mapping.DependencyInjection` | Scoped mapper dispatch and explicit map registration |
+| `HostLoom.Mapping.Testing` | Container-free mapper composition for tests |
 
 Install only the runtime and transport needed by the application, for example:
 
@@ -77,8 +78,10 @@ dotnet add package HostLoom.Analyzers
 ```
 
 It reports an omitted available cancellation token (`HLM0001`), synchronous blocking over a
-HostLoom async operation (`HLM0002`), and singleton registration of handlers or behaviors that
-should follow HostLoom's per-delivery scope (`HLM0003`). See the
+HostLoom async operation (`HLM0002`), singleton registration of handlers or behaviors that
+should follow HostLoom's per-delivery scope (`HLM0003`), a destination member an explicit map never
+assigns (`HLM0004`) and a map body whose completeness cannot be verified (`HLM0005`), and the scoped
+mapping dispatcher captured in a singleton (`HLM0006`). See the
 [analyzer rule reference](src/HostLoom.Analyzers/README.md).
 
 ## Quick start
@@ -276,7 +279,7 @@ using HostLoom.Mapping;
 using HostLoom.Mapping.DependencyInjection;
 
 builder.Services.AddHostLoomMapping(mapping =>
-    mapping.Add<Customer, CustomerDto, CustomerMapper>());
+    mapping.Add<CustomerMapper>());
 
 public sealed class CustomerMapper : IMapper<Customer, CustomerDto>
 {
@@ -284,14 +287,27 @@ public sealed class CustomerMapper : IMapper<Customer, CustomerDto>
 }
 ```
 
-Inject `IMapper<Customer, CustomerDto>` into a component that needs one pair. Orchestration code
-that coordinates several pairs can inject the scoped `IMapper` dispatcher and write
-`mapper.From(customer).To<CustomerDto>()`. Map classes are transient by default, duplicate pairs
-fail at registration, and missing pairs throw `MappingNotFoundException` with both types.
+The pair is read from the interface the map class already declares, so a registration restates
+nothing and the file that registers a map needs no `using` for the contracts it maps between. A
+generic map class is closed through a factory overload, which is what registers many pairs from one
+class.
+
+Inject `IMapper<Customer, CustomerDto>` into a component that needs one pair — that is the shape to
+reach for, and the fastest. Orchestration code coordinating several pairs can inject the scoped
+`IMapper` dispatcher and write `mapper.From(customer).To<CustomerDto>()`. Map classes are transient
+by default, duplicate pairs fail at registration, and a missing pair throws
+`MappingNotFoundException` naming both types and what the source *is* registered to map to.
+
+Sequences and null are extension methods whose names carry the policy — `MapMany` rejects a null
+source, `MapManyOrEmpty` treats it as empty, `MapOrNull` maps one value through null — so every
+place that depends on null tolerance stays greppable, where a convention mapper decides it once and
+invisibly. `HostLoom.Analyzers` reports a destination member a map never assigns (`HLM0004`) and a
+map body it cannot verify (`HLM0005`), which is what keeps a forgotten member from shipping as
+silent data loss.
 
 Mapping is deliberately synchronous and performs no I/O. Fetch and enrich data outside a map, use
 distinct destination types for distinct semantic views, and write database projections directly
-as `IQueryable.Select` expressions. Both mapping packages enable the .NET SDK Native AOT and
+as `IQueryable.Select` expressions. All three mapping packages enable the .NET SDK Native AOT and
 trimming analyzers.
 
 ## Logging
@@ -620,6 +636,7 @@ src/HostLoom.Analyzers/          Roslyn usage analyzers and rule documentation
 src/HostLoom.Diagnostics/        composition ledger, report, and startup reporter
 src/HostLoom.Mapping/            dependency-free explicit mapping contracts
 src/HostLoom.Mapping.DependencyInjection/ scoped dispatch and closed map registration
+src/HostLoom.Mapping.Testing/    container-free mapper composition for tests
 src/HostLoom.Pipelines/          transport-neutral middleware pipelines
   Contexts/                      pipe context and thread-safe typed payloads
   Filters/                       delegate, execute, conditional, concurrency, timeout, instrumented, terminal
@@ -631,7 +648,7 @@ src/HostLoom.Transport.InMemory/ deterministic in-process broker
 src/HostLoom.Transport.RabbitMq/ request queues and exclusive reply queues
 src/HostLoom.Transport.Kafka/    request/response topics with header correlation
 src/HostLoom.AspNetCore.WebSockets/ raw Kestrel WebSocket RPC and subscriptions
-benchmarks/HostLoom.Benchmarks/    JSON, MessagePack, and Protobuf codec benchmarks
+benchmarks/HostLoom.Benchmarks/    codec, logging, and mapping benchmarks
 examples/HostLoom.Examples.Pipelines/ runnable pipeline tour: DI stages, manual and standalone composition
 tests/HostLoom.Tests/            pipeline, round-trip, behavior, and fault tests
 tests/HostLoom.IntegrationTests/ RabbitMQ and Kafka transports against real brokers

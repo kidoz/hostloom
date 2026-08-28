@@ -153,6 +153,7 @@ jobs:
             HostLoom.Diagnostics
             HostLoom.Mapping
             HostLoom.Mapping.DependencyInjection
+            HostLoom.Mapping.Testing
           )
           for package_id in "${packages[@]}"; do
             package="artifacts/packages/${package_id}.${{ steps.version.outputs.version }}.nupkg"
