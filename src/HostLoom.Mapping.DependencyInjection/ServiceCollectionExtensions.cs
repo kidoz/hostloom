@@ -7,31 +7,96 @@ namespace HostLoom.Mapping.DependencyInjection;
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds the scoped mapping dispatcher and configures explicit source/destination mappings.
+    /// Adds the mapping dispatcher and configures explicit source/destination mappings.
     /// </summary>
+    /// <param name="services">The container being composed.</param>
+    /// <param name="configure">Declares the mappings.</param>
+    /// <param name="dispatcherLifetime">
+    /// The lifetime of the non-generic <see cref="IMapper"/> dispatcher. Scoped is the default and
+    /// the safe choice: it resolves each pair from the current scope, so a map class may take
+    /// scoped dependencies. <see cref="ServiceLifetime.Singleton"/> lets an
+    /// <c>IHostedService</c> take the dispatcher directly, and is sound only when every registered
+    /// map is itself singleton or transient with no scoped dependency — a singleton dispatcher
+    /// resolves from the root provider, where a scoped map cannot be created. Prefer injecting a
+    /// closed <see cref="IMapper{TSource, TDestination}"/>, which has neither restriction.
+    /// </param>
     public static IServiceCollection AddHostLoomMapping(
         this IServiceCollection services,
-        Action<MappingBuilder> configure
+        Action<MappingBuilder> configure,
+        ServiceLifetime dispatcherLifetime = ServiceLifetime.Scoped
     )
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configure);
 
-        AddDispatcher(services);
-        configure(new MappingBuilder(services));
+        configure(new MappingBuilder(services, AddDispatcher(services, dispatcherLifetime)));
         return services;
     }
 
     /// <summary>
-    /// Adds the scoped mapping dispatcher and returns a builder for explicit mappings.
+    /// Adds the mapping dispatcher and returns a builder for explicit mappings.
     /// </summary>
-    public static MappingBuilder AddHostLoomMapping(this IServiceCollection services)
+    /// <param name="services">The container being composed.</param>
+    /// <param name="dispatcherLifetime">
+    /// The dispatcher's lifetime; see the other overload for when anything but scoped is sound.
+    /// </param>
+    public static MappingBuilder AddHostLoomMapping(
+        this IServiceCollection services,
+        ServiceLifetime dispatcherLifetime = ServiceLifetime.Scoped
+    )
     {
         ArgumentNullException.ThrowIfNull(services);
-        AddDispatcher(services);
-        return new MappingBuilder(services);
+        return new MappingBuilder(services, AddDispatcher(services, dispatcherLifetime));
     }
 
-    private static void AddDispatcher(IServiceCollection services) =>
-        services.TryAddScoped<IMapper, ServiceProviderMapper>();
+    /// <summary>
+    /// The pairs registered so far, for a service that wants to assert its expectations at startup
+    /// rather than discover a missing pair on the code path that first needs it.
+    /// </summary>
+    public static MappedPairRegistry GetMappedPairs(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        return FindRegistry(services) ?? new MappedPairRegistry();
+    }
+
+    private static MappedPairRegistry AddDispatcher(
+        IServiceCollection services,
+        ServiceLifetime dispatcherLifetime
+    )
+    {
+        MappedPairRegistry? registry = FindRegistry(services);
+        if (registry is null)
+        {
+            registry = new MappedPairRegistry();
+            services.AddSingleton(registry);
+        }
+
+        // TryAdd, so repeated calls register the dispatcher once. A second call asking for a
+        // different lifetime therefore does not change the first one, which is the same rule the
+        // container applies to every other TryAdd registration.
+        services.TryAdd(
+            new ServiceDescriptor(
+                typeof(IMapper),
+                typeof(ServiceProviderMapper),
+                dispatcherLifetime
+            )
+        );
+        return registry;
+    }
+
+    private static MappedPairRegistry? FindRegistry(IServiceCollection services)
+    {
+        for (var i = 0; i < services.Count; i++)
+        {
+            if (
+                services[i].ServiceType == typeof(MappedPairRegistry)
+                && services[i].ImplementationInstance is MappedPairRegistry registry
+            )
+            {
+                return registry;
+            }
+        }
+
+        return null;
+    }
 }

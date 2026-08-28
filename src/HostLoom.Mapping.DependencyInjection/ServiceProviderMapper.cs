@@ -2,7 +2,8 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace HostLoom.Mapping.DependencyInjection;
 
-internal sealed class ServiceProviderMapper(IServiceProvider services) : IMapper
+internal sealed class ServiceProviderMapper(IServiceProvider services, MappedPairRegistry registry)
+    : IMapper
 {
     public TDestination Map<TSource, TDestination>(TSource source)
         where TSource : notnull
@@ -11,7 +12,11 @@ internal sealed class ServiceProviderMapper(IServiceProvider services) : IMapper
         ArgumentNullException.ThrowIfNull(source);
         var mapper = services.GetService<IMapper<TSource, TDestination>>();
         return mapper is null
-            ? throw new MappingNotFoundException(typeof(TSource), typeof(TDestination))
+            ? throw new MappingNotFoundException(
+                typeof(TSource),
+                typeof(TDestination),
+                registry.DestinationsFor(typeof(TSource))
+            )
             : mapper.Map(source);
     }
 }

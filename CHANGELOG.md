@@ -10,6 +10,22 @@ are derived from release tags at publish time.
 
 ### Added
 
+- `MappedPairRegistry` and `IServiceCollection.GetMappedPairs()`, exposing the registered source and
+  destination pairs so a service can assert its expectations while the container is still being
+  composed, rather than discovering a missing pair on the first code path that needs it. One
+  registry spans repeated `AddHostLoomMapping` calls and every registration overload.
+- `MappingNotFoundException` now reports the destinations the requested source type *is* registered
+  to map to, through a new constructor overload and a `RegisteredDestinations` property. The near
+  miss is usually the diagnosis — a destination named one letter differently, or the pair registered
+  in the other direction — so listing them turns reading the message into the fix.
+- `AddHostLoomMapping` takes the dispatcher's `ServiceLifetime`. Scoped remains the default and the
+  safe choice; singleton lets an `IHostedService` take the dispatcher directly and is sound only
+  when every registered map is itself singleton or transient with no scoped dependency, because a
+  singleton dispatcher resolves from the root provider. Injecting a closed
+  `IMapper<TSource, TDestination>` is still preferable and carries neither restriction — a
+  singleton dispatcher does not silence `HLM0006`, which reports the shape rather than the lifetime
+  it was registered with.
+
 - `HLM0004` and `HLM0005`, completeness analysis for explicit maps, closing the one axis on which
   an explicit map is weaker than the convention mapping it replaces: a destination member that is
   simply never assigned compiles, passes review, and ships as silent data loss. `HLM0004` reports
