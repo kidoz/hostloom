@@ -13,6 +13,9 @@ are derived from release tags at publish time.
 - Kafka now skips only records classified as malformed HostLoom envelopes; an application handler
   that throws `InvalidDataException` follows the configured broker redelivery policy instead of
   being committed immediately as poison data.
+- Usage analyzers identify framework assemblies through generated assembly metadata, preventing a
+  consumer such as `HostLoom.OrderService` from being analyzed as framework code while ensuring
+  future packages under `src/` are included automatically.
 
 ### Added
 

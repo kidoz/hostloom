@@ -144,6 +144,37 @@ public sealed class MissingCancellationTokenAnalyzerTests
         Assert.Empty(diagnostics);
     }
 
+    [Fact]
+    public async Task Ignores_consumer_assemblies_whose_names_start_with_HostLoom()
+    {
+        Diagnostic[] diagnostics = await AnalyzerTestHarness.AnalyzeAsync(
+            """
+            using System.Threading;
+            using System.Threading.Tasks;
+
+            internal static class OrderOperations
+            {
+                public static Task SaveAsync(
+                    string order,
+                    CancellationToken cancellationToken = default) => Task.CompletedTask;
+            }
+
+            internal static class Consumer
+            {
+                public static async Task SaveAsync(
+                    string order,
+                    CancellationToken stoppingToken)
+                {
+                    await OrderOperations.SaveAsync(order);
+                }
+            }
+            """,
+            new MissingCancellationTokenAnalyzer()
+        );
+
+        Assert.Empty(diagnostics);
+    }
+
     private const string ConsumerContracts = """
         using System;
         using System.Threading;
