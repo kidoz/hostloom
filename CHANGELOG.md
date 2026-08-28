@@ -16,6 +16,13 @@ are derived from release tags at publish time.
   registration form no longer costs anything. Inference failures are stored rather than thrown from
   the static constructor, which would otherwise reach the caller as a `TypeInitializationException`
   wrapping the real diagnostic, and would cache that wrapping for every later attempt.
+- Benchmark suites that settle an implementation choice rather than compare libraries:
+  `MapManyStrategyBenchmarks` measured a span fast path over `T[]` and `List<T>` at 2% against the
+  `IReadOnlyList<T>` indexing that ships, which does not pay for two extra type checks and a span
+  over `List<T>`'s internals — the map calls are roughly 94% of the work at 1000 elements.
+  `MappingLifetimeBenchmarks` established that the dispatcher's extra 24 B is the transient map
+  class constructed per dispatch, and that registering a stateless map as a singleton returns its
+  allocation to exactly that of an injected closed map.
 
 ### Fixed
 
