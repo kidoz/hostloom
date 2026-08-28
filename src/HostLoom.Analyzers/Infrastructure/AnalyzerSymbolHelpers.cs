@@ -4,18 +4,39 @@ namespace HostLoom.Analyzers.Infrastructure;
 
 internal static class AnalyzerSymbolHelpers
 {
+    private const string AssemblyMetadataAttribute = "System.Reflection.AssemblyMetadataAttribute";
+    private const string FrameworkAssemblyMarker = "HostLoom.FrameworkAssembly";
     private const string HostLoomNamespace = "HostLoom";
     private const string PipelineNamespace = "HostLoom.Pipelines";
 
     public static bool IsHostLoomSymbol(ISymbol? symbol)
     {
-        string? assemblyName = symbol?.ContainingAssembly?.Name;
-        return assemblyName is not null
-            && !string.Equals(assemblyName, "HostLoom.Analyzers", StringComparison.Ordinal)
-            && (
-                string.Equals(assemblyName, "HostLoom", StringComparison.Ordinal)
-                || assemblyName.StartsWith("HostLoom.", StringComparison.Ordinal)
-            );
+        IAssemblySymbol? assembly = symbol?.ContainingAssembly;
+        if (assembly is null)
+        {
+            return false;
+        }
+
+        foreach (AttributeData attribute in assembly.GetAttributes())
+        {
+            if (
+                string.Equals(
+                    attribute.AttributeClass?.ToDisplayString(),
+                    AssemblyMetadataAttribute,
+                    StringComparison.Ordinal
+                )
+                && attribute.ConstructorArguments.Length == 2
+                && attribute.ConstructorArguments[0].Value is string key
+                && attribute.ConstructorArguments[1].Value is string value
+                && string.Equals(key, FrameworkAssemblyMarker, StringComparison.Ordinal)
+                && string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public static bool IsCancellationToken(ITypeSymbol? type) =>

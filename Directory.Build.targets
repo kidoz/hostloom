@@ -1,4 +1,15 @@
 <Project>
+  <PropertyGroup>
+    <_HostLoomSourceDirectory>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)src'))</_HostLoomSourceDirectory>
+  </PropertyGroup>
+  <ItemGroup Condition="$([System.String]::Copy('$(MSBuildProjectDirectory)').StartsWith('$(_HostLoomSourceDirectory)')) and '$(MSBuildProjectName)' != 'HostLoom.Analyzers'">
+    <!-- The analyzers use this marker instead of package-name heuristics. Every current and
+         future framework project beneath src/ receives it automatically. -->
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>HostLoom.FrameworkAssembly</_Parameter1>
+      <_Parameter2>true</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
   <PropertyGroup Condition="'$(IsPackable)' != 'false' and '$(PackageReadmeFile)' == ''">
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>

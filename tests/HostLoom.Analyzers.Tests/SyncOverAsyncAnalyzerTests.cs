@@ -73,4 +73,27 @@ public sealed class SyncOverAsyncAnalyzerTests
 
         Assert.Empty(diagnostics);
     }
+
+    [Fact]
+    public async Task Ignores_consumer_assemblies_whose_names_start_with_HostLoom()
+    {
+        Diagnostic[] diagnostics = await AnalyzerTestHarness.AnalyzeAsync(
+            """
+            using System.Threading.Tasks;
+
+            internal static class OrderOperations
+            {
+                public static Task<int> LoadAsync() => Task.FromResult(42);
+            }
+
+            internal static class Consumer
+            {
+                public static int Load() => OrderOperations.LoadAsync().Result;
+            }
+            """,
+            new SyncOverAsyncAnalyzer()
+        );
+
+        Assert.Empty(diagnostics);
+    }
 }
