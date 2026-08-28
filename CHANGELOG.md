@@ -8,6 +8,34 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Fixed
+
+- RabbitMQ no longer replaces a connection that automatic recovery owns. Observing `IsOpen: false`
+  during a broker drop used to dispose the connection and build a new one, which cancelled the
+  recovery that would have restored the channels, queues, and consumers created on it — leaving
+  every listener and subscription permanently dead and silent while publishing carried on against
+  the replacement. Only an application-initiated close is now treated as final; a peer or library
+  shutdown is left to recover. The visible trade is deliberate: a publish attempted during the
+  outage now fails loudly and transiently instead of succeeding at the cost of the consumers.
+  `TopologyRecoveryEnabled` is stated explicitly rather than relied on as a default, because the
+  listeners depend on it.
+- A WebSocket `Cancel` frame no longer escapes as `ObjectDisposedException` when it races the
+  request it cancels. The request could complete and dispose its own cancellation source between
+  the lookup and the cancel, and unlike the shutdown path — which already guarded this exact race —
+  the frame path did not, so the exception passed the session's graceful-close handling and left
+  the connection through ASP.NET. A client sending request/cancel pairs could provoke it.
+- Kafka classifies both ways a required header can be absent as a malformed envelope. A record
+  produced without headers carries a null collection, and `Headers.GetLastBytes` throws
+  `KeyNotFoundException` rather than returning null for a missing key — so the existing null-check
+  never fired and neither case reached the malformed path. Both were treated as transient faults
+  and cost the record its full redelivery and backoff budget before being discarded, where a
+  malformed envelope is committed and skipped immediately.
+- Pipeline startup validation constructs only the filters a run would construct. A filter switched
+  off for the environment through `EnabledWhen` was still built by the validator, so a host refused
+  to start over a filter that would never execute — defeating the switch precisely when its
+  dependencies were absent, which is the case it exists for. The validator also wraps any
+  constructor failure in its guidance now, not only the container's `InvalidOperationException`.
+
 ### Added
 
 - `HostLoom.Mapping.Testing`, composing an `IMapper` dispatcher from explicit maps with no
