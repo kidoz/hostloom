@@ -326,13 +326,31 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
         }
     }
 
-    private static string GetRequiredHeader(Headers headers, string name)
+    /// <summary>
+    /// Reads one required header, classifying both ways it can be absent as a malformed envelope.
+    /// </summary>
+    /// <remarks>
+    /// A record produced without any headers — by an operations tool or a replay — carries a null
+    /// collection rather than an empty one. A record with headers but not this one makes
+    /// <see cref="Headers.GetLastBytes"/> throw <see cref="KeyNotFoundException"/>; it does not
+    /// return null, so <c>TryGetLastBytes</c> is the only way to ask without throwing. Either
+    /// escaping as something other than <see cref="MalformedEnvelopeException"/> classifies the
+    /// record as a transient fault, costing it a full redelivery and backoff budget before being
+    /// discarded, where the consumer loop commits and skips a malformed envelope immediately.
+    /// </remarks>
+    internal static string GetRequiredHeader(Headers? headers, string name)
     {
-        var value =
-            headers.GetLastBytes(name)
-            ?? throw new MalformedEnvelopeException(
+        if (headers is null)
+        {
+            throw new MalformedEnvelopeException(
+                $"Kafka message carries no headers, so required header '{name}' is missing."
+            );
+        }
+
+        return headers.TryGetLastBytes(name, out var value)
+            ? Encoding.UTF8.GetString(value)
+            : throw new MalformedEnvelopeException(
                 $"Kafka message is missing required header '{name}'."
             );
-        return Encoding.UTF8.GetString(value);
     }
 }
