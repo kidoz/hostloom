@@ -5,7 +5,8 @@ using Microsoft.Extensions.DependencyInjection;
 
 // CA1707: underscored benchmark names are how the results table stays readable.
 // CA2000: provider lifetimes are owned by GlobalSetup/GlobalCleanup.
-#pragma warning disable CA1707, CA2000
+// CA1822: BenchmarkDotNet discovers instance methods, so a stateless benchmark cannot be static.
+#pragma warning disable CA1707, CA2000, CA1822
 
 namespace HostLoom.Benchmarks;
 
@@ -162,6 +163,7 @@ public class MappingCollectionBenchmarks
 public class MappingResolutionBenchmarks
 {
     private ServiceProvider _hostLoom = null!;
+    private ServiceProvider _hostLoomFactory = null!;
     private ServiceProvider _autoMapper = null!;
 
     private readonly Customer _customer = MappingData.Customer;
@@ -172,6 +174,9 @@ public class MappingResolutionBenchmarks
         _hostLoom = MappingRegistration
             .AddHostLoomMaps(new ServiceCollection())
             .BuildServiceProvider();
+        _hostLoomFactory = MappingRegistration
+            .AddHostLoomMapsFactory(new ServiceCollection())
+            .BuildServiceProvider();
         _autoMapper = MappingRegistration
             .AddAutoMapperMaps(new ServiceCollection())
             .BuildServiceProvider();
@@ -180,6 +185,10 @@ public class MappingResolutionBenchmarks
         // construction or first-map plan compilation inside a benchmark iteration.
         using var hostLoomScope = _hostLoom.CreateScope();
         hostLoomScope
+            .ServiceProvider.GetRequiredService<IMapper>()
+            .Map<Customer, CustomerDto>(_customer);
+        using var factoryScope = _hostLoomFactory.CreateScope();
+        factoryScope
             .ServiceProvider.GetRequiredService<IMapper>()
             .Map<Customer, CustomerDto>(_customer);
         using var autoMapperScope = _autoMapper.CreateScope();
@@ -192,6 +201,7 @@ public class MappingResolutionBenchmarks
     public void Cleanup()
     {
         _hostLoom.Dispose();
+        _hostLoomFactory.Dispose();
         _autoMapper.Dispose();
     }
 
@@ -213,6 +223,20 @@ public class MappingResolutionBenchmarks
             .Map(_customer);
     }
 
+    /// <summary>
+    /// A factory-registered pair, which is how a generic map class is closed. The factory replaces
+    /// the container's own activator, so this row answers whether a service registering many pairs
+    /// that way — one per closed generic — pays for it on every resolve.
+    /// </summary>
+    [Benchmark]
+    public CustomerDto HostLoom_Scope_FactoryRegistered()
+    {
+        using var scope = _hostLoomFactory.CreateScope();
+        return scope
+            .ServiceProvider.GetRequiredService<IMapper<Customer, CustomerDto>>()
+            .Map(_customer);
+    }
+
     [Benchmark]
     public CustomerDto AutoMapper_Scope()
     {
@@ -221,6 +245,40 @@ public class MappingResolutionBenchmarks
             .ServiceProvider.GetRequiredService<AutoMapper.IMapper>()
             .Map<Customer, CustomerDto>(_customer);
     }
+}
+
+/// <summary>
+/// Registration only, with no container built and nothing resolved: what each way of declaring the
+/// same four pairs costs. The question is whether inferring a pair from the map class's interface,
+/// or closing it through a factory, is affordable at the scale a platform registers — 19 services
+/// with about 95 pairs between them. Every row allocates one <see cref="ServiceCollection"/>, so
+/// that constant is in the baseline and the difference is the registration itself.
+/// </summary>
+[MemoryDiagnoser]
+public class MappingRegistrationBenchmarks
+{
+    /// <summary>The pair restated in the call, which is what the map class already declares.</summary>
+    [Benchmark(Baseline = true)]
+    public IServiceCollection HostLoom_Explicit() =>
+        MappingRegistration.AddHostLoomMaps(new ServiceCollection());
+
+    /// <summary>The pair read off the interface — one GetInterfaces walk per registration.</summary>
+    [Benchmark]
+    public IServiceCollection HostLoom_Inferred() =>
+        MappingRegistration.AddHostLoomMapsInferred(new ServiceCollection());
+
+    /// <summary>The pair closed at the call site, as a generic map class must be.</summary>
+    [Benchmark]
+    public IServiceCollection HostLoom_Factory() =>
+        MappingRegistration.AddHostLoomMapsFactory(new ServiceCollection());
+
+    /// <summary>
+    /// AutoMapper's equivalent declaration. It only records the maps here — the expression
+    /// compilation those declarations imply is charged in <see cref="MappingStartupBenchmarks"/>.
+    /// </summary>
+    [Benchmark]
+    public IServiceCollection AutoMapper_Declare() =>
+        MappingRegistration.AddAutoMapperMaps(new ServiceCollection());
 }
 
 /// <summary>

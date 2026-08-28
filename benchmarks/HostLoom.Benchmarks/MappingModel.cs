@@ -214,6 +214,42 @@ internal static class MappingRegistration
         return services;
     }
 
+    /// <summary>
+    /// The same four maps registered through inferred pairs, so the cost of reading each pair off
+    /// the map class's interface can be compared against restating it in the call.
+    /// </summary>
+    public static IServiceCollection AddHostLoomMapsInferred(IServiceCollection services)
+    {
+        services.AddHostLoomMapping(mapping =>
+            mapping
+                .Add<CustomerMapper>()
+                .Add<AddressMapper>()
+                .Add<InvoiceLineMapper>()
+                .Add<InvoiceMapper>()
+        );
+        return services;
+    }
+
+    /// <summary>
+    /// The same four maps registered through factories, which is how a generic map class is
+    /// closed. The factory replaces the container's own activator, so this measures what that
+    /// substitution costs at registration and at resolve.
+    /// </summary>
+    public static IServiceCollection AddHostLoomMapsFactory(IServiceCollection services)
+    {
+        services.AddHostLoomMapping(mapping =>
+            mapping
+                .Add<Customer, CustomerDto>(_ => new CustomerMapper())
+                .Add<Address, AddressDto>(_ => new AddressMapper())
+                .Add<InvoiceLine, InvoiceLineDto>(_ => new InvoiceLineMapper())
+                .Add<Invoice, InvoiceDto>(provider => new InvoiceMapper(
+                    provider.GetRequiredService<IMapper<Address, AddressDto>>(),
+                    provider.GetRequiredService<IMapper<InvoiceLine, InvoiceLineDto>>()
+                ))
+        );
+        return services;
+    }
+
     /// <summary>Declares the same four maps to AutoMapper.</summary>
     public static void ConfigureAutoMapper(IMapperConfigurationExpression configuration)
     {
