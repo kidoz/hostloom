@@ -23,6 +23,13 @@ are derived from release tags at publish time.
   counts as assigned, because the rule targets forgotten members rather than conditional ones. A
   map whose destination is a type parameter cannot have its members enumerated and is skipped
   silently; that blind spot is documented in the analyzer README rather than left to be discovered.
+- `HLM0006`, reporting a type that takes the scoped `IMapper` dispatcher through its constructor
+  and is then registered as a singleton or a hosted service. The failure this replaces is the
+  asymmetric one: a captured scoped service throws at host build where scope validation is enabled,
+  the generic host's default in Development, and succeeds where it is not — so it fails in the
+  environment least like production and hides in the one that matters. Only the non-generic
+  dispatcher is reported; the closed `IMapper<TSource, TDestination>` the rule points at is
+  transient and never flagged.
 - `UnmappedMembersAttribute` in `HostLoom.Mapping`, naming the destination members a map leaves
   unset on purpose. Naming each one rather than marking the map incomplete is what keeps a member
   added to the contract later from being excused along with the deliberate omissions.

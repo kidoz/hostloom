@@ -73,6 +73,18 @@ members, and evidence that the author considered one is the whole signal.
 through `MappingBuilder.Add<TSource, TDestination>(factory)` — cannot have its members enumerated,
 so it is skipped silently and reports neither rule. Completeness of a generic map is not checked.
 
+### HLM0006
+
+Do not capture the scoped `IMapper` dispatcher in a singleton. `AddHostLoomMapping` registers the
+non-generic dispatcher scoped, so a singleton or an `IHostedService` that takes one is a captive
+dependency — and the failure is asymmetric: it throws at host build where scope validation is
+enabled, the generic host's default in Development, and succeeds where it is not. Left to run time
+it is a Development-only failure that Production would not reproduce.
+
+Inject the closed `IMapper<TSource, TDestination>` instead, which is transient and carries no such
+restriction, or take `IServiceScopeFactory` and resolve per unit of work. The rule reports only the
+non-generic dispatcher; the closed map it points at is never reported.
+
 ## Configuration
 
 All rules are warnings by default and use the `HLM` diagnostic prefix. Standard `.editorconfig`
