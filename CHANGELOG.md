@@ -8,6 +8,15 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Changed
+
+- An inferred mapping pair is resolved once per map class and read from a static field afterwards,
+  instead of walking `GetInterfaces()` on every registration. Registering four maps went from 111 ns
+  and 680 B to 63 ns and 552 B — identical to restating the type triple, so choosing the shorter
+  registration form no longer costs anything. Inference failures are stored rather than thrown from
+  the static constructor, which would otherwise reach the caller as a `TypeInitializationException`
+  wrapping the real diagnostic, and would cache that wrapping for every later attempt.
+
 ### Fixed
 
 - Kafka now skips only records classified as malformed HostLoom envelopes; an application handler
