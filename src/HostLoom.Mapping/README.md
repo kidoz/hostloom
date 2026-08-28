@@ -37,7 +37,16 @@ Resolving it from the root provider throws once scope validation is on — the d
 generic host in Development, so this fails there and would have succeeded in Production. For the
 same reason it cannot be constructor-injected into a singleton; inject the closed
 `IMapper<TSource, TDestination>` there, or take `IServiceScopeFactory` and resolve per unit of
-work. Closed maps registered with the default transient lifetime have neither restriction.
+work. A closed map is the right injection there, but not unconditionally: a transient map captured
+by a singleton is promoted to one, so a scoped service anywhere in that map's graph reproduces the
+same Development-throws, Production-succeeds asymmetry. Inject a closed map into a singleton only
+when its whole graph is singleton-safe.
+
+Registering the dispatcher itself as a singleton is possible and constrained: every map must then
+also be a singleton, and a non-singleton one is rejected at registration. A singleton dispatcher
+resolves from the root provider, which never goes out of scope — so a disposable map, or any
+disposable in its graph, would be retained for the life of the process rather than released per
+unit of work.
 
 Both of those failures, and a map whose constructor asks for a pair nobody registered, are caught
 by the container's own validation — which `Host.CreateDefaultBuilder` enables only in Development.
@@ -63,24 +72,31 @@ registration with both alternatives named.
 
 ### Generic map classes
 
-A map class generic in more than its pair — `EntityMapper<TEntity, TModel, TTranslation>`
-implementing `IMapper<TEntity, TModel>` — cannot be registered as an open generic, because the
-container requires the open service type and open implementation type to have equal arity and
-these never do. Close it at the call site with a factory instead, from a generic helper:
+A map class generic in more than its pair is closed by naming it, from a generic helper. Prefer the
+implementation-type overload: the container constructs the map, so `ValidateOnBuild` checks its
+dependencies at startup like any other registration.
 
 ```csharp
 static void AddEntityMap<TEntity, TModel, TTranslation>(MappingBuilder mapping)
     where TEntity : notnull where TModel : notnull =>
-    mapping
-        .Add<TEntity, TModel>(_ => new EntityMapper<TEntity, TModel, TTranslation>())
-        .Add<TModel, TEntity>(_ => new ModelMapper<TEntity, TModel, TTranslation>());
-
-services.AddHostLoomMapping(mapping =>
-{
-    AddEntityMap<ProductEntity, Product, ProductTranslation>(mapping);
-    AddEntityMap<VendorEntity, Vendor, VendorTranslation>(mapping);
-});
+    mapping.Add<TEntity, TModel, EntityMapper<TEntity, TModel, TTranslation>>();
 ```
+
+Reach for the factory overload below only when construction needs a value the container cannot
+supply. A factory body is opaque to `ValidateOnBuild`: whatever it resolves inside is unchecked
+until the map is first resolved, which moves a startup failure back to first use.
+
+```csharp
+static void AddEntityMap<TEntity, TModel, TTranslation>(MappingBuilder mapping, Func<TEntity, TModel> convert)
+    where TEntity : notnull where TModel : notnull =>
+    mapping.Add<TEntity, TModel>(_ => new EntityMapper<TEntity, TModel, TTranslation>(convert));
+```
+
+An *open* generic registration — `IMapper<,>` to `EntityMapper<,,>` — is not an option either way,
+because the container requires the open service type and open implementation type to have equal
+arity and this shape never does. Both forms above close the map at the call site, where the
+compiler still sees every type argument, so neither needs `MakeGenericType` and both keep the
+trimming and Native AOT analyzers clean.
 
 Every type argument stays visible to the compiler, so this needs no `MakeGenericType` and keeps the
 trimming and Native AOT analyzers clean. Each call still produces one closed descriptor, so the
