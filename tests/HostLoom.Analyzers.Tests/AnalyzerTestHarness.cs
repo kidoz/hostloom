@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using HostLoom.Mapping;
 using HostLoom.Pipelines;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -60,6 +61,7 @@ internal static class AnalyzerTestHarness
             ),
             typeof(HostLoomBuilder).Assembly.Location,
             typeof(PipeContext).Assembly.Location,
+            typeof(IMapper<,>).Assembly.Location,
             typeof(IServiceCollection).Assembly.Location,
             typeof(ServiceCollectionServiceExtensions).Assembly.Location,
         ];

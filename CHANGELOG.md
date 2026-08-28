@@ -8,6 +8,25 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- `HLM0004` and `HLM0005`, completeness analysis for explicit maps, closing the one axis on which
+  an explicit map is weaker than the convention mapping it replaces: a destination member that is
+  simply never assigned compiles, passes review, and ships as silent data loss. `HLM0004` reports
+  members a map never assigns; a member supplied through the destination's constructor counts as
+  assigned, so positional records need nothing extra. `HLM0005` reports a map whose body the
+  analysis cannot read, so that no diagnostic always means checked rather than skipped — every
+  `Map` implementation lands in verified, not verifiable, or not applicable, the last being a
+  destination with no settable public instance members or one that is itself a sequence. Two body
+  shapes are verified: a destination constructed and returned directly, and one local constructed,
+  assigned into across any number of statements and branches, then returned. Conditional assignment
+  counts as assigned, because the rule targets forgotten members rather than conditional ones. A
+  map whose destination is a type parameter cannot have its members enumerated and is skipped
+  silently; that blind spot is documented in the analyzer README rather than left to be discovered.
+- `UnmappedMembersAttribute` in `HostLoom.Mapping`, naming the destination members a map leaves
+  unset on purpose. Naming each one rather than marking the map incomplete is what keeps a member
+  added to the contract later from being excused along with the deliberate omissions.
+
 ### Changed
 
 - An inferred mapping pair is resolved once per map class and read from a static field afterwards,
