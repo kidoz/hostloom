@@ -20,12 +20,13 @@ dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --filter "*Map
 
 Compares `HostLoom.Mapping` against AutoMapper across four suites:
 
-| Suite                          | Question it answers                                            |
-| ------------------------------ | -------------------------------------------------------------- |
-| `MappingBenchmarks`            | What does one map cost once everything is warm?                 |
-| `MappingCollectionBenchmarks`  | What does a batch of 100 or 1000 cost?                          |
-| `MappingResolutionBenchmarks`  | What does a scope-resolve-map unit of work cost?                |
-| `MappingStartupBenchmarks`     | What does cold start through the first mapped object cost?      |
+| Suite                            | Question it answers                                          |
+| -------------------------------- | ------------------------------------------------------------ |
+| `MappingBenchmarks`              | What does one map cost once everything is warm?               |
+| `MappingCollectionBenchmarks`    | What does a batch of 100 or 1000 cost?                        |
+| `MappingResolutionBenchmarks`    | What does a scope-resolve-map unit of work cost?              |
+| `MappingRegistrationBenchmarks`  | What does each way of declaring the same pairs cost?          |
+| `MappingStartupBenchmarks`       | What does cold start through the first mapped object cost?    |
 
 Two contract shapes run through the first suite: a flat record of eight scalars, and a nested
 record with a child object and a three-element child collection. Both are grouped by category, so
