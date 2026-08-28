@@ -377,6 +377,149 @@ public sealed class MappingTests
     }
 
     [Fact]
+    public void One_generic_map_class_registers_many_pairs_through_a_factory()
+    {
+        var services = new ServiceCollection();
+        services.AddHostLoomMapping(mapping =>
+        {
+            // The FSA shape: one generic map class, two directions per call, closed at the call
+            // site so the compiler still sees every type argument.
+            AddEntityMap<ProductEntity, ProductModel, ProductTranslation>(
+                mapping,
+                entity => new ProductModel(entity.Name),
+                model => new ProductEntity(model.Name)
+            );
+            AddEntityMap<VendorEntity, VendorModel, VendorTranslation>(
+                mapping,
+                entity => new VendorModel(entity.Name),
+                model => new VendorEntity(model.Name)
+            );
+        });
+        using var provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true }
+        );
+
+        // Four closed pairs from one map class and two calls, both directions resolvable.
+        var forward = provider.GetRequiredService<IMapper<ProductEntity, ProductModel>>();
+        var reverse = provider.GetRequiredService<IMapper<VendorModel, VendorEntity>>();
+        Assert.Equal("notebook", forward.Map(new ProductEntity("notebook")).Name);
+        Assert.Equal("acme", reverse.Map(new VendorModel("acme")).Name);
+
+        // The third type argument really closed the map; it is the parameter that makes an
+        // open-generic registration impossible.
+        Assert.Equal(
+            typeof(ProductTranslation),
+            (
+                (GenericEntityMapper<ProductEntity, ProductModel, ProductTranslation>)forward
+            ).TranslationType
+        );
+    }
+
+    [Fact]
+    public void An_open_generic_map_class_cannot_be_registered_as_an_open_generic()
+    {
+        IServiceCollection services = new ServiceCollection();
+        services.Add(
+            new ServiceDescriptor(
+                typeof(IMapper<,>),
+                typeof(GenericEntityMapper<,,>),
+                ServiceLifetime.Transient
+            )
+        );
+
+        // This is why the factory overload exists rather than an open-generic registration: the
+        // container requires equal arity, and a map generic in more than its pair never has it.
+        // If a future container relaxes this, that is worth knowing here first.
+        var exception = Assert.Throws<ArgumentException>(() => services.BuildServiceProvider());
+        Assert.Contains("arity", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_factory_map_receives_the_provider_and_honours_its_lifetime()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(new NamePolicy("factory: "));
+        services.AddHostLoomMapping(mapping =>
+            mapping.Add<Customer, CustomerDto>(
+                provider => new CustomerMapper(provider.GetRequiredService<NamePolicy>()),
+                ServiceLifetime.Singleton
+            )
+        );
+        using var provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true }
+        );
+
+        var mapper = provider.GetRequiredService<IMapper<Customer, CustomerDto>>();
+        Assert.Equal("factory: Ada", mapper.Map(new Customer("Ada")).DisplayName);
+        Assert.Same(mapper, provider.GetRequiredService<IMapper<Customer, CustomerDto>>());
+    }
+
+    [Fact]
+    public void A_factory_returning_null_is_reported_as_the_factory_rather_than_a_missing_pair()
+    {
+        var services = new ServiceCollection();
+        services.AddHostLoomMapping(mapping => mapping.Add<Customer, CustomerDto>(_ => null!));
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        // MappingNotFoundException here would blame the registration for something the factory did.
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            scope
+                .ServiceProvider.GetRequiredService<IMapper>()
+                .Map<Customer, CustomerDto>(new Customer("Ada"))
+        );
+
+        Assert.IsNotType<MappingNotFoundException>(exception);
+        Assert.Contains("returned null", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Duplicate_detection_spans_the_factory_overload()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(new NamePolicy(string.Empty));
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            services.AddHostLoomMapping(mapping =>
+                mapping
+                    .Add<AlternateCustomerMapper>()
+                    .Add<Customer, CustomerDto>(_ => new AlternateCustomerMapper())
+            )
+        );
+
+        Assert.Contains(typeof(Customer).FullName!, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_null_factory_is_rejected()
+    {
+        var services = new ServiceCollection();
+
+        Assert.Throws<ArgumentNullException>(() =>
+            services.AddHostLoomMapping(mapping =>
+                mapping.Add<Customer, CustomerDto>(
+                    (Func<IServiceProvider, IMapper<Customer, CustomerDto>>)null!
+                )
+            )
+        );
+    }
+
+    private static void AddEntityMap<TEntity, TModel, TTranslation>(
+        MappingBuilder mapping,
+        Func<TEntity, TModel> forward,
+        Func<TModel, TEntity> reverse
+    )
+        where TEntity : notnull
+        where TModel : notnull =>
+        mapping
+            .Add<TEntity, TModel>(_ => new GenericEntityMapper<TEntity, TModel, TTranslation>(
+                forward
+            ))
+            .Add<TModel, TEntity>(_ => new GenericEntityMapper<TModel, TEntity, TTranslation>(
+                reverse
+            ));
+
+    [Fact]
     public void The_builder_overload_registers_the_dispatcher_once_across_repeated_calls()
     {
         var services = new ServiceCollection();
@@ -557,6 +700,33 @@ public sealed class MappingTests
 
     /// <summary>A plain class, so inference has no pair to read.</summary>
     public sealed class NotAMapper;
+
+    public sealed record ProductEntity(string Name);
+
+    public sealed record ProductModel(string Name);
+
+    public sealed record ProductTranslation(string Text);
+
+    public sealed record VendorEntity(string Name);
+
+    public sealed record VendorModel(string Name);
+
+    public sealed record VendorTranslation(string Text);
+
+    /// <summary>
+    /// Generic in three parameters while implementing a two-parameter interface — the shape that
+    /// cannot be registered as an open generic and so must be closed at the call site.
+    /// </summary>
+    public sealed class GenericEntityMapper<TEntity, TModel, TTranslation>(
+        Func<TEntity, TModel> convert
+    ) : IMapper<TEntity, TModel>
+        where TEntity : notnull
+        where TModel : notnull
+    {
+        public Type TranslationType => typeof(TTranslation);
+
+        public TModel Map(TEntity source) => convert(source);
+    }
 
     /// <summary>Two pairs on one class, which inference must refuse rather than pick between.</summary>
     public sealed class DualMapper : IMapper<Customer, CustomerDto>, IMapper<Address, AddressDto>
