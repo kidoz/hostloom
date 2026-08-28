@@ -29,3 +29,15 @@ build:
 # Run the test suite.
 test:
     dotnet test {{ solution }}
+
+# Start the RabbitMQ and Kafka brokers used by the integration tests.
+brokers-up:
+    docker compose up -d --wait
+
+# Stop the brokers and remove their volumes.
+brokers-down:
+    docker compose down -v
+
+# Run the transport integration tests. Requires `just brokers-up` first; they skip otherwise.
+test-integration:
+    dotnet test tests/HostLoom.IntegrationTests/HostLoom.IntegrationTests.csproj -c Release

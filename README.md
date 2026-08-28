@@ -591,6 +591,20 @@ just build
 just test
 ```
 
+The suite above is deterministic and in-process. The RabbitMQ and Kafka
+adapters are additionally exercised against real brokers, which
+`docker-compose.yml` provides:
+
+```text
+docker compose up -d
+dotnet test tests/HostLoom.IntegrationTests/HostLoom.IntegrationTests.csproj -c Release
+docker compose down -v
+```
+
+Those tests skip themselves when the broker ports are closed, so the standard
+gate stays green without Docker — and a skipped result is reported as skipped
+rather than passed, because without a broker they prove nothing.
+
 ## Repository map
 
 ```text
@@ -620,6 +634,7 @@ src/HostLoom.AspNetCore.WebSockets/ raw Kestrel WebSocket RPC and subscriptions
 benchmarks/HostLoom.Benchmarks/    JSON, MessagePack, and Protobuf codec benchmarks
 examples/HostLoom.Examples.Pipelines/ runnable pipeline tour: DI stages, manual and standalone composition
 tests/HostLoom.Tests/            pipeline, round-trip, behavior, and fault tests
+tests/HostLoom.IntegrationTests/ RabbitMQ and Kafka transports against real brokers
 tests/HostLoom.Analyzers.Tests/  compiler-level analyzer tests
 ```
 
