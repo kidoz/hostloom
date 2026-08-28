@@ -1,9 +1,72 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Operations;
 
 namespace HostLoom.Analyzers.Infrastructure;
 
 internal static class AnalyzerSymbolHelpers
 {
+    private const string DependencyInjectionAssembly = "Microsoft.Extensions.DependencyInjection";
+    private const string HostingAssembly = "Microsoft.Extensions.Hosting";
+
+    /// <summary>Recognises the container calls that register an implementation as a singleton.</summary>
+    public static bool IsSingletonRegistration(IMethodSymbol method)
+    {
+        if (!IsDependencyInjectionCall(method))
+        {
+            return false;
+        }
+
+        return string.Equals(method.Name, "AddSingleton", StringComparison.Ordinal)
+            || string.Equals(method.Name, "TryAddSingleton", StringComparison.Ordinal)
+            || string.Equals(method.Name, "AddKeyedSingleton", StringComparison.Ordinal)
+            || string.Equals(method.Name, "TryAddKeyedSingleton", StringComparison.Ordinal)
+            || string.Equals(method.Name, "Singleton", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Recognises hosted service registration, which is a singleton registration by another name —
+    /// the host resolves an <c>IHostedService</c> once and holds it for the process. The extension
+    /// ships in the hosting assembly rather than the dependency-injection one.
+    /// </summary>
+    public static bool IsHostedServiceRegistration(IMethodSymbol method) =>
+        method.ContainingAssembly?.Name is string assemblyName
+        && assemblyName.StartsWith(HostingAssembly, StringComparison.Ordinal)
+        && string.Equals(method.Name, "AddHostedService", StringComparison.Ordinal);
+
+    /// <summary>The implementation types a registration call names, by type argument or by value.</summary>
+    public static IEnumerable<ITypeSymbol> RegistrationTypes(IInvocationOperation invocation)
+    {
+        foreach (ITypeSymbol type in invocation.TargetMethod.TypeArguments)
+        {
+            yield return type;
+        }
+
+        foreach (IArgumentOperation argument in invocation.Arguments)
+        {
+            IOperation value = argument.Value;
+            while (value is IConversionOperation conversion)
+            {
+                value = conversion.Operand;
+            }
+
+            if (value is ITypeOfOperation typeOf)
+            {
+                yield return typeOf.TypeOperand;
+            }
+            else if (value is IObjectCreationOperation creation && creation.Type is not null)
+            {
+                yield return creation.Type;
+            }
+        }
+    }
+
+    private static bool IsDependencyInjectionCall(IMethodSymbol method)
+    {
+        string? assemblyName = method.ContainingAssembly?.Name;
+        return assemblyName is not null
+            && assemblyName.StartsWith(DependencyInjectionAssembly, StringComparison.Ordinal);
+    }
+
     private const string AssemblyMetadataAttribute = "System.Reflection.AssemblyMetadataAttribute";
     private const string FrameworkAssemblyMarker = "HostLoom.FrameworkAssembly";
     private const string HostLoomNamespace = "HostLoom";

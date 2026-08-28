@@ -15,6 +15,8 @@ public static class HostLoomDiagnosticDescriptors
 
     public const string MappingNotVerifiableDiagnosticId = "HLM0005";
 
+    public const string SingletonMapperInjectionDiagnosticId = "HLM0006";
+
     internal static readonly DiagnosticDescriptor MissingCancellationToken = new(
         MissingCancellationTokenDiagnosticId,
         "Pass an available cancellation token to HostLoom async calls",
@@ -68,5 +70,16 @@ public static class HostLoomDiagnosticDescriptors
         isEnabledByDefault: true,
         description: "Completeness analysis recognises a destination returned directly, and one local constructed and then assigned before being returned. A body outside both shapes is reported rather than skipped, so that 'not checked' is never mistaken for 'checked and complete'.",
         helpLinkUri: "https://github.com/kidoz/hostloom/tree/main/src/HostLoom.Analyzers#hlm0005"
+    );
+
+    internal static readonly DiagnosticDescriptor SingletonMapperInjection = new(
+        SingletonMapperInjectionDiagnosticId,
+        "Do not capture the scoped mapping dispatcher in a singleton",
+        "'{0}' is registered as a singleton but takes the scoped IMapper dispatcher; inject a closed IMapper<TSource, TDestination> instead",
+        "Usage",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "The non-generic IMapper dispatcher is registered scoped. Capturing it in a singleton throws at host build where scope validation is enabled and succeeds where it is not, so the failure appears in Development and hides in Production. A closed IMapper<TSource, TDestination> is transient and carries no such restriction.",
+        helpLinkUri: "https://github.com/kidoz/hostloom/tree/main/src/HostLoom.Analyzers#hlm0006"
     );
 }
