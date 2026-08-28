@@ -8,6 +8,121 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-29
+
+Upgrading adds three analyzer rules — `HLM0004`, `HLM0005`, and `HLM0006` — which report
+as warnings by default. A project building with `TreatWarningsAsErrors` will fail until each
+is addressed or its severity is set in `.editorconfig`; that is the intended effect, but it
+is a build break on upgrade rather than a silent change.
+
+### Added
+
+- `HostLoom.Mapping.Testing`, composing an `IMapper` dispatcher from explicit maps with no
+  container, so a unit test does not have to build an `IServiceCollection` to obtain one. Maps are
+  added as instances or as inline delegates. Duplicate pairs are rejected exactly as
+  `MappingBuilder` rejects them, so a test cannot pass against a composition the container would
+  refuse, and `Build` takes a snapshot so a dispatcher already handed to a test is unaffected by
+  later additions. Substituting the dispatcher remains the worse option: it needs one substitute per
+  pair, and each returns what the test told it to rather than what a map would.
+- `MappedPairRegistry` and `IServiceCollection.GetMappedPairs()`, exposing the registered source and
+  destination pairs so a service can assert its expectations while the container is still being
+  composed, rather than discovering a missing pair on the first code path that needs it. One
+  registry spans repeated `AddHostLoomMapping` calls and every registration overload.
+- `MappingNotFoundException` now reports the destinations the requested source type *is* registered
+  to map to, through a new constructor overload and a `RegisteredDestinations` property. The near
+  miss is usually the diagnosis — a destination named one letter differently, or the pair registered
+  in the other direction — so listing them turns reading the message into the fix.
+- `AddHostLoomMapping` takes the dispatcher's `ServiceLifetime`. Scoped remains the default and the
+  safe choice. Singleton lets an `IHostedService` take the dispatcher directly, and then every map
+  must be registered singleton too — anything else is rejected at registration, because a singleton
+  dispatcher resolves from the root provider and would retain each disposable map for the life of
+  the process. Injecting a closed `IMapper<TSource, TDestination>` is still preferable, provided
+  that map's own graph is singleton-safe. A singleton dispatcher does not silence `HLM0006`, which
+  reports the shape rather than the lifetime it was registered with.
+- `HLM0004` and `HLM0005`, completeness analysis for explicit maps, closing the one axis on which
+  an explicit map is weaker than the convention mapping it replaces: a destination member that is
+  simply never assigned compiles, passes review, and ships as silent data loss. `HLM0004` reports
+  members a map never assigns; a member supplied through the destination's constructor counts as
+  assigned, so positional records need nothing extra. `HLM0005` reports a map whose body the
+  analysis cannot read, so that no diagnostic always means checked rather than skipped — every
+  `Map` implementation lands in verified, not verifiable, or not applicable, the last being a
+  destination with no settable public instance members or one that is itself a sequence. Two body
+  shapes are verified: a destination constructed and returned directly, and one local constructed,
+  assigned into across any number of statements and branches, then returned. Conditional assignment
+  counts as assigned, because the rule targets forgotten members rather than conditional ones. A
+  map whose destination is a type parameter cannot have its members enumerated and is skipped
+  silently; that blind spot is documented in the analyzer README rather than left to be discovered.
+- `HLM0006`, reporting a type that takes the scoped `IMapper` dispatcher through its constructor
+  and is then registered as a singleton or a hosted service. The failure this replaces is the
+  asymmetric one: a captured scoped service throws at host build where scope validation is enabled,
+  the generic host's default in Development, and succeeds where it is not — so it fails in the
+  environment least like production and hides in the one that matters. Only the non-generic
+  dispatcher is reported; the closed `IMapper<TSource, TDestination>` the rule points at is
+  transient and never flagged.
+- `UnmappedMembersAttribute` in `HostLoom.Mapping`, naming the destination members a map leaves
+  unset on purpose. Naming each one rather than marking the map incomplete is what keeps a member
+  added to the contract later from being excused along with the deliberate omissions.
+- `MappingBuilder.Add<TSource, TDestination>(Func<IServiceProvider, IMapper<TSource, TDestination>>)`
+  registers a pair through a factory, which is how a generic map class is closed. A map generic in
+  more than its source and destination — `EntityMapper<TEntity, TModel, TTranslation>` implementing
+  `IMapper<TEntity, TModel>` — cannot be registered as an open generic, because the container
+  requires the open service type and open implementation type to have equal arity and this shape
+  never does. Closing the map at the call site instead keeps every type argument visible to the
+  compiler, so the registration needs no `MakeGenericType` and both packages keep their trimming
+  and Native AOT analyzers clean. Called from a generic helper, one map class registers many pairs
+  in both directions; each registration remains a single closed descriptor, so the registered pairs
+  stay enumerable and duplicate detection still spans it. A factory that returns null is reported
+  as the factory's fault rather than surfacing as `MappingNotFoundException`, which would blame the
+  registration for a pair that is in fact registered.
+- Sequence and null-tolerant mapping in the core package, as extension methods on the closed
+  mapper: `MapMany` and `MapManyOrEmpty` return `IReadOnlyList<TDestination>` sized in one
+  allocation when the source reports a count, `MapManyDeferred` maps lazily for scans too large to
+  materialize, and `MapOrNull` maps one value through null. The null policy is carried by the
+  method name instead of by configuration, so unlike a convention mapper's global switch every
+  call site that depends on null tolerance stays greppable. `MapManyDeferred` validates its
+  arguments eagerly and only the mapping is deferred, so a null argument is reported at the call
+  that passed it rather than at the first enumeration. The `HostLoom.Mapping` README documents the
+  three ways AutoMapper's defaults differ, verified against AutoMapper 14 — including that
+  `AllowNullCollections = false` rewrites null collection *members* to empty during ordinary object
+  mapping, not only top-level collection maps, which is the case most likely to change behaviour
+  silently during a migration.
+- `MappingBuilder.Add<TMapper>()` registers a map class from the pair it already declares, read
+  from the single closed `IMapper<TSource, TDestination>` it implements. A registration no longer
+  restates a type triple the class carries on its interface, and the registering file needs no
+  `using` for the contracts being mapped between — only for the map class. Inference reads type
+  metadata once per registration and composes nothing, so both packages keep their trimming and
+  Native AOT analyzers clean and the map dispatch path stays free of reflection. A class that
+  implements no pair, or more than one, fails at registration with every candidate pair named and
+  points at `Add<TSource, TDestination, TMapper>()`, which remains for choosing a pair explicitly
+  and for closing an open generic map. Duplicate detection spans both overloads, since an inferred
+  registration produces the same closed service type as an explicit one.
+- Mapping benchmarks against AutoMapper across four suites: one map in steady state for a flat
+  eight-scalar contract and a nested one with a child object and child collection; a batch of 100
+  and 1000; a scope-resolve-map unit of work through the container; and cold start through the
+  first mapped object, where a convention mapper's expression compilation lands. The flat shape is
+  deliberately AutoMapper's best case — names match on both sides, so it is pure convention with no
+  `ForMember` — and AutoMapper's execution plans are compiled during setup so the steady-state
+  suites measure per-call cost rather than the cost of getting there. `GlobalSetup` asserts that
+  both libraries produce equivalent destination values, so an incomplete map on either side fails
+  the run instead of being reported as a faster one. AutoMapper is referenced by the benchmark
+  project only; nothing under `src/` depends on it and the project is not packable.
+
+### Changed
+
+- An inferred mapping pair is resolved once per map class and read from a static field afterwards,
+  instead of walking `GetInterfaces()` on every registration. Registering four maps went from 111 ns
+  and 680 B to 63 ns and 552 B — identical to restating the type triple, so choosing the shorter
+  registration form no longer costs anything. Inference failures are stored rather than thrown from
+  the static constructor, which would otherwise reach the caller as a `TypeInitializationException`
+  wrapping the real diagnostic, and would cache that wrapping for every later attempt.
+- Benchmark suites that settle an implementation choice rather than compare libraries:
+  `MapManyStrategyBenchmarks` measured a span fast path over `T[]` and `List<T>` at 2% against the
+  `IReadOnlyList<T>` indexing that ships, which does not pay for two extra type checks and a span
+  over `List<T>`'s internals — the map calls are roughly 94% of the work at 1000 elements.
+  `MappingLifetimeBenchmarks` established that the dispatcher's extra 24 B is the transient map
+  class constructed per dispatch, and that registering a stateless map as a singleton returns its
+  allocation to exactly that of an injected closed map.
+
 ### Fixed
 
 - A singleton mapping dispatcher now requires every map to be a singleton, and rejects anything
@@ -31,7 +146,6 @@ are derived from release tags at publish time.
   four maps by inference had become 3.6× the explicit form at 392 ns and 1128 B; the source and
   destination are now cached alongside the pair, and both forms cost 107 ns and 808 B. Inference
   being free is the only thing that justifies preferring the shorter registration.
-
 - RabbitMQ no longer replaces a connection that automatic recovery owns. Observing `IsOpen: false`
   during a broker drop used to dispose the connection and build a new one, which cancelled the
   recovery that would have restored the channels, queues, and consumers created on it — leaving
@@ -61,130 +175,12 @@ are derived from release tags at publish time.
   to start over a filter that would never execute — defeating the switch precisely when its
   dependencies were absent, which is the case it exists for. The validator also wraps any
   constructor failure in its guidance now, not only the container's `InvalidOperationException`.
-
-### Added
-
-- `HostLoom.Mapping.Testing`, composing an `IMapper` dispatcher from explicit maps with no
-  container, so a unit test does not have to build an `IServiceCollection` to obtain one. Maps are
-  added as instances or as inline delegates. Duplicate pairs are rejected exactly as
-  `MappingBuilder` rejects them, so a test cannot pass against a composition the container would
-  refuse, and `Build` takes a snapshot so a dispatcher already handed to a test is unaffected by
-  later additions. Substituting the dispatcher remains the worse option: it needs one substitute per
-  pair, and each returns what the test told it to rather than what a map would.
-- `MappedPairRegistry` and `IServiceCollection.GetMappedPairs()`, exposing the registered source and
-  destination pairs so a service can assert its expectations while the container is still being
-  composed, rather than discovering a missing pair on the first code path that needs it. One
-  registry spans repeated `AddHostLoomMapping` calls and every registration overload.
-- `MappingNotFoundException` now reports the destinations the requested source type *is* registered
-  to map to, through a new constructor overload and a `RegisteredDestinations` property. The near
-  miss is usually the diagnosis — a destination named one letter differently, or the pair registered
-  in the other direction — so listing them turns reading the message into the fix.
-- `AddHostLoomMapping` takes the dispatcher's `ServiceLifetime`. Scoped remains the default and the
-  safe choice. Singleton lets an `IHostedService` take the dispatcher directly, and then every map
-  must be registered singleton too — anything else is rejected at registration, because a singleton
-  dispatcher resolves from the root provider and would retain each disposable map for the life of
-  the process. Injecting a closed `IMapper<TSource, TDestination>` is still preferable, provided
-  that map's own graph is singleton-safe. A singleton dispatcher does not silence `HLM0006`, which
-  reports the shape rather than the lifetime it was registered with.
-
-- `HLM0004` and `HLM0005`, completeness analysis for explicit maps, closing the one axis on which
-  an explicit map is weaker than the convention mapping it replaces: a destination member that is
-  simply never assigned compiles, passes review, and ships as silent data loss. `HLM0004` reports
-  members a map never assigns; a member supplied through the destination's constructor counts as
-  assigned, so positional records need nothing extra. `HLM0005` reports a map whose body the
-  analysis cannot read, so that no diagnostic always means checked rather than skipped — every
-  `Map` implementation lands in verified, not verifiable, or not applicable, the last being a
-  destination with no settable public instance members or one that is itself a sequence. Two body
-  shapes are verified: a destination constructed and returned directly, and one local constructed,
-  assigned into across any number of statements and branches, then returned. Conditional assignment
-  counts as assigned, because the rule targets forgotten members rather than conditional ones. A
-  map whose destination is a type parameter cannot have its members enumerated and is skipped
-  silently; that blind spot is documented in the analyzer README rather than left to be discovered.
-- `HLM0006`, reporting a type that takes the scoped `IMapper` dispatcher through its constructor
-  and is then registered as a singleton or a hosted service. The failure this replaces is the
-  asymmetric one: a captured scoped service throws at host build where scope validation is enabled,
-  the generic host's default in Development, and succeeds where it is not — so it fails in the
-  environment least like production and hides in the one that matters. Only the non-generic
-  dispatcher is reported; the closed `IMapper<TSource, TDestination>` the rule points at is
-  transient and never flagged.
-- `UnmappedMembersAttribute` in `HostLoom.Mapping`, naming the destination members a map leaves
-  unset on purpose. Naming each one rather than marking the map incomplete is what keeps a member
-  added to the contract later from being excused along with the deliberate omissions.
-
-### Changed
-
-- An inferred mapping pair is resolved once per map class and read from a static field afterwards,
-  instead of walking `GetInterfaces()` on every registration. Registering four maps went from 111 ns
-  and 680 B to 63 ns and 552 B — identical to restating the type triple, so choosing the shorter
-  registration form no longer costs anything. Inference failures are stored rather than thrown from
-  the static constructor, which would otherwise reach the caller as a `TypeInitializationException`
-  wrapping the real diagnostic, and would cache that wrapping for every later attempt.
-- Benchmark suites that settle an implementation choice rather than compare libraries:
-  `MapManyStrategyBenchmarks` measured a span fast path over `T[]` and `List<T>` at 2% against the
-  `IReadOnlyList<T>` indexing that ships, which does not pay for two extra type checks and a span
-  over `List<T>`'s internals — the map calls are roughly 94% of the work at 1000 elements.
-  `MappingLifetimeBenchmarks` established that the dispatcher's extra 24 B is the transient map
-  class constructed per dispatch, and that registering a stateless map as a singleton returns its
-  allocation to exactly that of an injected closed map.
-
-### Fixed
-
 - Kafka now skips only records classified as malformed HostLoom envelopes; an application handler
   that throws `InvalidDataException` follows the configured broker redelivery policy instead of
   being committed immediately as poison data.
 - Usage analyzers identify framework assemblies through generated assembly metadata, preventing a
   consumer such as `HostLoom.OrderService` from being analyzed as framework code while ensuring
   future packages under `src/` are included automatically.
-
-### Added
-
-- `MappingBuilder.Add<TSource, TDestination>(Func<IServiceProvider, IMapper<TSource, TDestination>>)`
-  registers a pair through a factory, which is how a generic map class is closed. A map generic in
-  more than its source and destination — `EntityMapper<TEntity, TModel, TTranslation>` implementing
-  `IMapper<TEntity, TModel>` — cannot be registered as an open generic, because the container
-  requires the open service type and open implementation type to have equal arity and this shape
-  never does. Closing the map at the call site instead keeps every type argument visible to the
-  compiler, so the registration needs no `MakeGenericType` and both packages keep their trimming
-  and Native AOT analyzers clean. Called from a generic helper, one map class registers many pairs
-  in both directions; each registration remains a single closed descriptor, so the registered pairs
-  stay enumerable and duplicate detection still spans it. A factory that returns null is reported
-  as the factory's fault rather than surfacing as `MappingNotFoundException`, which would blame the
-  registration for a pair that is in fact registered.
-
-- Sequence and null-tolerant mapping in the core package, as extension methods on the closed
-  mapper: `MapMany` and `MapManyOrEmpty` return `IReadOnlyList<TDestination>` sized in one
-  allocation when the source reports a count, `MapManyDeferred` maps lazily for scans too large to
-  materialize, and `MapOrNull` maps one value through null. The null policy is carried by the
-  method name instead of by configuration, so unlike a convention mapper's global switch every
-  call site that depends on null tolerance stays greppable. `MapManyDeferred` validates its
-  arguments eagerly and only the mapping is deferred, so a null argument is reported at the call
-  that passed it rather than at the first enumeration. The `HostLoom.Mapping` README documents the
-  three ways AutoMapper's defaults differ, verified against AutoMapper 14 — including that
-  `AllowNullCollections = false` rewrites null collection *members* to empty during ordinary object
-  mapping, not only top-level collection maps, which is the case most likely to change behaviour
-  silently during a migration.
-
-- `MappingBuilder.Add<TMapper>()` registers a map class from the pair it already declares, read
-  from the single closed `IMapper<TSource, TDestination>` it implements. A registration no longer
-  restates a type triple the class carries on its interface, and the registering file needs no
-  `using` for the contracts being mapped between — only for the map class. Inference reads type
-  metadata once per registration and composes nothing, so both packages keep their trimming and
-  Native AOT analyzers clean and the map dispatch path stays free of reflection. A class that
-  implements no pair, or more than one, fails at registration with every candidate pair named and
-  points at `Add<TSource, TDestination, TMapper>()`, which remains for choosing a pair explicitly
-  and for closing an open generic map. Duplicate detection spans both overloads, since an inferred
-  registration produces the same closed service type as an explicit one.
-
-- Mapping benchmarks against AutoMapper across four suites: one map in steady state for a flat
-  eight-scalar contract and a nested one with a child object and child collection; a batch of 100
-  and 1000; a scope-resolve-map unit of work through the container; and cold start through the
-  first mapped object, where a convention mapper's expression compilation lands. The flat shape is
-  deliberately AutoMapper's best case — names match on both sides, so it is pure convention with no
-  `ForMember` — and AutoMapper's execution plans are compiled during setup so the steady-state
-  suites measure per-call cost rather than the cost of getting there. `GlobalSetup` asserts that
-  both libraries produce equivalent destination values, so an incomplete map on either side fails
-  the run instead of being reported as a faster one. AutoMapper is referenced by the benchmark
-  project only; nothing under `src/` depends on it and the project is not packable.
 
 ## [0.2.0] - 2026-08-27
 
