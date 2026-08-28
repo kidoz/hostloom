@@ -4,6 +4,7 @@ using HostLoom.Transport.RabbitMq;
 using Microsoft.Extensions.Options;
 using NSubstitute;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 using Xunit;
 
 namespace HostLoom.Tests;
@@ -322,6 +323,85 @@ public sealed class RabbitMqBrokerTests
         Assert.Equal([2ul], channel.Rejects);
     }
 
+    [Fact]
+    public async Task A_dropped_broker_does_not_replace_the_connection_recovery_owns()
+    {
+        var rabbit = new FakeRabbit();
+        var connections = 0;
+        await using var broker = new RabbitMqRequestBroker(
+            Options.Create(new RabbitMqOptions()),
+            _ =>
+            {
+                connections++;
+                return ValueTask.FromResult(rabbit.Connection);
+            }
+        );
+
+        await broker
+            .PublishAsync(
+                "orders",
+                Encoding.UTF8.GetBytes("first"),
+                TestContext.Current.CancellationToken
+            )
+            .ConfigureAwait(true);
+        Assert.Equal(1, connections);
+
+        // The broker drops: the connection closes with a peer-initiated reason, which is what
+        // automatic recovery restores. Replacing it would strand every consumer created on it,
+        // silently, while publishing carried on — so the publish is expected to fail here rather
+        // than to succeed against a replacement.
+        rabbit.Drop(ShutdownInitiator.Peer);
+
+        await Assert
+            .ThrowsAnyAsync<Exception>(async () =>
+                await broker.PublishAsync(
+                    "orders",
+                    Encoding.UTF8.GetBytes("during-outage"),
+                    TestContext.Current.CancellationToken
+                )
+            )
+            .ConfigureAwait(true);
+        Assert.Equal(1, connections);
+    }
+
+    [Fact]
+    public async Task A_connection_closed_by_the_application_is_replaced()
+    {
+        var rabbit = new FakeRabbit();
+        var connections = 0;
+        await using var broker = new RabbitMqRequestBroker(
+            Options.Create(new RabbitMqOptions()),
+            _ =>
+            {
+                connections++;
+                rabbit.Reopen();
+                return ValueTask.FromResult(rabbit.Connection);
+            }
+        );
+
+        await broker
+            .PublishAsync(
+                "orders",
+                Encoding.UTF8.GetBytes("first"),
+                TestContext.Current.CancellationToken
+            )
+            .ConfigureAwait(true);
+
+        // Nothing will restore an application-initiated close, so a new connection is the only
+        // way forward and the broker must still make one.
+        rabbit.Drop(ShutdownInitiator.Application);
+
+        await broker
+            .PublishAsync(
+                "orders",
+                Encoding.UTF8.GetBytes("after-close"),
+                TestContext.Current.CancellationToken
+            )
+            .ConfigureAwait(true);
+
+        Assert.Equal(2, connections);
+    }
+
     private static RabbitMqRequestBroker Create(FakeRabbit rabbit) =>
         new(Options.Create(new RabbitMqOptions()), _ => ValueTask.FromResult(rabbit.Connection));
 
@@ -384,6 +464,50 @@ public sealed class RabbitMqBrokerTests
         }
 
         public IConnection Connection { get; }
+
+        /// <summary>Closes the connection with the given initiator, as a real shutdown would.</summary>
+        public void Drop(ShutdownInitiator initiator)
+        {
+            Connection.IsOpen.Returns(false);
+            Connection.CloseReason.Returns(
+                new ShutdownEventArgs(initiator, 320, "connection dropped")
+            );
+
+            // Channels die with their connection, which is what makes the broker re-enter
+            // EnsureConnectionAsync rather than keep publishing on a cached channel.
+            lock (_gate)
+            {
+                foreach (var channel in _channels)
+                {
+                    channel.Channel.IsOpen.Returns(false);
+                }
+            }
+
+            Connection
+                .CreateChannelAsync(Arg.Any<CreateChannelOptions?>(), Arg.Any<CancellationToken>())
+                .Returns<Task<IChannel>>(_ =>
+                    throw new InvalidOperationException("the connection is closed")
+                );
+        }
+
+        /// <summary>Restores the connection, standing in for a freshly created one.</summary>
+        public void Reopen()
+        {
+            Connection.IsOpen.Returns(true);
+            Connection.CloseReason.Returns(_ => null!);
+            Connection
+                .CreateChannelAsync(Arg.Any<CreateChannelOptions?>(), Arg.Any<CancellationToken>())
+                .Returns(_ =>
+                {
+                    var channel = new FakeChannel();
+                    lock (_gate)
+                    {
+                        _channels.Add(channel);
+                    }
+
+                    return Task.FromResult(channel.Channel);
+                });
+        }
 
         public List<FakeChannel> Channels
         {

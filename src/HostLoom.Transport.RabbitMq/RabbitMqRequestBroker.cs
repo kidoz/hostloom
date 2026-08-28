@@ -354,16 +354,28 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         await _initializationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_connection is not { IsOpen: true })
+            if (_connection is { IsOpen: true })
             {
-                if (_connection is not null)
-                {
-                    await _connection.DisposeAsync().ConfigureAwait(false);
-                }
-
-                _connection = await _connectionFactory(cancellationToken).ConfigureAwait(false);
+                return _connection;
             }
 
+            if (_connection is not null && IsRecovering(_connection))
+            {
+                // Automatic recovery owns this connection: it reopens this same object and
+                // restores the channels, queues, and consumers created on it. Replacing it here
+                // would cancel that and leave every listener and subscription silently dead while
+                // publishing carried on against a fresh connection — the worst pairing, because
+                // nothing reports it. Handing the closed connection back instead fails this
+                // operation loudly and transiently, which a caller can retry.
+                return _connection;
+            }
+
+            if (_connection is not null)
+            {
+                await _connection.DisposeAsync().ConfigureAwait(false);
+            }
+
+            _connection = await _connectionFactory(cancellationToken).ConfigureAwait(false);
             return _connection;
         }
         finally
@@ -371,6 +383,14 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             _initializationGate.Release();
         }
     }
+
+    /// <summary>
+    /// Reports whether the client library will restore this connection rather than the broker
+    /// needing a new one. Only an application-initiated close is final; a peer or library shutdown
+    /// is a dropped broker or network, which is exactly what recovery exists for.
+    /// </summary>
+    private static bool IsRecovering(IConnection connection) =>
+        connection.CloseReason is not { Initiator: ShutdownInitiator.Application };
 
     private async ValueTask EnsureClientAsync(CancellationToken cancellationToken)
     {
@@ -474,6 +494,9 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             Uri = _options.Uri,
             ClientProvidedName = _options.ClientProvidedName,
             AutomaticRecoveryEnabled = true,
+            // Stated rather than left to the default, because the listeners depend on it: it is
+            // what re-declares the queues and re-registers the consumers after a broker drop.
+            TopologyRecoveryEnabled = true,
         };
         return await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
     }
