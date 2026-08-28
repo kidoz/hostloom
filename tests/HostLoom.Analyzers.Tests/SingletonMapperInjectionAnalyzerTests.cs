@@ -36,6 +36,16 @@ public sealed class SingletonMapperInjectionAnalyzerTests
 
             public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         }
+
+        public abstract class SubscriberBase
+        {
+            protected SubscriberBase(IMapper mapper) { }
+        }
+
+        public sealed class DerivedSubscriber : SubscriberBase
+        {
+            public DerivedSubscriber(IMapper mapper) : base(mapper) { }
+        }
         """;
 
     [Fact]
@@ -91,6 +101,24 @@ public sealed class SingletonMapperInjectionAnalyzerTests
     {
         Diagnostic[] diagnostics = await AnalyzeAsync(
             """services.AddKeyedSingleton<CapturesDispatcher>("key");"""
+        );
+
+        Diagnostic diagnostic = Assert.Single(diagnostics);
+        Assert.Equal(
+            HostLoomDiagnosticDescriptors.SingletonMapperInjectionDiagnosticId,
+            diagnostic.Id
+        );
+    }
+
+    [Fact]
+    public async Task A_singleton_whose_base_takes_the_dispatcher_is_reported()
+    {
+        // C# does not inherit constructors, so a derived type whose base needs the dispatcher must
+        // declare a constructor taking it and pass it along — which is the constructor the
+        // container selects and the one this rule reads. Walking base constructors instead would
+        // report types the container never injects a dispatcher into.
+        Diagnostic[] diagnostics = await AnalyzeAsync(
+            "services.AddSingleton<DerivedSubscriber>();"
         );
 
         Diagnostic diagnostic = Assert.Single(diagnostics);
