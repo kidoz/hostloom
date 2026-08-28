@@ -644,6 +644,83 @@ public sealed class MappingTests
         Assert.Throws<ArgumentNullException>(() => mapper.MapOrNull(new Customer("ada")));
     }
 
+    [Fact]
+    public void The_registered_pairs_can_be_asserted_at_startup()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(new NamePolicy(string.Empty));
+        services.AddHostLoomMapping(mapping => mapping.Add<CustomerMapper>().Add<AddressMapper>());
+
+        MappedPairRegistry registry = services.GetMappedPairs();
+
+        Assert.True(registry.Contains(typeof(Customer), typeof(CustomerDto)));
+        Assert.True(registry.Contains(typeof(Address), typeof(AddressDto)));
+        Assert.False(registry.Contains(typeof(Address), typeof(CustomerDto)));
+        Assert.Equal(2, registry.Pairs.Count);
+    }
+
+    [Fact]
+    public void The_pair_registry_spans_every_registration_overload_and_repeated_calls()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(new NamePolicy(string.Empty));
+
+        services.AddHostLoomMapping().Add<CustomerMapper>();
+        services
+            .AddHostLoomMapping()
+            .Add<Address, AddressDto, AddressMapper>()
+            .Add<CustomerWithAddress, CustomerWithAddressDto>(_ => new CustomerWithAddressMapper(
+                new AddressMapper()
+            ))
+            .Add<Customer, StampedCustomerDto>(new StampedCustomerMapper(new MappingStamp()));
+
+        // One registry across repeated AddHostLoomMapping calls, as the dispatcher is.
+        Assert.Equal(4, services.GetMappedPairs().Pairs.Count);
+    }
+
+    [Fact]
+    public void A_missing_pair_names_what_the_source_is_registered_to_map_to()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(new NamePolicy(string.Empty));
+        services.AddHostLoomMapping(mapping => mapping.Add<CustomerMapper>());
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var mapper = scope.ServiceProvider.GetRequiredService<IMapper>();
+
+        var exception = Assert.Throws<MappingNotFoundException>(() =>
+            mapper.Map<Customer, StampedCustomerDto>(new Customer("Ada"))
+        );
+
+        // The near miss is the diagnosis: Customer maps somewhere, just not there.
+        Assert.Equal([typeof(CustomerDto)], exception.RegisteredDestinations);
+        Assert.Contains(typeof(CustomerDto).FullName!, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_dispatcher_can_be_registered_as_a_singleton()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(new NamePolicy(string.Empty));
+        services.AddHostLoomMapping(
+            mapping => mapping.Add<CustomerMapper>(ServiceLifetime.Singleton),
+            ServiceLifetime.Singleton
+        );
+        services.AddSingleton<SingletonNeedingMapper>();
+
+        // The captive-dependency failure the scoped default produces is gone, so this composes and
+        // resolves from the root provider even with scope validation on.
+        using var provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true }
+        );
+
+        var consumer = provider.GetRequiredService<SingletonNeedingMapper>();
+        Assert.Equal(
+            "Ada",
+            consumer.Mapper.From(new Customer("Ada")).To<CustomerDto>().DisplayName
+        );
+    }
+
     public sealed class SingletonNeedingMapper(IMapper mapper)
     {
         public IMapper Mapper { get; } = mapper;

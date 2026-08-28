@@ -6,7 +6,13 @@ namespace HostLoom.Mapping.DependencyInjection;
 /// <summary>Registers explicit source/destination mappings with the .NET service container.</summary>
 public sealed class MappingBuilder
 {
-    internal MappingBuilder(IServiceCollection services) => Services = services;
+    private readonly MappedPairRegistry _registry;
+
+    internal MappingBuilder(IServiceCollection services, MappedPairRegistry registry)
+    {
+        Services = services;
+        _registry = registry;
+    }
 
     /// <summary>The service collection receiving mapping registrations.</summary>
     public IServiceCollection Services { get; }
@@ -45,6 +51,7 @@ public sealed class MappingBuilder
             ?? throw new InvalidOperationException(MappedPair<TMapper>.Diagnostic);
         EnsureNotRegistered(serviceType);
         Services.Add(new ServiceDescriptor(serviceType, typeof(TMapper), lifetime));
+        _registry.Record(serviceType.GenericTypeArguments[0], serviceType.GenericTypeArguments[1]);
         return this;
     }
 
@@ -67,6 +74,7 @@ public sealed class MappingBuilder
         Services.Add(
             new ServiceDescriptor(typeof(IMapper<TSource, TDestination>), typeof(TMapper), lifetime)
         );
+        _registry.Record(typeof(TSource), typeof(TDestination));
         return this;
     }
 
@@ -116,6 +124,7 @@ public sealed class MappingBuilder
                 lifetime
             )
         );
+        _registry.Record(typeof(TSource), typeof(TDestination));
         return this;
     }
 
@@ -130,6 +139,7 @@ public sealed class MappingBuilder
         ArgumentNullException.ThrowIfNull(mapper);
         EnsureNotRegistered(typeof(IMapper<TSource, TDestination>));
         Services.AddSingleton(mapper);
+        _registry.Record(typeof(TSource), typeof(TDestination));
         return this;
     }
 
