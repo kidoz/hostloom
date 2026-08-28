@@ -142,6 +142,14 @@ public class MappingCollectionBenchmarks
     [Benchmark]
     public CustomerDto[] AutoMapper_Collection() =>
         _autoMapper.Map<Customer[], CustomerDto[]>(_batch);
+
+    /// <summary>
+    /// The shipped helper against the hand-written loop it exists to delete. R1's premise is that
+    /// a consumer can drop its own extension class without paying for it, so this row is the one
+    /// that has to stay level with the baseline rather than merely beat AutoMapper.
+    /// </summary>
+    [Benchmark]
+    public IReadOnlyList<CustomerDto> HostLoom_MapMany() => _customerMapper.MapMany(_batch);
 }
 
 /// <summary>

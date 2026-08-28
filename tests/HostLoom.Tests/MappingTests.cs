@@ -303,6 +303,85 @@ public sealed class MappingTests
         Assert.Contains(typeof(CustomerDto).FullName!, exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void A_sequence_maps_every_element_in_order()
+    {
+        var mapper = new AlternateCustomerMapper();
+        Customer[] indexable = [new("ada"), new("grace"), new("lin")];
+
+        // Indexable and non-indexable sources take different paths inside MapSequence; the
+        // Where keeps the second one from reporting a count, which is the unsized case.
+        var fromIndexable = mapper.MapMany(indexable);
+        var fromEnumerable = mapper.MapMany(indexable.Where(_ => true));
+
+        Assert.Equal(["ADA", "GRACE", "LIN"], fromIndexable.Select(dto => dto.DisplayName));
+        Assert.Equal(["ADA", "GRACE", "LIN"], fromEnumerable.Select(dto => dto.DisplayName));
+        Assert.Empty(mapper.MapMany(Array.Empty<Customer>()));
+    }
+
+    [Fact]
+    public void A_null_sequence_is_rejected_by_MapMany_and_emptied_by_MapManyOrEmpty()
+    {
+        var mapper = new AlternateCustomerMapper();
+
+        Assert.Throws<ArgumentNullException>(() => mapper.MapMany(null!));
+
+        // AutoMapper's AllowNullCollections=false default, opted into by name rather than by
+        // configuration, so every migrated call site that relies on it stays greppable.
+        var coerced = mapper.MapManyOrEmpty(null);
+        Assert.NotNull(coerced);
+        Assert.Empty(coerced);
+        Assert.Equal(
+            ["ADA"],
+            mapper.MapManyOrEmpty([new Customer("ada")]).Select(d => d.DisplayName)
+        );
+    }
+
+    [Fact]
+    public void A_deferred_sequence_validates_eagerly_but_maps_lazily()
+    {
+        var mapper = new AlternateCustomerMapper();
+        var pulled = 0;
+
+        IEnumerable<Customer> Source()
+        {
+            foreach (var name in (string[])["ada", "grace", "lin"])
+            {
+                pulled++;
+                yield return new Customer(name);
+            }
+        }
+
+        // Never enumerated, so this only throws if the guard runs at call time. An iterator body
+        // without the local-function split would defer the guard and pass this silently.
+        Assert.Throws<ArgumentNullException>(() => mapper.MapManyDeferred(null!));
+
+        var deferred = mapper.MapManyDeferred(Source());
+        Assert.Equal(0, pulled);
+        Assert.Equal("ADA", deferred.First().DisplayName);
+        Assert.Equal(1, pulled);
+    }
+
+    [Fact]
+    public void A_null_value_is_rejected_by_Map_and_returned_as_null_by_MapOrNull()
+    {
+        var mapper = new AlternateCustomerMapper();
+
+        Assert.Null(mapper.MapOrNull(null));
+        Assert.Equal("ADA", mapper.MapOrNull(new Customer("ada"))!.DisplayName);
+    }
+
+    [Fact]
+    public void The_sequence_and_null_extensions_reject_a_null_mapper()
+    {
+        IMapper<Customer, CustomerDto> mapper = null!;
+
+        Assert.Throws<ArgumentNullException>(() => mapper.MapMany([]));
+        Assert.Throws<ArgumentNullException>(() => mapper.MapManyOrEmpty(null));
+        Assert.Throws<ArgumentNullException>(() => mapper.MapManyDeferred([]));
+        Assert.Throws<ArgumentNullException>(() => mapper.MapOrNull(new Customer("ada")));
+    }
+
     public sealed class SingletonNeedingMapper(IMapper mapper)
     {
         public IMapper Mapper { get; } = mapper;
