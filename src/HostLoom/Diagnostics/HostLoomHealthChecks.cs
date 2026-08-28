@@ -37,11 +37,14 @@ internal sealed class HostLoomReadinessCheck(
         CancellationToken cancellationToken = default
     )
     {
-        var expected = configuration.Endpoints.Count;
+        // Subscriptions count too: the hosted service starts endpoints and subscriptions together
+        // and reports one combined state, so counting endpoints alone reports a subscription-only
+        // service as a healthy client that happens to listen to nothing.
+        var expected = configuration.Endpoints.Count + configuration.Subscriptions.Count;
         if (expected > 0 && !state.Listening)
         {
             return HealthCheckResult.Unhealthy(
-                $"HostLoom has {expected} endpoint(s) that are not listening yet."
+                $"HostLoom has {expected} endpoint(s) and subscription(s) that are not listening yet."
             );
         }
 
@@ -51,7 +54,7 @@ internal sealed class HostLoomReadinessCheck(
             return HealthCheckResult.Healthy(
                 expected == 0
                     ? "HostLoom is client-only; the transport does not report broker health."
-                    : $"HostLoom is listening on {state.EndpointCount} endpoint(s); the transport does not report broker health."
+                    : $"HostLoom is listening on {state.EndpointCount} endpoint(s) and subscription(s); the transport does not report broker health."
             );
         }
 

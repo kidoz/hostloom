@@ -93,8 +93,20 @@ jobs:
       - name: Build
         run: dotnet build HostLoom.slnx --configuration Release --no-restore -p:Version=${{ steps.version.outputs.version }}
 
+      - name: Start brokers
+        run: docker compose up -d --wait
+
       - name: Test
+        # HOSTLOOM_REQUIRE_BROKERS turns an unreachable broker into a failure instead of a skip.
+        # Without it the release would publish having proved that the RabbitMQ and Kafka adapters
+        # compile, while reporting a green suite that never touched either broker.
+        env:
+          HOSTLOOM_REQUIRE_BROKERS: "1"
         run: dotnet test HostLoom.slnx --configuration Release --no-build --no-restore
+
+      - name: Stop brokers
+        if: always()
+        run: docker compose down -v
 
       - name: Pack
         run: dotnet pack HostLoom.slnx --configuration Release --no-build --no-restore --output artifacts/packages -p:Version=${{ steps.version.outputs.version }}

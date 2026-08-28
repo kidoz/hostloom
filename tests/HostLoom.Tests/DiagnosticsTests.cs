@@ -75,6 +75,56 @@ public sealed class DiagnosticsTests
     }
 
     [Fact]
+    public async Task A_subscription_only_application_is_not_ready_before_it_starts()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder
+            .Services.AddHostLoom()
+            .UseInMemory()
+            .AddHealthChecks()
+            .AddSubscriber<Pinged, PingedSubscriber>("orders", subscription: "audit");
+
+        using var host = builder.Build();
+        var health = host.Services.GetRequiredService<HealthCheckService>();
+
+        var ready = await health.CheckHealthAsync(
+            r => r.Tags.Contains("ready"),
+            TestContext.Current.CancellationToken
+        );
+
+        // Counting request endpoints alone reported this as a healthy client-only service while
+        // no subscription was listening — ready, and consuming nothing.
+        Assert.Equal(HealthStatus.Unhealthy, ready.Status);
+        Assert.Contains(
+            "not listening",
+            ready.Entries.Values.Single().Description,
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
+    public async Task A_subscription_only_application_is_ready_once_it_starts()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder
+            .Services.AddHostLoom()
+            .UseInMemory()
+            .AddHealthChecks()
+            .AddSubscriber<Pinged, PingedSubscriber>("orders", subscription: "audit");
+
+        using var host = builder.Build();
+        await host.StartAsync(TestContext.Current.CancellationToken);
+        var health = host.Services.GetRequiredService<HealthCheckService>();
+
+        var ready = await health.CheckHealthAsync(
+            r => r.Tags.Contains("ready"),
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(HealthStatus.Healthy, ready.Status);
+    }
+
+    [Fact]
     public async Task A_client_only_application_is_ready_without_any_endpoint()
     {
         var builder = Host.CreateApplicationBuilder();
@@ -209,6 +259,14 @@ public sealed class DiagnosticsTests
         host.Services.GetRequiredService<IRequestClient<Ping, Pong>>();
 
     public sealed record Ping : IRequest<Pong>;
+
+    public sealed record Pinged : IEvent;
+
+    public sealed class PingedSubscriber : IEventHandler<Pinged>
+    {
+        public ValueTask HandleAsync(Pinged @event, CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+    }
 
     public sealed record Pong(string Value);
 

@@ -15,9 +15,12 @@ internal sealed class WebSocketSession : IWebSocketEventSink
     private readonly WebSocketSessionRegistry _registry;
     private readonly ByteBoundedOutboundQueue _outbound;
     private readonly CancellationTokenSource _stop = new();
+
+    // Both are keyed by stream id and emptied as each request completes. Append-only collections
+    // here would grow with the total number of requests a connection ever made, not the number in
+    // flight, which is the opposite of the bounded per-connection memory the gateway promises.
     private readonly ConcurrentDictionary<ulong, CancellationTokenSource> _requests = [];
-    private readonly ConcurrentQueue<CancellationTokenSource> _requestCancellations = [];
-    private readonly ConcurrentQueue<Task> _requestTasks = [];
+    private readonly ConcurrentDictionary<ulong, Task> _requestTasks = [];
     private readonly ConcurrentDictionary<ulong, SubscriptionState> _subscriptions = [];
     private WebSocketCloseStatus _closeStatus = WebSocketCloseStatus.NormalClosure;
     private string _closeReason = "Session completed.";
@@ -130,7 +133,15 @@ internal sealed class WebSocketSession : IWebSocketEventSink
             await _stop.CancelAsync().ConfigureAwait(false);
             foreach (var request in _requests.Values)
             {
-                await request.CancelAsync().ConfigureAwait(false);
+                try
+                {
+                    await request.CancelAsync().ConfigureAwait(false);
+                }
+                catch (ObjectDisposedException)
+                {
+                    // The request completed and disposed its own source between the snapshot and
+                    // this call. Cancelling a finished request has nothing left to do anyway.
+                }
             }
 
             foreach (var subscription in _subscriptions.Values)
@@ -140,11 +151,17 @@ internal sealed class WebSocketSession : IWebSocketEventSink
 
             _subscriptions.Clear();
             _outbound.Complete();
-            await Task.WhenAll(_requestTasks.ToArray()).ConfigureAwait(false);
+            await Task.WhenAll([.. _requestTasks.Values]).ConfigureAwait(false);
             await writer.ConfigureAwait(false);
-            foreach (var request in _requestCancellations)
+
+            // Whatever is still registered never reached its own cleanup. TryRemove decides the
+            // owner, so a source is disposed exactly once however the session ended.
+            foreach (var streamId in _requests.Keys)
             {
-                request.Dispose();
+                if (_requests.TryRemove(streamId, out var request))
+                {
+                    request.Dispose();
+                }
             }
 
             _stop.Dispose();
@@ -280,11 +297,16 @@ internal sealed class WebSocketSession : IWebSocketEventSink
             return;
         }
 
-        _requestCancellations.Enqueue(cancellation);
-#pragma warning disable CA2025 // RunAsync joins every queued task before disposing any queued cancellation source.
+#pragma warning disable CA2025 // The request disposes its own source in ProcessRequestAsync, and RunAsync joins every tracked task before disposing what is left.
         var task = ProcessRequestAsync(frame, cancellation);
 #pragma warning restore CA2025
-        _requestTasks.Enqueue(task);
+        _requestTasks[frame.StreamId] = task;
+        if (task.IsCompleted)
+        {
+            // A request that finished before this assignment already ran its cleanup, so it would
+            // otherwise leave the entry behind for the life of the connection.
+            _requestTasks.TryRemove(frame.StreamId, out _);
+        }
     }
 
     private async Task ProcessRequestAsync(HubFrame frame, CancellationTokenSource cancellation)
@@ -301,7 +323,15 @@ internal sealed class WebSocketSession : IWebSocketEventSink
         }
         finally
         {
-            _requests.TryRemove(frame.StreamId, out _);
+            // Releasing here, rather than at session end, is what keeps a long-lived connection's
+            // memory proportional to requests in flight. TryRemove decides the owner so the
+            // shutdown path cannot dispose the same source a second time.
+            if (_requests.TryRemove(frame.StreamId, out var cancellationSource))
+            {
+                cancellationSource.Dispose();
+            }
+
+            _requestTasks.TryRemove(frame.StreamId, out _);
         }
     }
 

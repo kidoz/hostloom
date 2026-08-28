@@ -67,7 +67,7 @@ packages are versioned together:
 Install only the runtime and transport needed by the application, for example:
 
 ```text
-dotnet add package HostLoom.Transport.RabbitMq --version 0.1.0
+dotnet add package HostLoom.Transport.RabbitMq --version 0.2.0
 ```
 
 The analyzer package is optional and has no runtime dependency:

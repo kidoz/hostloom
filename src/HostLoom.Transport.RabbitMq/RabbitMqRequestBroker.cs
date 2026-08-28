@@ -220,13 +220,19 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     )
     {
         await EnsureClientAsync(cancellationToken).ConfigureAwait(false);
-        await DeclareTopicAsync(_clientChannel!, topic, cancellationToken).ConfigureAwait(false);
 
         var properties = new BasicProperties { ContentType = ContentType };
 
         await _publishGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // Declared inside the gate: an IChannel must not be used concurrently, and this
+            // shares _clientChannel with every request and event publish. Declaring outside let
+            // an exchange declaration interleave frames with a publish, which closes the
+            // connection rather than failing the one operation.
+            await DeclareTopicAsync(_clientChannel!, topic, cancellationToken)
+                .ConfigureAwait(false);
+
             // Not mandatory: an event with no subscriptions is dropped, which is ordinary
             // publish/subscribe. Returning it unrouted would make publishing fail whenever
             // nobody happens to be listening.
