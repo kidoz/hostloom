@@ -19,6 +19,19 @@ are derived from release tags at publish time.
 
 ### Added
 
+- `MappingBuilder.Add<TSource, TDestination>(Func<IServiceProvider, IMapper<TSource, TDestination>>)`
+  registers a pair through a factory, which is how a generic map class is closed. A map generic in
+  more than its source and destination — `EntityMapper<TEntity, TModel, TTranslation>` implementing
+  `IMapper<TEntity, TModel>` — cannot be registered as an open generic, because the container
+  requires the open service type and open implementation type to have equal arity and this shape
+  never does. Closing the map at the call site instead keeps every type argument visible to the
+  compiler, so the registration needs no `MakeGenericType` and both packages keep their trimming
+  and Native AOT analyzers clean. Called from a generic helper, one map class registers many pairs
+  in both directions; each registration remains a single closed descriptor, so the registered pairs
+  stay enumerable and duplicate detection still spans it. A factory that returns null is reported
+  as the factory's fault rather than surfacing as `MappingNotFoundException`, which would blame the
+  registration for a pair that is in fact registered.
+
 - Sequence and null-tolerant mapping in the core package, as extension methods on the closed
   mapper: `MapMany` and `MapManyOrEmpty` return `IReadOnlyList<TDestination>` sized in one
   allocation when the source reports a count, `MapManyDeferred` maps lazily for scans too large to

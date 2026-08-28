@@ -47,6 +47,32 @@ reads metadata once per registration; nothing is reflected on the map path. Use 
 or to close an open generic map. A class implementing no pair, or more than one, fails at
 registration with both alternatives named.
 
+### Generic map classes
+
+A map class generic in more than its pair — `EntityMapper<TEntity, TModel, TTranslation>`
+implementing `IMapper<TEntity, TModel>` — cannot be registered as an open generic, because the
+container requires the open service type and open implementation type to have equal arity and
+these never do. Close it at the call site with a factory instead, from a generic helper:
+
+```csharp
+static void AddEntityMap<TEntity, TModel, TTranslation>(MappingBuilder mapping)
+    where TEntity : notnull where TModel : notnull =>
+    mapping
+        .Add<TEntity, TModel>(_ => new EntityMapper<TEntity, TModel, TTranslation>())
+        .Add<TModel, TEntity>(_ => new ModelMapper<TEntity, TModel, TTranslation>());
+
+services.AddHostLoomMapping(mapping =>
+{
+    AddEntityMap<SportEntity, Sport, SportTranslation>(mapping);
+    AddEntityMap<TeamEntity, Team, TeamTranslation>(mapping);
+});
+```
+
+Every type argument stays visible to the compiler, so this needs no `MakeGenericType` and keeps the
+trimming and Native AOT analyzers clean. Each call still produces one closed descriptor, so the
+registered pairs remain enumerable and duplicate detection still applies. The factory also takes
+the `IServiceProvider`, so a generic map can resolve dependencies like any other.
+
 Maps are transient by default so constructor-injected scoped dependencies remain safe. Choose a
 different `ServiceLifetime` only when its dependency graph supports that lifetime. A singleton map
 instance can also be registered explicitly. Container-created map classes expose a public

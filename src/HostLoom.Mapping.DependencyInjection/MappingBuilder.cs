@@ -66,6 +66,55 @@ public sealed class MappingBuilder
     }
 
     /// <summary>
+    /// Registers one pair through a factory, which is how a generic map class is closed.
+    /// </summary>
+    /// <remarks>
+    /// The container cannot register a generic map as an open generic: it requires the open
+    /// service type and open implementation type to have equal arity, and a map generic in more
+    /// than its source and destination — <c>Mapper&lt;TEntity, TModel, TTranslation&gt;</c>
+    /// implementing <c>IMapper&lt;TEntity, TModel&gt;</c> — does not. Closing it at the call site
+    /// instead keeps every type argument visible to the compiler, so this stays free of
+    /// <see cref="Type.MakeGenericType"/> and the trimming and Native AOT analyzers stay clean.
+    /// Each registration is still one closed descriptor, so the registered pairs remain
+    /// enumerable. Call it from a generic helper to produce many pairs from one map class.
+    /// </remarks>
+    /// <example>
+    /// <code>
+    /// static void AddEntityMap&lt;TEntity, TModel, TTranslation&gt;(MappingBuilder mapping)
+    ///     where TEntity : notnull where TModel : notnull =&gt;
+    ///     mapping
+    ///         .Add&lt;TEntity, TModel&gt;(_ =&gt; new EntityMapper&lt;TEntity, TModel, TTranslation&gt;())
+    ///         .Add&lt;TModel, TEntity&gt;(_ =&gt; new ModelMapper&lt;TEntity, TModel, TTranslation&gt;());
+    /// </code>
+    /// </example>
+    public MappingBuilder Add<TSource, TDestination>(
+        Func<IServiceProvider, IMapper<TSource, TDestination>> factory,
+        ServiceLifetime lifetime = ServiceLifetime.Transient
+    )
+        where TSource : notnull
+        where TDestination : notnull
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        EnsureNotRegistered(typeof(IMapper<TSource, TDestination>));
+        Services.Add(
+            new ServiceDescriptor(
+                typeof(IMapper<TSource, TDestination>),
+                // A factory returning null would otherwise surface as MappingNotFoundException
+                // from the dispatcher, which would report the pair as unregistered when it is
+                // registered and the factory is the thing at fault.
+                provider =>
+                    factory(provider)
+                    ?? throw new InvalidOperationException(
+                        $"The factory registered for the mapping from '{typeof(TSource).FullName}' "
+                            + $"to '{typeof(TDestination).FullName}' returned null."
+                    ),
+                lifetime
+            )
+        );
+        return this;
+    }
+
+    /// <summary>
     /// Registers a prebuilt mapping instance as a singleton. This overload is intended for pure,
     /// stateless maps that have no scoped dependencies.
     /// </summary>
