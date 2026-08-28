@@ -103,7 +103,8 @@ internal sealed class WebSocketRequestRouter(
                     "The downstream request timed out."
                 );
             }
-            catch (InvalidDataException)
+            catch (Exception exception)
+                when (exception is MalformedEnvelopeException or InvalidDataException)
             {
                 return Fault(
                     frame.StreamId,

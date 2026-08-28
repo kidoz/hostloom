@@ -162,7 +162,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
             {
                 break;
             }
-            catch (InvalidDataException exception)
+            catch (MalformedEnvelopeException exception)
             {
                 // Poison record: it can never be decoded, so committing past it keeps the
                 // partition moving instead of blocking every later request behind it.

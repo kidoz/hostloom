@@ -55,7 +55,7 @@ internal sealed class RequestClient<TRequest, TResponse>(
         var response = WireEnvelopeCodec.Decode(responseFrame.Span);
         if (response.CorrelationId != requestId)
         {
-            throw new InvalidDataException(
+            throw new MalformedEnvelopeException(
                 $"Response correlation id '{response.CorrelationId}' did not match request '{requestId}'."
             );
         }
@@ -73,13 +73,13 @@ internal sealed class RequestClient<TRequest, TResponse>(
             || response.MessageType != MessageTypeName.For<TResponse>()
         )
         {
-            throw new InvalidDataException(
+            throw new MalformedEnvelopeException(
                 $"Expected response '{MessageTypeName.For<TResponse>()}', received '{response.MessageType}'."
             );
         }
 
         return serializer.Deserialize<TResponse>(response.Body)
-            ?? throw new InvalidDataException(
+            ?? throw new MalformedEnvelopeException(
                 $"Response body for '{response.MessageType}' was null."
             );
     }

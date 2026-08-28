@@ -31,7 +31,7 @@ internal sealed class MessageDispatcher
 
         if (request.Kind is not MessageKind.Request)
         {
-            throw new InvalidDataException(
+            throw new MalformedEnvelopeException(
                 $"Expected a request envelope, received '{request.Kind}'."
             );
         }
@@ -59,7 +59,7 @@ internal sealed class MessageDispatcher
             return EncodeFault(
                 request,
                 tags,
-                new InvalidDataException(
+                new MalformedEnvelopeException(
                     $"Request declares response '{request.ResponseType}', but '{request.MessageType}' returns '{registeredResponseType}'."
                 )
             );
@@ -79,7 +79,7 @@ internal sealed class MessageDispatcher
         {
             var message =
                 _serializer.Deserialize(request.Body, registration.RequestType)
-                ?? throw new InvalidDataException(
+                ?? throw new MalformedEnvelopeException(
                     $"Request body for '{request.MessageType}' was null."
                 );
 

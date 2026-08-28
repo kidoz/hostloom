@@ -330,7 +330,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
     {
         var value =
             headers.GetLastBytes(name)
-            ?? throw new InvalidDataException(
+            ?? throw new MalformedEnvelopeException(
                 $"Kafka message is missing required header '{name}'."
             );
         return Encoding.UTF8.GetString(value);
