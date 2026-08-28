@@ -226,7 +226,17 @@ internal sealed class WebSocketSession : IWebSocketEventSink
             case HubFrameKind.Cancel:
                 if (_requests.TryGetValue(frame.StreamId, out var request))
                 {
-                    await request.CancelAsync().ConfigureAwait(false);
+                    try
+                    {
+                        await request.CancelAsync().ConfigureAwait(false);
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // The request completed and disposed its own source between the lookup
+                        // and this call. Cancelling a finished request has nothing left to do,
+                        // and a client sending request/cancel pairs widens the window at will —
+                        // so this must not escape into the connection's fault path.
+                    }
                 }
 
                 break;
