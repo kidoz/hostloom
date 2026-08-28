@@ -18,7 +18,7 @@ and 4 KiB application payloads. `MemoryDiagnoser` reports managed allocations al
 dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --filter "*Mapping*"
 ```
 
-Compares `HostLoom.Mapping` against AutoMapper across four suites:
+Compares `HostLoom.Mapping` against AutoMapper across five suites:
 
 | Suite                            | Question it answers                                          |
 | -------------------------------- | ------------------------------------------------------------ |
@@ -51,10 +51,13 @@ What they concluded, on an M4 Max:
   7.5 ns is 7.5 µs of an 8.1 µs total, so the access strategy is about 6% of the work. Two extra
   type checks and a span over `List<T>`'s internals are not worth 2%. Enumerating into a pre-sized
   `List<T>` was 3–5% slower and allocated marginally more.
-- **An inferred pair is cached per map class.** Walking `GetInterfaces()` costs 8 ns and 32 B every
-  registration; a static field on a generic type costs neither. That took registration of four maps
-  from 111 ns and 680 B to 63 ns and 552 B — identical to restating the triple, so the ergonomic
-  form is now free rather than merely cheap.
+- **An inferred pair is cached per map class, and so are its parts.** Walking `GetInterfaces()`
+  costs 8 ns and 32 B every registration; a static field on a generic type costs neither. The pair's
+  source and destination types are cached with it, because `Type.GenericTypeArguments` allocates a
+  fresh array on every access and recording the pair read it twice — which alone made inferred
+  registration 3.6× the explicit form. Both cached, registering four maps costs 107 ns and 808 B
+  either way: inference is free rather than merely cheap, which is the only thing that justifies
+  preferring the shorter form.
 - **A stateless map used through the dispatcher should be a singleton.** The dispatcher's 112 B
   against an injected closed map's 88 B is the transient map class being constructed on every
   dispatch. Registering it singleton returns the allocation to 88 B exactly. It saves only 0.7 ns,

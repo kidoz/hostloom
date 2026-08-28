@@ -58,7 +58,7 @@ public sealed class MappingBuilder
         EnsureNotRegistered(serviceType);
         EnsureLifetimeMatchesDispatcher(lifetime, typeof(TMapper).Name);
         Services.Add(new ServiceDescriptor(serviceType, typeof(TMapper), lifetime));
-        _registry.Record(serviceType.GenericTypeArguments[0], serviceType.GenericTypeArguments[1]);
+        _registry.Record(MappedPair<TMapper>.Source!, MappedPair<TMapper>.Destination!);
         return this;
     }
 
@@ -157,23 +157,52 @@ public sealed class MappingBuilder
     /// a worse message than the uncached code produced — and it would be cached too, so only the
     /// first attempt would report anything useful.
     /// </remarks>
+    /// <summary>One inference result: the closed pair and its parts, or why there is none.</summary>
+    private readonly record struct InferredPair(
+        Type? ServiceType,
+        Type? Source,
+        Type? Destination,
+        string? Diagnostic
+    )
+    {
+        public static InferredPair From(Type serviceType)
+        {
+            // Read once here, so registration never touches GenericTypeArguments again.
+            Type[] arguments = serviceType.GenericTypeArguments;
+            return new InferredPair(serviceType, arguments[0], arguments[1], null);
+        }
+
+        public static InferredPair Failed(string diagnostic) => new(null, null, null, diagnostic);
+    }
+
     private static class MappedPair<
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] TMapper
     >
     {
+        private static readonly InferredPair Value = Resolve(typeof(TMapper));
+
         /// <summary>The closed service type, or null when the pair could not be inferred.</summary>
-        public static readonly Type? ServiceType;
+        public static Type? ServiceType => Value.ServiceType;
+
+        /// <summary>The inferred source type, read once with the pair.</summary>
+        /// <remarks>
+        /// Held here rather than read back from <see cref="Type.GenericTypeArguments"/>, which
+        /// allocates a fresh array on every access — twice per registration, on the path whose
+        /// whole point is that inferring a pair costs nothing over restating it.
+        /// </remarks>
+        public static Type? Source => Value.Source;
+
+        /// <summary>The inferred destination type, read once with the pair.</summary>
+        public static Type? Destination => Value.Destination;
 
         /// <summary>Why inference failed, when <see cref="ServiceType"/> is null.</summary>
-        public static readonly string? Diagnostic;
-
-        static MappedPair() => (ServiceType, Diagnostic) = Resolve(typeof(TMapper));
+        public static string? Diagnostic => Value.Diagnostic;
 
         /// <summary>
         /// <see cref="Type.GetInterfaces"/> already returns closed interface types, so the service
         /// type is read straight out of metadata rather than composed with reflection.
         /// </summary>
-        private static (Type? ServiceType, string? Diagnostic) Resolve(
+        private static InferredPair Resolve(
             [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type mapperType
         )
         {
@@ -208,8 +237,7 @@ public sealed class MappingBuilder
                         $"'{pair.GenericTypeArguments[0].FullName}' to '{pair.GenericTypeArguments[1].FullName}'"
                     )
                 );
-                return (
-                    null,
+                return InferredPair.Failed(
                     $"'{mapperType.FullName}' implements more than one mapping ({pairs}), so the "
                         + "pair cannot be inferred. Register it with "
                         + "Add<TSource, TDestination, TMapper> once per pair to choose each one "
@@ -218,13 +246,12 @@ public sealed class MappingBuilder
             }
 
             return mapped is null
-                ? (
-                    null,
+                ? InferredPair.Failed(
                     $"'{mapperType.FullName}' does not implement IMapper<TSource, TDestination>, "
                         + "so there is no pair to infer. A map class implements the closed "
                         + "interface for the pair it maps."
                 )
-                : (mapped, null);
+                : InferredPair.From(mapped);
         }
     }
 
