@@ -5,10 +5,14 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="AutoMapper" />
     <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     <PackageReference Include="Serilog" />
     <PackageReference Include="Serilog.Formatting.Compact" />
     <ProjectReference Include="../../src/HostLoom.AspNetCore.WebSockets/HostLoom.AspNetCore.WebSockets.csproj" />
     <ProjectReference Include="../../src/HostLoom.Logging/HostLoom.Logging.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Mapping.DependencyInjection/HostLoom.Mapping.DependencyInjection.csproj" />
   </ItemGroup>
 </Project>

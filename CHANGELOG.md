@@ -8,6 +8,19 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- Mapping benchmarks against AutoMapper across four suites: one map in steady state for a flat
+  eight-scalar contract and a nested one with a child object and child collection; a batch of 100
+  and 1000; a scope-resolve-map unit of work through the container; and cold start through the
+  first mapped object, where a convention mapper's expression compilation lands. The flat shape is
+  deliberately AutoMapper's best case — names match on both sides, so it is pure convention with no
+  `ForMember` — and AutoMapper's execution plans are compiled during setup so the steady-state
+  suites measure per-call cost rather than the cost of getting there. `GlobalSetup` asserts that
+  both libraries produce equivalent destination values, so an incomplete map on either side fails
+  the run instead of being reported as a faster one. AutoMapper is referenced by the benchmark
+  project only; nothing under `src/` depends on it and the project is not packable.
+
 ## [0.2.0] - 2026-08-27
 
 ### Added
