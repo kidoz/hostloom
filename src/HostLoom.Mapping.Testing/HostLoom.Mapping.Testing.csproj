@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Container-free mapper composition for testing HostLoom mapping consumers.</Description>
+    <PackageId>HostLoom.Mapping.Testing</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>hostloom;mapping;mapper;testing;aot</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HostLoom.Mapping/HostLoom.Mapping.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+</Project>

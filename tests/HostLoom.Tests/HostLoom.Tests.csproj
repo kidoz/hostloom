@@ -21,6 +21,7 @@
     <ProjectReference Include="../../src/HostLoom.Diagnostics/HostLoom.Diagnostics.csproj" />
     <ProjectReference Include="../../src/HostLoom.Logging/HostLoom.Logging.csproj" />
     <ProjectReference Include="../../src/HostLoom.Mapping.DependencyInjection/HostLoom.Mapping.DependencyInjection.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Mapping.Testing/HostLoom.Mapping.Testing.csproj" />
     <ProjectReference Include="../../src/HostLoom.Mapping/HostLoom.Mapping.csproj" />
     <ProjectReference Include="../../src/HostLoom.Pipelines.DependencyInjection/HostLoom.Pipelines.DependencyInjection.csproj" />
     <ProjectReference Include="../../src/HostLoom.Pipelines.Testing/HostLoom.Pipelines.Testing.csproj" />

@@ -133,6 +133,39 @@ Translate to the `OrEmpty` and `OrNull` forms first, which preserves behaviour e
 each one as its own decision. Because the tolerance is named at the call site rather than set
 globally, every place that depends on it stays greppable — which a configuration flag does not.
 
+## Asserting the registered pairs
+
+A missing pair is a runtime failure on the first code path that needs it. `GetMappedPairs` exposes
+what was registered, so a service can assert its expectations while the container is still being
+composed:
+
+```csharp
+MappedPairRegistry pairs = services.GetMappedPairs();
+if (!pairs.Contains(typeof(TransferModel), typeof(CfaTransfer)))
+{
+    throw new InvalidOperationException("the transfer map is not registered");
+}
+```
+
+When a pair really is missing, `MappingNotFoundException` names the destinations the source *is*
+registered to map to. The near miss is usually the diagnosis — a destination named one letter
+differently, or the pair registered in the other direction.
+
+## Testing without a container
+
+`HostLoom.Mapping.Testing` builds the dispatcher from explicit maps, so a unit test does not have to
+compose an `IServiceCollection` to get one:
+
+```csharp
+IMapper mapper = new TestMapperBuilder()
+    .Add<Customer, CustomerDto>(new CustomerMapper())
+    .Add<Address, AddressDto>(source => new AddressDto(source.City, source.PostalCode))
+    .Build();
+```
+
+A consumer that takes a closed `IMapper<TSource, TDestination>` — the shape recommended above —
+needs nothing from that package: construct the map class and pass it.
+
 ## Completeness
 
 The compiler catches a rename, a changed constructor, and a nullability mismatch. It does not catch
