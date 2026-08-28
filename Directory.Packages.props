@@ -3,6 +3,10 @@
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
   </PropertyGroup>
   <ItemGroup>
+    <!-- AutoMapper is a benchmark comparison target only; nothing under src/ references it.
+       15.0.0 and later are licensed RPL-1.5 or commercial rather than MIT, and every version
+       below 15.1.1 carries GHSA-rvv3-g6hj-g44x, so there is no unaffected MIT version left. -->
+    <PackageVersion Include="AutoMapper" Version="16.2.0" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
     <PackageVersion Include="Confluent.Kafka" Version="2.15.0" />
     <PackageVersion Include="MessagePack" Version="3.1.8" />
