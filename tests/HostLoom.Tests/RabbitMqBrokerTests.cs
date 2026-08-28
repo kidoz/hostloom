@@ -365,6 +365,45 @@ public sealed class RabbitMqBrokerTests
     }
 
     [Fact]
+    public async Task A_reply_queue_renamed_by_recovery_is_followed()
+    {
+        var rabbit = new FakeRabbit();
+        await using var broker = Create(rabbit);
+
+        var first = broker
+            .RequestAsync(
+                "greetings",
+                Encoding.UTF8.GetBytes("before"),
+                Guid.NewGuid(),
+                TimeSpan.FromMilliseconds(300),
+                TestContext.Current.CancellationToken
+            )
+            .AsTask();
+        var client = await WaitForChannelAsync(rabbit, channel => channel.Publishes.Count == 1);
+        Assert.Equal(FakeRabbit.GeneratedReplyQueue, client.Publishes[0].ReplyTo);
+        await Assert.ThrowsAsync<RequestTimeoutException>(async () => await first);
+
+        // The reply queue is server-named and exclusive, so recovery re-declares it under a new
+        // name. Keeping the connection through a drop is what makes this reachable: the recovered
+        // channel reports itself open, so nothing re-declares the reply path on its own.
+        rabbit.RenameReplyQueue("amq.gen-after-recovery");
+
+        var second = broker
+            .RequestAsync(
+                "greetings",
+                Encoding.UTF8.GetBytes("after"),
+                Guid.NewGuid(),
+                TimeSpan.FromMilliseconds(300),
+                TestContext.Current.CancellationToken
+            )
+            .AsTask();
+        await WaitForChannelAsync(rabbit, channel => channel.Publishes.Count == 2);
+
+        Assert.Equal("amq.gen-after-recovery", client.Publishes[1].ReplyTo);
+        await Assert.ThrowsAsync<RequestTimeoutException>(async () => await second);
+    }
+
+    [Fact]
     public async Task A_connection_closed_by_the_application_is_replaced()
     {
         var rabbit = new FakeRabbit();
@@ -489,6 +528,12 @@ public sealed class RabbitMqBrokerTests
                     throw new InvalidOperationException("the connection is closed")
                 );
         }
+
+        /// <summary>Raises the rename topology recovery performs on a server-named queue.</summary>
+        public void RenameReplyQueue(string name) =>
+            Connection.QueueNameChangedAfterRecoveryAsync += Raise.Event<
+                AsyncEventHandler<QueueNameChangedAfterRecoveryEventArgs>
+            >(Connection, new QueueNameChangedAfterRecoveryEventArgs(GeneratedReplyQueue, name));
 
         /// <summary>Restores the connection, standing in for a freshly created one.</summary>
         public void Reopen()

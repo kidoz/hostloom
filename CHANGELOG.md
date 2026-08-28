@@ -35,7 +35,11 @@ are derived from release tags at publish time.
   shutdown is left to recover. The visible trade is deliberate: a publish attempted during the
   outage now fails loudly and transiently instead of succeeding at the cost of the consumers.
   `TopologyRecoveryEnabled` is stated explicitly rather than relied on as a default, because the
-  listeners depend on it.
+  listeners depend on it. Keeping the connection makes a second case reachable that replacing it
+  had hidden: the reply queue is server-named and exclusive, so recovery re-declares it under a new
+  name while the recovered channel reports itself open — nothing re-declared the reply path, and
+  the cached name would have addressed a queue that no longer existed, timing out every later
+  request on a connection that looked healthy. The broker now follows the rename.
 - A WebSocket `Cancel` frame no longer escapes as `ObjectDisposedException` when it races the
   request it cancels. The request could complete and dispose its own cancellation source between
   the lookup and the cancel, and unlike the shutdown path — which already guarded this exact race —
