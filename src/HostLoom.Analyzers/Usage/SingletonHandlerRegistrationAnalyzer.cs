@@ -32,12 +32,12 @@ public sealed class SingletonHandlerRegistrationAnalyzer : DiagnosticAnalyzer
     {
         var invocation = (IInvocationOperation)context.Operation;
         IMethodSymbol method = invocation.TargetMethod;
-        if (!IsSingletonRegistration(method))
+        if (!AnalyzerSymbolHelpers.IsSingletonRegistration(method))
         {
             return;
         }
 
-        foreach (ITypeSymbol type in RegistrationTypes(invocation))
+        foreach (ITypeSymbol type in AnalyzerSymbolHelpers.RegistrationTypes(invocation))
         {
             if (!AnalyzerSymbolHelpers.IsHostLoomHandlerOrBehavior(type))
             {
@@ -52,53 +52,6 @@ public sealed class SingletonHandlerRegistrationAnalyzer : DiagnosticAnalyzer
                 )
             );
             return;
-        }
-    }
-
-    private static bool IsSingletonRegistration(IMethodSymbol method)
-    {
-        string? assemblyName = method.ContainingAssembly?.Name;
-        if (
-            assemblyName is null
-            || !assemblyName.StartsWith(
-                "Microsoft.Extensions.DependencyInjection",
-                StringComparison.Ordinal
-            )
-        )
-        {
-            return false;
-        }
-
-        return string.Equals(method.Name, "AddSingleton", StringComparison.Ordinal)
-            || string.Equals(method.Name, "TryAddSingleton", StringComparison.Ordinal)
-            || string.Equals(method.Name, "AddKeyedSingleton", StringComparison.Ordinal)
-            || string.Equals(method.Name, "TryAddKeyedSingleton", StringComparison.Ordinal)
-            || string.Equals(method.Name, "Singleton", StringComparison.Ordinal);
-    }
-
-    private static IEnumerable<ITypeSymbol> RegistrationTypes(IInvocationOperation invocation)
-    {
-        foreach (ITypeSymbol type in invocation.TargetMethod.TypeArguments)
-        {
-            yield return type;
-        }
-
-        foreach (IArgumentOperation argument in invocation.Arguments)
-        {
-            IOperation value = argument.Value;
-            while (value is IConversionOperation conversion)
-            {
-                value = conversion.Operand;
-            }
-
-            if (value is ITypeOfOperation typeOf)
-            {
-                yield return typeOf.TypeOperand;
-            }
-            else if (value is IObjectCreationOperation creation && creation.Type is not null)
-            {
-                yield return creation.Type;
-            }
         }
     }
 }
