@@ -67,7 +67,7 @@ public sealed class KafkaConsumerLoopTests
                     handled.Add(record.Offset.Value);
                     if (record.Offset.Value == 0)
                     {
-                        throw new InvalidDataException("undecodable");
+                        throw new MalformedEnvelopeException("undecodable");
                     }
 
                     log.Commit(record);
@@ -83,6 +83,37 @@ public sealed class KafkaConsumerLoopTests
         Assert.Equal([0, 1], handled);
         Assert.Empty(log.Seeks);
         Assert.Equal([1, 2], log.Commits.Select(commit => commit.Offset.Value));
+    }
+
+    [Fact]
+    public async Task Application_invalid_data_exception_uses_the_redelivery_policy()
+    {
+        var log = new PartitionLog("requests", 1);
+        var handled = 0;
+
+        await using (
+            Start(
+                log,
+                (record, _) =>
+                {
+                    handled++;
+                    if (handled == 1)
+                    {
+                        throw new InvalidDataException("application validation failed");
+                    }
+
+                    log.Commit(record);
+                    return ValueTask.CompletedTask;
+                }
+            )
+        )
+        {
+            await WaitUntilAsync(() => log.Commits.Count == 1, "the retried record commits");
+        }
+
+        Assert.Equal(2, handled);
+        Assert.Equal([0], log.Seeks.Select(seek => seek.Offset.Value));
+        Assert.Equal([1], log.Commits.Select(commit => commit.Offset.Value));
     }
 
     [Fact]

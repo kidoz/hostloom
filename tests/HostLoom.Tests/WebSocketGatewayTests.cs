@@ -102,6 +102,37 @@ public sealed class WebSocketGatewayTests
     }
 
     [Fact]
+    public async Task Malformed_request_payload_returns_an_invalid_payload_fault()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder
+            .Services.AddHostLoom()
+            .UseInMemory()
+            .AddHandler<Greet, Greeting, GreetHandler>("greeter")
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
+            .AddRequest<Greet, Greeting>("greet", "greeter");
+
+        using var host = builder.Build();
+        await host.StartAsync(TestContext.Current.CancellationToken);
+        var router = host.Services.GetRequiredService<WebSocketRequestRouter>();
+
+        var response = await router.RouteAsync(
+            new HubFrame
+            {
+                Kind = HubFrameKind.Request,
+                StreamId = 18,
+                Operation = "greet",
+                Payload = "not-json"u8.ToArray(),
+            },
+            new ClaimsPrincipal(),
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(HubFrameKind.Fault, response.Kind);
+        Assert.Equal(HubFaultCodes.InvalidPayload, response.Code);
+    }
+
+    [Fact]
     public async Task Operation_policy_is_checked_for_each_request()
     {
         var builder = Host.CreateApplicationBuilder();

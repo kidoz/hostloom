@@ -8,6 +8,12 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Fixed
+
+- Kafka now skips only records classified as malformed HostLoom envelopes; an application handler
+  that throws `InvalidDataException` follows the configured broker redelivery policy instead of
+  being committed immediately as poison data.
+
 ### Added
 
 - Mapping benchmarks against AutoMapper across four suites: one map in steady state for a flat

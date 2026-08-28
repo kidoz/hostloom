@@ -13,7 +13,21 @@ internal static class WireEnvelopeCodec
     public static byte[] Encode(MessageEnvelope envelope) =>
         JsonSerializer.SerializeToUtf8Bytes(envelope, Options);
 
-    public static MessageEnvelope Decode(ReadOnlySpan<byte> frame) =>
-        JsonSerializer.Deserialize<MessageEnvelope>(frame, Options)
-        ?? throw new InvalidDataException("The broker frame did not contain a message envelope.");
+    public static MessageEnvelope Decode(ReadOnlySpan<byte> frame)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<MessageEnvelope>(frame, Options)
+                ?? throw new MalformedEnvelopeException(
+                    "The broker frame did not contain a message envelope."
+                );
+        }
+        catch (JsonException exception)
+        {
+            throw new MalformedEnvelopeException(
+                "The broker frame did not contain a valid message envelope.",
+                exception
+            );
+        }
+    }
 }

@@ -75,7 +75,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                         .ConfigureAwait(false);
                     if (string.IsNullOrWhiteSpace(delivery.BasicProperties.ReplyTo))
                     {
-                        throw new InvalidDataException(
+                        throw new MalformedEnvelopeException(
                             "RabbitMQ request did not specify a reply queue."
                         );
                     }

@@ -25,7 +25,7 @@ internal sealed class WebSocketRequestInvoker<TRequest, TResponse>(
     {
         var request =
             serializer.Deserialize<TRequest>(payload.Span)
-            ?? throw new InvalidDataException("The request payload was null.");
+            ?? throw new MalformedEnvelopeException("The request payload was null.");
         var response = await client
             .GetResponseAsync(destination, request, timeout, cancellationToken)
             .ConfigureAwait(false);

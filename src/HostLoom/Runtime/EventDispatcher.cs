@@ -19,7 +19,7 @@ internal sealed class EventDispatcher(
         var envelope = WireEnvelopeCodec.Decode(frame.Span);
         if (envelope.Kind is not MessageKind.Event)
         {
-            throw new InvalidDataException(
+            throw new MalformedEnvelopeException(
                 $"Expected an event envelope, received '{envelope.Kind}'."
             );
         }
@@ -55,7 +55,9 @@ internal sealed class EventDispatcher(
 
         var message =
             serializer.Deserialize(envelope.Body, registration.EventType)
-            ?? throw new InvalidDataException($"Event body for '{envelope.MessageType}' was null.");
+            ?? throw new MalformedEnvelopeException(
+                $"Event body for '{envelope.MessageType}' was null."
+            );
 
         var context = new EventReceiveContext(
             topic,
