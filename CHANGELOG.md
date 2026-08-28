@@ -32,6 +32,17 @@ are derived from release tags at publish time.
   mapping, not only top-level collection maps, which is the case most likely to change behaviour
   silently during a migration.
 
+- `MappingBuilder.Add<TMapper>()` registers a map class from the pair it already declares, read
+  from the single closed `IMapper<TSource, TDestination>` it implements. A registration no longer
+  restates a type triple the class carries on its interface, and the registering file needs no
+  `using` for the contracts being mapped between — only for the map class. Inference reads type
+  metadata once per registration and composes nothing, so both packages keep their trimming and
+  Native AOT analyzers clean and the map dispatch path stays free of reflection. A class that
+  implements no pair, or more than one, fails at registration with every candidate pair named and
+  points at `Add<TSource, TDestination, TMapper>()`, which remains for choosing a pair explicitly
+  and for closing an open generic map. Duplicate detection spans both overloads, since an inferred
+  registration produces the same closed service type as an explicit one.
+
 - Mapping benchmarks against AutoMapper across four suites: one map in steady state for a flat
   eight-scalar contract and a nested one with a child object and child collection; a batch of 100
   and 1000; a scope-resolve-map unit of work through the container; and cold start through the

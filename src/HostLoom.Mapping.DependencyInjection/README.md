@@ -5,8 +5,13 @@ This package registers explicit `HostLoom.Mapping` map classes with
 
 ```csharp
 services.AddHostLoomMapping(mapping =>
-    mapping.Add<Customer, CustomerDto, CustomerMapper>());
+    mapping.Add<CustomerMapper>());
 ```
+
+The pair is inferred from the single closed `IMapper<TSource, TDestination>` the map class
+implements, so the registration names only the class and the file needs no `using` for the mapped
+contracts. `Add<TSource, TDestination, TMapper>()` states the pair explicitly, which is required
+for a class implementing several pairs and for closing an open generic map.
 
 Each `IMapper<TSource, TDestination>` is transient by default. The non-generic `IMapper`
 dispatcher is scoped and resolves closed map contracts from the current scope, so it must be

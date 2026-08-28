@@ -12,6 +12,38 @@ public sealed class MappingBuilder
     public IServiceCollection Services { get; }
 
     /// <summary>
+    /// Registers <typeparamref name="TMapper"/> for the single type pair it already declares,
+    /// inferred from the one closed <see cref="IMapper{TSource, TDestination}"/> it implements.
+    /// The lifetime rules match the explicit overload: transient by default, so a map class taking
+    /// scoped services through constructor injection stays safe.
+    /// </summary>
+    /// <remarks>
+    /// The pair is read from the map class's own interface, so a registration does not restate a
+    /// type triple the class has already declared. Inference is metadata-only and happens once per
+    /// registration; the map dispatch path stays free of reflection. Use
+    /// <see cref="Add{TSource, TDestination, TMapper}(ServiceLifetime)"/> for a map class that
+    /// implements more than one pair, or to close an open generic map explicitly.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// <typeparamref name="TMapper"/> implements no closed <see cref="IMapper{TSource, TDestination}"/>,
+    /// implements more than one, or its pair is already registered.
+    /// </exception>
+    public MappingBuilder Add<
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicConstructors
+                | DynamicallyAccessedMemberTypes.Interfaces
+        )]
+            TMapper
+    >(ServiceLifetime lifetime = ServiceLifetime.Transient)
+        where TMapper : class
+    {
+        var serviceType = ResolveMappedPair(typeof(TMapper));
+        EnsureNotRegistered(serviceType);
+        Services.Add(new ServiceDescriptor(serviceType, typeof(TMapper), lifetime));
+        return this;
+    }
+
+    /// <summary>
     /// Registers <typeparamref name="TMapper"/> for one type pair. The default transient lifetime
     /// is safe for map classes that take scoped services through constructor injection. As with
     /// other implementation types in the built-in container, the map class must have a public
@@ -26,7 +58,7 @@ public sealed class MappingBuilder
         where TDestination : notnull
         where TMapper : class, IMapper<TSource, TDestination>
     {
-        EnsureNotRegistered<TSource, TDestination>();
+        EnsureNotRegistered(typeof(IMapper<TSource, TDestination>));
         Services.Add(
             new ServiceDescriptor(typeof(IMapper<TSource, TDestination>), typeof(TMapper), lifetime)
         );
@@ -42,23 +74,75 @@ public sealed class MappingBuilder
         where TDestination : notnull
     {
         ArgumentNullException.ThrowIfNull(mapper);
-        EnsureNotRegistered<TSource, TDestination>();
+        EnsureNotRegistered(typeof(IMapper<TSource, TDestination>));
         Services.AddSingleton(mapper);
         return this;
     }
 
-    private void EnsureNotRegistered<TSource, TDestination>()
-        where TSource : notnull
-        where TDestination : notnull
+    /// <summary>
+    /// Finds the single closed <see cref="IMapper{TSource, TDestination}"/> a map class implements.
+    /// <see cref="Type.GetInterfaces"/> already returns closed interface types, so the service type
+    /// is read straight out of metadata rather than composed with reflection.
+    /// </summary>
+    private static Type ResolveMappedPair(
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type mapperType
+    )
     {
-        var serviceType = typeof(IMapper<TSource, TDestination>);
+        Type? mapped = null;
+        List<Type>? ambiguous = null;
+
+        foreach (var candidate in mapperType.GetInterfaces())
+        {
+            if (
+                candidate.IsGenericType is false
+                || candidate.GetGenericTypeDefinition() != typeof(IMapper<,>)
+            )
+            {
+                continue;
+            }
+
+            if (mapped is null)
+            {
+                mapped = candidate;
+                continue;
+            }
+
+            ambiguous ??= [mapped];
+            ambiguous.Add(candidate);
+        }
+
+        if (ambiguous is not null)
+        {
+            var pairs = string.Join(
+                ", ",
+                ambiguous.Select(pair =>
+                    $"'{pair.GenericTypeArguments[0].FullName}' to '{pair.GenericTypeArguments[1].FullName}'"
+                )
+            );
+            throw new InvalidOperationException(
+                $"'{mapperType.FullName}' implements more than one mapping ({pairs}), so the pair "
+                    + "cannot be inferred. Register it with Add<TSource, TDestination, TMapper> "
+                    + "once per pair to choose each one explicitly."
+            );
+        }
+
+        return mapped
+            ?? throw new InvalidOperationException(
+                $"'{mapperType.FullName}' does not implement IMapper<TSource, TDestination>, so "
+                    + "there is no pair to infer. A map class implements the closed interface for "
+                    + "the pair it maps."
+            );
+    }
+
+    private void EnsureNotRegistered(Type serviceType)
+    {
         var registered = false;
-        for (var i = 0; i < Services.Count; i++)
+        foreach (var service in Services)
         {
             // Keyed descriptors are skipped on purpose: the dispatcher resolves this pair
             // unkeyed, so a keyed registration can never satisfy it. Counting one as a duplicate
             // would leave the pair unregisterable here and unresolvable at run time.
-            if (Services[i].IsKeyedService is false && Services[i].ServiceType == serviceType)
+            if (service.IsKeyedService is false && service.ServiceType == serviceType)
             {
                 registered = true;
                 break;
@@ -68,8 +152,9 @@ public sealed class MappingBuilder
         if (registered)
         {
             throw new InvalidOperationException(
-                $"A mapping from '{typeof(TSource).FullName}' to '{typeof(TDestination).FullName}' "
-                    + "is already registered. Use a distinct destination type for a different semantic view."
+                $"A mapping from '{serviceType.GenericTypeArguments[0].FullName}' to "
+                    + $"'{serviceType.GenericTypeArguments[1].FullName}' is already registered. "
+                    + "Use a distinct destination type for a different semantic view."
             );
         }
     }

@@ -19,7 +19,7 @@ public sealed class CustomerMapper : IMapper<Customer, CustomerDto>
 }
 
 services.AddHostLoomMapping(mapping =>
-    mapping.Add<Customer, CustomerDto, CustomerMapper>());
+    mapping.Add<CustomerMapper>());
 
 // Prefer the closed mapper when only this pair is needed.
 var customerMapper = provider.GetRequiredService<IMapper<Customer, CustomerDto>>();
@@ -39,10 +39,19 @@ same reason it cannot be constructor-injected into a singleton; inject the close
 `IMapper<TSource, TDestination>` there, or take `IServiceScopeFactory` and resolve per unit of
 work. Closed maps registered with the default transient lifetime have neither restriction.
 
+`Add<TMapper>()` reads the pair from the single closed `IMapper<TSource, TDestination>` the map
+class implements, so a registration does not restate a type triple the class already declares —
+and the file that registers a map needs no `using` for the contracts it maps between. Inference
+reads metadata once per registration; nothing is reflected on the map path. Use the explicit
+`Add<TSource, TDestination, TMapper>()` overload for a class that implements more than one pair,
+or to close an open generic map. A class implementing no pair, or more than one, fails at
+registration with both alternatives named.
+
 Maps are transient by default so constructor-injected scoped dependencies remain safe. Choose a
 different `ServiceLifetime` only when its dependency graph supports that lifetime. A singleton map
 instance can also be registered explicitly. Container-created map classes expose a public
-constructor. Duplicate type pairs fail during registration, and a missing pair throws
+constructor. Duplicate type pairs fail during registration — across both overloads, since the
+inferred pair is the same closed service type — and a missing pair throws
 `MappingNotFoundException` with both requested types.
 
 ## Sequences and null
