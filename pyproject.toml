@@ -1,0 +1,14 @@
+[project]
+name = "hostloom-docs"
+version = "0.1.0"
+description = "Documentation tooling for HostLoom"
+requires-python = ">=3.14"
+dependencies = [
+    # mkdocs 2.0 removes the plugin/theming system Material depends on.
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.5",
+]
+
+[tool.uv]
+# Docs-only project: no Python package to build or install.
+package = false
