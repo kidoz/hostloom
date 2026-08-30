@@ -1,0 +1,84 @@
+site_name: HostLoom
+site_description: Transport-neutral request/response framework for .NET 10 / C# 14
+repo_name: HostLoom
+docs_dir: docs
+strict: true
+
+validation:
+  links:
+    anchors: warn
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Tutorials:
+      - Your first request/response: tutorials/getting-started.md
+      - Publish and subscribe: tutorials/publish-subscribe.md
+      - Building a standalone pipeline: tutorials/first-pipeline.md
+  - How-to guides:
+      - Run over RabbitMQ: how-to/use-rabbitmq.md
+      - Run over Kafka: how-to/use-kafka.md
+      - Harden the receive pipeline: how-to/harden-receive-pipeline.md
+      - Register pipelines with stages: how-to/register-pipelines.md
+      - Test pipelines deterministically: how-to/test-pipelines.md
+      - Expose health checks and metrics: how-to/health-and-metrics.md
+      - Map objects explicitly: how-to/explicit-mapping.md
+      - Record composition decisions: how-to/composition-diagnostics.md
+  - Reference:
+      - Packages: reference/packages.md
+      - Messaging runtime: reference/messaging.md
+      - Transports: reference/transports.md
+      - Pipelines: reference/pipelines.md
+      - Mapping: reference/mapping.md
+      - Logging: reference/logging.md
+      - WebSocket gateway: reference/websocket-gateway.md
+      - Composition diagnostics: reference/composition-diagnostics.md
+      - Analyzer rules: reference/analyzer-rules.md
+      - Observability surface: reference/observability.md
+      - Wire envelope: reference/wire-envelope.md
+  - Explanation:
+      - Architecture and package layering: explanation/architecture.md
+      - Honest transport semantics: explanation/transports.md
+      - The pipeline model: explanation/pipeline-model.md
+      - Faults, retries, and delivery: explanation/faults-and-retries.md
+  - About the docs: meta/about-these-docs.md
