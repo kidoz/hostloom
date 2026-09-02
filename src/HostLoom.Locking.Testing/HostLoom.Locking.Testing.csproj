@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Container-free lock composition, scripted, recording, and fault-injecting provider decorators for testing HostLoom locking consumers.</Description>
+    <PackageId>HostLoom.Locking.Testing</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>hostloom;lock;distributed-lock;testing;aot</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HostLoom.Locking/HostLoom.Locking.csproj" />
+  </ItemGroup>
+</Project>
