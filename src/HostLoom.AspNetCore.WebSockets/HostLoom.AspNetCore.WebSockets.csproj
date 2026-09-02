@@ -16,5 +16,10 @@
   <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="/" />
     <None Include="hostloom-websocket-v1.proto" Pack="true" PackagePath="protocol/" />
+    <None
+      Include="protocol/**/*.json"
+      Pack="true"
+      PackagePath="protocol/%(RecursiveDir)%(Filename)%(Extension)"
+    />
   </ItemGroup>
 </Project>

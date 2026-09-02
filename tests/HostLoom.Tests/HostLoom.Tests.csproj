@@ -41,4 +41,11 @@
     <ProjectReference Include="../../src/HostLoom.Transport.RabbitMq/HostLoom.Transport.RabbitMq.csproj" />
     <ProjectReference Include="../HostLoom.Conformance/HostLoom.Conformance.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None
+      Include="../../src/HostLoom.AspNetCore.WebSockets/protocol/**/*.json"
+      Link="protocol/%(RecursiveDir)%(Filename)%(Extension)"
+      CopyToOutputDirectory="PreserveNewest"
+    />
+  </ItemGroup>
 </Project>

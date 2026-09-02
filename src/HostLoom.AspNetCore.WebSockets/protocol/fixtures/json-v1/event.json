@@ -1,0 +1,1 @@
+{"kind":"event","streamId":41,"topic":"orders.changed","key":"customer-1","sequence":7,"eventId":"event-1","payload":"AQID"}
