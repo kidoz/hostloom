@@ -623,6 +623,111 @@ public sealed class WebSocketGatewayTests
         Assert.Equal("customer-1", value?.CustomerId);
     }
 
+    [Fact]
+    public async Task Same_origin_policy_accepts_a_matching_browser_origin()
+    {
+        using var host = await CreateTestHostAsync();
+        await using var client = new WebSocketTestClient(host.GetTestServer())
+        {
+            ConfigureRequest = request => request.Headers.Origin = "http://localhost",
+        };
+
+        await client.ConnectAsync(
+            new Uri("ws://localhost/hostloom"),
+            TestContext.Current.CancellationToken
+        );
+
+        _ = await client.AwaitWelcomeAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Same_origin_policy_rejects_a_foreign_browser_origin()
+    {
+        using var host = await CreateTestHostAsync();
+        await using var client = new WebSocketTestClient(host.GetTestServer())
+        {
+            ConfigureRequest = request => request.Headers.Origin = "https://foreign.example",
+        };
+
+        var exception = await Assert.ThrowsAnyAsync<Exception>(() =>
+            client.ConnectAsync(
+                new Uri("ws://localhost/hostloom"),
+                TestContext.Current.CancellationToken
+            )
+        );
+        Assert.Contains("403", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Origin_allowlist_accepts_an_exact_origin()
+    {
+        using var host = await CreateTestHostAsync(options =>
+        {
+            options.OriginMode = WebSocketOriginMode.AllowList;
+            options.AllowedOrigins.Add("https://app.example");
+        });
+        await using var client = new WebSocketTestClient(host.GetTestServer())
+        {
+            ConfigureRequest = request => request.Headers.Origin = "https://APP.example:443",
+        };
+
+        await client.ConnectAsync(
+            new Uri("ws://localhost/hostloom"),
+            TestContext.Current.CancellationToken
+        );
+
+        _ = await client.AwaitWelcomeAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Origin_policy_can_require_the_header()
+    {
+        using var host = await CreateTestHostAsync(options => options.AllowMissingOrigin = false);
+        await using var client = new WebSocketTestClient(host.GetTestServer());
+
+        var exception = await Assert.ThrowsAnyAsync<Exception>(() =>
+            client.ConnectAsync(
+                new Uri("ws://localhost/hostloom"),
+                TestContext.Current.CancellationToken
+            )
+        );
+        Assert.Contains("403", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Origin_allowlist_requires_at_least_one_valid_origin()
+    {
+        var services = new ServiceCollection();
+
+        _ = Assert.Throws<InvalidOperationException>(() =>
+            services
+                .AddHostLoom()
+                .UseInMemory()
+                .AddWebSocketGateway(options => options.OriginMode = WebSocketOriginMode.AllowList)
+        );
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("null")]
+    [InlineData("https://app.example/path")]
+    [InlineData("https://user@app.example")]
+    public void Origin_allowlist_rejects_malformed_origins(string origin)
+    {
+        var services = new ServiceCollection();
+
+        _ = Assert.Throws<InvalidOperationException>(() =>
+            services
+                .AddHostLoom()
+                .UseInMemory()
+                .AddWebSocketGateway(options =>
+                {
+                    options.OriginMode = WebSocketOriginMode.AllowList;
+                    options.AllowedOrigins.Add(origin);
+                })
+        );
+    }
+
     private static async Task SendInvalidCreditAndAwaitFaultAsync(
         ScriptedWebSocket socket,
         JsonWebSocketHubProtocol protocol

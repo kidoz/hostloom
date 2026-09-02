@@ -4,6 +4,18 @@ namespace HostLoom.AspNetCore.WebSockets;
 
 public sealed class HostLoomWebSocketOptions
 {
+    /// <summary>Gets or sets how browser-supplied Origin headers are validated.</summary>
+    public WebSocketOriginMode OriginMode { get; set; } = WebSocketOriginMode.SameOrigin;
+
+    /// <summary>
+    /// Gets or sets whether clients without an Origin header are accepted. Browsers supply Origin,
+    /// while native and service clients commonly do not.
+    /// </summary>
+    public bool AllowMissingOrigin { get; set; } = true;
+
+    /// <summary>Gets the exact origins accepted when <see cref="OriginMode"/> is AllowList.</summary>
+    public IList<string> AllowedOrigins { get; } = [];
+
     public int MaximumMessageSize { get; set; } = 64 * 1024;
 
     public int ReceiveBufferSize { get; set; } = 4 * 1024;
@@ -85,6 +97,28 @@ public sealed class HostLoomWebSocketOptions
             throw new InvalidOperationException(
                 "At least one valid WebSocket subprotocol must be preferred."
             );
+        }
+
+        if (!Enum.IsDefined(OriginMode))
+        {
+            throw new InvalidOperationException("The WebSocket origin mode is invalid.");
+        }
+
+        if (OriginMode is WebSocketOriginMode.AllowList && AllowedOrigins.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "At least one allowed origin is required when the WebSocket origin mode is AllowList."
+            );
+        }
+
+        foreach (var origin in AllowedOrigins)
+        {
+            if (!DefaultWebSocketOriginValidator.NormalizedOrigin.TryParse(origin, out _))
+            {
+                throw new InvalidOperationException(
+                    $"The configured WebSocket origin '{origin}' is invalid."
+                );
+            }
         }
     }
 }

@@ -54,6 +54,10 @@ public static class ServiceCollectionExtensions
         hostLoom.Services.TryAddSingleton<WebSocketSessionFactory>();
         hostLoom.Services.TryAddSingleton(TimeProvider.System);
         hostLoom.Services.TryAddSingleton<
+            IWebSocketOriginValidator,
+            DefaultWebSocketOriginValidator
+        >();
+        hostLoom.Services.TryAddSingleton<
             IWebSocketSessionLifetimeResolver,
             DefaultWebSocketSessionLifetimeResolver
         >();
