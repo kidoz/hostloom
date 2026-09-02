@@ -10,5 +10,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/HostLoom.Transport.Kafka/HostLoom.Transport.Kafka.csproj" />
     <ProjectReference Include="../../src/HostLoom.Transport.RabbitMq/HostLoom.Transport.RabbitMq.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Redis/HostLoom.Redis.csproj" />
+    <ProjectReference Include="../HostLoom.Conformance/HostLoom.Conformance.csproj" />
   </ItemGroup>
 </Project>

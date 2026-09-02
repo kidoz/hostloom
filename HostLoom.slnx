@@ -24,6 +24,7 @@
     <Project Path="src/HostLoom.Pipelines.DependencyInjection/HostLoom.Pipelines.DependencyInjection.csproj" />
     <Project Path="src/HostLoom.Pipelines.Testing/HostLoom.Pipelines.Testing.csproj" />
     <Project Path="src/HostLoom.Pipelines/HostLoom.Pipelines.csproj" />
+    <Project Path="src/HostLoom.Redis/HostLoom.Redis.csproj" />
     <Project Path="src/HostLoom/HostLoom.csproj" />
     <Project Path="src/HostLoom.Transport.InMemory/HostLoom.Transport.InMemory.csproj" />
     <Project Path="src/HostLoom.Transport.Kafka/HostLoom.Transport.Kafka.csproj" />
