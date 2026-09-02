@@ -50,7 +50,7 @@ packages are versioned together:
 
 | Package | Purpose |
 | --- | --- |
-| `HostLoom.Analyzers` | Compile-time checks for asynchronous, DI, and mapping usage |
+| `HostLoom.Analyzers` | Compile-time checks for asynchronous, DI, mapping, and caching usage |
 | `HostLoom` | Typed request/response and event runtime |
 | `HostLoom.Pipelines` | Transport-neutral asynchronous pipelines |
 | `HostLoom.Pipelines.DependencyInjection` | Named stages, per-run resolution, and instrumentation |
@@ -64,6 +64,15 @@ packages are versioned together:
 | `HostLoom.Mapping` | Explicit, compile-time-safe, AOT-friendly object mapping |
 | `HostLoom.Mapping.DependencyInjection` | Scoped mapper dispatch and explicit map registration |
 | `HostLoom.Mapping.Testing` | Container-free mapper composition for tests |
+| `HostLoom.Caching` | Two-tier cache contracts, in-process stores, single-flight, fail-open composition |
+| `HostLoom.Caching.DependencyInjection` | Cache registration, options validation, warmup, health checks, and the `IDistributedCache` adapter |
+| `HostLoom.Caching.Testing` | Container-free cache composition, recording and fault-injecting stores |
+| `HostLoom.Caching.Pipelines` | Cache and deduplication filters for HostLoom pipelines |
+| `HostLoom.Locking` | Distributed lock contracts, lease handles, retry policy, in-process provider |
+| `HostLoom.Locking.DependencyInjection` | Lock registration, options validation, and health checks |
+| `HostLoom.Locking.Testing` | Container-free lock composition, scripted, recording, and fault-injecting providers |
+| `HostLoom.Locking.Pipelines` | Distributed-lock filter for HostLoom pipelines |
+| `HostLoom.Redis` | Redis cache store, invalidation channel, lock provider, and health probes over one connection |
 
 Install only the runtime and transport needed by the application, for example:
 
@@ -309,6 +318,51 @@ Mapping is deliberately synchronous and performs no I/O. Fetch and enrich data o
 distinct destination types for distinct semantic views, and write database projections directly
 as `IQueryable.Select` expressions. All three mapping packages enable the .NET SDK Native AOT and
 trimming analyzers.
+
+## Caching and locking
+
+`HostLoom.Caching` is a two-tier cache: an in-process tier in front of an optional distributed
+tier, per-key single-flight, a best-effort cluster-wide lease, cross-instance invalidation, and
+fail-open behaviour when the store misbehaves. `HostLoom.Locking` is a distributed lock with
+leases, owner tokens, a retry policy, and lost-lease detection; it is coordination, not
+correctness, for persisted state. Both are kernels that compose with `new`; their
+`DependencyInjection` packages register them, and `HostLoom.Redis` supplies both backends over one
+connection:
+
+```csharp
+builder.Services
+    .AddHostLoomCaching(caching => caching.Namespace = "catalog")
+    .UseRedis(redis => redis.Configuration = "redis:6379")
+    .UseSystemTextJson(new JsonSerializerOptions { TypeInfoResolver = CatalogJsonContext.Default })
+    .AddHealthChecks();
+
+builder.Services
+    .AddHostLoomLocking(locking => locking.Namespace = "catalog")
+    .UseRedis()
+    .AddHealthChecks();
+```
+
+```csharp
+public sealed class CatalogService(ICache cache, IDistributedLock locks)
+{
+    public ValueTask<Catalog?> GetAsync(string region, CancellationToken ct) =>
+        cache.GetOrCreateAsync(
+            $"catalog:{region}", region,
+            static (region, token) => LoadAsync(region, token),
+            new CacheEntryOptions(TimeSpan.FromMinutes(10)) { Tags = ["catalog"] }, ct);
+
+    public ValueTask RefreshAsync(CancellationToken ct) =>
+        locks.ExecuteWithLockAsync("catalog:refresh", RebuildAsync, cancellationToken: ct);
+}
+```
+
+A distributed-store failure never reaches a consumer as an exception from a read or a
+get-or-create: the cache serves from the in-process tier and the factory, records a `degraded`
+outcome, and logs one warning per key per interval. The lock throws a typed
+`LockProviderUnavailableException` instead, because a lock that cannot be taken must not pretend
+it was. See the [caching](docs/reference/caching.md) and [locking](docs/reference/locking.md)
+references, [Cache and lock over Redis](docs/how-to/use-redis.md), and
+[Keep serving when the cache backend is down](docs/how-to/cache-and-lock-fail-open.md).
 
 ## Logging
 
@@ -637,6 +691,15 @@ src/HostLoom.Diagnostics/        composition ledger, report, and startup reporte
 src/HostLoom.Mapping/            dependency-free explicit mapping contracts
 src/HostLoom.Mapping.DependencyInjection/ scoped dispatch and closed map registration
 src/HostLoom.Mapping.Testing/    container-free mapper composition for tests
+src/HostLoom.Caching/            two-tier cache kernel: contracts, in-process stores, serializer, TieredCache
+src/HostLoom.Caching.DependencyInjection/ cache registration, validation, warmup, health checks
+src/HostLoom.Caching.Testing/    container-free cache composition, recording and faulting stores
+src/HostLoom.Caching.Pipelines/  cache and deduplication filters for generic pipelines
+src/HostLoom.Locking/            distributed lock kernel: contracts, retry policy, in-process provider
+src/HostLoom.Locking.DependencyInjection/ lock registration, validation, health checks
+src/HostLoom.Locking.Testing/    container-free lock composition, scripted, recording, faulting providers
+src/HostLoom.Locking.Pipelines/  distributed-lock filter for generic pipelines
+src/HostLoom.Redis/              Redis store, invalidation channel, lock provider, owned connection
 src/HostLoom.Pipelines/          transport-neutral middleware pipelines
   Contexts/                      pipe context and thread-safe typed payloads
   Filters/                       delegate, execute, conditional, concurrency, timeout, instrumented, terminal
@@ -650,7 +713,9 @@ src/HostLoom.Transport.Kafka/    request/response topics with header correlation
 src/HostLoom.AspNetCore.WebSockets/ raw Kestrel WebSocket RPC and subscriptions
 benchmarks/HostLoom.Benchmarks/    codec, logging, and mapping benchmarks
 examples/HostLoom.Examples.Pipelines/ runnable pipeline tour: DI stages, manual and standalone composition
+examples/HostLoom.Examples.CachingAot/ Native AOT sample for caching and locking
 tests/HostLoom.Tests/            pipeline, round-trip, behavior, and fault tests
+tests/HostLoom.Conformance/      backend-neutral cache and lock scenarios shared by the unit and integration suites
 tests/HostLoom.IntegrationTests/ RabbitMQ and Kafka transports against real brokers
 tests/HostLoom.Analyzers.Tests/  compiler-level analyzer tests
 ```
