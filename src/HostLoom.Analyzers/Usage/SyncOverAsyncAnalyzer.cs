@@ -8,7 +8,8 @@ using Microsoft.CodeAnalysis.Diagnostics;
 namespace HostLoom.Analyzers.Usage;
 
 /// <summary>
-/// Reports synchronous blocking over HostLoom Task and ValueTask operations.
+/// Reports synchronous blocking over HostLoom Task and ValueTask operations, including the cache
+/// and lock contracts.
 /// </summary>
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class SyncOverAsyncAnalyzer : DiagnosticAnalyzer
@@ -98,9 +99,7 @@ public sealed class SyncOverAsyncAnalyzer : DiagnosticAnalyzer
 
         if (
             context.SemanticModel.GetSymbolInfo(invocation).Symbol is IMethodSymbol method
-            && AnalyzerSymbolHelpers.IsHostLoomSymbol(method)
-            && method.Name.EndsWith("Async", StringComparison.Ordinal)
-            && AnalyzerSymbolHelpers.IsAwaitable(method.ReturnType)
+            && AnalyzerSymbolHelpers.IsHostLoomAsyncOperation(method)
         )
         {
             return method.Name;
