@@ -462,7 +462,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             return;
         }
 
-        if (!await _router.AuthorizeTopicAsync(topic, _user).ConfigureAwait(false))
+        if (!await _router.AuthorizeTopicAsync(topic, frame.Key, _user).ConfigureAwait(false))
         {
             _ = TryQueue(
                 WebSocketRequestRouter.Fault(

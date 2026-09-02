@@ -216,6 +216,173 @@ public sealed class WebSocketGatewayTests
     }
 
     [Fact]
+    public async Task Topic_policy_receives_the_client_selected_subscription_key()
+    {
+        var services = new ServiceCollection();
+        services.AddAuthorization(options =>
+            options.AddPolicy(
+                "customer-key",
+                policy =>
+                    policy.RequireAssertion(context =>
+                        context.Resource
+                            is WebSocketTopicResource { Topic: "orders.changed", Key: "customer-1" }
+                    )
+            )
+        );
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
+            .AddTopic<OrderChanged>(
+                "orders.changed",
+                "orders",
+                value => value.CustomerId,
+                authorizationPolicy: "customer-key"
+            );
+        await using var provider = services.BuildServiceProvider();
+        var configuration = provider.GetRequiredService<GatewayConfiguration>();
+        Assert.True(configuration.TryGetTopic("orders.changed", out var topic));
+        var router = provider.GetRequiredService<WebSocketRequestRouter>();
+
+        Assert.True(await router.AuthorizeTopicAsync(topic, "customer-1", new ClaimsPrincipal()));
+        Assert.False(await router.AuthorizeTopicAsync(topic, "customer-2", new ClaimsPrincipal()));
+    }
+
+    [Fact]
+    public async Task Subject_only_topic_policy_accepts_own_key_and_rejects_other_keys()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options =>
+            {
+                options.RequireAuthenticatedUser = false;
+                options.SubjectClaimType = "tenant_id";
+            })
+            .AddTopic<OrderChanged>(
+                "orders.changed",
+                "orders",
+                value => value.CustomerId,
+                authorizationPolicy: TopicKeyPolicy.SubjectOnly
+            );
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        var user = new ClaimsPrincipal(
+            new ClaimsIdentity([new Claim("tenant_id", "tenant-1")], "test")
+        );
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, user);
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Subscribe,
+                    StreamId = 1,
+                    Topic = "orders.changed",
+                    Key = "TENANT-1",
+                    Credit = 1,
+                }
+            ),
+            protocol.MessageType
+        );
+        var forbidden = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        Assert.Equal(HubFrameKind.Fault, forbidden.Kind);
+        Assert.Equal(HubFaultCodes.Forbidden, forbidden.Code);
+        Assert.Equal(
+            0,
+            Assert
+                .Single(provider.GetRequiredService<IWebSocketSessionDirectory>().GetSessions())
+                .SubscriptionCount
+        );
+
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Subscribe,
+                    StreamId = 2,
+                    Topic = "orders.changed",
+                    Key = "tenant-1",
+                    Credit = 1,
+                }
+            ),
+            protocol.MessageType
+        );
+        var subscribed = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        Assert.Equal(HubFrameKind.Subscribed, subscribed.Kind);
+        Assert.Equal((ulong)2, subscribed.StreamId);
+
+        socket.EnqueueClose();
+        await run;
+    }
+
+    [Fact]
+    public async Task Subject_only_topic_policy_rejects_missing_key_or_subject()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
+            .AddTopic<OrderChanged>(
+                "orders.changed",
+                "orders",
+                value => value.CustomerId,
+                authorizationPolicy: TopicKeyPolicy.SubjectOnly
+            );
+        await using var provider = services.BuildServiceProvider();
+        var configuration = provider.GetRequiredService<GatewayConfiguration>();
+        Assert.True(configuration.TryGetTopic("orders.changed", out var topic));
+        var router = provider.GetRequiredService<WebSocketRequestRouter>();
+        var user = new ClaimsPrincipal(
+            new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "subject-1")], "test")
+        );
+
+        Assert.False(await router.AuthorizeTopicAsync(topic, null, user));
+        Assert.False(
+            await router.AuthorizeTopicAsync(
+                topic,
+                "subject-1",
+                new ClaimsPrincipal(new ClaimsIdentity())
+            )
+        );
+        Assert.False(
+            await router.AuthorizeTopicAsync(
+                topic,
+                "subject-1",
+                new ClaimsPrincipal(
+                    new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "subject-1")])
+                )
+            )
+        );
+        Assert.False(
+            await router.AuthorizeTopicAsync(
+                topic,
+                "subject-2",
+                new ClaimsPrincipal(
+                    new ClaimsIdentity(
+                        [
+                            new Claim(ClaimTypes.NameIdentifier, "subject-1"),
+                            new Claim(ClaimTypes.NameIdentifier, "subject-2"),
+                        ],
+                        "test"
+                    )
+                )
+            )
+        );
+    }
+
+    [Fact]
     public void Registry_routes_keyed_events_to_wildcard_and_matching_subscribers()
     {
         var registry = new WebSocketSessionRegistry();
