@@ -39,6 +39,11 @@ upgrade rather than a silent change.
   with sequence zero, consume credit, support credit and unsubscribe during asynchronous loading,
   filter keyed snapshots, and reserve concurrent live frames against the existing connection
   bounds. Provider failures fault only the subscription with `snapshot_failed`.
+- A machine-guarded WebSocket fan-out regression baseline for one serialized 256-byte payload sent
+  through JSON envelope encoding, subscription credit, and ready-writer bounded queue cycles at 1,
+  100, and 500 sessions, with explicit separation from real-socket capacity evidence.
+- Live subscription credit replenishment no longer signals a completed snapshot initializer, which
+  removes one caught `SemaphoreFullException` allocation per zero-to-positive refill.
 
 - `HLM0007` and `HLM0008` in `HostLoom.Analyzers`, and coverage of the cache and lock contracts by
   `HLM0001` and `HLM0002`. `HLM0007` reports a cache or lock key built from a parameter, local,
