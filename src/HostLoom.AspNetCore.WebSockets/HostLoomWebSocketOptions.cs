@@ -19,6 +19,11 @@ public sealed class HostLoomWebSocketOptions
     public int MaximumCreditPerSubscription { get; set; } = 1024;
 
     /// <summary>
+    /// Gets or sets the maximum number of client control frames accepted in a one-second window.
+    /// </summary>
+    public int MaximumControlFramesPerSecond { get; set; } = 50;
+
+    /// <summary>
     /// Gets or sets the longest a session may remain connected, even when its credential has no
     /// expiry or expires later.
     /// </summary>
@@ -51,6 +56,7 @@ public sealed class HostLoomWebSocketOptions
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumConcurrentRequestsPerConnection);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumSubscriptionsPerConnection);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumCreditPerSubscription);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumControlFramesPerSecond);
 
         if (MaximumSessionLifetime <= TimeSpan.Zero)
         {

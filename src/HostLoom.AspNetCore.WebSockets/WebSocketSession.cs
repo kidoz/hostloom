@@ -18,6 +18,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
     private readonly DateTimeOffset _connectedAt;
     private readonly DateTimeOffset _expiresAt;
     private readonly string? _subject;
+    private readonly ControlFrameRateLimiter _controlFrames;
     private readonly CancellationTokenSource _stop = new();
     private readonly TaskCompletionSource _completion = new(
         TaskCreationOptions.RunContinuationsAsynchronously
@@ -57,6 +58,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         _connectedAt = connectedAt;
         _expiresAt = expiresAt;
         _subject = subject;
+        _controlFrames = new(timeProvider, configuration.Options.MaximumControlFramesPerSecond);
         _outbound = new ByteBoundedOutboundQueue(
             configuration.Options.MaximumQueuedBytesPerConnection,
             configuration.Options.MaximumQueuedFramesPerConnection
@@ -272,6 +274,12 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
 
     private async ValueTask HandleAsync(HubFrame frame)
     {
+        if (IsControlFrame(frame.Kind) && !_controlFrames.TryAcquire())
+        {
+            RequestDisconnect(WebSocketCloseStatus.PolicyViolation, "rate_limited");
+            return;
+        }
+
         switch (frame.Kind)
         {
             case HubFrameKind.Request:
@@ -680,6 +688,14 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
 
         RequestDisconnect(WebSocketCloseStatus.PolicyViolation, "session_expired");
     }
+
+    private static bool IsControlFrame(HubFrameKind kind) =>
+        kind
+            is HubFrameKind.Cancel
+                or HubFrameKind.Subscribe
+                or HubFrameKind.Credit
+                or HubFrameKind.Ack
+                or HubFrameKind.Unsubscribe;
 
     private readonly record struct InboundMessage(
         ReadOnlyMemory<byte> Payload,
