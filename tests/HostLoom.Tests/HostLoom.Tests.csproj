@@ -19,6 +19,7 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="../../src/HostLoom.AspNetCore.WebSockets/HostLoom.AspNetCore.WebSockets.csproj" />
     <ProjectReference Include="../../src/HostLoom.Diagnostics/HostLoom.Diagnostics.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Locking/HostLoom.Locking.csproj" />
     <ProjectReference Include="../../src/HostLoom.Logging/HostLoom.Logging.csproj" />
     <ProjectReference Include="../../src/HostLoom.Mapping.DependencyInjection/HostLoom.Mapping.DependencyInjection.csproj" />
     <ProjectReference Include="../../src/HostLoom.Mapping.Testing/HostLoom.Mapping.Testing.csproj" />
