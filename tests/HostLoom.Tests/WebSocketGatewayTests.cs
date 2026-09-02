@@ -439,6 +439,51 @@ public sealed class WebSocketGatewayTests
     }
 
     [Fact]
+    public async Task Control_frame_rate_limit_uses_a_fake_time_window()
+    {
+        var clock = new TestClock();
+        var services = new ServiceCollection();
+        services.AddSingleton<TimeProvider>(clock);
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options =>
+            {
+                options.RequireAuthenticatedUser = false;
+                options.MaximumControlFramesPerSecond = 2;
+            });
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, new ClaimsPrincipal());
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+
+        await SendInvalidCreditAndAwaitFaultAsync(socket, protocol);
+        await SendInvalidCreditAndAwaitFaultAsync(socket, protocol);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await SendInvalidCreditAndAwaitFaultAsync(socket, protocol);
+        await SendInvalidCreditAndAwaitFaultAsync(socket, protocol);
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Credit,
+                    StreamId = 5,
+                    Credit = 1,
+                }
+            ),
+            protocol.MessageType
+        );
+        await run.WaitAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(WebSocketCloseStatus.PolicyViolation, socket.CloseStatus);
+        Assert.Equal("rate_limited", socket.CloseStatusDescription);
+    }
+
+    [Fact]
     public async Task Shutdown_service_closes_sessions_before_it_completes()
     {
         var services = new ServiceCollection();
@@ -496,6 +541,28 @@ public sealed class WebSocketGatewayTests
             DateTimeOffset.UnixEpoch + TimeSpan.FromHours(1),
             await resolver.ResolveExpirationAsync(context, TestContext.Current.CancellationToken)
         );
+    }
+
+    private static async Task SendInvalidCreditAndAwaitFaultAsync(
+        ScriptedWebSocket socket,
+        JsonWebSocketHubProtocol protocol
+    )
+    {
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Credit,
+                    StreamId = 5,
+                    Credit = 1,
+                }
+            ),
+            protocol.MessageType
+        );
+        var response = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        Assert.Equal(HubFrameKind.Fault, response.Kind);
     }
 
     private static void AssertRoundTrip(IWebSocketHubProtocol protocol)
