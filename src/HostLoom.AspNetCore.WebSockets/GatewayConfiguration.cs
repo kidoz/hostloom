@@ -55,6 +55,33 @@ internal sealed class GatewayConfiguration(HostLoomWebSocketOptions options)
                 $"Event type '{eventType}' is not exposed by the WebSocket gateway."
             );
 
+    public void AddTopicSnapshot(string topic, Type eventType, Type invokerType)
+    {
+        ValidateName(topic, nameof(topic));
+        if (!_topics.TryGetValue(topic, out var route))
+        {
+            throw new InvalidOperationException(
+                $"WebSocket topic '{topic}' must be registered before its snapshot provider."
+            );
+        }
+
+        if (route.EventType != eventType)
+        {
+            throw new InvalidOperationException(
+                $"WebSocket topic '{topic}' exposes event type '{route.EventType}', not '{eventType}'."
+            );
+        }
+
+        if (route.SnapshotInvokerType is not null)
+        {
+            throw new InvalidOperationException(
+                $"WebSocket topic '{topic}' already has a snapshot provider."
+            );
+        }
+
+        route.SnapshotInvokerType = invokerType;
+    }
+
     private static void ValidateName(string value, string parameterName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(value, parameterName);
@@ -85,4 +112,7 @@ internal sealed record TopicRoute(
     Type EventType,
     Func<object, string?> KeySelector,
     string? AuthorizationPolicy
-);
+)
+{
+    public Type? SnapshotInvokerType { get; set; }
+}

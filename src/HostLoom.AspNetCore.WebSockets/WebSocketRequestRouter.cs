@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.DependencyInjection;
@@ -155,6 +156,38 @@ internal sealed class WebSocketRequestRouter(
                     topic.AuthorizationPolicy
                 )
                 .ConfigureAwait(false);
+        }
+        finally
+        {
+            await scope.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    public async IAsyncEnumerable<SerializedWebSocketSnapshot> GetTopicSnapshotAsync(
+        TopicRoute topic,
+        WebSocketTopicSnapshotContext context,
+        [EnumeratorCancellation] CancellationToken cancellationToken
+    )
+    {
+        if (topic.SnapshotInvokerType is null)
+        {
+            yield break;
+        }
+
+        var scope = scopeFactory.CreateAsyncScope();
+        try
+        {
+            var invoker = (IWebSocketTopicSnapshotInvoker)
+                scope.ServiceProvider.GetRequiredService(topic.SnapshotInvokerType);
+            await foreach (
+                var item in invoker
+                    .GetSnapshotAsync(context, topic.KeySelector, cancellationToken)
+                    .WithCancellation(cancellationToken)
+                    .ConfigureAwait(false)
+            )
+            {
+                yield return item;
+            }
         }
         finally
         {
