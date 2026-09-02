@@ -3,6 +3,7 @@
     <Project Path="benchmarks/HostLoom.Benchmarks/HostLoom.Benchmarks.csproj" />
   </Folder>
   <Folder Name="/examples/">
+    <Project Path="examples/HostLoom.Examples.CachingAot/HostLoom.Examples.CachingAot.csproj" />
     <Project Path="examples/HostLoom.Examples.Pipelines/HostLoom.Examples.Pipelines.csproj" />
   </Folder>
   <Folder Name="/src/">
