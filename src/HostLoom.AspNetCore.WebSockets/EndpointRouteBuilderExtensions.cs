@@ -43,6 +43,18 @@ public static class EndpointRouteBuilderExtensions
             return;
         }
 
+        var originValidator =
+            context.RequestServices.GetRequiredService<IWebSocketOriginValidator>();
+        if (
+            !await originValidator
+                .IsAllowedAsync(context, context.RequestAborted)
+                .ConfigureAwait(false)
+        )
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return;
+        }
+
         var protocols = context
             .RequestServices.GetServices<IWebSocketHubProtocol>()
             .ToDictionary(static protocol => protocol.SubProtocol, StringComparer.Ordinal);
