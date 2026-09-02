@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hostloom.dev/protocol/hostloom-websocket-json-v1.schema.json",
+  "title": "HostLoom WebSocket JSON v1 frame",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "streamId"],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "welcome", "request", "response", "fault", "cancel", "subscribe",
+        "subscribed", "event", "credit", "ack", "unsubscribe", "complete"
+      ]
+    },
+    "streamId": { "type": "integer", "minimum": 0 },
+    "sessionId": { "type": "string" },
+    "operation": { "type": "string" },
+    "topic": { "type": "string" },
+    "key": { "type": "string" },
+    "timeoutMilliseconds": { "type": "integer", "minimum": 1 },
+    "credit": { "type": "integer", "minimum": 0 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "eventId": { "type": "string" },
+    "code": { "type": "string" },
+    "message": { "type": "string" },
+    "payload": { "type": "string", "contentEncoding": "base64" },
+    "maximumMessageSize": { "type": "integer", "minimum": 1 },
+    "maximumConcurrentRequests": { "type": "integer", "minimum": 1 }
+  },
+  "allOf": [
+    { "if": { "properties": { "kind": { "const": "welcome" } } }, "then": { "required": ["sessionId", "credit", "maximumMessageSize", "maximumConcurrentRequests"] } },
+    { "if": { "properties": { "kind": { "const": "request" } } }, "then": { "required": ["streamId", "operation", "payload"], "properties": { "streamId": { "minimum": 1 } } } },
+    { "if": { "properties": { "kind": { "const": "response" } } }, "then": { "required": ["streamId", "payload"], "properties": { "streamId": { "minimum": 1 } } } },
+    { "if": { "properties": { "kind": { "const": "fault" } } }, "then": { "required": ["streamId", "code", "message"] } },
+    { "if": { "properties": { "kind": { "const": "subscribe" } } }, "then": { "required": ["streamId", "topic", "credit"], "properties": { "streamId": { "minimum": 1 } } } },
+    { "if": { "properties": { "kind": { "const": "subscribed" } } }, "then": { "required": ["streamId", "topic", "credit"], "properties": { "streamId": { "minimum": 1 } } } },
+    { "if": { "properties": { "kind": { "const": "event" } } }, "then": { "required": ["streamId", "eventId", "sequence", "payload"], "properties": { "streamId": { "minimum": 1 } } } },
+    { "if": { "properties": { "kind": { "const": "cancel" } } }, "then": { "properties": { "streamId": { "minimum": 1 } } } },
+    { "if": { "properties": { "kind": { "const": "credit" } } }, "then": { "required": ["credit"], "properties": { "streamId": { "minimum": 1 } } } },
+    { "if": { "properties": { "kind": { "const": "ack" } } }, "then": { "required": ["sequence"], "properties": { "streamId": { "minimum": 1 } } } },
+    { "if": { "properties": { "kind": { "enum": ["unsubscribe", "complete"] } } }, "then": { "properties": { "streamId": { "minimum": 1 } } } }
+  ]
+}

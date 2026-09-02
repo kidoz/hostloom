@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Security.Claims;
+using System.Text;
+using System.Text.Json;
 using System.Threading.Channels;
 using HostLoom.AspNetCore.WebSockets;
 using HostLoom.Transport.InMemory;
@@ -18,6 +20,46 @@ public sealed class WebSocketGatewayTests
         var protocol = new JsonWebSocketHubProtocol();
         AssertRoundTrip(protocol);
         Assert.Equal(WebSocketMessageType.Text, protocol.MessageType);
+    }
+
+    [Theory]
+    [InlineData("welcome")]
+    [InlineData("subscribed")]
+    [InlineData("event")]
+    [InlineData("fault")]
+    public void Json_v1_protocol_matches_published_fixtures(string fixture)
+    {
+        AssertFixture(new JsonWebSocketHubProtocol(), "json-v1", fixture);
+    }
+
+    [Theory]
+    [InlineData("hostloom-websocket-json-v1.schema.json")]
+    public void Published_json_schema_is_well_formed(string schema)
+    {
+        using var document = JsonDocument.Parse(File.ReadAllBytes(ProtocolFile(schema)));
+        Assert.Equal(JsonValueKind.Object, document.RootElement.ValueKind);
+    }
+
+    [Theory]
+    [InlineData("{\"kind\":1,\"streamId\":1}")]
+    [InlineData("{\"kind\":\"Unknown\",\"streamId\":1}")]
+    [InlineData("{\"kind\":\"None\",\"streamId\":1}")]
+    public void Json_protocols_reject_non_contract_frame_kinds(string json)
+    {
+        var payload = Encoding.UTF8.GetBytes(json);
+        _ = Assert.Throws<InvalidDataException>(() =>
+            new JsonWebSocketHubProtocol().Decode(payload)
+        );
+    }
+
+    [Fact]
+    public void Json_protocol_reads_legacy_kind_casing_case_insensitively()
+    {
+        var frame = new JsonWebSocketHubProtocol().Decode(
+            "{\"kind\":\"Welcome\",\"streamId\":0}"u8
+        );
+
+        Assert.Equal(HubFrameKind.Welcome, frame.Kind);
     }
 
     [Fact]
@@ -336,6 +378,67 @@ public sealed class WebSocketGatewayTests
         Assert.Equal(65536, decoded.MaximumMessageSize);
         Assert.Equal(8, decoded.MaximumConcurrentRequests);
     }
+
+    private static void AssertFixture(
+        JsonWebSocketHubProtocol protocol,
+        string fixtureDirectory,
+        string fixture
+    )
+    {
+        var expected = File.ReadAllText(
+                ProtocolFile("fixtures", fixtureDirectory, $"{fixture}.json")
+            )
+            .TrimEnd();
+        var frame = CreateFixtureFrame(fixture);
+        var encoded = Encoding.UTF8.GetString(protocol.Encode(frame));
+
+        Assert.Equal(expected, encoded);
+        var decoded = protocol.Decode(Encoding.UTF8.GetBytes(expected));
+        Assert.Equal(frame.Kind, decoded.Kind);
+        Assert.Equal(frame.StreamId, decoded.StreamId);
+    }
+
+    private static HubFrame CreateFixtureFrame(string fixture) =>
+        fixture switch
+        {
+            "welcome" => new HubFrame
+            {
+                Kind = HubFrameKind.Welcome,
+                SessionId = "session-1",
+                Credit = 1024,
+                MaximumMessageSize = 65536,
+                MaximumConcurrentRequests = 8,
+            },
+            "subscribed" => new HubFrame
+            {
+                Kind = HubFrameKind.Subscribed,
+                StreamId = 41,
+                Topic = "orders.changed",
+                Key = "customer-1",
+                Credit = 32,
+            },
+            "event" => new HubFrame
+            {
+                Kind = HubFrameKind.Event,
+                StreamId = 41,
+                Topic = "orders.changed",
+                Key = "customer-1",
+                Sequence = 7,
+                EventId = "event-1",
+                Payload = new byte[] { 1, 2, 3 },
+            },
+            "fault" => new HubFrame
+            {
+                Kind = HubFrameKind.Fault,
+                StreamId = 12,
+                Code = "forbidden",
+                Message = "The caller is not authorized.",
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(fixture), fixture, null),
+        };
+
+    private static string ProtocolFile(params string[] segments) =>
+        Path.Combine([AppContext.BaseDirectory, "protocol", .. segments]);
 
     public sealed record Greet(string Name) : IRequest<Greeting>;
 

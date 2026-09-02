@@ -1,5 +1,6 @@
 using System.Net.WebSockets;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace HostLoom.AspNetCore.WebSockets;
 
@@ -10,6 +11,7 @@ public sealed class JsonWebSocketHubProtocol : IWebSocketHubProtocol
     )
     {
         MaxDepth = 32,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
     public const string ProtocolName = "hostloom.json.v1";
@@ -22,8 +24,10 @@ public sealed class JsonWebSocketHubProtocol : IWebSocketHubProtocol
     {
         try
         {
-            return JsonSerializer.Deserialize<HubFrame>(payload, SerializerOptions)
+            var frame =
+                JsonSerializer.Deserialize<JsonHubFrame>(payload, SerializerOptions)
                 ?? throw new InvalidDataException("The JSON frame was null.");
+            return frame.ToHubFrame();
         }
         catch (JsonException exception)
         {
@@ -34,6 +38,9 @@ public sealed class JsonWebSocketHubProtocol : IWebSocketHubProtocol
     public byte[] Encode(HubFrame frame)
     {
         ArgumentNullException.ThrowIfNull(frame);
-        return JsonSerializer.SerializeToUtf8Bytes(frame, SerializerOptions);
+        return JsonSerializer.SerializeToUtf8Bytes(
+            JsonHubFrame.FromHubFrame(frame, camelCaseKind: true),
+            SerializerOptions
+        );
     }
 }
