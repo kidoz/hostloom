@@ -35,6 +35,7 @@
     <ProjectReference Include="../../src/HostLoom.Pipelines.DependencyInjection/HostLoom.Pipelines.DependencyInjection.csproj" />
     <ProjectReference Include="../../src/HostLoom.Pipelines.Testing/HostLoom.Pipelines.Testing.csproj" />
     <ProjectReference Include="../../src/HostLoom.Pipelines/HostLoom.Pipelines.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Redis/HostLoom.Redis.csproj" />
     <ProjectReference Include="../../src/HostLoom.Transport.InMemory/HostLoom.Transport.InMemory.csproj" />
     <ProjectReference Include="../../src/HostLoom.Transport.Kafka/HostLoom.Transport.Kafka.csproj" />
     <ProjectReference Include="../../src/HostLoom.Transport.RabbitMq/HostLoom.Transport.RabbitMq.csproj" />

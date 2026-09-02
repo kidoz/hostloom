@@ -29,6 +29,7 @@
     <PackageVersion Include="RabbitMQ.Client" Version="7.2.1" />
     <PackageVersion Include="Serilog" Version="4.0.1" />
     <PackageVersion Include="Serilog.Formatting.Compact" Version="3.0.0" />
+    <PackageVersion Include="StackExchange.Redis" Version="3.1.31" />
     <PackageVersion Include="protobuf-net" Version="3.4.14" />
     <PackageVersion Include="xunit.v3" Version="4.0.0" />
     <PackageVersion Include="xunit.v3.assert" Version="4.0.0" />
