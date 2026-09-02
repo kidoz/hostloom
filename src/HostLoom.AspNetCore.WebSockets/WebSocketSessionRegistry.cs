@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Net.WebSockets;
+using System.Text;
 
 namespace HostLoom.AspNetCore.WebSockets;
 
@@ -18,9 +20,92 @@ internal interface IWebSocketEventSink
     void Abort();
 }
 
+internal interface IWebSocketSessionHandle : IWebSocketEventSink
+{
+    WebSocketSessionInfo GetInfo();
+
+    Task Completion { get; }
+
+    void RequestDisconnect(WebSocketCloseStatus status, string reason);
+}
+
 internal sealed class WebSocketSessionRegistry
+    : IWebSocketSessionDirectory,
+        IWebSocketSessionControl
 {
     private readonly ConcurrentDictionary<SubscriptionGroup, GroupState> _groups = [];
+    private readonly ConcurrentDictionary<string, IWebSocketSessionHandle> _sessions = new(
+        StringComparer.Ordinal
+    );
+
+    public int Count => _sessions.Count;
+
+    public IReadOnlyList<WebSocketSessionInfo> GetSessions() =>
+        [.. _sessions.Values.Select(static session => session.GetInfo())];
+
+    public IReadOnlyList<WebSocketSessionInfo> GetSessionsBySubject(string subject)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(subject);
+        return
+        [
+            .. _sessions
+                .Values.Select(static session => session.GetInfo())
+                .Where(info => string.Equals(info.Subject, subject, StringComparison.Ordinal)),
+        ];
+    }
+
+    public async ValueTask<bool> DisconnectAsync(
+        string sessionId,
+        string reason,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ValidateReason(reason);
+        if (!_sessions.TryGetValue(sessionId, out var session))
+        {
+            return false;
+        }
+
+        session.RequestDisconnect(WebSocketCloseStatus.PolicyViolation, reason);
+        await session.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
+    public async ValueTask<int> DisconnectSubjectAsync(
+        string subject,
+        string reason,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(subject);
+        ValidateReason(reason);
+        var sessions = _sessions
+            .Values.Where(session =>
+                string.Equals(session.GetInfo().Subject, subject, StringComparison.Ordinal)
+            )
+            .ToArray();
+        foreach (var session in sessions)
+        {
+            session.RequestDisconnect(WebSocketCloseStatus.PolicyViolation, reason);
+        }
+
+        await Task.WhenAll(sessions.Select(static session => session.Completion))
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return sessions.Length;
+    }
+
+    internal void Register(IWebSocketSessionHandle session)
+    {
+        if (!_sessions.TryAdd(session.Id, session))
+        {
+            throw new InvalidOperationException($"Session '{session.Id}' is already registered.");
+        }
+    }
+
+    internal void Unregister(IWebSocketSessionHandle session) =>
+        _sessions.TryRemove(new KeyValuePair<string, IWebSocketSessionHandle>(session.Id, session));
 
     public void Subscribe(IWebSocketEventSink session, string topic, string? key)
     {
@@ -74,6 +159,18 @@ internal sealed class WebSocketSessionRegistry
             {
                 session.Abort();
             }
+        }
+    }
+
+    private static void ValidateReason(string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        if (Encoding.UTF8.GetByteCount(reason) > 123)
+        {
+            throw new ArgumentException(
+                "A WebSocket close reason must be at most 123 UTF-8 bytes.",
+                nameof(reason)
+            );
         }
     }
 

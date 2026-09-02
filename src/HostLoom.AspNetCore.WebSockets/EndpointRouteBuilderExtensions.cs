@@ -62,11 +62,22 @@ public static class EndpointRouteBuilderExtensions
             return;
         }
 
+        var lifetimeResolver =
+            context.RequestServices.GetRequiredService<IWebSocketSessionLifetimeResolver>();
+        var credentialExpiration = await lifetimeResolver
+            .ResolveExpirationAsync(context, context.RequestAborted)
+            .ConfigureAwait(false);
+
         using var socket = await context
             .WebSockets.AcceptWebSocketAsync(selected)
             .ConfigureAwait(false);
         var factory = context.RequestServices.GetRequiredService<WebSocketSessionFactory>();
-        var session = factory.Create(socket, protocols[selected], context.User);
+        var session = factory.Create(
+            socket,
+            protocols[selected],
+            context.User,
+            credentialExpiration
+        );
         await session.RunAsync(context.RequestAborted).ConfigureAwait(false);
     }
 }

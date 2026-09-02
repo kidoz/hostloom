@@ -6,6 +6,8 @@ using System.Text.Json;
 using System.Threading.Channels;
 using HostLoom.AspNetCore.WebSockets;
 using HostLoom.Transport.InMemory;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Xunit;
@@ -321,6 +323,12 @@ public sealed class WebSocketGatewayTests
         );
         Assert.Equal(HubFrameKind.Welcome, welcome.Kind);
         Assert.Equal(HubFrameKind.Subscribed, subscribed.Kind);
+        Assert.Equal(
+            1,
+            Assert
+                .Single(provider.GetRequiredService<IWebSocketSessionDirectory>().GetSessions())
+                .SubscriptionCount
+        );
 
         provider
             .GetRequiredService<WebSocketSessionRegistry>()
@@ -336,6 +344,131 @@ public sealed class WebSocketGatewayTests
         socket.EnqueueClose();
         await run;
         Assert.Equal(WebSocketCloseStatus.NormalClosure, socket.CloseStatus);
+        Assert.Equal(0, provider.GetRequiredService<IWebSocketSessionDirectory>().Count);
+    }
+
+    [Fact]
+    public async Task Session_expiry_is_capped_and_closes_with_policy_violation()
+    {
+        var clock = new TestClock();
+        var services = new ServiceCollection();
+        services.AddSingleton<TimeProvider>(clock);
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options =>
+            {
+                options.RequireAuthenticatedUser = false;
+                options.MaximumSessionLifetime = TimeSpan.FromMinutes(1);
+            });
+        await using var provider = services.BuildServiceProvider();
+        using var socket = new ScriptedWebSocket();
+        var protocol = new JsonWebSocketHubProtocol();
+        var user = new ClaimsPrincipal(
+            new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "subject-1")], "test")
+        );
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, user, clock.GetUtcNow() + TimeSpan.FromHours(1));
+
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        var directory = provider.GetRequiredService<IWebSocketSessionDirectory>();
+        var info = Assert.Single(directory.GetSessionsBySubject("subject-1"));
+        Assert.Equal(session.Id, info.SessionId);
+        Assert.Equal(protocol.SubProtocol, info.Protocol);
+        Assert.Equal(DateTimeOffset.UnixEpoch, info.ConnectedAt);
+        Assert.Equal(DateTimeOffset.UnixEpoch + TimeSpan.FromMinutes(1), info.ExpiresAt);
+
+        clock.Advance(TimeSpan.FromMinutes(1));
+        await run.WaitAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(WebSocketCloseStatus.PolicyViolation, socket.CloseStatus);
+        Assert.Equal("session_expired", socket.CloseStatusDescription);
+        Assert.Equal(0, directory.Count);
+    }
+
+    [Fact]
+    public async Task Session_control_disconnects_one_session_or_every_session_for_a_subject()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false);
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        var user = new ClaimsPrincipal(
+            new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "subject-1")], "test")
+        );
+        using var firstSocket = new ScriptedWebSocket();
+        using var secondSocket = new ScriptedWebSocket();
+        var factory = provider.GetRequiredService<WebSocketSessionFactory>();
+        var first = factory.Create(firstSocket, protocol, user);
+        var second = factory.Create(secondSocket, protocol, user);
+        var firstRun = first.RunAsync(TestContext.Current.CancellationToken);
+        var secondRun = second.RunAsync(TestContext.Current.CancellationToken);
+        _ = await firstSocket.ReadSentAsync(TestContext.Current.CancellationToken);
+        _ = await secondSocket.ReadSentAsync(TestContext.Current.CancellationToken);
+        var control = provider.GetRequiredService<IWebSocketSessionControl>();
+
+        Assert.False(
+            await control.DisconnectAsync(
+                "missing",
+                "logout",
+                TestContext.Current.CancellationToken
+            )
+        );
+        Assert.True(
+            await control.DisconnectAsync(first.Id, "logout", TestContext.Current.CancellationToken)
+        );
+        Assert.Equal(
+            1,
+            await control.DisconnectSubjectAsync(
+                "subject-1",
+                "roles_changed",
+                TestContext.Current.CancellationToken
+            )
+        );
+        await Task.WhenAll(firstRun, secondRun);
+
+        Assert.Equal(WebSocketCloseStatus.PolicyViolation, firstSocket.CloseStatus);
+        Assert.Equal("logout", firstSocket.CloseStatusDescription);
+        Assert.Equal(WebSocketCloseStatus.PolicyViolation, secondSocket.CloseStatus);
+        Assert.Equal("roles_changed", secondSocket.CloseStatusDescription);
+    }
+
+    [Fact]
+    public async Task Default_lifetime_resolver_prefers_ticket_expiry_and_falls_back_to_exp_claim()
+    {
+        var resolver = new DefaultWebSocketSessionLifetimeResolver();
+        var ticketExpiry = DateTimeOffset.UnixEpoch + TimeSpan.FromHours(2);
+        var context = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity([new Claim("exp", "3600")], "test")),
+        };
+        context.Features.Set<IAuthenticateResultFeature>(
+            new TestAuthenticateResultFeature
+            {
+                AuthenticateResult = AuthenticateResult.Success(
+                    new AuthenticationTicket(
+                        context.User,
+                        new AuthenticationProperties { ExpiresUtc = ticketExpiry },
+                        "test"
+                    )
+                ),
+            }
+        );
+
+        Assert.Equal(
+            ticketExpiry,
+            await resolver.ResolveExpirationAsync(context, TestContext.Current.CancellationToken)
+        );
+        context.Features.Set<IAuthenticateResultFeature>(null);
+        Assert.Equal(
+            DateTimeOffset.UnixEpoch + TimeSpan.FromHours(1),
+            await resolver.ResolveExpirationAsync(context, TestContext.Current.CancellationToken)
+        );
     }
 
     private static void AssertRoundTrip(IWebSocketHubProtocol protocol)
@@ -569,5 +702,10 @@ public sealed class WebSocketGatewayTests
             WebSocketMessageType MessageType,
             WebSocketCloseStatus? CloseStatus
         );
+    }
+
+    private sealed class TestAuthenticateResultFeature : IAuthenticateResultFeature
+    {
+        public AuthenticateResult? AuthenticateResult { get; set; }
     }
 }
