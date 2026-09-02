@@ -15,6 +15,22 @@ upgrade rather than a silent change.
 
 ### Added
 
+- The `hostloom.json.v1` WebSocket contract now matches its documented web defaults: camelCase
+  frame kinds and omitted null optional fields. It ships a JSON Schema and exact frame fixtures,
+  reads kinds case-insensitively, rejects numeric or unknown kinds, and retains Base64 opaque
+  application payloads.
+- Same-origin WebSocket handshake validation by default, exact-origin allowlists, an explicit
+  missing-Origin policy for browser-only versus native clients, and a replaceable
+  `IWebSocketOriginValidator`. Validation uses ASP.NET Core's effective scheme and host and rejects
+  before accepting the upgrade.
+- `HostLoom.AspNetCore.WebSockets.Testing`, a protocol-aware `WebSocketTestClient` over ASP.NET Core
+  TestServer for driving frames and awaiting common gateway responses in consumer integration tests.
+- Credential-bounded WebSocket sessions driven by `TimeProvider`, with a 12-hour maximum lifetime,
+  1008 `session_expired` closure, read-only `IWebSocketSessionDirectory` snapshots, and
+  `IWebSocketSessionControl` for logout or role-change disconnects by session id or subject. Host
+  shutdown now waits for sessions to receive 1001 `server_shutdown` before broker listeners stop,
+  and per-session control-frame rate limiting closes floods with 1008 `rate_limited`.
+
 - `HLM0007` and `HLM0008` in `HostLoom.Analyzers`, and coverage of the cache and lock contracts by
   `HLM0001` and `HLM0002`. `HLM0007` reports a cache or lock key built from a parameter, local,
   field, or property whose name says it is a credential (`token`, `secret`, `password`,
