@@ -12,6 +12,8 @@
     <PackageReference Include="Serilog" />
     <PackageReference Include="Serilog.Formatting.Compact" />
     <ProjectReference Include="../../src/HostLoom.AspNetCore.WebSockets/HostLoom.AspNetCore.WebSockets.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Caching/HostLoom.Caching.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Locking/HostLoom.Locking.csproj" />
     <ProjectReference Include="../../src/HostLoom.Logging/HostLoom.Logging.csproj" />
     <ProjectReference Include="../../src/HostLoom.Mapping.DependencyInjection/HostLoom.Mapping.DependencyInjection.csproj" />
   </ItemGroup>
