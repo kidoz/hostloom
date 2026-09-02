@@ -34,6 +34,11 @@ upgrade rather than a silent change.
   subscription key to ASP.NET Core policies, and `TopicKeyPolicy.SubjectOnly` provides an
   authenticated, exact subject-to-key policy that rejects foreign or missing keys before
   subscription registration.
+- Scoped `IWebSocketTopicSnapshotProvider<TEvent>` registration with deterministic
+  `subscribed` → snapshot → concurrent-live ordering. Snapshot events reuse the v1 `event` frame
+  with sequence zero, consume credit, support credit and unsubscribe during asynchronous loading,
+  filter keyed snapshots, and reserve concurrent live frames against the existing connection
+  bounds. Provider failures fault only the subscription with `snapshot_failed`.
 
 - `HLM0007` and `HLM0008` in `HostLoom.Analyzers`, and coverage of the cache and lock contracts by
   `HLM0001` and `HLM0002`. `HLM0007` reports a cache or lock key built from a parameter, local,
