@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/HostLoom.Benchmarks/HostLoom.Benchmarks.csproj" />
+    <Project Path="benchmarks/HostLoom.Redis.Benchmarks/HostLoom.Redis.Benchmarks.csproj" />
   </Folder>
   <Folder Name="/examples/">
     <Project Path="examples/HostLoom.Examples.CachingAot/HostLoom.Examples.CachingAot.csproj" />
