@@ -27,6 +27,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/HostLoom.Analyzers.Tests/HostLoom.Analyzers.Tests.csproj" />
+    <Project Path="tests/HostLoom.Conformance/HostLoom.Conformance.csproj" />
     <Project Path="tests/HostLoom.IntegrationTests/HostLoom.IntegrationTests.csproj" />
     <Project Path="tests/HostLoom.Tests/HostLoom.Tests.csproj" />
   </Folder>
