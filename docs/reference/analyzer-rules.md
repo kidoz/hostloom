@@ -14,6 +14,8 @@ repository.
 | `HLM0004` | A destination member an explicit map never assigns |
 | `HLM0005` | A map body whose completeness cannot be verified |
 | `HLM0006` | The scoped mapping dispatcher captured in a singleton |
+| `HLM0007` | A cache or lock key built from a token, secret, password, or API key without `FromSensitive` |
+| `HLM0008` | A get-or-create factory that declares its cancellation token and never forwards it |
 
 ## Why these rules exist
 
@@ -30,3 +32,9 @@ repository.
   forgotten member from shipping as silent data loss.
 - **`HLM0006`** — the `IMapper` dispatcher is scoped; capturing it in a
   singleton pins the first scope forever.
+- **`HLM0007`** — a cache or lock key reaches the backend, the logs, and
+  the spans; `CacheKey.FromSensitive` and `LockKey.FromSensitive` hash a
+  credential so the key stays unique without carrying it.
+- **`HLM0008`** — a get-or-create factory receives the caller's token so its
+  work stops with the request; declaring the token and ignoring it keeps the
+  work, and the per-key guard, alive after the caller has gone.

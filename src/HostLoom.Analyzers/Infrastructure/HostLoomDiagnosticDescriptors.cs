@@ -17,6 +17,10 @@ public static class HostLoomDiagnosticDescriptors
 
     public const string SingletonMapperInjectionDiagnosticId = "HLM0006";
 
+    public const string SensitiveCacheKeyDiagnosticId = "HLM0007";
+
+    public const string FactoryIgnoresCancellationTokenDiagnosticId = "HLM0008";
+
     internal static readonly DiagnosticDescriptor MissingCancellationToken = new(
         MissingCancellationTokenDiagnosticId,
         "Pass an available cancellation token to HostLoom async calls",
@@ -81,5 +85,27 @@ public static class HostLoomDiagnosticDescriptors
         isEnabledByDefault: true,
         description: "The non-generic IMapper dispatcher is registered scoped. Capturing it in a singleton throws at host build where scope validation is enabled and succeeds where it is not, so the failure appears in Development and hides in Production. Inject a closed IMapper<TSource, TDestination> instead, provided that map's own graph is singleton-safe: a transient map captured by a singleton is promoted to one, so a scoped dependency inside it reproduces the same asymmetry.",
         helpLinkUri: "https://github.com/kidoz/hostloom/tree/main/src/HostLoom.Analyzers#hlm0006"
+    );
+
+    internal static readonly DiagnosticDescriptor SensitiveCacheKey = new(
+        SensitiveCacheKeyDiagnosticId,
+        "Hash a secret before it becomes part of a cache or lock key",
+        "Key passed to '{0}' includes '{1}'; wrap it in {2}.FromSensitive so the secret never reaches the store, a log, or a span",
+        "Usage",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "A cache or lock key is written to the backend, appears in logs, and is tagged on spans. A key built from a token, secret, password, or API key therefore copies the credential into all three. FromSensitive hashes the value so the key stays unique without carrying it.",
+        helpLinkUri: "https://github.com/kidoz/hostloom/tree/main/src/HostLoom.Analyzers#hlm0007"
+    );
+
+    internal static readonly DiagnosticDescriptor FactoryIgnoresCancellationToken = new(
+        FactoryIgnoresCancellationTokenDiagnosticId,
+        "Forward the cancellation token a get-or-create factory receives",
+        "The factory passed to '{0}' never uses its cancellation token '{1}'; forward it to the work it starts, or name the parameter '_' to opt out",
+        "Usage",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "GetOrCreateAsync hands the caller's cancellation token to the factory so the work it starts stops with the request. A factory that declares the token and never forwards it keeps running after the caller has gone, and holds the per-key guard while it does.",
+        helpLinkUri: "https://github.com/kidoz/hostloom/tree/main/src/HostLoom.Analyzers#hlm0008"
     );
 }

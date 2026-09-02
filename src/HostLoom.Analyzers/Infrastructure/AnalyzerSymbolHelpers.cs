@@ -128,6 +128,25 @@ internal static class AnalyzerSymbolHelpers
         && method.Name.EndsWith("Async", StringComparison.Ordinal)
         && IsAwaitable(method.ReturnType);
 
+    /// <summary>Whether <paramref name="method"/> is <c>ICache.GetOrCreateAsync</c>, in any overload.</summary>
+    public static bool IsGetOrCreate(IMethodSymbol? method) =>
+        method is not null
+        && string.Equals(method.Name, "GetOrCreateAsync", StringComparison.Ordinal)
+        && IsNamedType(method.ContainingType, CachingNamespace, "ICache");
+
+    /// <summary><c>CacheKey.FromSensitive</c> or <c>LockKey.FromSensitive</c>, the sanctioned way to key on a secret.</summary>
+    public static bool IsSensitiveKeyHelper(IMethodSymbol? method) =>
+        method is not null
+        && string.Equals(method.Name, "FromSensitive", StringComparison.Ordinal)
+        && (
+            IsNamedType(method.ContainingType, CachingNamespace, "CacheKey")
+            || IsNamedType(method.ContainingType, LockingNamespace, "LockKey")
+        );
+
+    /// <summary>The helper a consumer of <paramref name="contract"/> should wrap a secret in.</summary>
+    public static string SensitiveKeyHelperName(ITypeSymbol? contract) =>
+        IsNamedType(contract, CachingNamespace, "ICache") ? "CacheKey" : "LockKey";
+
     public static bool IsCancellationToken(ITypeSymbol? type) =>
         IsNamedType(type, "System.Threading", "CancellationToken");
 
