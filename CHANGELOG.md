@@ -133,9 +133,13 @@ upgrade rather than a silent change.
   receive pipeline is deliberately not wired.
 - Documentation: `docs/reference/caching.md`, `docs/reference/locking.md`,
   `docs/how-to/cache-and-lock-fail-open.md`, and a caching and locking section in the README.
-- `benchmarks/HostLoom.Benchmarks` gains the cache's tracked scenarios (in-process hit through the
-  state-carrying overload, distributed hit through the serializer, miss under 100-way
-  contention, bulk read of 100 keys) and lock acquire, release, and execute.
+- Cache and lock benchmarks: the tracked HostLoom scenarios cover an in-process hit through the
+  state-carrying overload, a distributed hit through the serializer, a miss under 100-way
+  contention, a bulk read of 100 keys, and lock acquire/release and execute. Process-local cache
+  comparisons add Microsoft `HybridCache` and FusionCache. A separate real-Redis project compares
+  all three cache L2 paths and HostLoom locks against Medallion `DistributedLock.Redis`, failing
+  setup when Redis is unavailable. A committed environment-checked baseline and command fail when
+  deterministic HostLoom cache or lock mean time or allocations regress by more than 10%.
 
 ## [0.3.0] - 2026-08-29
 
