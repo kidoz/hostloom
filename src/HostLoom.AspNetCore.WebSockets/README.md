@@ -73,6 +73,43 @@ denied with a `forbidden` fault before the subscription enters session state. De
 ASP.NET Core policy over `WebSocketTopicResource` when subject ownership must be combined with
 additional requirements.
 
+## Snapshot on subscribe
+
+A topic can load its current application state from a scoped provider before live delivery begins:
+
+```csharp
+.AddTopic<OrderChanged>("orders.changed", "orders", changed => changed.CustomerId)
+.AddTopicSnapshot<OrderChanged, OrderSnapshotProvider>("orders.changed");
+
+sealed class OrderSnapshotProvider(OrderStore store)
+    : IWebSocketTopicSnapshotProvider<OrderChanged>
+{
+    public IAsyncEnumerable<OrderChanged> GetSnapshotAsync(
+        WebSocketTopicSnapshotContext context,
+        CancellationToken cancellationToken = default) =>
+        store.ReadCurrentAsync(context.Key, cancellationToken);
+}
+```
+
+`AddTopicSnapshot` follows `AddTopic`, requires the same event type, and allows one provider per
+topic. The provider is scoped by default and receives the authorized topic, optional key, and
+session principal. It must honor the cancellation token and must not retain the principal after
+enumeration. Applications remain the source of truth; the gateway does not add a retained-value
+store.
+
+The server queues `subscribed` first, then emits snapshot values as ordinary `event` frames with
+`sequence = 0`, then releases live events that arrived while the provider was running. Positive
+sequences remain live, process-local events. Snapshot values consume subscription credit; the
+receive loop remains active, so the client can add credit or unsubscribe while initialization is
+waiting. A keyed subscription receives only provider values whose configured event key selector
+matches exactly. A keyless subscription receives every provider value.
+
+Live frames held during initialization reserve bytes and frames from the existing connection-wide
+outbound limits. Overflow keeps the existing slow-client behavior and aborts the connection rather
+than allocating an unbounded snapshot side buffer. Provider cancellation ends silently;
+unsubscribe cancels it. Other provider failures remove that subscription and return a sanitized
+`snapshot_failed` fault without closing unrelated streams.
+
 ## Origin validation
 
 Browser-supplied Origin headers are checked before the upgrade. `OriginMode` defaults to
@@ -148,7 +185,7 @@ a subscription stream lives until `unsubscribe` and `complete`.
 | client → server | `cancel` | `streamId` | Cancels an active request. |
 | client → server | `subscribe` | `streamId`, `topic`, `credit` | Starts a topic subscription; `key` is optional. |
 | server → client | `subscribed` | `streamId`, `topic`, `credit` | Confirms the subscription. |
-| server → client | `event` | `streamId`, `eventId`, `sequence`, `payload` | Delivers one live event. |
+| server → client | `event` | `streamId`, `eventId`, `sequence`, `payload` | Delivers a snapshot (`sequence = 0`) or live event. |
 | client → server | `credit` | `streamId`, `credit` | Adds bounded delivery credit. |
 | client → server | `ack` | `streamId`, `sequence` | Records progress in session state; it does not enable replay. |
 | client → server | `unsubscribe` | `streamId` | Stops a subscription. |

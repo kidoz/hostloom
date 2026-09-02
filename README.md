@@ -236,6 +236,10 @@ Topic policies receive the client-selected subscription key. The built-in
 `TopicKeyPolicy.SubjectOnly` policy restricts a keyed topic to the authenticated subject using the
 configured subject claim type and exact ordinal matching.
 
+Topics can also register a scoped `IWebSocketTopicSnapshotProvider<TEvent>`. Subscriptions receive
+`subscribed`, snapshot events marked by `sequence = 0`, and then any live events buffered within
+the existing connection limits while the snapshot was loading.
+
 Supplied browser origins are checked against the effective request origin by default. Native
 clients may omit Origin; browser-only endpoints can reject a missing header, and cross-origin
 applications can configure an exact allowlist.

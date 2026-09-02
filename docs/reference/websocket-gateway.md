@@ -29,11 +29,28 @@ HostLoomWebSocketBuilder AddTopic<TEvent>(
 HostLoomWebSocketBuilder AddTopic<TEvent>(
     string topic, RequestAddress source, Func<TEvent, string?> keySelector,
     string subscription = "hostloom-websocket", string? authorizationPolicy = null);
+
+HostLoomWebSocketBuilder AddTopicSnapshot<TEvent, TProvider>(string topic)
+    where TProvider : class, IWebSocketTopicSnapshotProvider<TEvent>;
 ```
 
 `AddRequest` also registers the typed request client; `AddTopic` also
 registers a broker subscription under `subscription`. One event type maps
 to one public topic — a second mapping throws.
+
+`AddTopicSnapshot` must follow the matching `AddTopic` call. It registers one scoped snapshot
+provider for that topic; a provider already registered for
+`IWebSocketTopicSnapshotProvider<TEvent>` is respected. `WebSocketTopicSnapshotContext` supplies
+the authorized topic, optional key, and session principal for the duration of enumeration. The
+provider must honor cancellation and must not retain the principal after enumeration.
+
+Snapshot delivery order is `subscribed`, zero or more snapshot `event` frames with `sequence = 0`,
+then live events with positive process-local sequences. Snapshot values consume credit, and the
+client may send `credit` or `unsubscribe` while the asynchronous provider is running. Live events
+arriving during initialization reserve capacity in the same connection-wide byte/frame budget and
+are released afterward. Keyed subscriptions receive only values whose event key matches; keyless
+subscriptions receive all provider values. A provider failure removes only that subscription and
+returns `snapshot_failed`; cancellation is silent.
 
 ## Middleware and endpoint
 
@@ -141,7 +158,8 @@ It uses JSON v1 by default and accepts any `IWebSocketHubProtocol` in its constr
 
 `HubFaultCodes` string constants: `invalid_frame`, `invalid_payload`,
 `operation_not_found`, `topic_not_found`, `forbidden`, `request_timeout`,
-`request_failed`, `canceled`, `duplicate_stream`, `capacity_exceeded`.
+`request_failed`, `snapshot_failed`, `canceled`, `duplicate_stream`, `capacity_exceeded`.
+`snapshot_failed` reports a sanitized topic-snapshot provider failure.
 
 Remote fault *messages* are withheld from clients unless
 `IncludeRemoteFaultMessages` is enabled; the code `request_failed` is
