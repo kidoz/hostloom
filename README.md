@@ -364,6 +364,11 @@ it was. See the [caching](docs/reference/caching.md) and [locking](docs/referenc
 references, [Cache and lock over Redis](docs/how-to/use-redis.md), and
 [Keep serving when the cache backend is down](docs/how-to/cache-and-lock-fail-open.md).
 
+BenchmarkDotNet comparisons cover HostLoom against Microsoft `HybridCache` and FusionCache for
+cache paths, and against Medallion `DistributedLock.Redis` for Redis locking. The deterministic
+HostLoom-only cases have a committed, machine-checked 10% regression gate. See the
+[benchmark guide](benchmarks/HostLoom.Benchmarks/README.md).
+
 ## Logging
 
 `HostLoom.Logging` is a structured `Microsoft.Extensions.Logging` provider: a bounded queue
@@ -711,7 +716,8 @@ src/HostLoom.Transport.InMemory/ deterministic in-process broker
 src/HostLoom.Transport.RabbitMq/ request queues and exclusive reply queues
 src/HostLoom.Transport.Kafka/    request/response topics with header correlation
 src/HostLoom.AspNetCore.WebSockets/ raw Kestrel WebSocket RPC and subscriptions
-benchmarks/HostLoom.Benchmarks/    codec, logging, and mapping benchmarks
+benchmarks/HostLoom.Benchmarks/    cache, lock, codec, logging, and mapping benchmarks
+benchmarks/HostLoom.Redis.Benchmarks/ real-Redis cache and lock comparisons
 examples/HostLoom.Examples.Pipelines/ runnable pipeline tour: DI stages, manual and standalone composition
 examples/HostLoom.Examples.CachingAot/ Native AOT sample for caching and locking
 tests/HostLoom.Tests/            pipeline, round-trip, behavior, and fault tests
