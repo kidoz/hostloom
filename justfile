@@ -46,6 +46,18 @@ test-integration:
 benchmark-cache-libraries:
     dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --filter "*CacheLibrary*"
 
+# Produce stable HostLoom-only cache and lock reports for the regression gate.
+benchmark-cache-lock:
+    dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --job Short --exporters json --filter "HostLoom.Benchmarks.CachingBenchmarks.*" "HostLoom.Benchmarks.LockingBenchmarks.*"
+
+# Fail when mean time or allocations exceed the committed cache/lock baseline by over 10%.
+benchmark-cache-lock-check: benchmark-cache-lock
+    python3 benchmarks/check_cache_lock_baseline.py
+
+# Deliberately replace the cache/lock baseline after reviewing an intentional change.
+benchmark-cache-lock-update: benchmark-cache-lock
+    python3 benchmarks/check_cache_lock_baseline.py --update
+
 # Compare Redis-backed caches and locks. Configure HOSTLOOM_BENCHMARK_REDIS when not local.
 benchmark-redis:
     dotnet run --project benchmarks/HostLoom.Redis.Benchmarks -c Release -- --filter "*"
