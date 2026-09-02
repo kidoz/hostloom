@@ -48,10 +48,19 @@ on, the endpoint requires authorization and unauthenticated requests get
 acceptable subprotocol. Named policies are evaluated again per operation
 (`WebSocketOperationResource`) and per topic (`WebSocketTopicResource`).
 
+A supplied Origin is validated before the upgrade. `SameOrigin` is the default;
+`AllowList` accepts configured exact origins and `Disabled` opts out. Native clients
+may omit Origin by default; set `AllowMissingOrigin` to `false` for browser-only endpoints.
+The gateway uses the effective ASP.NET Core request scheme and host, so trusted forwarded
+headers must be configured earlier in the middleware pipeline.
+
 ## Options (`HostLoomWebSocketOptions`)
 
 | Option | Default |
 | --- | --- |
+| `OriginMode` | `SameOrigin` |
+| `AllowMissingOrigin` | `true` |
+| `AllowedOrigins` | empty |
 | `MaximumMessageSize` | 64 KiB |
 | `ReceiveBufferSize` | 4 KiB |
 | `MaximumQueuedBytesPerConnection` | 256 KiB |
@@ -59,6 +68,9 @@ acceptable subprotocol. Named policies are evaluated again per operation
 | `MaximumConcurrentRequestsPerConnection` | 8 |
 | `MaximumSubscriptionsPerConnection` | 32 |
 | `MaximumCreditPerSubscription` | 1024 |
+| `MaximumControlFramesPerSecond` | 50 |
+| `MaximumSessionLifetime` | 12 h |
+| `SubjectClaimType` | `ClaimTypes.NameIdentifier` |
 | `DefaultRequestTimeout` | 10 s |
 | `MaximumRequestTimeout` | 30 s |
 | `RequireAuthenticatedUser` | `true` |
@@ -68,6 +80,29 @@ acceptable subprotocol. Named policies are evaluated again per operation
 All limits are validated at registration; the byte and frame bounds plus
 per-subscription credit are what keep a slow client from creating
 unbounded per-connection memory or work.
+
+## Session lifetime and control
+
+`IWebSocketSessionLifetimeResolver.ResolveExpirationAsync` resolves credential expiry during the
+upgrade. The default prefers `AuthenticationProperties.ExpiresUtc`, then the earliest valid `exp`
+claim. The session is capped by `MaximumSessionLifetime` in either case and closes with 1008
+`session_expired` when the injected `TimeProvider` reaches that boundary. Register a replacement
+resolver before `AddWebSocketGateway` when the authentication system stores expiry elsewhere.
+
+`IWebSocketSessionDirectory` provides `Count`, `GetSessions()`, and
+`GetSessionsBySubject(subject)`. Each `WebSocketSessionInfo` snapshot contains session id, subject,
+negotiated protocol, connection and expiry times, and the current subscription count; no
+`ClaimsPrincipal` is exposed.
+
+`IWebSocketSessionControl.DisconnectAsync(sessionId, reason)` and
+`DisconnectSubjectAsync(subject, reason)` close matched sessions with 1008 and wait for their
+lifecycle to finish. Use them when logout or a role change must revoke an already upgraded socket.
+The reason must fit the WebSocket 123-byte UTF-8 close-description limit. During host shutdown the
+gateway closes all sessions with 1001 `server_shutdown` before HostLoom's broker listeners stop.
+
+Client control frames are bounded independently from request concurrency. More than
+`MaximumControlFramesPerSecond` `cancel`, `subscribe`, `credit`, `ack`, or `unsubscribe` frames in
+one fixed one-second window closes the session with 1008 `rate_limited`.
 
 ## Subprotocols
 
@@ -79,6 +114,15 @@ unbounded per-connection memory or work.
 
 Custom protocols implement `IWebSocketHubProtocol`
 (`SubProtocol`, `MessageType`, `Decode`, `Encode`).
+
+JSON uses camelCase kind values, omits null optional fields, and keeps application payloads as
+Base64 bytes. The NuGet package includes its schema and conformance fixtures under `protocol/`.
+
+## Testing
+
+`HostLoom.AspNetCore.WebSockets.Testing.WebSocketTestClient` connects to an ASP.NET Core
+`TestServer`, configures handshake headers, drives frames, and awaits common server frame kinds.
+It uses JSON v1 by default and accepts any `IWebSocketHubProtocol` in its constructor.
 
 ## Frames and fault codes
 
