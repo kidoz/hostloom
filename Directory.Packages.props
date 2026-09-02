@@ -27,5 +27,6 @@
     <PackageVersion Include="Serilog.Formatting.Compact" Version="3.0.0" />
     <PackageVersion Include="protobuf-net" Version="3.4.14" />
     <PackageVersion Include="xunit.v3" Version="4.0.0" />
+    <PackageVersion Include="xunit.v3.assert" Version="4.0.0" />
   </ItemGroup>
 </Project>
