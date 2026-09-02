@@ -44,8 +44,19 @@ public static class ServiceCollectionExtensions
             ServiceDescriptor.Singleton<IWebSocketHubProtocol, ProtobufWebSocketHubProtocol>()
         );
         hostLoom.Services.TryAddSingleton<WebSocketSessionRegistry>();
+        hostLoom.Services.TryAddSingleton<IWebSocketSessionDirectory>(provider =>
+            provider.GetRequiredService<WebSocketSessionRegistry>()
+        );
+        hostLoom.Services.TryAddSingleton<IWebSocketSessionControl>(provider =>
+            provider.GetRequiredService<WebSocketSessionRegistry>()
+        );
         hostLoom.Services.TryAddSingleton<WebSocketRequestRouter>();
         hostLoom.Services.TryAddSingleton<WebSocketSessionFactory>();
+        hostLoom.Services.TryAddSingleton(TimeProvider.System);
+        hostLoom.Services.TryAddSingleton<
+            IWebSocketSessionLifetimeResolver,
+            DefaultWebSocketSessionLifetimeResolver
+        >();
         return new HostLoomWebSocketBuilder(hostLoom, configuration);
     }
 }

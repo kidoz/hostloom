@@ -5,7 +5,7 @@ using System.Security.Claims;
 
 namespace HostLoom.AspNetCore.WebSockets;
 
-internal sealed class WebSocketSession : IWebSocketEventSink
+internal sealed class WebSocketSession : IWebSocketSessionHandle
 {
     private readonly WebSocket _socket;
     private readonly IWebSocketHubProtocol _protocol;
@@ -14,7 +14,14 @@ internal sealed class WebSocketSession : IWebSocketEventSink
     private readonly WebSocketRequestRouter _router;
     private readonly WebSocketSessionRegistry _registry;
     private readonly ByteBoundedOutboundQueue _outbound;
+    private readonly TimeProvider _timeProvider;
+    private readonly DateTimeOffset _connectedAt;
+    private readonly DateTimeOffset _expiresAt;
+    private readonly string? _subject;
     private readonly CancellationTokenSource _stop = new();
+    private readonly TaskCompletionSource _completion = new(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    );
 
     // Both are keyed by stream id and emptied as each request completes. Append-only collections
     // here would grow with the total number of requests a connection ever made, not the number in
@@ -25,6 +32,7 @@ internal sealed class WebSocketSession : IWebSocketEventSink
     private WebSocketCloseStatus _closeStatus = WebSocketCloseStatus.NormalClosure;
     private string _closeReason = "Session completed.";
     private int _aborted;
+    private int _closeAssigned;
 
     public WebSocketSession(
         WebSocket socket,
@@ -32,7 +40,11 @@ internal sealed class WebSocketSession : IWebSocketEventSink
         ClaimsPrincipal user,
         GatewayConfiguration configuration,
         WebSocketRequestRouter router,
-        WebSocketSessionRegistry registry
+        WebSocketSessionRegistry registry,
+        TimeProvider timeProvider,
+        DateTimeOffset connectedAt,
+        DateTimeOffset expiresAt,
+        string? subject
     )
     {
         _socket = socket;
@@ -41,6 +53,10 @@ internal sealed class WebSocketSession : IWebSocketEventSink
         _configuration = configuration;
         _router = router;
         _registry = registry;
+        _timeProvider = timeProvider;
+        _connectedAt = connectedAt;
+        _expiresAt = expiresAt;
+        _subject = subject;
         _outbound = new ByteBoundedOutboundQueue(
             configuration.Options.MaximumQueuedBytesPerConnection,
             configuration.Options.MaximumQueuedFramesPerConnection
@@ -50,43 +66,66 @@ internal sealed class WebSocketSession : IWebSocketEventSink
 
     public string Id { get; }
 
+    public Task Completion => _completion.Task;
+
+    public WebSocketSessionInfo GetInfo() =>
+        new(Id, _subject, _protocol.SubProtocol, _connectedAt, _expiresAt, _subscriptions.Count);
+
+    public void RequestDisconnect(WebSocketCloseStatus status, string reason)
+    {
+        RequestClose(status, reason);
+        try
+        {
+            _stop.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The session completed between a directory snapshot and the disconnect request.
+        }
+    }
+
     public async Task RunAsync(CancellationToken cancellationToken)
     {
+        _registry.Register(this);
+        using var expiryCancellation = new CancellationTokenSource();
+        var expiry = ExpireAsync(expiryCancellation.Token);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             _stop.Token
         );
         var writer = WriteLoopAsync(cancellationToken);
-        if (
-            !TryQueue(
-                new HubFrame
-                {
-                    Kind = HubFrameKind.Welcome,
-                    SessionId = Id,
-                    MaximumMessageSize = _configuration.Options.MaximumMessageSize,
-                    MaximumConcurrentRequests = _configuration
-                        .Options
-                        .MaximumConcurrentRequestsPerConnection,
-                    Credit = _configuration.Options.MaximumCreditPerSubscription,
-                }
-            )
-        )
-        {
-            Abort();
-        }
-
         try
         {
+            if (
+                !TryQueue(
+                    new HubFrame
+                    {
+                        Kind = HubFrameKind.Welcome,
+                        SessionId = Id,
+                        MaximumMessageSize = _configuration.Options.MaximumMessageSize,
+                        MaximumConcurrentRequests = _configuration
+                            .Options
+                            .MaximumConcurrentRequestsPerConnection,
+                        Credit = _configuration.Options.MaximumCreditPerSubscription,
+                    }
+                )
+            )
+            {
+                Abort();
+            }
+
             while (!linked.IsCancellationRequested && _socket.State is WebSocketState.Open)
             {
                 var inbound = await ReceiveAsync(linked.Token).ConfigureAwait(false);
                 if (inbound.IsClose)
                 {
-                    _closeStatus = inbound.CloseStatus ?? WebSocketCloseStatus.NormalClosure;
-                    _closeReason =
-                        _closeStatus is WebSocketCloseStatus.MessageTooBig
+                    var closeStatus = inbound.CloseStatus ?? WebSocketCloseStatus.NormalClosure;
+                    RequestClose(
+                        closeStatus,
+                        closeStatus is WebSocketCloseStatus.MessageTooBig
                             ? "The message exceeded the configured limit."
-                            : "Peer closed the session.";
+                            : "Peer closed the session."
+                    );
                     break;
                 }
 
@@ -130,41 +169,56 @@ internal sealed class WebSocketSession : IWebSocketEventSink
         }
         finally
         {
-            await _stop.CancelAsync().ConfigureAwait(false);
-            foreach (var request in _requests.Values)
+            try
             {
+                await expiryCancellation.CancelAsync().ConfigureAwait(false);
                 try
                 {
-                    await request.CancelAsync().ConfigureAwait(false);
+                    await expiry.ConfigureAwait(false);
                 }
-                catch (ObjectDisposedException)
+                catch (OperationCanceledException) when (expiryCancellation.IsCancellationRequested)
+                { }
+
+                await _stop.CancelAsync().ConfigureAwait(false);
+                foreach (var request in _requests.Values)
                 {
-                    // The request completed and disposed its own source between the snapshot and
-                    // this call. Cancelling a finished request has nothing left to do anyway.
+                    try
+                    {
+                        await request.CancelAsync().ConfigureAwait(false);
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // The request completed and disposed its own source between the snapshot and
+                        // this call. Cancelling a finished request has nothing left to do anyway.
+                    }
                 }
-            }
 
-            foreach (var subscription in _subscriptions.Values)
-            {
-                _registry.Unsubscribe(this, subscription.Topic, subscription.Key);
-            }
-
-            _subscriptions.Clear();
-            _outbound.Complete();
-            await Task.WhenAll([.. _requestTasks.Values]).ConfigureAwait(false);
-            await writer.ConfigureAwait(false);
-
-            // Whatever is still registered never reached its own cleanup. TryRemove decides the
-            // owner, so a source is disposed exactly once however the session ended.
-            foreach (var streamId in _requests.Keys)
-            {
-                if (_requests.TryRemove(streamId, out var request))
+                foreach (var subscription in _subscriptions.Values)
                 {
-                    request.Dispose();
+                    _registry.Unsubscribe(this, subscription.Topic, subscription.Key);
+                }
+
+                _subscriptions.Clear();
+                _outbound.Complete();
+                await Task.WhenAll([.. _requestTasks.Values]).ConfigureAwait(false);
+                await writer.ConfigureAwait(false);
+
+                // Whatever is still registered never reached its own cleanup. TryRemove decides the
+                // owner, so a source is disposed exactly once however the session ended.
+                foreach (var streamId in _requests.Keys)
+                {
+                    if (_requests.TryRemove(streamId, out var request))
+                    {
+                        request.Dispose();
+                    }
                 }
             }
-
-            _stop.Dispose();
+            finally
+            {
+                _registry.Unregister(this);
+                _stop.Dispose();
+                _completion.TrySetResult();
+            }
         }
     }
 
@@ -607,8 +661,24 @@ internal sealed class WebSocketSession : IWebSocketEventSink
 
     private void RequestClose(WebSocketCloseStatus status, string reason)
     {
+        if (Interlocked.CompareExchange(ref _closeAssigned, 1, 0) != 0)
+        {
+            return;
+        }
+
         _closeStatus = status;
         _closeReason = reason;
+    }
+
+    private async Task ExpireAsync(CancellationToken cancellationToken)
+    {
+        var delay = _expiresAt - _timeProvider.GetUtcNow();
+        if (delay > TimeSpan.Zero)
+        {
+            await Task.Delay(delay, _timeProvider, cancellationToken).ConfigureAwait(false);
+        }
+
+        RequestDisconnect(WebSocketCloseStatus.PolicyViolation, "session_expired");
     }
 
     private readonly record struct InboundMessage(

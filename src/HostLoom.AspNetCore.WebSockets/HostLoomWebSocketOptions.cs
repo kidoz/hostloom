@@ -1,3 +1,5 @@
+using System.Security.Claims;
+
 namespace HostLoom.AspNetCore.WebSockets;
 
 public sealed class HostLoomWebSocketOptions
@@ -15,6 +17,15 @@ public sealed class HostLoomWebSocketOptions
     public int MaximumSubscriptionsPerConnection { get; set; } = 32;
 
     public int MaximumCreditPerSubscription { get; set; } = 1024;
+
+    /// <summary>
+    /// Gets or sets the longest a session may remain connected, even when its credential has no
+    /// expiry or expires later.
+    /// </summary>
+    public TimeSpan MaximumSessionLifetime { get; set; } = TimeSpan.FromHours(12);
+
+    /// <summary>Gets or sets the claim used to identify sessions belonging to one subject.</summary>
+    public string SubjectClaimType { get; set; } = ClaimTypes.NameIdentifier;
 
     public TimeSpan DefaultRequestTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
@@ -40,6 +51,16 @@ public sealed class HostLoomWebSocketOptions
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumConcurrentRequestsPerConnection);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumSubscriptionsPerConnection);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumCreditPerSubscription);
+
+        if (MaximumSessionLifetime <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException("The maximum session lifetime must be positive.");
+        }
+
+        if (string.IsNullOrWhiteSpace(SubjectClaimType))
+        {
+            throw new InvalidOperationException("The session subject claim type is required.");
+        }
 
         if (DefaultRequestTimeout <= TimeSpan.Zero || DefaultRequestTimeout > MaximumRequestTimeout)
         {
