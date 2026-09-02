@@ -45,3 +45,7 @@ test-integration:
 # Compare HostLoom, HybridCache, and FusionCache on process-local cache paths.
 benchmark-cache-libraries:
     dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --filter "*CacheLibrary*"
+
+# Compare Redis-backed caches and locks. Configure HOSTLOOM_BENCHMARK_REDIS when not local.
+benchmark-redis:
+    dotnet run --project benchmarks/HostLoom.Redis.Benchmarks -c Release -- --filter "*"

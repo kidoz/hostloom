@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Redis-backed performance comparisons for HostLoom caching and locking.</Description>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="DistributedLock.Redis" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" />
+    <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="ZiggyCreatures.FusionCache" />
+    <PackageReference Include="ZiggyCreatures.FusionCache.Serialization.SystemTextJson" />
+    <ProjectReference Include="../../src/HostLoom.Caching/HostLoom.Caching.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Locking/HostLoom.Locking.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Redis/HostLoom.Redis.csproj" />
+  </ItemGroup>
+</Project>
