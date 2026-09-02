@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Microsoft.Extensions.DependencyInjection registration, options validation, warmup, and health checks for HostLoom caching.</Description>
+    <PackageId>HostLoom.Caching.DependencyInjection</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>hostloom;cache;caching;dependency-injection;aot</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Caching.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+    <ProjectReference Include="../HostLoom.Caching/HostLoom.Caching.csproj" />
+  </ItemGroup>
+</Project>

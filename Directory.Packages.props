@@ -12,14 +12,18 @@
     <PackageVersion Include="MessagePack" Version="3.1.8" />
     <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="5.9.0" />
     <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
+    <PackageVersion Include="Microsoft.Extensions.Caching.Abstractions" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Caching.Hybrid" Version="10.9.0" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.0" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="10.0.0" />
     <PackageVersion
       Include="Microsoft.Extensions.DependencyInjection.Abstractions"
       Version="10.0.0"
     />
     <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.0" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.0" />
     <PackageVersion Include="NSubstitute" Version="6.2.0" />
     <PackageVersion Include="NSubstitute.Analyzers.CSharp" Version="1.0.17" />
     <PackageVersion Include="RabbitMQ.Client" Version="7.2.1" />
