@@ -8,6 +8,135 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+Upgrading adds two analyzer rules — `HLM0007` and `HLM0008` — which report as warnings by
+default. A project building with `TreatWarningsAsErrors` will fail until each is addressed or
+its severity is set in `.editorconfig`; that is the intended effect, but it is a build break on
+upgrade rather than a silent change.
+
+### Added
+
+- `HLM0007` and `HLM0008` in `HostLoom.Analyzers`, and coverage of the cache and lock contracts by
+  `HLM0001` and `HLM0002`. `HLM0007` reports a cache or lock key built from a parameter, local,
+  field, or property whose name says it is a credential (`token`, `secret`, `password`,
+  `refreshToken`, `apiKey`) through interpolation, concatenation, or `string.Format`, `Concat`,
+  or `Join`, unless the value is wrapped in `CacheKey.FromSensitive` or `LockKey.FromSensitive`:
+  a key reaches the store, the logs, and the spans, and the helper hashes the secret so the key
+  stays unique without carrying it. `HLM0008` reports a factory passed to
+  `ICache.GetOrCreateAsync` that names its `CancellationToken` parameter and never uses it, so
+  the work it starts would outlive the caller while holding the per-key guard; a `_` parameter is
+  the deliberate opt-out. `HLM0001` (omitted cancellation token) and `HLM0002` (blocking on an
+  asynchronous call) now recognise `ICache`, `IDistributedLock`, and `ILockHandle` by name, so
+  they apply to those contracts whether the call goes through the package or a test stub.
+
+- `HostLoom.Caching`, a two-tier cache kernel: the consumer contract `ICache` with get-or-create,
+  a state-carrying overload that captures nothing on an in-process hit, `TryGetAsync` returning a
+  `CacheLookup<T>` that distinguishes a cached default value from a miss, tags, bulk reads,
+  set-if-absent, and warmup; the backend contract `IDistributedCacheStore` over opaque keys and
+  byte payloads with a `CacheStoreException` and `CacheFailureKind` as the only failure shape;
+  `ICacheValueSerializer` with a `System.Text.Json` implementation that resolves contracts from
+  the injected `TypeInfoResolver` and never calls the reflection overloads; the in-process tier
+  `LocalCacheStore`, the in-process second tier `InMemoryDistributedCacheStore` that also acts as
+  an invalidation channel, and `TieredCache`, the composition. A distributed-store failure never
+  reaches a consumer as an exception from a read or a get-or-create: the cache degrades to the
+  factory, keeps the in-process tier, records a metric, and logs one warning per key per interval.
+  Every kind of key lives in its own domain under `{namespace}:cache:`, so a consumer key cannot
+  collide with a stampede lease or a tag index. The kernel references only
+  `Microsoft.Extensions.Logging.Abstractions`, is `IsAotCompatible`, and composes with `new`.
+- `HostLoom.Caching.DependencyInjection`: `AddHostLoomCaching` with a `CachingBuilder` that
+  chooses exactly one store (`UseInMemory()` or `UseStore<TStore>(name)`, a second choice throws
+  naming the first), the serializer (`UseSystemTextJson`, which requires a type-info resolver,
+  `UseSerializer<T>`, and the annotated `UseReflectionSerialization` opt-out), warmups that run
+  in the background after startup with a readiness contributor governed by
+  `Caching:Warmup:BlocksReadiness`, and a readiness check that asks the store's health probe.
+  Options are validated at startup, every message naming the option key.
+- `HostLoom.Locking`, a distributed lock kernel: `IDistributedLock` with a `ValueTask`,
+  token-aware execute and `TryAcquireAsync` returning an `ILockHandle` that exposes `IsHeld`,
+  `LeaseEnd`, a `LostToken` cancelled when the lease is lost, and `ExtendAsync`; the backend
+  contract `ILockProvider` with owner tokens and compare-and-set release and extend;
+  `LockRetryPolicy` with immediate, interval, linear, and exponential shapes plus additive jitter,
+  defaulting to ten linear retries at a 50 ms step; typed outcomes `LockNotAcquiredException`,
+  `LockProviderUnavailableException`, and `LockReentrancyException`; `Locking:Enabled = false`
+  as a visible single-instance mode; and `InMemoryLockProvider` with real lease expiry on a
+  `TimeProvider`. The lock is coordination, not correctness, for persisted state, and its
+  documentation says so.
+- `HostLoom.Locking.DependencyInjection`: `AddHostLoomLocking` with a `LockingBuilder`
+  (`UseInMemory()`, `UseProvider<TProvider>(name)`, `AddHealthChecks()`), startup validation,
+  and the same exactly-one rule as caching.
+- Meters and activity sources named `HostLoom.Caching` and `HostLoom.Locking`, with
+  `hostloom.cache.*` and `hostloom.lock.*` instruments tagged by namespace, and execution-free
+  `CachingProbe` and `LockingProbe` descriptions in the spirit of `HostLoomProbe`.
+- `tests/HostLoom.Conformance`, backend-neutral cache and lock scenarios with a manual clock and
+  fault-injecting decorators, run by the unit suite on the in-process backends both composed with
+  `new` and through the container, and reusable by the integration suite on a real backend.
+- `examples/HostLoom.Examples.CachingAot`, a Native AOT sample that publishes without trim or AOT
+  warnings and executes a serialized cache round trip through a source-generated
+  `JsonSerializerContext`.
+- `HostLoom.Redis`, the Redis backend for caching and locking over StackExchange.Redis 3.1.31.
+  `UseRedis()` on either builder registers `RedisOptions`, validates them at startup, and creates
+  one connection per process lazily; calling it on both builders shares that connection.
+  `RedisCacheStore` uses `SET … PX`, `GET` with `PTTL`, `MGET`, `UNLINK`, and `SET … NX PX`, and
+  keeps tag indexes as sets that expire with their longest member; `RedisCacheInvalidationChannel`
+  fans invalidations out over `{namespace}:cache:invalidate` and keeps subscribing with backoff
+  while Redis is unreachable; `RedisLockProvider` acquires with `SET … NX PX` and releases and
+  extends through Lua compare-and-set. `Redis:FailFast` is false by default: an unreachable Redis
+  lets the host start, readiness reports unhealthy, the cache serves from its in-process tier and
+  factories, and the lock raises `LockProviderUnavailableException`, until the connection recovers.
+  `UseHashTags` wraps the namespace for Redis Cluster slot affinity; a password never reaches a
+  log or probe line. Meter `HostLoom.Redis` with `hostloom.redis.connection.state` and
+  `hostloom.redis.reconnects`.
+- The Redis conformance run: `tests/HostLoom.IntegrationTests` executes every shared cache and
+  lock scenario against the `redis:7.4` service that `docker-compose.yml` now provides, on the
+  wall clock, composed with `new` and through the container, plus backend tests for the key
+  layout, hash tags, readiness, cross-connection invalidation, and re-subscription after the
+  server kills the pub/sub connection. The suite skips honestly without a listener and fails
+  under `HOSTLOOM_REQUIRE_BROKERS=1`.
+- Server-side invalidation on Redis. `Caching:Invalidation:Mode` now does what it says:
+  `Tracking` registers `CLIENT TRACKING ON REDIRECT … NOLOOP` to the process's subscriber
+  connection, so an entry any other client modifies, deletes, expires, or evicts leaves the
+  in-process tier without anyone publishing; `Broadcast` subscribes to keyspace notifications for
+  the namespace's entries or the configured prefix filters; `Auto` picks tracking on Redis 6.0 or
+  later from the server version and broadcast below that. Tracking is registered again after a
+  reconnect, both re-establishments count on `hostloom.cache.invalidation.resubscribed`, a mode
+  that cannot be enabled after `Redis:MaxClientCommandRetries` attempts falls back to the explicit
+  channel with one warning, and `CachingProbe` reports the transport in effect. The package
+  applies the client-side `allowAdmin` flag and RESP2 to its connection, because StackExchange.Redis
+  gates `CLIENT` commands behind the former and only keeps a dedicated subscriber connection under
+  the latter. Proven against Redis 7.4: automatic selection, another connection's write, the
+  connection's own write ignored, server-side expiry, re-registration after the server kills the
+  connections, and a second instance's in-process entry evicted by an overwrite.
+- `CachingBuilder.AddDistributedCacheAdapter()`: `IDistributedCache` and `IBufferDistributedCache`
+  over the chosen distributed store, so `HybridCache` and other asynchronous Microsoft consumers
+  share a HostLoom backend. Entries live under `{namespace}:cache:external:` apart from the tiered
+  cache's own; the synchronous members throw `NotSupportedException`; `RefreshAsync` is a no-op
+  because the store has no touch operation, so sliding windows become absolute; store failures
+  answer as misses and log rather than throw. Proven with `HybridCache` reading through a second
+  provider what the first wrote.
+- `HostLoom.Caching.Testing` and `HostLoom.Locking.Testing`: `TestCache.InMemory()` and
+  `TestCache.Tiered(store, serializer)`, `TestLock.Create()`, the `FaultingCacheStore` and
+  `FaultingLockProvider` decorators that fail the next `n` calls or every call with a chosen kind,
+  `RecordingCacheStore` and `RecordingLockProvider` that record every call, and
+  `ManualLockProvider` whose `Hold` and `Release` script the key another instance would own. Both
+  reference their kernel only and are `IsAotCompatible`; the conformance suite now builds on them.
+- `HostLoom.Caching.Pipelines` and `HostLoom.Locking.Pipelines`, filters for `HostLoom.Pipelines`
+  over the caching and locking kernels, with `HostLoom.Pipelines` itself staying dependency-free.
+  `UseCache<TContext, TPayload>` is get-or-create around the rest of the pipe: a hit puts the
+  cached payload on the context and stops, a miss runs the pipe and caches the payload it leaves
+  behind, and a `CacheFilterResult` records which happened. `UseDeduplication` claims an identity
+  with an atomic set-if-absent before running and adds a `Deduplicated` payload instead of running
+  again inside the window; when the store cannot answer it runs anyway with a
+  `DeduplicationSkipped` payload, because processing twice is recoverable and dropping on an
+  outage is not. `UseDistributedLock` runs the rest of the pipe under the lock for a key derived
+  from the context and leaves a `HeldLock` payload whose token is cancelled on a lost lease when
+  the options ask for it. Each filter also has a public constructor over the kernel service plus a
+  small options object, so `HostLoom.Pipelines.DependencyInjection` resolves it through
+  `AddFilter`, and each describes itself to `PipelineProbe`. Deduplication on the messaging
+  receive pipeline is deliberately not wired.
+- Documentation: `docs/reference/caching.md`, `docs/reference/locking.md`,
+  `docs/how-to/cache-and-lock-fail-open.md`, and a caching and locking section in the README.
+- `benchmarks/HostLoom.Benchmarks` gains the cache's tracked scenarios (in-process hit through the
+  state-carrying overload, distributed hit through the serializer, miss under 100-way
+  contention, bulk read of 100 keys) and lock acquire, release, and execute.
+
 ## [0.3.0] - 2026-08-29
 
 Upgrading adds three analyzer rules — `HLM0004`, `HLM0005`, and `HLM0006` — which report
