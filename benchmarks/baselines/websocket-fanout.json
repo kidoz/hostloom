@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "regressionThreshold": 0.1,
+  "scope": {
+    "transport": "in-process registry to bounded session queues",
+    "protocol": "hostloom.json.v1",
+    "payloadBytes": 256,
+    "sessionCounts": [
+      1,
+      100,
+      500
+    ],
+    "operationsPerInvoke": 256,
+    "includesSocketIo": false
+  },
+  "environment": {
+    "BenchmarkDotNetVersion": "0.15.8",
+    "ProcessorName": "Apple M4 Max",
+    "RuntimeVersion": ".NET 10.0.11 (10.0.11, 10.0.1126.37416)",
+    "Architecture": "Arm64"
+  },
+  "job": "ShortRun(IterationCount=3, LaunchCount=1, WarmupCount=3)",
+  "benchmarks": {
+    "HostLoom.Benchmarks.WebSocketFanoutBenchmarks.PublishToReadySessions(SessionCount: 1)": {
+      "meanNanoseconds": 585.9268115361532,
+      "allocatedBytes": 1080.0
+    },
+    "HostLoom.Benchmarks.WebSocketFanoutBenchmarks.PublishToReadySessions(SessionCount: 100)": {
+      "meanNanoseconds": 26327.571024576824,
+      "allocatedBytes": 91378.0
+    },
+    "HostLoom.Benchmarks.WebSocketFanoutBenchmarks.PublishToReadySessions(SessionCount: 500)": {
+      "meanNanoseconds": 130698.51345486111,
+      "allocatedBytes": 455426.0
+    }
+  }
+}

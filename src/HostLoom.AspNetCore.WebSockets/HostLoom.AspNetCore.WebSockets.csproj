@@ -11,6 +11,7 @@
     <ProjectReference Include="../HostLoom/HostLoom.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="HostLoom.Benchmarks" />
     <InternalsVisibleTo Include="HostLoom.Tests" />
   </ItemGroup>
   <ItemGroup>
