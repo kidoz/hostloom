@@ -264,6 +264,17 @@ dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --filter "*Web
 The suite covers zero-byte, 256-byte, and 4 KiB payloads. A `--job Dry` run verifies benchmark
 discovery and execution but is not statistically meaningful.
 
+Bounded JSON fan-out to 1, 100, and 500 ready session queues has a separate, machine-guarded
+regression baseline:
+
+```text
+just benchmark-websocket-fanout-check
+```
+
+It measures in-process registry dispatch, per-session envelope encoding, credit, and the bounded
+queue cycle for a ready writer. It deliberately excludes socket and network I/O, so deployment
+capacity still requires a real-socket load test.
+
 ## Health and metrics
 
 `AddHealthChecks()` registers two checks, tagged `live` and `ready` so they map to

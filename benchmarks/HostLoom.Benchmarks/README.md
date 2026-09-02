@@ -69,6 +69,36 @@ dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --filter "*Web
 The encode and decode suites compare JSON, MessagePack, and protobuf-net for zero-byte, 256-byte,
 and 4 KiB application payloads. `MemoryDiagnoser` reports managed allocations alongside throughput.
 
+### Bounded fan-out regression gate
+
+The fan-out suite publishes one already-serialized 256-byte application payload to 1, 100, and 500
+ready topic subscribers using `hostloom.json.v1`. Each subscriber performs the stream-specific
+envelope encode, consumes one credit, and writes to its own one-frame, 64 KiB bounded outbound
+queue. The ready writer immediately drains the frame and restores credit. Each measured invocation
+runs 256 publish-and-drain cycles and BenchmarkDotNet normalizes the result per published event,
+which reduces noise without allowing the bounded queue to accumulate work.
+
+Run the fixed `ShortRun` and enforce the 10% ceiling for mean time and allocated bytes with:
+
+```text
+just benchmark-websocket-fanout-check
+```
+
+The checker also rejects any measured exception rate; caught exceptions are still hot-path work and
+must not disappear inside aggregate timing or allocation columns.
+
+After an intentional performance change, rerun on the baseline machine and review the update:
+
+```text
+just benchmark-websocket-fanout-update
+```
+
+The environment guard rejects results from a different CPU, architecture, runtime, BenchmarkDotNet
+version, or job. This is an in-process ready-writer regression signal: it includes bounded queue
+enqueue, dequeue, and credit restoration but excludes socket I/O, browser processing, network
+latency, reconnects, and multi-node broker delivery. It therefore does not establish the
+real-socket p99 capacity target by itself.
+
 ## Mapping
 
 ```text
