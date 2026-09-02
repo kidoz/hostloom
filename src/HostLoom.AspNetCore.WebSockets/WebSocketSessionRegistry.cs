@@ -107,6 +107,24 @@ internal sealed class WebSocketSessionRegistry
     internal void Unregister(IWebSocketSessionHandle session) =>
         _sessions.TryRemove(new KeyValuePair<string, IWebSocketSessionHandle>(session.Id, session));
 
+    internal async Task DisconnectAllAsync(
+        WebSocketCloseStatus status,
+        string reason,
+        CancellationToken cancellationToken
+    )
+    {
+        ValidateReason(reason);
+        var sessions = _sessions.Values.ToArray();
+        foreach (var session in sessions)
+        {
+            session.RequestDisconnect(status, reason);
+        }
+
+        await Task.WhenAll(sessions.Select(static session => session.Completion))
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     public void Subscribe(IWebSocketEventSink session, string topic, string? key)
     {
         var group = _groups.GetOrAdd(
