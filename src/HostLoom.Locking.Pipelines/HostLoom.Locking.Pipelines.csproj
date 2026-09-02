@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Distributed-lock filter for HostLoom pipelines, built on the HostLoom locking kernel.</Description>
+    <PackageId>HostLoom.Locking.Pipelines</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>hostloom;lock;distributed-lock;pipelines;aot</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HostLoom.Locking/HostLoom.Locking.csproj" />
+    <ProjectReference Include="../HostLoom.Pipelines/HostLoom.Pipelines.csproj" />
+  </ItemGroup>
+</Project>
