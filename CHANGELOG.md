@@ -30,6 +30,10 @@ upgrade rather than a silent change.
   `IWebSocketSessionControl` for logout or role-change disconnects by session id or subject. Host
   shutdown now waits for sessions to receive 1001 `server_shutdown` before broker listeners stop,
   and per-session control-frame rate limiting closes floods with 1008 `rate_limited`.
+- Key-aware WebSocket topic authorization: `WebSocketTopicResource.Key` exposes the requested
+  subscription key to ASP.NET Core policies, and `TopicKeyPolicy.SubjectOnly` provides an
+  authenticated, exact subject-to-key policy that rejects foreign or missing keys before
+  subscription registration.
 
 - `HLM0007` and `HLM0008` in `HostLoom.Analyzers`, and coverage of the cache and lock contracts by
   `HLM0001` and `HLM0002`. `HLM0007` reports a cache or lock key built from a parameter, local,
