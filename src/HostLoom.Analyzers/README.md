@@ -88,6 +88,43 @@ Inject the closed `IMapper<TSource, TDestination>` instead, which is transient a
 restriction, or take `IServiceScopeFactory` and resolve per unit of work. The rule reports only the
 non-generic dispatcher; the closed map it points at is never reported.
 
+### HLM0007
+
+Hash a secret before it becomes part of a cache or lock key. A key is written to the backend,
+appears in logs, and is tagged on spans, so a key built from a token, secret, password, or API key
+copies the credential into all three. The rule reports an interpolation hole, a concatenation
+operand, or a `string.Format`, `string.Concat`, or `string.Join` argument of the `key` (or `keys`)
+argument of an `ICache` or `IDistributedLock` member that references a parameter, local, field, or
+property whose name contains `token`, `secret`, `password`, `refreshToken`, or `apiKey`. Wrap the
+value in `CacheKey.FromSensitive` or `LockKey.FromSensitive`, which hashes it so the key stays
+unique without carrying the secret:
+
+```csharp
+await cache.GetOrCreateAsync(
+    $"session:{CacheKey.FromSensitive(refreshToken)}",
+    token => LoadSessionAsync(token),
+    TimeSpan.FromMinutes(5),
+    cancellationToken
+);
+```
+
+A key that is entirely a `FromSensitive` call is never reported. A `CancellationToken` operand is
+ignored even though its name contains `token`.
+
+### HLM0008
+
+Forward the cancellation token a get-or-create factory receives. `GetOrCreateAsync` hands the
+caller's token to the factory so the work it starts stops with the request; a factory that names
+the token and never uses it keeps running after the caller has gone, holding the per-key guard
+while it does. The rule reports a lambda, anonymous method, or method group whose
+`CancellationToken` parameter is never referenced in its body, including from nested lambdas. Name
+the parameter `_` to state that the factory has nothing to cancel.
+
+```csharp
+await cache.GetOrCreateAsync("catalog", token => LoadCatalogAsync(token), options, cancellationToken);
+await cache.GetOrCreateAsync("constant", _ => ValueTask.FromResult(42), options, cancellationToken);
+```
+
 ## Configuration
 
 All rules are warnings by default and use the `HLM` diagnostic prefix. Standard `.editorconfig`
