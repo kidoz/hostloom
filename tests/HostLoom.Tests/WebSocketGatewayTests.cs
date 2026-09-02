@@ -5,9 +5,13 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using HostLoom.AspNetCore.WebSockets;
+using HostLoom.AspNetCore.WebSockets.Testing;
 using HostLoom.Transport.InMemory;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Xunit;
@@ -543,6 +547,82 @@ public sealed class WebSocketGatewayTests
         );
     }
 
+    [Fact]
+    public async Task Test_client_opens_an_in_process_gateway_session()
+    {
+        using var host = await CreateTestHostAsync();
+        await using var client = new WebSocketTestClient(host.GetTestServer());
+
+        await client.ConnectAsync(
+            new Uri("ws://localhost/hostloom"),
+            TestContext.Current.CancellationToken
+        );
+        var welcome = await client.AwaitWelcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.NotNull(welcome.SessionId);
+        Assert.Equal(JsonWebSocketHubProtocol.ProtocolName, client.Socket.SubProtocol);
+    }
+
+    [Fact]
+    public async Task Test_server_session_uses_the_registered_lifetime_resolver()
+    {
+        var clock = new TestClock();
+        using var host = await CreateTestHostAsync(configureServices: services =>
+        {
+            services.AddSingleton<TimeProvider>(clock);
+            services.AddSingleton<IWebSocketSessionLifetimeResolver>(
+                new FixedLifetimeResolver(clock.GetUtcNow() + TimeSpan.FromMinutes(1))
+            );
+        });
+        await using var client = new WebSocketTestClient(host.GetTestServer());
+        await client.ConnectAsync(
+            new Uri("ws://localhost/hostloom"),
+            TestContext.Current.CancellationToken
+        );
+        _ = await client.AwaitWelcomeAsync(TestContext.Current.CancellationToken);
+
+        clock.Advance(TimeSpan.FromMinutes(1));
+        var buffer = new byte[1];
+        var close = await client.Socket.ReceiveAsync(buffer, TestContext.Current.CancellationToken);
+
+        Assert.Equal(WebSocketMessageType.Close, close.MessageType);
+        Assert.Equal(WebSocketCloseStatus.PolicyViolation, close.CloseStatus);
+        Assert.Equal("session_expired", close.CloseStatusDescription);
+    }
+
+    [Fact]
+    public async Task Test_client_subscribes_and_receives_an_in_process_event()
+    {
+        using var host = await CreateTestHostAsync();
+        await using var client = new WebSocketTestClient(host.GetTestServer());
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        await client.ConnectAsync(new Uri("ws://localhost/hostloom"), cancellationToken);
+        _ = await client.AwaitWelcomeAsync(cancellationToken);
+        await client.SendAsync(
+            new HubFrame
+            {
+                Kind = HubFrameKind.Subscribe,
+                StreamId = 7,
+                Topic = "orders.changed",
+                Key = "customer-1",
+                Credit = 1,
+            },
+            cancellationToken
+        );
+        _ = await client.AwaitSubscribedAsync(7, cancellationToken);
+
+        await host
+            .Services.GetRequiredService<IPublishEndpoint>()
+            .PublishAsync("orders", new OrderChanged("customer-1"), cancellationToken);
+        var delivered = await client.AwaitEventAsync(7, cancellationToken);
+        var value = host
+            .Services.GetRequiredService<IMessageSerializer>()
+            .Deserialize<OrderChanged>(delivered.Payload!.Value.Span);
+
+        Assert.Equal("customer-1", value?.CustomerId);
+    }
+
     private static async Task SendInvalidCreditAndAwaitFaultAsync(
         ScriptedWebSocket socket,
         JsonWebSocketHubProtocol protocol
@@ -666,6 +746,46 @@ public sealed class WebSocketGatewayTests
 
     private static string ProtocolFile(params string[] segments) =>
         Path.Combine([AppContext.BaseDirectory, "protocol", .. segments]);
+
+    private static async Task<IHost> CreateTestHostAsync(
+        Action<HostLoomWebSocketOptions>? configure = null,
+        Action<IServiceCollection>? configureServices = null
+    )
+    {
+        var builder = new HostBuilder().ConfigureWebHost(webHost =>
+            webHost
+                .UseTestServer()
+                .ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                    configureServices?.Invoke(services);
+                    services
+                        .AddHostLoom()
+                        .UseInMemory()
+                        .AddWebSocketGateway(options =>
+                        {
+                            options.RequireAuthenticatedUser = false;
+                            configure?.Invoke(options);
+                        })
+                        .AddTopic<OrderChanged>(
+                            "orders.changed",
+                            "orders",
+                            value => value.CustomerId
+                        );
+                })
+                .Configure(application =>
+                {
+                    application.UseHostLoomWebSockets();
+                    application.UseRouting();
+                    application.UseEndpoints(endpoints =>
+                    {
+                        endpoints.MapHostLoomWebSocketHub("/hostloom");
+                    });
+                })
+        );
+
+        return await builder.StartAsync(TestContext.Current.CancellationToken);
+    }
 
     public sealed record Greet(string Name) : IRequest<Greeting>;
 
@@ -801,5 +921,14 @@ public sealed class WebSocketGatewayTests
     private sealed class TestAuthenticateResultFeature : IAuthenticateResultFeature
     {
         public AuthenticateResult? AuthenticateResult { get; set; }
+    }
+
+    private sealed class FixedLifetimeResolver(DateTimeOffset expiration)
+        : IWebSocketSessionLifetimeResolver
+    {
+        public ValueTask<DateTimeOffset?> ResolveExpirationAsync(
+            HttpContext context,
+            CancellationToken cancellationToken = default
+        ) => ValueTask.FromResult<DateTimeOffset?>(expiration);
     }
 }
