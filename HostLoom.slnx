@@ -14,6 +14,7 @@
     <Project Path="src/HostLoom.Caching/HostLoom.Caching.csproj" />
     <Project Path="src/HostLoom.Diagnostics/HostLoom.Diagnostics.csproj" />
     <Project Path="src/HostLoom.Locking.DependencyInjection/HostLoom.Locking.DependencyInjection.csproj" />
+    <Project Path="src/HostLoom.Locking.Pipelines/HostLoom.Locking.Pipelines.csproj" />
     <Project Path="src/HostLoom.Locking.Testing/HostLoom.Locking.Testing.csproj" />
     <Project Path="src/HostLoom.Locking/HostLoom.Locking.csproj" />
     <Project Path="src/HostLoom.Logging/HostLoom.Logging.csproj" />
