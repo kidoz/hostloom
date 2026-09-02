@@ -19,7 +19,9 @@ For central package management:
 
 Pass an available cancellation token to HostLoom asynchronous calls. The analyzer recognizes both
 a `CancellationToken` parameter and an `IPipeContext.CancellationToken` available from an enclosing
-pipeline filter or helper.
+pipeline filter or helper. The cache and lock contracts (`ICache`, `IDistributedLock`,
+`ILockHandle`) are recognized by name, so the rule covers them whether the call goes through the
+real package or a test stub of the interface.
 
 ```csharp
 await client.GetResponseAsync(
@@ -32,7 +34,8 @@ await client.GetResponseAsync(
 ### HLM0002
 
 Await HostLoom asynchronous operations instead of blocking through `.Result`, `.Wait()`, or
-`.GetAwaiter().GetResult()`. The rule also recognizes `.AsTask()` over a HostLoom `ValueTask`.
+`.GetAwaiter().GetResult()`. The rule also recognizes `.AsTask()` over a HostLoom `ValueTask`, and
+covers the cache and lock contracts, whose members all return `ValueTask`.
 
 ### HLM0003
 

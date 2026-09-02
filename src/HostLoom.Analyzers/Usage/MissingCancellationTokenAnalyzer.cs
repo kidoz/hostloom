@@ -9,8 +9,8 @@ using Microsoft.CodeAnalysis.Operations;
 namespace HostLoom.Analyzers.Usage;
 
 /// <summary>
-/// Reports HostLoom asynchronous calls that omit a cancellation token already available through
-/// an enclosing parameter or pipeline context.
+/// Reports HostLoom asynchronous calls, including the cache and lock contracts, that omit a
+/// cancellation token already available through an enclosing parameter or pipeline context.
 /// </summary>
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class MissingCancellationTokenAnalyzer : DiagnosticAnalyzer
@@ -35,9 +35,7 @@ public sealed class MissingCancellationTokenAnalyzer : DiagnosticAnalyzer
         var invocation = (IInvocationOperation)context.Operation;
         IMethodSymbol method = invocation.TargetMethod;
         if (
-            !AnalyzerSymbolHelpers.IsHostLoomSymbol(method)
-            || !method.Name.EndsWith("Async", StringComparison.Ordinal)
-            || !AnalyzerSymbolHelpers.IsAwaitable(method.ReturnType)
+            !AnalyzerSymbolHelpers.IsHostLoomAsyncOperation(method)
             || !AcceptsCancellationToken(method)
             || PassesCancellationToken(invocation)
             || invocation.SemanticModel is not { } semanticModel

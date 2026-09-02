@@ -71,6 +71,8 @@ internal static class AnalyzerSymbolHelpers
     private const string FrameworkAssemblyMarker = "HostLoom.FrameworkAssembly";
     private const string HostLoomNamespace = "HostLoom";
     private const string PipelineNamespace = "HostLoom.Pipelines";
+    private const string CachingNamespace = "HostLoom.Caching";
+    private const string LockingNamespace = "HostLoom.Locking";
 
     public static bool IsHostLoomSymbol(ISymbol? symbol)
     {
@@ -101,6 +103,30 @@ internal static class AnalyzerSymbolHelpers
 
         return false;
     }
+
+    /// <summary>
+    /// The consumer contracts of the caching and locking kernels, recognised by metadata name so
+    /// the analyzer never references those packages and works against any assembly that declares
+    /// them, including a test stub.
+    /// </summary>
+    public static bool IsCacheOrLockContract(ITypeSymbol? type) =>
+        IsNamedType(type, CachingNamespace, "ICache")
+        || IsNamedType(type, LockingNamespace, "IDistributedLock")
+        || IsNamedType(type, LockingNamespace, "ILockHandle");
+
+    /// <summary>Whether <paramref name="method"/> is declared on one of the cache or lock contracts.</summary>
+    public static bool IsCacheOrLockContractMember(IMethodSymbol? method) =>
+        method is not null && IsCacheOrLockContract(method.ContainingType);
+
+    /// <summary>
+    /// An asynchronous HostLoom operation: an <c>…Async</c> method returning a task-like type,
+    /// declared in a framework assembly or on a cache or lock contract.
+    /// </summary>
+    public static bool IsHostLoomAsyncOperation(IMethodSymbol? method) =>
+        method is not null
+        && (IsHostLoomSymbol(method) || IsCacheOrLockContractMember(method))
+        && method.Name.EndsWith("Async", StringComparison.Ordinal)
+        && IsAwaitable(method.ReturnType);
 
     public static bool IsCancellationToken(ITypeSymbol? type) =>
         IsNamedType(type, "System.Threading", "CancellationToken");

@@ -1,9 +1,9 @@
 # Analyzer rules
 
 `HostLoom.Analyzers` ships Roslyn analyzers that enforce correct
-asynchronous, dependency-injection, and mapping usage at compile time. The
-package is optional and has no runtime dependency. The canonical rule
-documentation lives at `src/HostLoom.Analyzers/README.md` in the
+asynchronous, dependency-injection, mapping, and caching usage at compile
+time. The package is optional and has no runtime dependency. The canonical
+rule documentation lives at `src/HostLoom.Analyzers/README.md` in the
 repository.
 
 | Rule | Reports |
@@ -19,7 +19,9 @@ repository.
 
 - **`HLM0001`/`HLM0002`** — HostLoom is `ValueTask`-based end to end;
   dropped tokens and sync-over-async are the two classic ways that surface
-  as production stalls.
+  as production stalls. Both rules cover the cache and lock contracts
+  (`ICache`, `IDistributedLock`, `ILockHandle`) as well as the messaging
+  runtime.
 - **`HLM0003`** — every delivery attempt gets its own
   dependency-injection scope. A handler registered as a singleton silently
   opts out of that isolation and shares state across retries.
