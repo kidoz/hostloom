@@ -188,20 +188,15 @@ public sealed class DistributedCacheAdapterTests
         var store = new InMemoryDistributedCacheStore(clock);
         await using var first = Provider(store, clock, services => services.AddHybridCache());
         await using var second = Provider(store, clock, services => services.AddHybridCache());
+        var options = new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(5) };
         var factoryRuns = 0;
 
-        var fromFactory = await first
+        // SetAsync completes only after HybridCache has written the distributed tier, whereas
+        // GetOrCreateAsync releases its caller before that write lands. Seeding through SetAsync
+        // keeps the second provider's read deterministic.
+        await first
             .GetRequiredService<HybridCache>()
-            .GetOrCreateAsync(
-                "catalog",
-                _ =>
-                {
-                    factoryRuns++;
-                    return ValueTask.FromResult(new Catalog("eu", 3));
-                },
-                new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(5) },
-                cancellationToken: Token
-            );
+            .SetAsync("catalog", new Catalog("eu", 3), options, cancellationToken: Token);
         var fromStore = await second
             .GetRequiredService<HybridCache>()
             .GetOrCreateAsync(
@@ -211,14 +206,13 @@ public sealed class DistributedCacheAdapterTests
                     factoryRuns++;
                     return ValueTask.FromResult(new Catalog("miss", 0));
                 },
-                new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(5) },
+                options,
                 cancellationToken: Token
             );
 
-        Assert.Equal(new Catalog("eu", 3), fromFactory);
-        Assert.Equal(new Catalog("eu", 3), fromStore);
-        Assert.Equal(1, factoryRuns);
         Assert.NotNull(await store.GetAsync("svc:cache:external:catalog", Token));
+        Assert.Equal(new Catalog("eu", 3), fromStore);
+        Assert.Equal(0, factoryRuns);
     }
 
     private sealed record Catalog(string Region, int Items);
