@@ -57,6 +57,12 @@ public static class ServiceCollectionExtensions
             IWebSocketSessionLifetimeResolver,
             DefaultWebSocketSessionLifetimeResolver
         >();
+        hostLoom.Services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<
+                Microsoft.Extensions.Hosting.IHostedService,
+                WebSocketSessionShutdownService
+            >()
+        );
         return new HostLoomWebSocketBuilder(hostLoom, configuration);
     }
 }

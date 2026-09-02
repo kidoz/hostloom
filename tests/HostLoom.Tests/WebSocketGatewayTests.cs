@@ -439,6 +439,33 @@ public sealed class WebSocketGatewayTests
     }
 
     [Fact]
+    public async Task Shutdown_service_closes_sessions_before_it_completes()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false);
+        await using var provider = services.BuildServiceProvider();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, new JsonWebSocketHubProtocol(), new ClaimsPrincipal());
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        var shutdown = provider
+            .GetServices<IHostedService>()
+            .OfType<WebSocketSessionShutdownService>()
+            .Single();
+
+        await shutdown.StopAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(run.IsCompletedSuccessfully);
+        Assert.Equal(WebSocketCloseStatus.EndpointUnavailable, socket.CloseStatus);
+        Assert.Equal("server_shutdown", socket.CloseStatusDescription);
+    }
+
+    [Fact]
     public async Task Default_lifetime_resolver_prefers_ticket_expiry_and_falls_back_to_exp_claim()
     {
         var resolver = new DefaultWebSocketSessionLifetimeResolver();
