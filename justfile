@@ -58,6 +58,18 @@ benchmark-cache-lock-check: benchmark-cache-lock
 benchmark-cache-lock-update: benchmark-cache-lock
     python3 benchmarks/check_cache_lock_baseline.py --update
 
+# Produce stable bounded WebSocket fan-out reports for the regression gate.
+benchmark-websocket-fanout:
+    dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --job Short --exporters json --filter "HostLoom.Benchmarks.WebSocketFanoutBenchmarks.*"
+
+# Fail when fan-out mean time or allocations exceed the committed baseline by over 10%.
+benchmark-websocket-fanout-check: benchmark-websocket-fanout
+    python3 benchmarks/check_websocket_fanout_baseline.py
+
+# Deliberately replace the fan-out baseline after reviewing an intentional change.
+benchmark-websocket-fanout-update: benchmark-websocket-fanout
+    python3 benchmarks/check_websocket_fanout_baseline.py --update
+
 # Compare Redis-backed caches and locks. Configure HOSTLOOM_BENCHMARK_REDIS when not local.
 benchmark-redis:
     dotnet run --project benchmarks/HostLoom.Redis.Benchmarks -c Release -- --filter "*"
