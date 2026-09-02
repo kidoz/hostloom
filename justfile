@@ -41,3 +41,7 @@ brokers-down:
 # Run the transport integration tests. Requires `just brokers-up` first; they skip otherwise.
 test-integration:
     dotnet test tests/HostLoom.IntegrationTests/HostLoom.IntegrationTests.csproj -c Release
+
+# Compare HostLoom, HybridCache, and FusionCache on process-local cache paths.
+benchmark-cache-libraries:
+    dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --filter "*CacheLibrary*"
