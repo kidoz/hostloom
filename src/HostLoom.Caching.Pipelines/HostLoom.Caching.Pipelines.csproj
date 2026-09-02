@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Cache and deduplication filters for HostLoom pipelines, built on the HostLoom caching kernel.</Description>
+    <PackageId>HostLoom.Caching.Pipelines</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>hostloom;cache;caching;pipelines;deduplication;aot</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HostLoom.Caching/HostLoom.Caching.csproj" />
+    <ProjectReference Include="../HostLoom.Pipelines/HostLoom.Pipelines.csproj" />
+  </ItemGroup>
+</Project>
