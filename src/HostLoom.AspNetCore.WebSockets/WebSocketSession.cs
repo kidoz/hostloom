@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Security.Claims;
+using Microsoft.Extensions.Logging;
 
 namespace HostLoom.AspNetCore.WebSockets;
 
@@ -19,6 +20,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
     private readonly DateTimeOffset _expiresAt;
     private readonly string? _subject;
     private readonly ControlFrameRateLimiter _controlFrames;
+    private readonly ILogger<WebSocketSession> _logger;
     private readonly CancellationTokenSource _stop = new();
     private readonly TaskCompletionSource _completion = new(
         TaskCreationOptions.RunContinuationsAsynchronously
@@ -30,6 +32,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
     private readonly ConcurrentDictionary<ulong, CancellationTokenSource> _requests = [];
     private readonly ConcurrentDictionary<ulong, Task> _requestTasks = [];
     private readonly ConcurrentDictionary<ulong, SubscriptionState> _subscriptions = [];
+    private readonly ConcurrentDictionary<ulong, Task> _subscriptionTasks = [];
     private WebSocketCloseStatus _closeStatus = WebSocketCloseStatus.NormalClosure;
     private string _closeReason = "Session completed.";
     private int _aborted;
@@ -45,7 +48,8 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         TimeProvider timeProvider,
         DateTimeOffset connectedAt,
         DateTimeOffset expiresAt,
-        string? subject
+        string? subject,
+        ILogger<WebSocketSession> logger
     )
     {
         _socket = socket;
@@ -58,6 +62,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         _connectedAt = connectedAt;
         _expiresAt = expiresAt;
         _subject = subject;
+        _logger = logger;
         _controlFrames = new(timeProvider, configuration.Options.MaximumControlFramesPerSecond);
         _outbound = new ByteBoundedOutboundQueue(
             configuration.Options.MaximumQueuedBytesPerConnection,
@@ -198,9 +203,11 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                 foreach (var subscription in _subscriptions.Values)
                 {
                     _registry.Unsubscribe(this, subscription.Topic, subscription.Key);
+                    subscription.Stop(_outbound.Release);
                 }
 
                 _subscriptions.Clear();
+                await Task.WhenAll([.. _subscriptionTasks.Values]).ConfigureAwait(false);
                 _outbound.Complete();
                 await Task.WhenAll([.. _requestTasks.Values]).ConfigureAwait(false);
                 await writer.ConfigureAwait(false);
@@ -239,13 +246,12 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             if (
                 !string.Equals(subscription.Topic, topic, StringComparison.Ordinal)
                 || !string.Equals(subscription.Key, subscriptionKey, StringComparison.Ordinal)
-                || !subscription.TryConsumeCredit()
             )
             {
                 continue;
             }
 
-            accepted &= TryQueue(
+            var encoded = _protocol.Encode(
                 new HubFrame
                 {
                     Kind = HubFrameKind.Event,
@@ -257,6 +263,37 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                     Payload = payload,
                 }
             );
+            if (encoded.Length > _configuration.Options.MaximumMessageSize)
+            {
+                accepted = false;
+                continue;
+            }
+
+            switch (
+                subscription.AcceptLiveEvent(
+                    _outbound,
+                    encoded,
+                    _protocol.MessageType,
+                    out var frame
+                )
+            )
+            {
+                case LiveEventDisposition.Buffered:
+                    break;
+                case LiveEventDisposition.Active:
+                    accepted &= _outbound.TryWriteReserved(frame);
+                    break;
+                case LiveEventDisposition.Dropped:
+                case LiveEventDisposition.Stopped:
+                    break;
+                case LiveEventDisposition.CapacityExceeded:
+                    accepted = false;
+                    break;
+                default:
+                    throw new InvalidOperationException(
+                        "The subscription delivery state is invalid."
+                    );
+            }
         }
 
         return accepted;
@@ -474,7 +511,13 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             return;
         }
 
-        var state = new SubscriptionState(frame.StreamId, topic.Name, frame.Key, credit);
+        var state = new SubscriptionState(
+            frame.StreamId,
+            topic.Name,
+            frame.Key,
+            credit,
+            _stop.Token
+        );
         if (_requests.ContainsKey(frame.StreamId) || !_subscriptions.TryAdd(frame.StreamId, state))
         {
             _ = TryQueue(
@@ -488,16 +531,129 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         }
 
         _registry.Subscribe(this, topic.Name, frame.Key);
-        _ = TryQueue(
-            new HubFrame
+        if (
+            !TryQueue(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Subscribed,
+                    StreamId = frame.StreamId,
+                    Topic = topic.Name,
+                    Key = frame.Key,
+                    Credit = credit,
+                }
+            )
+        )
+        {
+            Abort();
+            return;
+        }
+
+        StartSubscriptionInitialization(topic, state);
+    }
+
+    private void StartSubscriptionInitialization(TopicRoute topic, SubscriptionState state)
+    {
+#pragma warning disable CA2025 // RunAsync joins every tracked initialization task before releasing session state.
+        var task = InitializeSubscriptionAsync(topic, state);
+#pragma warning restore CA2025
+        _subscriptionTasks[state.StreamId] = task;
+        if (task.IsCompleted)
+        {
+            _subscriptionTasks.TryRemove(state.StreamId, out _);
+        }
+    }
+
+    private async Task InitializeSubscriptionAsync(TopicRoute topic, SubscriptionState state)
+    {
+        try
+        {
+            var context = new WebSocketTopicSnapshotContext(topic.Name, state.Key, _user);
+            await foreach (
+                var item in _router
+                    .GetTopicSnapshotAsync(topic, context, state.SnapshotCancellationToken)
+                    .WithCancellation(state.SnapshotCancellationToken)
+                    .ConfigureAwait(false)
+            )
             {
-                Kind = HubFrameKind.Subscribed,
-                StreamId = frame.StreamId,
-                Topic = topic.Name,
-                Key = frame.Key,
-                Credit = credit,
+                if (
+                    state.Key is not null
+                    && !string.Equals(state.Key, item.Key, StringComparison.Ordinal)
+                )
+                {
+                    continue;
+                }
+
+                await state
+                    .WaitForCreditAsync(state.SnapshotCancellationToken)
+                    .ConfigureAwait(false);
+                var write = state.WriteSnapshot(() =>
+                    TryQueue(
+                        new HubFrame
+                        {
+                            Kind = HubFrameKind.Event,
+                            StreamId = state.StreamId,
+                            Topic = topic.Name,
+                            Key = item.Key,
+                            EventId = Guid.NewGuid().ToString("N"),
+                            Sequence = 0,
+                            Payload = item.Payload,
+                        }
+                    )
+                );
+                if (write is SnapshotWriteDisposition.Failed)
+                {
+                    Abort();
+                    return;
+                }
+
+                if (write is SnapshotWriteDisposition.Stopped)
+                {
+                    return;
+                }
             }
-        );
+
+            if (!state.CompleteInitialization(_outbound.TryWriteReserved, _outbound.Release))
+            {
+                Abort();
+            }
+        }
+        catch (OperationCanceledException)
+            when (state.SnapshotCancellationToken.IsCancellationRequested) { }
+        catch (Exception) when (state.SnapshotCancellationToken.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "WebSocket topic {Topic} snapshot failed for session {SessionId}.",
+                topic.Name,
+                Id
+            );
+            if (
+                _subscriptions.TryRemove(
+                    new KeyValuePair<ulong, SubscriptionState>(state.StreamId, state)
+                )
+            )
+            {
+                _registry.Unsubscribe(this, state.Topic, state.Key);
+                state.Stop(_outbound.Release);
+                if (
+                    !TryQueue(
+                        WebSocketRequestRouter.Fault(
+                            state.StreamId,
+                            HubFaultCodes.SnapshotFailed,
+                            "The topic snapshot could not be loaded."
+                        )
+                    )
+                )
+                {
+                    Abort();
+                }
+            }
+        }
+        finally
+        {
+            _subscriptionTasks.TryRemove(state.StreamId, out _);
+        }
     }
 
     private void AddCredit(HubFrame frame)
@@ -557,6 +713,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         }
 
         _registry.Unsubscribe(this, subscription.Topic, subscription.Key);
+        subscription.Stop(_outbound.Release);
         if (sendComplete)
         {
             _ = TryQueue(new HubFrame { Kind = HubFrameKind.Complete, StreamId = streamId });
@@ -565,13 +722,19 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
 
     private bool TryQueue(HubFrame frame)
     {
+        return TryReserve(frame, out var reserved) && _outbound.TryWriteReserved(reserved);
+    }
+
+    private bool TryReserve(HubFrame frame, out OutboundFrame reserved)
+    {
         var payload = _protocol.Encode(frame);
         if (payload.Length > _configuration.Options.MaximumMessageSize)
         {
+            reserved = default;
             return false;
         }
 
-        return _outbound.TryWrite(payload, _protocol.MessageType);
+        return _outbound.TryReserve(payload, _protocol.MessageType, out reserved);
     }
 
     private async Task WriteLoopAsync(CancellationToken cancellationToken)

@@ -1,5 +1,6 @@
 using System.Net.WebSockets;
 using System.Security.Claims;
+using Microsoft.Extensions.Logging;
 
 namespace HostLoom.AspNetCore.WebSockets;
 
@@ -7,7 +8,8 @@ internal sealed class WebSocketSessionFactory(
     GatewayConfiguration configuration,
     WebSocketRequestRouter router,
     WebSocketSessionRegistry registry,
-    TimeProvider timeProvider
+    TimeProvider timeProvider,
+    ILogger<WebSocketSession> logger
 )
 {
     public WebSocketSession Create(
@@ -43,7 +45,8 @@ internal sealed class WebSocketSessionFactory(
             timeProvider,
             connectedAt,
             expiresAt,
-            subject
+            subject,
+            logger
         );
     }
 }

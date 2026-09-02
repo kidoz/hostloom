@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
+using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
@@ -32,6 +33,7 @@ public sealed class WebSocketGatewayTests
     [InlineData("welcome")]
     [InlineData("subscribed")]
     [InlineData("event")]
+    [InlineData("snapshot-event")]
     [InlineData("fault")]
     public void Json_v1_protocol_matches_published_fixtures(string fixture)
     {
@@ -413,6 +415,40 @@ public sealed class WebSocketGatewayTests
     }
 
     [Fact]
+    public void Outbound_queue_counts_reserved_frames_against_the_connection_budget()
+    {
+        var queue = new ByteBoundedOutboundQueue(maximumBytes: 16, maximumFrames: 1);
+
+        Assert.True(
+            queue.TryReserve(new byte[] { 1 }, WebSocketMessageType.Binary, out var reservation)
+        );
+        Assert.False(queue.TryWrite(new byte[] { 2 }, WebSocketMessageType.Binary));
+        queue.Release(reservation);
+        Assert.True(queue.TryWrite(new byte[] { 2 }, WebSocketMessageType.Binary));
+    }
+
+    [Fact]
+    public void Active_subscription_drops_no_credit_event_without_reserving_queue_capacity()
+    {
+        var queue = new ByteBoundedOutboundQueue(maximumBytes: 16, maximumFrames: 1);
+        var state = new SubscriptionState(1, "orders.changed", null, initialCredit: 0);
+        Assert.True(state.CompleteInitialization(queue.TryWriteReserved, queue.Release));
+        Assert.True(queue.TryWrite(new byte[] { 1 }, WebSocketMessageType.Binary));
+
+        var disposition = state.AcceptLiveEvent(
+            queue,
+            new byte[] { 2 },
+            WebSocketMessageType.Binary,
+            out _
+        );
+
+        Assert.Equal(LiveEventDisposition.Dropped, disposition);
+        Assert.True(queue.Reader.TryRead(out var queued));
+        queue.Release(queued);
+        Assert.True(queue.TryWrite(new byte[] { 2 }, WebSocketMessageType.Binary));
+    }
+
+    [Fact]
     public void Subscription_credit_is_atomic_and_bounded()
     {
         var subscription = new SubscriptionState(1, "orders", null, initialCredit: 1);
@@ -516,6 +552,382 @@ public sealed class WebSocketGatewayTests
         await run;
         Assert.Equal(WebSocketCloseStatus.NormalClosure, socket.CloseStatus);
         Assert.Equal(0, provider.GetRequiredService<IWebSocketSessionDirectory>().Count);
+    }
+
+    [Fact]
+    public async Task Snapshot_is_queued_before_live_events_that_arrive_during_initialization()
+    {
+        var snapshots = new BlockingStatusSnapshotProvider(new StatusChanged("customer-1", 1));
+        var services = new ServiceCollection();
+        services.AddSingleton<IWebSocketTopicSnapshotProvider<StatusChanged>>(snapshots);
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
+            .AddTopic<StatusChanged>("status.changed", "status", value => value.Key)
+            .AddTopicSnapshot<StatusChanged, BlockingStatusSnapshotProvider>("status.changed");
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, new ClaimsPrincipal());
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Subscribe,
+                    StreamId = 51,
+                    Topic = "status.changed",
+                    Key = "customer-1",
+                    Credit = 2,
+                }
+            ),
+            protocol.MessageType
+        );
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        var subscribed = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        Assert.Equal(HubFrameKind.Subscribed, subscribed.Kind);
+        await snapshots.Started.WaitAsync(TestContext.Current.CancellationToken);
+
+        var serializer = provider.GetRequiredService<IMessageSerializer>();
+        provider
+            .GetRequiredService<WebSocketSessionRegistry>()
+            .Publish(
+                "status.changed",
+                "customer-1",
+                serializer.Serialize(new StatusChanged("customer-1", 2))
+            );
+        snapshots.Release();
+
+        var snapshot = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        var live = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        Assert.Equal(0, snapshot.Sequence);
+        Assert.Equal(
+            1,
+            serializer.Deserialize<StatusChanged>(snapshot.Payload!.Value.Span)?.Version
+        );
+        Assert.True(live.Sequence > 0);
+        Assert.Equal(2, serializer.Deserialize<StatusChanged>(live.Payload!.Value.Span)?.Version);
+        Assert.Equal("customer-1", snapshots.Context?.Key);
+
+        socket.EnqueueClose();
+        await run;
+    }
+
+    [Fact]
+    public async Task Snapshot_waits_for_additional_subscription_credit()
+    {
+        var snapshots = new ListStatusSnapshotProvider(
+            new StatusChanged("customer-1", 1),
+            new StatusChanged("customer-1", 2)
+        );
+        var services = new ServiceCollection();
+        services.AddSingleton<IWebSocketTopicSnapshotProvider<StatusChanged>>(snapshots);
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
+            .AddTopic<StatusChanged>("status.changed", "status", value => value.Key)
+            .AddTopicSnapshot<StatusChanged, ListStatusSnapshotProvider>("status.changed");
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, new ClaimsPrincipal());
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Subscribe,
+                    StreamId = 52,
+                    Topic = "status.changed",
+                    Key = "customer-1",
+                    Credit = 1,
+                }
+            ),
+            protocol.MessageType
+        );
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        var first = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        Assert.Equal(0, first.Sequence);
+
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Credit,
+                    StreamId = 52,
+                    Credit = 1,
+                }
+            ),
+            protocol.MessageType
+        );
+        var second = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        Assert.Equal(0, second.Sequence);
+        Assert.Equal(
+            2,
+            provider
+                .GetRequiredService<IMessageSerializer>()
+                .Deserialize<StatusChanged>(second.Payload!.Value.Span)
+                ?.Version
+        );
+
+        socket.EnqueueClose();
+        await run;
+    }
+
+    [Fact]
+    public async Task Keyless_subscription_receives_every_snapshot_value()
+    {
+        var snapshots = new ListStatusSnapshotProvider(
+            new StatusChanged("customer-1", 1),
+            new StatusChanged("customer-2", 2)
+        );
+        var services = new ServiceCollection();
+        services.AddSingleton<IWebSocketTopicSnapshotProvider<StatusChanged>>(snapshots);
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
+            .AddTopic<StatusChanged>("status.changed", "status", value => value.Key)
+            .AddTopicSnapshot<StatusChanged, ListStatusSnapshotProvider>("status.changed");
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, new ClaimsPrincipal());
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Subscribe,
+                    StreamId = 53,
+                    Topic = "status.changed",
+                    Credit = 2,
+                }
+            ),
+            protocol.MessageType
+        );
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+
+        var first = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        var second = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        Assert.Equal(["customer-1", "customer-2"], new[] { first.Key, second.Key });
+        Assert.Equal(0, first.Sequence);
+        Assert.Equal(0, second.Sequence);
+
+        socket.EnqueueClose();
+        await run;
+    }
+
+    [Fact]
+    public async Task Keyed_subscription_ignores_snapshot_values_for_other_keys()
+    {
+        var snapshots = new ListStatusSnapshotProvider(
+            new StatusChanged("customer-1", 1),
+            new StatusChanged("customer-2", 2)
+        );
+        var services = new ServiceCollection();
+        services.AddSingleton<IWebSocketTopicSnapshotProvider<StatusChanged>>(snapshots);
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
+            .AddTopic<StatusChanged>("status.changed", "status", value => value.Key)
+            .AddTopicSnapshot<StatusChanged, ListStatusSnapshotProvider>("status.changed");
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, new ClaimsPrincipal());
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Subscribe,
+                    StreamId = 56,
+                    Topic = "status.changed",
+                    Key = "customer-1",
+                    Credit = 2,
+                }
+            ),
+            protocol.MessageType
+        );
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        var snapshot = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+
+        provider
+            .GetRequiredService<WebSocketSessionRegistry>()
+            .Publish(
+                "status.changed",
+                "customer-1",
+                provider
+                    .GetRequiredService<IMessageSerializer>()
+                    .Serialize(new StatusChanged("customer-1", 3))
+            );
+        var live = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+
+        Assert.Equal("customer-1", snapshot.Key);
+        Assert.Equal(0, snapshot.Sequence);
+        Assert.True(live.Sequence > 0);
+
+        socket.EnqueueClose();
+        await run;
+    }
+
+    [Fact]
+    public async Task Snapshot_failure_faults_only_the_subscription()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
+            .AddTopic<StatusChanged>("status.changed", "status", value => value.Key)
+            .AddTopicSnapshot<StatusChanged, FailingStatusSnapshotProvider>("status.changed");
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, new ClaimsPrincipal());
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Subscribe,
+                    StreamId = 54,
+                    Topic = "status.changed",
+                    Credit = 1,
+                }
+            ),
+            protocol.MessageType
+        );
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        var fault = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+
+        Assert.Equal(HubFrameKind.Fault, fault.Kind);
+        Assert.Equal(HubFaultCodes.SnapshotFailed, fault.Code);
+        Assert.Equal(
+            0,
+            Assert
+                .Single(provider.GetRequiredService<IWebSocketSessionDirectory>().GetSessions())
+                .SubscriptionCount
+        );
+
+        socket.EnqueueClose();
+        await run;
+    }
+
+    [Fact]
+    public async Task Unsubscribe_cancels_snapshot_initialization_before_completing_the_stream()
+    {
+        var snapshots = new BlockingStatusSnapshotProvider(new StatusChanged("customer-1", 1));
+        var services = new ServiceCollection();
+        services.AddSingleton<IWebSocketTopicSnapshotProvider<StatusChanged>>(snapshots);
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
+            .AddTopic<StatusChanged>("status.changed", "status", value => value.Key)
+            .AddTopicSnapshot<StatusChanged, BlockingStatusSnapshotProvider>("status.changed");
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, new ClaimsPrincipal());
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Subscribe,
+                    StreamId = 55,
+                    Topic = "status.changed",
+                    Key = "customer-1",
+                    Credit = 1,
+                }
+            ),
+            protocol.MessageType
+        );
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        await snapshots.Started.WaitAsync(TestContext.Current.CancellationToken);
+
+        socket.Enqueue(
+            protocol.Encode(new HubFrame { Kind = HubFrameKind.Unsubscribe, StreamId = 55 }),
+            protocol.MessageType
+        );
+        var complete = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        await snapshots.Completed.WaitAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(HubFrameKind.Complete, complete.Kind);
+        Assert.True(snapshots.WasCanceled);
+        Assert.Equal(
+            0,
+            Assert
+                .Single(provider.GetRequiredService<IWebSocketSessionDirectory>().GetSessions())
+                .SubscriptionCount
+        );
+
+        socket.EnqueueClose();
+        await run;
+    }
+
+    [Fact]
+    public void Snapshot_provider_requires_a_matching_registered_topic()
+    {
+        var services = new ServiceCollection();
+        var gateway = services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false);
+
+        _ = Assert.Throws<InvalidOperationException>(() =>
+            gateway.AddTopicSnapshot<StatusChanged, ListStatusSnapshotProvider>("missing")
+        );
+        gateway
+            .AddTopic<StatusChanged>("status.changed", "status", value => value.Key)
+            .AddTopicSnapshot<StatusChanged, ListStatusSnapshotProvider>("status.changed");
+        _ = Assert.Throws<InvalidOperationException>(() =>
+            gateway.AddTopicSnapshot<StatusChanged, ListStatusSnapshotProvider>("status.changed")
+        );
     }
 
     [Fact]
@@ -1006,6 +1418,16 @@ public sealed class WebSocketGatewayTests
                 EventId = "event-1",
                 Payload = new byte[] { 1, 2, 3 },
             },
+            "snapshot-event" => new HubFrame
+            {
+                Kind = HubFrameKind.Event,
+                StreamId = 41,
+                Topic = "orders.changed",
+                Key = "customer-1",
+                Sequence = 0,
+                EventId = "snapshot-1",
+                Payload = new byte[] { 1, 2, 3 },
+            },
             "fault" => new HubFrame
             {
                 Kind = HubFrameKind.Fault,
@@ -1064,6 +1486,8 @@ public sealed class WebSocketGatewayTests
     public sealed record Greeting(string Text);
 
     public sealed record OrderChanged(string CustomerId) : IEvent;
+
+    public sealed record StatusChanged(string Key, int Version) : IEvent;
 
     public sealed class GreetHandler : IRequestHandler<Greet, Greeting>
     {
@@ -1202,5 +1626,79 @@ public sealed class WebSocketGatewayTests
             HttpContext context,
             CancellationToken cancellationToken = default
         ) => ValueTask.FromResult<DateTimeOffset?>(expiration);
+    }
+
+    private sealed class BlockingStatusSnapshotProvider(StatusChanged snapshot)
+        : IWebSocketTopicSnapshotProvider<StatusChanged>
+    {
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        private readonly TaskCompletionSource _started = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        private readonly TaskCompletionSource _completed = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+
+        public Task Started => _started.Task;
+
+        public Task Completed => _completed.Task;
+
+        public bool WasCanceled { get; private set; }
+
+        public WebSocketTopicSnapshotContext? Context { get; private set; }
+
+        public async IAsyncEnumerable<StatusChanged> GetSnapshotAsync(
+            WebSocketTopicSnapshotContext context,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default
+        )
+        {
+            Context = context;
+            _started.TrySetResult();
+            try
+            {
+                await _release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                yield return snapshot;
+            }
+            finally
+            {
+                WasCanceled = cancellationToken.IsCancellationRequested;
+                _completed.TrySetResult();
+            }
+        }
+
+        public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class ListStatusSnapshotProvider(params StatusChanged[] snapshots)
+        : IWebSocketTopicSnapshotProvider<StatusChanged>
+    {
+        public async IAsyncEnumerable<StatusChanged> GetSnapshotAsync(
+            WebSocketTopicSnapshotContext context,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default
+        )
+        {
+            await Task.CompletedTask.ConfigureAwait(false);
+            foreach (var snapshot in snapshots)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return snapshot;
+            }
+        }
+    }
+
+    private sealed class FailingStatusSnapshotProvider
+        : IWebSocketTopicSnapshotProvider<StatusChanged>
+    {
+        public async IAsyncEnumerable<StatusChanged> GetSnapshotAsync(
+            WebSocketTopicSnapshotContext context,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default
+        )
+        {
+            await Task.FromException(new InvalidOperationException("snapshot failed"))
+                .ConfigureAwait(false);
+            yield break;
+        }
     }
 }

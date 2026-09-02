@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace HostLoom.AspNetCore.WebSockets;
 
@@ -63,6 +64,21 @@ public sealed class HostLoomWebSocketBuilder
             )
         );
         _hostLoom.AddSubscriber<TEvent, WebSocketEventForwarder<TEvent>>(source, subscription);
+        return this;
+    }
+
+    public HostLoomWebSocketBuilder AddTopicSnapshot<TEvent, TProvider>(string topic)
+        where TEvent : class, IEvent
+        where TProvider : class, IWebSocketTopicSnapshotProvider<TEvent>
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+        _configuration.AddTopicSnapshot(
+            topic,
+            typeof(TEvent),
+            typeof(WebSocketTopicSnapshotInvoker<TEvent>)
+        );
+        Services.TryAddScoped<IWebSocketTopicSnapshotProvider<TEvent>, TProvider>();
+        Services.TryAddScoped<WebSocketTopicSnapshotInvoker<TEvent>>();
         return this;
     }
 }

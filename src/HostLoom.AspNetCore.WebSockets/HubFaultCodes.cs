@@ -12,4 +12,5 @@ public static class HubFaultCodes
     public const string Canceled = "canceled";
     public const string DuplicateStream = "duplicate_stream";
     public const string CapacityExceeded = "capacity_exceeded";
+    public const string SnapshotFailed = "snapshot_failed";
 }
