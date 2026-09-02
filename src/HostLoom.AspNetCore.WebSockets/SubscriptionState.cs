@@ -91,12 +91,12 @@ internal sealed class SubscriptionState(
                 if (!write(frame))
                 {
                     ReleaseBuffered(release);
-                    _initializing = false;
+                    FinishInitialization();
                     return false;
                 }
             }
 
-            _initializing = false;
+            FinishInitialization();
             return true;
         }
     }
@@ -179,7 +179,7 @@ internal sealed class SubscriptionState(
 
             if (Interlocked.CompareExchange(ref _credit, current + amount, current) == current)
             {
-                if (current == 0)
+                if (current == 0 && Volatile.Read(ref _initializing))
                 {
                     try
                     {
@@ -217,6 +217,12 @@ internal sealed class SubscriptionState(
         {
             release(frame);
         }
+    }
+
+    private void FinishInitialization()
+    {
+        Volatile.Write(ref _initializing, false);
+        _creditAvailable.Wait(0);
     }
 }
 
