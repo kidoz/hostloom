@@ -47,6 +47,13 @@ on, the endpoint requires authorization and unauthenticated requests get
 401. Non-upgrade requests get 400, as does a client offering no
 acceptable subprotocol. Named policies are evaluated again per operation
 (`WebSocketOperationResource`) and per topic (`WebSocketTopicResource`).
+The topic resource includes the exact client-selected `Key`.
+
+`TopicKeyPolicy.SubjectOnly` is the built-in own-channel policy. Pass it as a topic's
+`authorizationPolicy` to require an authenticated principal and an ordinal match between a
+nonempty key and the first claim named by `SubjectClaimType`. A mismatch returns `forbidden` before
+the subscription is registered. Applications that also require a scope or role define a normal
+composite ASP.NET Core policy and inspect `WebSocketTopicResource.Key` in that policy.
 
 A supplied Origin is validated before the upgrade. `SameOrigin` is the default;
 `AllowList` accepts configured exact origins and `Disabled` opts out. Native clients

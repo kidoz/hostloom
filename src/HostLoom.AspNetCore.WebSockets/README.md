@@ -52,6 +52,27 @@ ASP.NET Core policy. Policy handlers receive `WebSocketOperationResource` or
 short-lived, single-use WebSocket ticket in application code instead of putting a long-lived
 bearer token in a query string.
 
+## Key-aware subscription authorization
+
+Topic policy handlers receive `WebSocketTopicResource.Topic` and the exact client-selected
+`WebSocketTopicResource.Key`. This lets an application combine key ownership with its ordinary
+scope or role requirements. For the common "own channel" case, use the built-in policy:
+
+```csharp
+.AddTopic<OrderChanged>(
+    "orders.changed",
+    "orders",
+    changed => changed.CustomerId,
+    authorizationPolicy: TopicKeyPolicy.SubjectOnly)
+```
+
+`TopicKeyPolicy.SubjectOnly` requires an authenticated principal, a nonempty subscription key, and
+an ordinal match between that key and the first `SubjectClaimType` claim (by default
+`ClaimTypes.NameIdentifier`). Missing subjects, missing keys, and differently cased values are
+denied with a `forbidden` fault before the subscription enters session state. Define an ordinary
+ASP.NET Core policy over `WebSocketTopicResource` when subject ownership must be combined with
+additional requirements.
+
 ## Origin validation
 
 Browser-supplied Origin headers are checked before the upgrade. `OriginMode` defaults to
