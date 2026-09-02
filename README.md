@@ -232,6 +232,10 @@ operation and subscription. One receive loop, one socket writer, a byte-bounded 
 concurrent-request limits, and subscription credit prevent a slow client from creating unbounded
 per-connection work or memory.
 
+Topic policies receive the client-selected subscription key. The built-in
+`TopicKeyPolicy.SubjectOnly` policy restricts a keyed topic to the authenticated subject using the
+configured subject claim type and exact ordinal matching.
+
 Supplied browser origins are checked against the effective request origin by default. Native
 clients may omit Origin; browser-only endpoints can reject a missing header, and cross-origin
 applications can configure an exact allowlist.
