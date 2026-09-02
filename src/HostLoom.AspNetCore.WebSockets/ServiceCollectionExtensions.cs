@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -32,7 +33,15 @@ public static class ServiceCollectionExtensions
         configuration = new GatewayConfiguration(options);
 
         hostLoom.Services.AddSingleton(configuration);
-        hostLoom.Services.AddAuthorization();
+        hostLoom.Services.AddAuthorization(options =>
+            options.AddPolicy(
+                TopicKeyPolicy.SubjectOnly,
+                policy =>
+                    policy
+                        .RequireAuthenticatedUser()
+                        .AddRequirements(new TopicKeySubjectRequirement())
+            )
+        );
         hostLoom.Services.AddLogging();
         hostLoom.Services.TryAddEnumerable(
             ServiceDescriptor.Singleton<IWebSocketHubProtocol, JsonWebSocketHubProtocol>()
@@ -51,6 +60,12 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<WebSocketSessionRegistry>()
         );
         hostLoom.Services.TryAddSingleton<WebSocketRequestRouter>();
+        hostLoom.Services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<
+                IAuthorizationHandler,
+                TopicKeySubjectAuthorizationHandler
+            >()
+        );
         hostLoom.Services.TryAddSingleton<WebSocketSessionFactory>();
         hostLoom.Services.TryAddSingleton(TimeProvider.System);
         hostLoom.Services.TryAddSingleton<

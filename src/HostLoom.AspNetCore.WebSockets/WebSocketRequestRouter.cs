@@ -139,7 +139,11 @@ internal sealed class WebSocketRequestRouter(
         }
     }
 
-    public async ValueTask<bool> AuthorizeTopicAsync(TopicRoute topic, ClaimsPrincipal user)
+    public async ValueTask<bool> AuthorizeTopicAsync(
+        TopicRoute topic,
+        string? key,
+        ClaimsPrincipal user
+    )
     {
         var scope = scopeFactory.CreateAsyncScope();
         try
@@ -147,7 +151,7 @@ internal sealed class WebSocketRequestRouter(
             return await IsAuthorizedAsync(
                     scope.ServiceProvider,
                     user,
-                    new WebSocketTopicResource(topic.Name),
+                    new WebSocketTopicResource(topic.Name, key),
                     topic.AuthorizationPolicy
                 )
                 .ConfigureAwait(false);
