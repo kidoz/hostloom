@@ -10,6 +10,7 @@
   <Folder Name="/src/">
     <Project Path="src/HostLoom.Analyzers/HostLoom.Analyzers.csproj" />
     <Project Path="src/HostLoom.AspNetCore.WebSockets/HostLoom.AspNetCore.WebSockets.csproj" />
+    <Project Path="src/HostLoom.AspNetCore.WebSockets.Testing/HostLoom.AspNetCore.WebSockets.Testing.csproj" />
     <Project Path="src/HostLoom.Caching.DependencyInjection/HostLoom.Caching.DependencyInjection.csproj" />
     <Project Path="src/HostLoom.Caching.Pipelines/HostLoom.Caching.Pipelines.csproj" />
     <Project Path="src/HostLoom.Caching.Testing/HostLoom.Caching.Testing.csproj" />
