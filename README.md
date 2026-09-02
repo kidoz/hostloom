@@ -59,6 +59,7 @@ packages are versioned together:
 | `HostLoom.Transport.RabbitMq` | RabbitMQ request and fan-out event transport |
 | `HostLoom.Transport.Kafka` | Kafka request and consumer-group event transport |
 | `HostLoom.AspNetCore.WebSockets` | Authenticated WebSocket RPC and subscriptions |
+| `HostLoom.AspNetCore.WebSockets.Testing` | In-process TestServer client for gateway tests |
 | `HostLoom.Logging` | Allocation-free UTF-8 logging provider |
 | `HostLoom.Diagnostics` | Composition ledger and startup report of registration decisions |
 | `HostLoom.Mapping` | Explicit, compile-time-safe, AOT-friendly object mapping |
@@ -224,10 +225,21 @@ app.MapHostLoomWebSocketHub("/realtime");
 ```
 
 Clients negotiate `hostloom.msgpack.v1`, `hostloom.protobuf.v1`, or `hostloom.json.v1`.
+JSON uses camelCase frame-kind values, omits null optional fields, and carries application payloads
+as Base64-encoded bytes.
 Authentication happens before upgrade and named ASP.NET Core policies are checked again for every
 operation and subscription. One receive loop, one socket writer, a byte-bounded outbound queue,
 concurrent-request limits, and subscription credit prevent a slow client from creating unbounded
 per-connection work or memory.
+
+Supplied browser origins are checked against the effective request origin by default. Native
+clients may omit Origin; browser-only endpoints can reject a missing header, and cross-origin
+applications can configure an exact allowlist.
+
+Sessions are bounded by credential expiry and a 12-hour maximum, and control-frame floods close
+with a policy violation. `IWebSocketSessionDirectory` exposes safe active-session snapshots while
+`IWebSocketSessionControl` disconnects one session or every session for a subject after logout or a
+role change. Host shutdown sends 1001 `server_shutdown` before broker subscriptions stop.
 
 The initial subscription protocol is live and process-local: acknowledgements record progress but
 do not provide replay, and gateway-generated event IDs are not broker offsets. Multi-node services
@@ -716,6 +728,7 @@ src/HostLoom.Transport.InMemory/ deterministic in-process broker
 src/HostLoom.Transport.RabbitMq/ request queues and exclusive reply queues
 src/HostLoom.Transport.Kafka/    request/response topics with header correlation
 src/HostLoom.AspNetCore.WebSockets/ raw Kestrel WebSocket RPC and subscriptions
+src/HostLoom.AspNetCore.WebSockets.Testing/ TestServer gateway integration client
 benchmarks/HostLoom.Benchmarks/    cache, lock, codec, logging, and mapping benchmarks
 benchmarks/HostLoom.Redis.Benchmarks/ real-Redis cache and lock comparisons
 examples/HostLoom.Examples.Pipelines/ runnable pipeline tour: DI stages, manual and standalone composition

@@ -25,6 +25,9 @@ builder.Services
     {
         options.MaximumConcurrentRequestsPerConnection = 16;
         options.MaximumQueuedBytesPerConnection = 512 * 1024;
+        options.OriginMode = WebSocketOriginMode.AllowList;
+        options.AllowedOrigins.Add("https://admin.example.com");
+        options.AllowMissingOrigin = false;
     })
     .AddRequest<GetOrder, OrderView>("orders.get", "orders-api", "orders.read")
     .AddTopic<OrderChanged>(
@@ -49,6 +52,43 @@ ASP.NET Core policy. Policy handlers receive `WebSocketOperationResource` or
 short-lived, single-use WebSocket ticket in application code instead of putting a long-lived
 bearer token in a query string.
 
+## Origin validation
+
+Browser-supplied Origin headers are checked before the upgrade. `OriginMode` defaults to
+`SameOrigin`; `AllowList` accepts exact normalized scheme, host, and effective-port matches, while
+`Disabled` is an explicit opt-out. Missing Origin is allowed by default because native WebSocket
+clients may omit it; set `AllowMissingOrigin = false` for a browser-only endpoint.
+
+Configure ASP.NET Core forwarded-header middleware before the WebSocket endpoint when a trusted
+proxy supplies the effective scheme or host. The gateway uses the resulting `Request.Scheme` and
+`Request.Host` and never interprets forwarding headers itself. Register a custom
+`IWebSocketOriginValidator` to replace the built-in policy.
+
+## Session lifetime and revocation
+
+Every accepted session has a fixed expiry. The built-in
+`IWebSocketSessionLifetimeResolver` uses `AuthenticationProperties.ExpiresUtc` when authorization
+middleware exposes the authentication ticket, otherwise it reads the earliest valid JWT `exp`
+claim. `MaximumSessionLifetime` (12 hours by default) is always an upper bound, including for
+credentials without an expiry. At expiry the server closes with 1008 `session_expired`.
+
+`IWebSocketSessionDirectory` exposes read-only point-in-time session metadata and can filter by the
+configured `SubjectClaimType`. It does not expose credentials. Application logout and role-change
+handlers can use `IWebSocketSessionControl`:
+
+```csharp
+var sessions = services.GetRequiredService<IWebSocketSessionControl>();
+await sessions.DisconnectSubjectAsync(userId, "roles_changed", cancellationToken);
+```
+
+Administrative disconnects close with 1008 and the supplied close reason. Reasons must be nonempty
+and at most 123 UTF-8 bytes. Host shutdown closes every registered session with 1001
+`server_shutdown` and waits for session teardown before HostLoom broker subscriptions stop.
+Client `cancel`, `subscribe`, `credit`, `ack`, and `unsubscribe` frames share a per-session fixed
+one-second rate window; exceeding `MaximumControlFramesPerSecond` closes with 1008 `rate_limited`.
+Register a custom `IWebSocketSessionLifetimeResolver` before `AddWebSocketGateway` when credential
+expiry lives elsewhere.
+
 Only registered operations and topics are reachable. Client-supplied CLR type names, broker
 addresses, and arbitrary handler names are never resolved.
 
@@ -58,13 +98,17 @@ The client must offer at least one versioned `Sec-WebSocket-Protocol` value:
 
 - `hostloom.msgpack.v1` — binary MessagePack envelope, preferred by default;
 - `hostloom.protobuf.v1` — binary Protocol Buffers envelope implemented with protobuf-net;
-- `hostloom.json.v1` — UTF-8 JSON envelope.
+- `hostloom.json.v1` — compact UTF-8 JSON with camelCase frame-kind values and omitted null fields.
 
 All codecs carry the same `HubFrame`. `Payload` contains bytes produced by HostLoom's configured
 `IMessageSerializer`; JSON therefore represents it as Base64 while MessagePack and Protocol Buffers
 represent it as binary. This keeps the WebSocket framing protocol independent from application
 contract serialization. The cross-language Protocol Buffers schema is shipped as
 `protocol/hostloom-websocket-v1.proto` in the NuGet package.
+
+JSON accepts kind names case-insensitively and rejects numeric, `None`, and unknown kinds. Its JSON
+Schema and exact `welcome`, `subscribed`, `event`, and `fault` fixtures are shipped under the
+package's `protocol/` directory.
 
 The server rejects an upgrade when no supported subprotocol was offered. Changing a frame's
 WebSocket message type after negotiation closes the connection.
@@ -89,9 +133,9 @@ a subscription stream lives until `unsubscribe` and `complete`.
 | client → server | `unsubscribe` | `streamId` | Stops a subscription. |
 | server → client | `complete` | `streamId` | Confirms termination. |
 
-For JSON, enum names use the serializer's web defaults (for example `"request"`). Unknown or
-malformed connection-level frames close the connection. Route errors are returned as `fault`
-frames with codes from `HubFaultCodes`.
+For JSON, enum names are camelCase (for example `"request"`). Malformed frames close the
+connection. A decodable frame kind that is not valid from a client returns an `invalid_frame`
+fault. Route errors are returned as `fault` frames with codes from `HubFaultCodes`.
 
 ## Load and delivery semantics
 
@@ -114,12 +158,20 @@ exactly-once delivery.
 
 Important limits are `MaximumMessageSize`, `MaximumQueuedBytesPerConnection`,
 `MaximumQueuedFramesPerConnection`, `MaximumConcurrentRequestsPerConnection`,
-`MaximumSubscriptionsPerConnection`, `MaximumCreditPerSubscription`, and
-`MaximumRequestTimeout`. Defaults are conservative and should be load-tested with the actual event
-size distribution and client population.
+`MaximumSubscriptionsPerConnection`, `MaximumCreditPerSubscription`,
+`MaximumControlFramesPerSecond`, `MaximumSessionLifetime`, and `MaximumRequestTimeout`. Defaults are
+conservative and should be load-tested with the actual event size distribution and client
+population.
 
 Codec throughput and allocations can be measured with the repository's BenchmarkDotNet project:
 
 ```text
 dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --filter "*WebSocketProtocol*"
 ```
+
+## Integration testing
+
+`HostLoom.AspNetCore.WebSockets.Testing` wraps ASP.NET Core `TestServer` with a protocol-aware
+`WebSocketTestClient`. It configures upgrade headers, sends and receives `HubFrame` values, and has
+helpers for awaiting `welcome`, `subscribed`, `event`, and `fault` frames without a real browser or
+network listener.
