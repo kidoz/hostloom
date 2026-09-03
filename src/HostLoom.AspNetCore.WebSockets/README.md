@@ -221,6 +221,31 @@ Important limits are `MaximumMessageSize`, `MaximumQueuedBytesPerConnection`,
 conservative and should be load-tested with the actual event size distribution and client
 population.
 
+## Tracing
+
+The `HostLoom.AspNetCore.WebSockets` activity source, exposed as
+`WebSocketDiagnostics.ActivitySourceName`, creates one `hostloom.websocket.request` Server activity
+for each registered request operation. Enable both gateway and core sources to retain the complete
+same-process chain:
+
+```csharp
+builder.Services.AddOpenTelemetry().WithTracing(tracing => tracing.AddSource(
+    WebSocketDiagnostics.ActivitySourceName,
+    HostLoomDiagnostics.ActivitySourceName));
+```
+
+The gateway activity becomes the ambient parent of the existing core `hostloom request` activity;
+the transport and in-process handler activities continue below it. Tags are
+`hostloom.websocket.operation`, `hostloom.websocket.protocol`, `hostloom.websocket.outcome`
+(`success`, `fault`, `canceled`, or `exception`), and `hostloom.websocket.fault.code` on a fault.
+Only registered operation names become trace identity. Unregistered client input creates no
+gateway activity, and activities never contain stream or session ids, subjects, payloads, keys,
+credentials, caller text, or remote fault messages.
+
+This is parent/child correlation inside the current process. HostLoom transports do not yet
+propagate W3C trace context in broker headers, so a handler running in another process cannot join
+this trace until that separate transport feature is implemented.
+
 ## Metrics
 
 The gateway publishes `System.Diagnostics.Metrics` instruments from the

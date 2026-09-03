@@ -13,16 +13,23 @@ configuration needs.
 | `HostLoom.Caching` | `ActivitySource` and `Meter` | every `TieredCache` |
 | `HostLoom.Locking` | `ActivitySource` and `Meter` | every `DistributedLock` |
 | `HostLoom.Redis` | `ActivitySource` and `Meter` | the Redis connection |
+| `HostLoom.AspNetCore.WebSockets` | `ActivitySource` and `Meter` | raw WebSocket gateway |
 
 ```csharp
 builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics => metrics.AddMeter(
-        "HostLoom", "HostLoom.Pipelines", "HostLoom.Logging", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Redis"))
+        "HostLoom", "HostLoom.Pipelines", "HostLoom.Logging", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Redis",
+        "HostLoom.AspNetCore.WebSockets"))
     .WithTracing(tracing => tracing.AddSource(
-        "HostLoom", "HostLoom.Pipelines", "HostLoom.Caching", "HostLoom.Locking"));
+        "HostLoom", "HostLoom.Pipelines", "HostLoom.Caching", "HostLoom.Locking",
+        "HostLoom.AspNetCore.WebSockets"));
 ```
 
 Requires the `OpenTelemetry.Extensions.Hosting` package.
+
+The WebSocket source creates `hostloom.websocket.request` Server activities for registered
+operations. The existing `HostLoom` send activity is their direct child. External transports do
+not yet propagate W3C trace context to a consumer process.
 
 ## Messaging instruments (`HostLoom`)
 

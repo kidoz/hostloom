@@ -165,6 +165,19 @@ Remote fault *messages* are withheld from clients unless
 `IncludeRemoteFaultMessages` is enabled; the code `request_failed` is
 returned either way.
 
+## Tracing
+
+Enable the `HostLoom.AspNetCore.WebSockets` activity source through
+`WebSocketDiagnostics.ActivitySourceName`. Each registered request creates a
+`hostloom.websocket.request` Server activity tagged with registered operation, negotiated protocol,
+bounded outcome, and public fault code when applicable. Unregistered client operation names do not
+create activities or tags.
+
+The existing `HostLoom` request activity is a direct child through ambient context. This provides
+the complete gateway-to-handler chain for the in-memory transport and gateway-to-broker-send
+correlation for external transports. Cross-process consumer correlation still requires future W3C
+trace-context propagation in broker headers.
+
 ## Metrics
 
 Enable the `HostLoom.AspNetCore.WebSockets` meter (also exposed as
