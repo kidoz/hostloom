@@ -8,10 +8,22 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-03
+
 Upgrading adds two analyzer rules — `HLM0007` and `HLM0008` — which report as warnings by
 default. A project building with `TreatWarningsAsErrors` will fail until each is addressed or
 its severity is set in `.editorconfig`; that is the intended effect, but it is a build break on
 upgrade rather than a silent change.
+
+The WebSocket gateway's identifiers and JSON frame spelling change in this release, so a 0.3.0
+browser client, a Protocol Buffers consumer, or a caller of `IWebSocketSessionControl` must be
+updated together with the server. Each break is stated under **Changed** below. Applications that
+do not use `HostLoom.AspNetCore.WebSockets` are unaffected.
+
+Ten packages are published for the first time: `HostLoom.Caching`,
+`HostLoom.Caching.DependencyInjection`, `HostLoom.Caching.Testing`, `HostLoom.Caching.Pipelines`,
+`HostLoom.Locking`, `HostLoom.Locking.DependencyInjection`, `HostLoom.Locking.Testing`,
+`HostLoom.Locking.Pipelines`, `HostLoom.Redis`, and `HostLoom.AspNetCore.WebSockets.Testing`.
 
 ### Added
 
@@ -40,12 +52,8 @@ upgrade rather than a silent change.
   trusted publishing with provenance. Pull requests that affect the client or its canonical
   protocol artifacts run the same package gate. The initial registry publication alone uses a
   removable bootstrap token because npm requires an existing package before it accepts an OIDC
-  publisher.
-- Fixed browser subscriptions created synchronously by a `connected` state listener so reconnect
-  restoration cannot re-key and orphan their stream routing. Terminal `unsubscribe()` cleanup is
-  now idempotent, and non-string request operations reject through the returned promise. Gateway
-  fan-out membership is reference-counted per session and topic/key pair, so unsubscribing one of
-  several matching streams no longer silently stops its siblings.
+  publisher. The package carries its own version and changelog and is not part of this release's
+  NuGet set; it ships when a `websocket-client-vX.Y.Z` tag is published.
 - Client-initiated `ping` and server `pong` frames in the version-one hub protocol, across the
   JSON, MessagePack, and Protocol Buffers codecs. The client picks a stream identifier and the
   gateway echoes it, so round-trip time stays unambiguous with several pings in flight. The session
@@ -55,23 +63,6 @@ upgrade rather than a silent change.
   `invalid_frame`, and browsers gain the
   liveness signal that RFC 6455 Ping and Pong cannot give them. Existing clients are unaffected
   because a `pong` is only ever sent in reply to a `ping`.
-- The `hostloom.json.v1` WebSocket contract now matches its documented web defaults: camelCase
-  frame kinds and omitted null optional fields. It ships a JSON Schema and exact frame fixtures,
-  reads kinds case-insensitively, rejects numeric or unknown kinds, and retains Base64 opaque
-  application payloads. The published schema pins `welcome` to the reserved session stream, bounds
-  every numeric field so that no schema-valid frame exceeds what the .NET codec and the browser
-  client can read, and asserts the Base64 payload alphabet with a pattern rather than the advisory
-  `contentEncoding` annotation alone.
-- `HubFrame.StreamId`, `SessionId`, and `EventId` are `Guid` values rather than a `ulong` and two
-  strings, across the JSON, MessagePack, and Protocol Buffers codecs. JSON spells an identifier as
-  32 lowercase hexadecimal digits without separators and rejects every other spelling; the binary
-  codecs carry the 16 big-endian bytes of RFC 4122, so all three subprotocols name one identifier.
-  `Guid.Empty` addresses the session rather than a stream and is valid only on `welcome`. The
-  Protocol Buffers contract changes `stream_id`, `session_id`, and `event_id` to `bytes` on their
-  existing field numbers. `WebSocketSessionInfo.SessionId` and
-  `IWebSocketSessionControl.DisconnectAsync` take a `Guid`, and `WebSocketTestClient` awaits a
-  `Guid` stream. Clients no longer allocate stream identifiers from a counter, so a stream is never
-  reused within or across sessions and a late frame from a closed stream cannot be misrouted.
 - Same-origin WebSocket handshake validation by default, exact-origin allowlists, an explicit
   missing-Origin policy for browser-only versus native clients, and a replaceable
   `IWebSocketOriginValidator`. Validation uses ASP.NET Core's effective scheme and host and rejects
@@ -121,9 +112,6 @@ upgrade rather than a silent change.
 - An in-memory transport and WebSocket gateway how-to for the broker-free per-replica topology,
   including a browser verification path, reconnect and startup boundaries, operational checks, and
   explicit triggers for moving to RabbitMQ, Kafka, or a backplane.
-- Live subscription credit replenishment no longer signals a completed snapshot initializer, which
-  removes one caught `SemaphoreFullException` allocation per zero-to-positive refill.
-
 - `HLM0007` and `HLM0008` in `HostLoom.Analyzers`, and coverage of the cache and lock contracts by
   `HLM0001` and `HLM0002`. `HLM0007` reports a cache or lock key built from a parameter, local,
   field, or property whose name says it is a credential (`token`, `secret`, `password`,
@@ -249,6 +237,41 @@ upgrade rather than a silent change.
   all three cache L2 paths and HostLoom locks against Medallion `DistributedLock.Redis`, failing
   setup when Redis is unavailable. A committed environment-checked baseline and command fail when
   deterministic HostLoom cache or lock mean time or allocations regress by more than 10%.
+
+### Changed
+
+- **Breaking.** `HubFrame.StreamId`, `SessionId`, and `EventId` are `Guid` values rather than a
+  `ulong` and two strings, across the JSON, MessagePack, and Protocol Buffers codecs. JSON spells
+  an identifier as 32 lowercase hexadecimal digits without separators and rejects every other
+  spelling; the binary codecs carry the 16 big-endian bytes of RFC 4122, so all three subprotocols
+  name one identifier. `Guid.Empty` addresses the session rather than a stream and is valid only on
+  `welcome`. The Protocol Buffers contract changes `stream_id`, `session_id`, and `event_id` to
+  `bytes` on their existing field numbers, so a 0.3.0 consumer misreads rather than fails cleanly
+  and must be rebuilt from the new contract. `WebSocketSessionInfo.SessionId` and
+  `IWebSocketSessionControl.DisconnectAsync` take a `Guid`, and `WebSocketTestClient` awaits a
+  `Guid` stream. Clients now choose their own stream identifiers rather than allocating from a
+  counter, so a stream is never reused within or across sessions and a late frame from a closed
+  stream cannot be misrouted. Fan-out allocates more per event frame because a hexadecimal
+  identifier is longer than a small integer; the committed fan-out baseline records the new cost.
+- **Breaking.** The `hostloom.json.v1` WebSocket contract now matches its documented web defaults:
+  camelCase frame kinds and omitted null optional fields, so a 0.3.0 JSON client that sends
+  PascalCase kinds is rejected. It ships a JSON Schema and exact frame fixtures, reads kinds
+  case-insensitively, rejects numeric or unknown kinds, and retains Base64 opaque application
+  payloads. The published schema pins `welcome` to the reserved session stream, bounds every
+  numeric field so that no schema-valid frame exceeds what the .NET codec and the browser client
+  can read, and asserts the Base64 payload alphabet with a pattern rather than the advisory
+  `contentEncoding` annotation alone.
+
+### Fixed
+
+- Gateway fan-out membership is reference-counted per session and topic/key pair, so unsubscribing
+  one of several matching streams no longer silently stops its siblings.
+- Live subscription credit replenishment no longer signals a completed snapshot initializer, which
+  removes one caught `SemaphoreFullException` allocation per zero-to-positive refill.
+- Browser subscriptions created synchronously by a `connected` state listener keep their stream
+  routing, because reconnect restoration can no longer re-key and orphan them. Terminal
+  `unsubscribe()` cleanup is idempotent, and non-string request operations reject through the
+  returned promise rather than throwing synchronously.
 
 ## [0.3.0] - 2026-08-29
 
@@ -586,6 +609,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/kidoz/hostloom/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/kidoz/hostloom/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kidoz/hostloom/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kidoz/hostloom/releases/tag/v0.1.0
