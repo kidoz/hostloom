@@ -28,6 +28,13 @@ internal sealed class ByteBoundedOutboundQueue(int maximumBytes, int maximumFram
         byte[] payload,
         WebSocketMessageType messageType,
         out OutboundFrame frame
+    ) => TryReserve(payload, messageType, eventTopic: null, out frame);
+
+    public bool TryReserve(
+        byte[] payload,
+        WebSocketMessageType messageType,
+        string? eventTopic,
+        out OutboundFrame frame
     )
     {
         ArgumentNullException.ThrowIfNull(payload);
@@ -47,7 +54,12 @@ internal sealed class ByteBoundedOutboundQueue(int maximumBytes, int maximumFram
             return false;
         }
 
-        frame = new OutboundFrame(payload, messageType);
+        frame = new OutboundFrame(payload, messageType, eventTopic);
+        if (eventTopic is not null)
+        {
+            WebSocketDiagnostics.EventQueued(eventTopic, payload.Length);
+        }
+
         return true;
     }
 
@@ -71,4 +83,8 @@ internal sealed class ByteBoundedOutboundQueue(int maximumBytes, int maximumFram
     public void Complete() => _channel.Writer.TryComplete();
 }
 
-internal readonly record struct OutboundFrame(byte[] Payload, WebSocketMessageType MessageType);
+internal readonly record struct OutboundFrame(
+    byte[] Payload,
+    WebSocketMessageType MessageType,
+    string? EventTopic = null
+);

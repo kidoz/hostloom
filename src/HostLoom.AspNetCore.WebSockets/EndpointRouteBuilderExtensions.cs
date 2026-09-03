@@ -30,12 +30,14 @@ public static class EndpointRouteBuilderExtensions
             && context.User.Identity?.IsAuthenticated is not true
         )
         {
+            WebSocketDiagnostics.HandshakeWasRejected("unauthenticated");
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return;
         }
 
         if (!context.WebSockets.IsWebSocketRequest)
         {
+            WebSocketDiagnostics.HandshakeWasRejected("not_websocket");
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             await context
                 .Response.WriteAsync("A WebSocket upgrade is required.", context.RequestAborted)
@@ -51,6 +53,7 @@ public static class EndpointRouteBuilderExtensions
                 .ConfigureAwait(false)
         )
         {
+            WebSocketDiagnostics.HandshakeWasRejected("origin");
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             return;
         }
@@ -64,6 +67,7 @@ public static class EndpointRouteBuilderExtensions
             .FirstOrDefault(requested.Contains);
         if (selected is null)
         {
+            WebSocketDiagnostics.HandshakeWasRejected("subprotocol");
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             await context
                 .Response.WriteAsync(

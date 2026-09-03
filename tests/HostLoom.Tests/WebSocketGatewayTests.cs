@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
@@ -552,6 +553,108 @@ public sealed class WebSocketGatewayTests
         await run;
         Assert.Equal(WebSocketCloseStatus.NormalClosure, socket.CloseStatus);
         Assert.Equal(0, provider.GetRequiredService<IWebSocketSessionDirectory>().Count);
+    }
+
+    [Fact]
+    public async Task Session_lifecycle_and_delivery_emit_bounded_metrics()
+    {
+        const string topic = "metrics.orders.changed";
+        using var metrics = new WebSocketMetricRecorder();
+        var services = new ServiceCollection();
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
+            .AddTopic<OrderChanged>(topic, "orders", value => value.CustomerId);
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, new ClaimsPrincipal());
+
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Subscribe,
+                    StreamId = 51,
+                    Topic = topic,
+                    Credit = 1,
+                }
+            ),
+            protocol.MessageType
+        );
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+
+        var registry = provider.GetRequiredService<WebSocketSessionRegistry>();
+        registry.Publish(topic, key: null, new byte[] { 9, 8 });
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        registry.Publish(topic, key: null, new byte[] { 7, 6 });
+
+        socket.Enqueue(
+            protocol.Encode(new HubFrame { Kind = HubFrameKind.Response, StreamId = 52 }),
+            protocol.MessageType
+        );
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        socket.Enqueue(
+            protocol.Encode(new HubFrame { Kind = HubFrameKind.Unsubscribe, StreamId = 51 }),
+            protocol.MessageType
+        );
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        socket.EnqueueClose();
+        await run;
+
+        Assert.Contains(
+            metrics.Measurements("hostloom.websocket.sessions"),
+            measurement =>
+                measurement.Value == 1
+                && measurement.Tag(WebSocketDiagnostics.ProtocolTag)
+                    is JsonWebSocketHubProtocol.ProtocolName
+        );
+        Assert.Contains(
+            metrics.Measurements("hostloom.websocket.sessions"),
+            measurement =>
+                measurement.Value == -1
+                && measurement.Tag(WebSocketDiagnostics.ProtocolTag)
+                    is JsonWebSocketHubProtocol.ProtocolName
+        );
+        Assert.Equal(
+            [1d, -1d],
+            metrics
+                .Measurements("hostloom.websocket.subscriptions")
+                .Where(measurement => measurement.Tag(WebSocketDiagnostics.TopicTag) is topic)
+                .Select(static measurement => measurement.Value)
+                .ToArray()
+        );
+        Assert.Single(
+            metrics.Measurements("hostloom.websocket.events.sent"),
+            measurement => measurement.Tag(WebSocketDiagnostics.TopicTag) is topic
+        );
+        Assert.Contains(
+            metrics.Measurements("hostloom.websocket.events.dropped"),
+            measurement =>
+                measurement.Tag(WebSocketDiagnostics.TopicTag) is topic
+                && measurement.Tag(WebSocketDiagnostics.ReasonTag) is "no_credit"
+        );
+        Assert.Contains(
+            metrics.Measurements("hostloom.websocket.queue.bytes"),
+            measurement =>
+                measurement.Value > 0 && measurement.Tag(WebSocketDiagnostics.TopicTag) is topic
+        );
+        Assert.Contains(
+            metrics.Measurements("hostloom.websocket.faults"),
+            measurement =>
+                measurement.Tag(WebSocketDiagnostics.FaultCodeTag) is HubFaultCodes.InvalidFrame
+        );
+        Assert.Contains(
+            metrics.Measurements("hostloom.websocket.session.duration"),
+            measurement =>
+                measurement.Value >= 0
+                && measurement.Tag(WebSocketDiagnostics.CloseReasonTag) is "peer_closed"
+        );
     }
 
     [Fact]
@@ -1222,6 +1325,7 @@ public sealed class WebSocketGatewayTests
     [Fact]
     public async Task Same_origin_policy_rejects_a_foreign_browser_origin()
     {
+        using var metrics = new WebSocketMetricRecorder();
         using var host = await CreateTestHostAsync();
         await using var client = new WebSocketTestClient(host.GetTestServer())
         {
@@ -1235,6 +1339,10 @@ public sealed class WebSocketGatewayTests
             )
         );
         Assert.Contains("403", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            metrics.Measurements("hostloom.websocket.handshake.rejected"),
+            measurement => measurement.Tag(WebSocketDiagnostics.ReasonTag) is "origin"
+        );
     }
 
     [Fact]
@@ -1521,6 +1629,70 @@ public sealed class WebSocketGatewayTests
 
         public void Abort() =>
             throw new InvalidOperationException("The recording sink should not be aborted.");
+    }
+
+    private sealed class WebSocketMetricRecorder : IDisposable
+    {
+        private readonly MeterListener _listener = new();
+        private readonly List<MetricMeasurement> _measurements = [];
+        private readonly Lock _gate = new();
+
+        public WebSocketMetricRecorder()
+        {
+            _listener.InstrumentPublished = (instrument, listener) =>
+            {
+                if (instrument.Meter.Name == WebSocketDiagnostics.MeterName)
+                {
+                    listener.EnableMeasurementEvents(instrument);
+                }
+            };
+            _listener.SetMeasurementEventCallback<long>(
+                (instrument, value, tags, _) => Record(instrument, value, tags)
+            );
+            _listener.SetMeasurementEventCallback<double>(
+                (instrument, value, tags, _) => Record(instrument, value, tags)
+            );
+            _listener.Start();
+        }
+
+        public MetricMeasurement[] Measurements(string instrumentName)
+        {
+            lock (_gate)
+            {
+                return _measurements
+                    .Where(measurement => measurement.Name == instrumentName)
+                    .ToArray();
+            }
+        }
+
+        public void Dispose() => _listener.Dispose();
+
+        private void Record(
+            Instrument instrument,
+            double value,
+            ReadOnlySpan<KeyValuePair<string, object?>> tags
+        )
+        {
+            var captured = new Dictionary<string, object?>(StringComparer.Ordinal);
+            foreach (var tag in tags)
+            {
+                captured[tag.Key] = tag.Value;
+            }
+
+            lock (_gate)
+            {
+                _measurements.Add(new MetricMeasurement(instrument.Name, value, captured));
+            }
+        }
+    }
+
+    private sealed record MetricMeasurement(
+        string Name,
+        double Value,
+        IReadOnlyDictionary<string, object?> Tags
+    )
+    {
+        public object? Tag(string name) => Tags.GetValueOrDefault(name);
     }
 
     private sealed class ScriptedWebSocket : WebSocket
