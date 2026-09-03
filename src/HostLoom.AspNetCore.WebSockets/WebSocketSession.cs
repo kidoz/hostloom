@@ -37,6 +37,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
     private string _closeReason = "Session completed.";
     private int _aborted;
     private int _closeAssigned;
+    private int _slowClientAbortLogged;
 
     public WebSocketSession(
         WebSocket socket,
@@ -95,6 +96,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
     {
         _registry.Register(this);
         WebSocketDiagnostics.SessionOpened(_protocol.SubProtocol);
+        WebSocketLog.SessionOpened(_logger, Id, _protocol.SubProtocol, _subject);
         using var expiryCancellation = new CancellationTokenSource();
         var expiry = ExpireAsync(expiryCancellation.Token);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
@@ -227,10 +229,17 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             finally
             {
                 _registry.Unregister(this);
-                WebSocketDiagnostics.SessionClosed(
+                var duration = Math.Max(0, (_timeProvider.GetUtcNow() - _connectedAt).TotalSeconds);
+                var closeReason = GetDiagnosticCloseReason();
+                WebSocketDiagnostics.SessionClosed(_protocol.SubProtocol, duration, closeReason);
+                WebSocketLog.SessionClosed(
+                    _logger,
+                    Id,
                     _protocol.SubProtocol,
-                    Math.Max(0, (_timeProvider.GetUtcNow() - _connectedAt).TotalSeconds),
-                    GetMetricCloseReason()
+                    _subject,
+                    closeReason,
+                    _closeStatus,
+                    duration * 1000
                 );
                 _stop.Dispose();
                 _completion.TrySetResult();
@@ -304,6 +313,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                     break;
                 case LiveEventDisposition.CapacityExceeded:
                     WebSocketDiagnostics.EventDropped(topic, "queue_capacity");
+                    AbortSlowClient(HubFrameKind.Event, topic);
                     accepted = false;
                     break;
                 default:
@@ -469,24 +479,24 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             || !_configuration.TryGetTopic(frame.Topic, out var topic)
         )
         {
-            _ = TryQueue(
-                WebSocketRequestRouter.Fault(
-                    frame.StreamId,
-                    HubFaultCodes.TopicNotFound,
-                    "The requested topic is not registered."
-                )
+            DenySubscription(
+                frame.StreamId,
+                topic: null,
+                "topic_not_found",
+                HubFaultCodes.TopicNotFound,
+                "The requested topic is not registered."
             );
             return;
         }
 
         if (frame.Key is { Length: > 256 })
         {
-            _ = TryQueue(
-                WebSocketRequestRouter.Fault(
-                    frame.StreamId,
-                    HubFaultCodes.InvalidFrame,
-                    "The subscription key is too long."
-                )
+            DenySubscription(
+                frame.StreamId,
+                topic.Name,
+                "key_too_long",
+                HubFaultCodes.InvalidFrame,
+                "The subscription key is too long."
             );
             return;
         }
@@ -494,36 +504,36 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         var credit = frame.Credit ?? 0;
         if (credit <= 0 || credit > _configuration.Options.MaximumCreditPerSubscription)
         {
-            _ = TryQueue(
-                WebSocketRequestRouter.Fault(
-                    frame.StreamId,
-                    HubFaultCodes.InvalidFrame,
-                    "Initial credit is outside the allowed range."
-                )
+            DenySubscription(
+                frame.StreamId,
+                topic.Name,
+                "invalid_credit",
+                HubFaultCodes.InvalidFrame,
+                "Initial credit is outside the allowed range."
             );
             return;
         }
 
         if (_subscriptions.Count >= _configuration.Options.MaximumSubscriptionsPerConnection)
         {
-            _ = TryQueue(
-                WebSocketRequestRouter.Fault(
-                    frame.StreamId,
-                    HubFaultCodes.CapacityExceeded,
-                    "Too many subscriptions are active."
-                )
+            DenySubscription(
+                frame.StreamId,
+                topic.Name,
+                "capacity",
+                HubFaultCodes.CapacityExceeded,
+                "Too many subscriptions are active."
             );
             return;
         }
 
         if (!await _router.AuthorizeTopicAsync(topic, frame.Key, _user).ConfigureAwait(false))
         {
-            _ = TryQueue(
-                WebSocketRequestRouter.Fault(
-                    frame.StreamId,
-                    HubFaultCodes.Forbidden,
-                    "The caller is not authorized for this topic."
-                )
+            DenySubscription(
+                frame.StreamId,
+                topic.Name,
+                "forbidden",
+                HubFaultCodes.Forbidden,
+                "The caller is not authorized for this topic."
             );
             return;
         }
@@ -537,12 +547,12 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         );
         if (_requests.ContainsKey(frame.StreamId) || !_subscriptions.TryAdd(frame.StreamId, state))
         {
-            _ = TryQueue(
-                WebSocketRequestRouter.Fault(
-                    frame.StreamId,
-                    HubFaultCodes.DuplicateStream,
-                    "The subscription stream is already active."
-                )
+            DenySubscription(
+                frame.StreamId,
+                topic.Name,
+                "duplicate_stream",
+                HubFaultCodes.DuplicateStream,
+                "The subscription stream is already active."
             );
             return;
         }
@@ -640,12 +650,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         catch (Exception) when (state.SnapshotCancellationToken.IsCancellationRequested) { }
         catch (Exception exception)
         {
-            _logger.LogError(
-                exception,
-                "WebSocket topic {Topic} snapshot failed for session {SessionId}.",
-                topic.Name,
-                Id
-            );
+            WebSocketLog.SnapshotFailed(_logger, topic.Name, Id, exception);
             if (
                 _subscriptions.TryRemove(
                     new KeyValuePair<ulong, SubscriptionState>(state.StreamId, state)
@@ -740,6 +745,18 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         }
     }
 
+    private void DenySubscription(
+        ulong streamId,
+        string? topic,
+        string reason,
+        string faultCode,
+        string faultMessage
+    )
+    {
+        WebSocketLog.SubscriptionDenied(_logger, Id, topic, reason);
+        _ = TryQueue(WebSocketRequestRouter.Fault(streamId, faultCode, faultMessage));
+    }
+
     private bool TryQueue(HubFrame frame)
     {
         if (frame.Kind is HubFrameKind.Fault && frame.Code is { } code)
@@ -790,7 +807,27 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             WebSocketDiagnostics.EventDropped(eventTopic, "queue_capacity");
         }
 
+        AbortSlowClient(frame.Kind, eventTopic);
+
         return false;
+    }
+
+    private void AbortSlowClient(HubFrameKind frameKind, string? topic)
+    {
+        if (Interlocked.Exchange(ref _slowClientAbortLogged, 1) != 0)
+        {
+            return;
+        }
+
+        WebSocketLog.SlowClientAborted(
+            _logger,
+            Id,
+            frameKind,
+            topic,
+            _configuration.Options.MaximumQueuedFramesPerConnection,
+            _configuration.Options.MaximumQueuedBytesPerConnection
+        );
+        Abort();
     }
 
     private async Task WriteLoopAsync(CancellationToken cancellationToken)
@@ -912,7 +949,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         RequestDisconnect(WebSocketCloseStatus.PolicyViolation, "session_expired");
     }
 
-    private string GetMetricCloseReason()
+    private string GetDiagnosticCloseReason()
     {
         if (Volatile.Read(ref _aborted) != 0)
         {

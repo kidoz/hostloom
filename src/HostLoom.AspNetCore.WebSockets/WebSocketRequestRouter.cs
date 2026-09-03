@@ -122,11 +122,7 @@ internal sealed class WebSocketRequestRouter(
             }
             catch (Exception exception)
             {
-                logger.LogError(
-                    exception,
-                    "WebSocket operation {Operation} failed before a response was produced.",
-                    route.Name
-                );
+                WebSocketLog.OperationFailed(logger, route.Name, exception);
                 return Fault(
                     frame.StreamId,
                     HubFaultCodes.RequestFailed,

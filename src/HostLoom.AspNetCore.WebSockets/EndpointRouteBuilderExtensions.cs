@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace HostLoom.AspNetCore.WebSockets;
 
@@ -30,14 +31,14 @@ public static class EndpointRouteBuilderExtensions
             && context.User.Identity?.IsAuthenticated is not true
         )
         {
-            WebSocketDiagnostics.HandshakeWasRejected("unauthenticated");
+            RecordHandshakeRejection(context, "unauthenticated");
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return;
         }
 
         if (!context.WebSockets.IsWebSocketRequest)
         {
-            WebSocketDiagnostics.HandshakeWasRejected("not_websocket");
+            RecordHandshakeRejection(context, "not_websocket");
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             await context
                 .Response.WriteAsync("A WebSocket upgrade is required.", context.RequestAborted)
@@ -53,7 +54,7 @@ public static class EndpointRouteBuilderExtensions
                 .ConfigureAwait(false)
         )
         {
-            WebSocketDiagnostics.HandshakeWasRejected("origin");
+            RecordHandshakeRejection(context, "origin");
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             return;
         }
@@ -67,7 +68,7 @@ public static class EndpointRouteBuilderExtensions
             .FirstOrDefault(requested.Contains);
         if (selected is null)
         {
-            WebSocketDiagnostics.HandshakeWasRejected("subprotocol");
+            RecordHandshakeRejection(context, "subprotocol");
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             await context
                 .Response.WriteAsync(
@@ -95,5 +96,14 @@ public static class EndpointRouteBuilderExtensions
             credentialExpiration
         );
         await session.RunAsync(context.RequestAborted).ConfigureAwait(false);
+    }
+
+    private static void RecordHandshakeRejection(HttpContext context, string reason)
+    {
+        WebSocketDiagnostics.HandshakeWasRejected(reason);
+        var logger = context
+            .RequestServices.GetRequiredService<ILoggerFactory>()
+            .CreateLogger(WebSocketLog.HandshakeCategory);
+        WebSocketLog.HandshakeRejected(logger, reason);
     }
 }
