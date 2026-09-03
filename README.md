@@ -228,6 +228,13 @@ The parameterless middleware helper uses a 20-second keep-alive interval and a 1
 timeout. An overload accepts ASP.NET Core `WebSocketOptions`; applications that already called
 `UseWebSockets` omit the HostLoom helper instead of installing the middleware twice.
 
+Behind a reverse proxy, preserve the HTTP/1.1 `Upgrade` and `Connection` headers and the offered
+`Sec-WebSocket-Protocol`, apply trusted forwarded scheme/host headers before the gateway, and set
+the proxy idle timeout above 60 seconds for the default 20-second keep-alive. Sticky sessions are
+not required when every replica receives every event through a distinct broker subscription or a
+fan-out backplane; affinity does not repair a shared load-balancing queue or consumer group. See the
+[gateway protocol and operating notes](src/HostLoom.AspNetCore.WebSockets/README.md).
+
 Clients negotiate `hostloom.msgpack.v1`, `hostloom.protobuf.v1`, or `hostloom.json.v1`.
 JSON uses camelCase frame-kind values, omits null optional fields, and carries application payloads
 as Base64-encoded bytes.

@@ -63,6 +63,29 @@ the gateway does not attempt unreliable pipeline-presence detection. ASP.NET Cor
 `WebSocketOptions.AllowedOrigins` and the gateway's `HostLoomWebSocketOptions.OriginMode` are
 independent checks, so configure them consistently when both are enabled.
 
+### Reverse proxies and load balancing
+
+For HTTP/1.1 WebSocket connections, the reverse proxy must support the upgrade and preserve the
+`Upgrade: websocket`, `Connection: Upgrade`, and `Sec-WebSocket-Protocol` request headers. It must
+also preserve the application's selected authentication material and `Origin` when those values
+participate in authentication or origin validation.
+
+When TLS terminates at a proxy, have that proxy set the forwarded scheme and host and configure
+ASP.NET Core forwarded-header middleware to trust and apply those values before authentication and
+the gateway endpoint. The gateway evaluates ASP.NET Core's effective `Request.Scheme` and
+`Request.Host`; it does not interpret forwarding headers itself.
+
+With the default 20-second keep-alive interval, configure the proxy's idle timeout above 60 seconds.
+For a custom interval, leave equivalent operational margin above the chosen interval. The 10-second
+Pong timeout detects an unresponsive peer; it is not a substitute for the proxy idle timeout.
+
+Sticky sessions are not required when every gateway replica has a distinct HostLoom broker
+subscription name, or when a backplane otherwise delivers every event to every replica. Each open
+socket remains on the replica that accepted it, while a reconnect may select another replica. The
+version-one protocol is live and has no replay, so a reconnecting client must refresh its current
+state. Sharing one RabbitMQ queue or Kafka consumer group load-balances events between replicas;
+session affinity does not turn that topology into fan-out.
+
 The endpoint requires an authenticated ASP.NET Core principal by default. Authentication is
 completed before the upgrade; each request operation and subscription can additionally name an
 ASP.NET Core policy. Policy handlers receive `WebSocketOperationResource` or
