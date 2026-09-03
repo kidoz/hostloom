@@ -5,9 +5,12 @@
 [![License](https://img.shields.io/badge/license-MIT-blue)](https://github.com/kidoz/hostloom/blob/main/LICENSE)
 
 **HostLoom** — an experimental, Spring-inspired application framework for
-.NET 10 and C# 14. The first vertical slice is typed request/response messaging
-over interchangeable transports, carried by a transport-neutral asynchronous
-middleware pipeline. The current slice implements:
+.NET 10 and C# 14. It began as typed request/response messaging over
+interchangeable transports, carried by a transport-neutral asynchronous
+middleware pipeline, and now also covers caching, distributed locking, explicit
+object mapping, structured logging, and composition diagnostics. Every slice is
+a separate package, so an application takes only what it uses. The current state
+implements:
 
 - generic `IPipe<TContext>` and `IFilter<TContext>` composition, with typed
   context payloads, conditional branches, retry, circuit breaking, rate and
@@ -18,6 +21,9 @@ middleware pipeline. The current slice implements:
   and tracing, and a deterministic test harness;
 - explicit, compile-time-safe object maps with scoped dependency-injection dispatch and
   reflection-free, Native AOT-compatible map dispatch;
+- a two-tier cache with per-key single-flight, cross-instance invalidation, and
+  fail-open reads, and a distributed lock with leases, owner tokens, bounded
+  retry, and lost-lease detection, both backed by Redis over one connection;
 - typed `IRequest<TResponse>` contracts with handler, behavior, and client
   abstractions;
 - typed `IEvent` contracts published to a topic and fanned out to named
@@ -28,16 +34,28 @@ middleware pipeline. The current slice implements:
   name, timestamp, and remote faults;
 - a configurable `System.Text.Json` serialization boundary;
 - an OpenTelemetry-compatible `ActivitySource` and `Meter`, both named `HostLoom`;
+- a structured logging provider with a bounded queue, a background writer,
+  destructuring, and fail-closed masking of protected members;
+- a composition ledger that reports registration decisions, including the
+  components deliberately left out, once at host startup;
+- compile-time analyzers `HLM0001`–`HLM0008` for asynchronous, dependency-injection,
+  mapping, and cache-key usage;
 - liveness and readiness health checks, and an execution-free pipeline probe;
 - in-memory, RabbitMQ, and Kafka broker adapters;
 - an authenticated raw-WebSocket RPC and live-subscription gateway with JSON,
-  MessagePack, and Protocol Buffers subprotocols, bounded per-connection memory,
-  and explicit credit;
+  MessagePack, and Protocol Buffers subprotocols, GUID stream identifiers,
+  application-level ping and pong frames, bounded per-connection memory, and
+  explicit credit;
 - a dependency-free ESM TypeScript client with JSON-v1 framing, validated welcome negotiation,
   observable connection state, an injectable WebSocket boundary, and correlated cancellable
   requests plus reconnecting, credit-managed subscriptions;
 - .NET Generic Host startup with graceful endpoint disposal;
-- tests for typed round trips, behavior ordering, and fault propagation.
+- deterministic tests for typed round trips, behavior ordering, and fault
+  propagation, plus backend-neutral cache and lock conformance scenarios that
+  the Redis suite replays against a real server.
+
+Documentation lives under [`docs/`](docs/index.md): tutorials, how-to guides,
+reference pages per package, and explanations of the architecture.
 
 HostLoom is intentionally a small foundation, not a MassTransit
 reimplementation. It borrows two durable ideas:
@@ -96,7 +114,7 @@ without a stored write token; ordinary .NET `vX.Y.Z` releases remain independent
 Install only the runtime and transport needed by the application, for example:
 
 ```text
-dotnet add package HostLoom.Transport.RabbitMq --version 0.2.0
+dotnet add package HostLoom.Transport.RabbitMq --version 0.3.0
 ```
 
 The analyzer package is optional and has no runtime dependency:
@@ -108,9 +126,10 @@ dotnet add package HostLoom.Analyzers
 It reports an omitted available cancellation token (`HLM0001`), synchronous blocking over a
 HostLoom async operation (`HLM0002`), singleton registration of handlers or behaviors that
 should follow HostLoom's per-delivery scope (`HLM0003`), a destination member an explicit map never
-assigns (`HLM0004`) and a map body whose completeness cannot be verified (`HLM0005`), and the scoped
-mapping dispatcher captured in a singleton (`HLM0006`). See the
-[analyzer rule reference](src/HostLoom.Analyzers/README.md).
+assigns (`HLM0004`) and a map body whose completeness cannot be verified (`HLM0005`), the scoped
+mapping dispatcher captured in a singleton (`HLM0006`), a secret interpolated into a cache or lock
+key (`HLM0007`), and a get-or-create factory that ignores the cancellation token it was handed
+(`HLM0008`). See the [analyzer rule reference](src/HostLoom.Analyzers/README.md).
 
 ## Quick start
 
@@ -255,7 +274,13 @@ fan-out backplane; affinity does not repair a shared load-balancing queue or con
 
 Clients negotiate `hostloom.msgpack.v1`, `hostloom.protobuf.v1`, or `hostloom.json.v1`.
 JSON uses camelCase frame-kind values, omits null optional fields, and carries application payloads
-as Base64-encoded bytes. The repository's dependency-free
+as Base64-encoded bytes. Stream, session, and event identifiers are `Guid` values: JSON spells each
+as 32 lowercase hexadecimal digits without separators, and the binary codecs carry the 16
+big-endian bytes of RFC 4122, so all three subprotocols name one identifier. The client picks each
+stream identifier, the all-zero value addresses the session rather than a stream, and identifiers
+are never reused, so a late frame from a closed stream cannot be misrouted. A client `ping` is
+answered by a `pong` echoing its stream, which gives a browser the liveness signal RFC 6455 Ping
+and Pong frames cannot expose to it. The repository's dependency-free
 [`@hostloom/websocket-client`](clients/hostloom-websocket-client/README.md) package now provides
 TypeScript frame types, direction-aware JSON-v1 encoding and decoding, runtime validation, and
 Base64 JSON payload helpers. Its injectable connection core negotiates the subprotocol, waits for a
@@ -757,9 +782,9 @@ just build
 just test
 ```
 
-The suite above is deterministic and in-process. The RabbitMQ and Kafka
-adapters are additionally exercised against real brokers, which
-`docker-compose.yml` provides:
+The suite above is deterministic and in-process. The RabbitMQ and Kafka adapters
+and the Redis cache and lock backend are additionally exercised against real
+servers, which `docker-compose.yml` provides:
 
 ```text
 docker compose up -d
@@ -767,9 +792,19 @@ dotnet test tests/HostLoom.IntegrationTests/HostLoom.IntegrationTests.csproj -c 
 docker compose down -v
 ```
 
-Those tests skip themselves when the broker ports are closed, so the standard
+Those tests skip themselves when the server ports are closed, so the standard
 gate stays green without Docker — and a skipped result is reported as skipped
-rather than passed, because without a broker they prove nothing.
+rather than passed, because without a server they prove nothing.
+
+The browser client is a separate npm package with its own gate, which runs
+formatting, linting, compilation, type-checking, tests, and the packaged
+contents:
+
+```text
+cd clients/hostloom-websocket-client
+npm ci
+npm run verify
+```
 
 ## Repository map
 
@@ -784,6 +819,7 @@ src/HostLoom/                    messaging kernel
   Wire/                          envelope, logical type names, codec
 src/HostLoom.Analyzers/          Roslyn usage analyzers and rule documentation
 src/HostLoom.Diagnostics/        composition ledger, report, and startup reporter
+src/HostLoom.Logging/            bounded-queue structured logging provider and formatters
 src/HostLoom.Mapping/            dependency-free explicit mapping contracts
 src/HostLoom.Mapping.DependencyInjection/ scoped dispatch and closed map registration
 src/HostLoom.Mapping.Testing/    container-free mapper composition for tests
@@ -808,26 +844,30 @@ src/HostLoom.Transport.RabbitMq/ request queues and exclusive reply queues
 src/HostLoom.Transport.Kafka/    request/response topics with header correlation
 src/HostLoom.AspNetCore.WebSockets/ raw Kestrel WebSocket RPC and subscriptions
 src/HostLoom.AspNetCore.WebSockets.Testing/ TestServer gateway integration client
+clients/hostloom-websocket-client/ dependency-free browser client for the JSON-v1 protocol
+docs/                            tutorials, how-to guides, reference, and explanations
 benchmarks/HostLoom.Benchmarks/    cache, lock, codec, logging, and mapping benchmarks
 benchmarks/HostLoom.Redis.Benchmarks/ real-Redis cache and lock comparisons
 examples/HostLoom.Examples.Pipelines/ runnable pipeline tour: DI stages, manual and standalone composition
 examples/HostLoom.Examples.CachingAot/ Native AOT sample for caching and locking
 tests/HostLoom.Tests/            pipeline, round-trip, behavior, and fault tests
 tests/HostLoom.Conformance/      backend-neutral cache and lock scenarios shared by the unit and integration suites
-tests/HostLoom.IntegrationTests/ RabbitMQ and Kafka transports against real brokers
+tests/HostLoom.IntegrationTests/ RabbitMQ, Kafka, and Redis against real servers
 tests/HostLoom.Analyzers.Tests/  compiler-level analyzer tests
 ```
 
 ## Roadmap toward a Spring-like framework
 
 1. Harden messaging: delivery policies, retry/dead-letter behaviors,
-   outbox/inbox, trace-context propagation, health checks, broker integration
-   tests, and source-generated contract manifests.
-2. Add starter packages and conditional auto-configuration over
+   outbox/inbox, cross-process trace-context propagation, and source-generated
+   contract manifests.
+2. Close the two topology gaps this README names: partition-affine Kafka reply
+   routing, and a WebSocket fan-out backplane with replayable subscriptions.
+3. Add starter packages and conditional auto-configuration over
    `Microsoft.Extensions.*`.
-3. Add validation, transactions, persistence conventions, HTTP problem details,
+4. Add validation, transactions, persistence conventions, HTTP problem details,
    security, and observability starters.
-4. Add a CLI/template and AOT-safe compile-time registration.
+5. Add a CLI/template and AOT-safe compile-time registration.
 
 ## License
 
