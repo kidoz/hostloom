@@ -15,10 +15,63 @@ upgrade rather than a silent change.
 
 ### Added
 
+- The initial `@hostloom/websocket-client` package structure: dependency-free ESM output,
+  discriminated JSON-v1 frame types, direction-aware encoding and decoding, validation of untrusted
+  frames and safe integers, and Base64 UTF-8 JSON payload helpers. Its Node tests consume the
+  gateway's canonical schema and exact fixtures, and its npm dry-run verifies the publishable
+  package contents. An injectable connection core now validates subprotocol and welcome
+  negotiation before reporting `connected`, exposes state and validated-frame observers, sends
+  validated client frames, surfaces close details, and supports explicit close and manual
+  reconnect. Its request API allocates non-reused session stream identifiers, correlates responses
+  and typed remote faults, enforces the welcome-advertised concurrency limit, forwards gateway
+  timeouts, maps `AbortSignal` to one cancel frame, and rejects every pending request on connection
+  loss. Its subscription API shares non-reused stream allocation with requests, waits for a matching
+  confirmation, buffers events within initial credit until a listener exists, automatically
+  replenishes credit at a configurable low watermark, sends acknowledgements, maps cancellation to
+  one `unsubscribe`, and reports terminal faults. An opt-in reconnect policy now applies jittered
+  exponential backoff from one to 30 seconds, resets after a validated welcome, awaits credential
+  refresh before retrying close code `1008`, and retains logical subscription handles and listeners
+  across resubscription with fresh session state. Manual closes and protocol failures remain
+  terminal, while pending requests fail and are never replayed. The package development gate pins a
+  TypeScript 7-compatible ESLint 10/Babel configuration, Prettier, and Vitest, with one
+  `npm run verify` command covering format, lint, compilation, tests, and package contents.
+  Independent `websocket-client-vX.Y.Z` releases now validate the package version and client
+  changelog, upload the exact tarball, and publish from a protected GitHub environment through npm
+  trusted publishing with provenance. Pull requests that affect the client or its canonical
+  protocol artifacts run the same package gate. The initial registry publication alone uses a
+  removable bootstrap token because npm requires an existing package before it accepts an OIDC
+  publisher.
+- Fixed browser subscriptions created synchronously by a `connected` state listener so reconnect
+  restoration cannot re-key and orphan their stream routing. Terminal `unsubscribe()` cleanup is
+  now idempotent, and non-string request operations reject through the returned promise. Gateway
+  fan-out membership is reference-counted per session and topic/key pair, so unsubscribing one of
+  several matching streams no longer silently stops its siblings.
+- Client-initiated `ping` and server `pong` frames in the version-one hub protocol, across the
+  JSON, MessagePack, and Protocol Buffers codecs. The client picks a stream identifier and the
+  gateway echoes it, so round-trip time stays unambiguous with several pings in flight. The session
+  answers directly, without a dependency-injection scope, a registered operation, or a transport
+  hop, and retains no ping state. A `ping` shares the existing control-frame rate window, a `ping`
+  addressed to the session rather than a stream and a client-sent `pong` both return
+  `invalid_frame`, and browsers gain the
+  liveness signal that RFC 6455 Ping and Pong cannot give them. Existing clients are unaffected
+  because a `pong` is only ever sent in reply to a `ping`.
 - The `hostloom.json.v1` WebSocket contract now matches its documented web defaults: camelCase
   frame kinds and omitted null optional fields. It ships a JSON Schema and exact frame fixtures,
   reads kinds case-insensitively, rejects numeric or unknown kinds, and retains Base64 opaque
-  application payloads.
+  application payloads. The published schema pins `welcome` to the reserved session stream, bounds
+  every numeric field so that no schema-valid frame exceeds what the .NET codec and the browser
+  client can read, and asserts the Base64 payload alphabet with a pattern rather than the advisory
+  `contentEncoding` annotation alone.
+- `HubFrame.StreamId`, `SessionId`, and `EventId` are `Guid` values rather than a `ulong` and two
+  strings, across the JSON, MessagePack, and Protocol Buffers codecs. JSON spells an identifier as
+  32 lowercase hexadecimal digits without separators and rejects every other spelling; the binary
+  codecs carry the 16 big-endian bytes of RFC 4122, so all three subprotocols name one identifier.
+  `Guid.Empty` addresses the session rather than a stream and is valid only on `welcome`. The
+  Protocol Buffers contract changes `stream_id`, `session_id`, and `event_id` to `bytes` on their
+  existing field numbers. `WebSocketSessionInfo.SessionId` and
+  `IWebSocketSessionControl.DisconnectAsync` take a `Guid`, and `WebSocketTestClient` awaits a
+  `Guid` stream. Clients no longer allocate stream identifiers from a counter, so a stream is never
+  reused within or across sessions and a late frame from a closed stream cannot be misrouted.
 - Same-origin WebSocket handshake validation by default, exact-origin allowlists, an explicit
   missing-Origin policy for browser-only versus native clients, and a replaceable
   `IWebSocketOriginValidator`. Validation uses ASP.NET Core's effective scheme and host and rejects
