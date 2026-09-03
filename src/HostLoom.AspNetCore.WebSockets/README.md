@@ -183,8 +183,9 @@ await sessions.DisconnectSubjectAsync(userId, "roles_changed", cancellationToken
 Administrative disconnects close with 1008 and the supplied close reason. Reasons must be nonempty
 and at most 123 UTF-8 bytes. Host shutdown closes every registered session with 1001
 `server_shutdown` and waits for session teardown before HostLoom broker subscriptions stop.
-Client `cancel`, `subscribe`, `credit`, `ack`, and `unsubscribe` frames share a per-session fixed
-one-second rate window; exceeding `MaximumControlFramesPerSecond` closes with 1008 `rate_limited`.
+Client `cancel`, `subscribe`, `credit`, `ack`, `unsubscribe`, and `ping` frames share a per-session
+fixed one-second rate window; exceeding `MaximumControlFramesPerSecond` closes with 1008
+`rate_limited`.
 Register a custom `IWebSocketSessionLifetimeResolver` before `AddWebSocketGateway` when credential
 expiry lives elsewhere.
 
@@ -206,16 +207,45 @@ contract serialization. The cross-language Protocol Buffers schema is shipped as
 `protocol/hostloom-websocket-v1.proto` in the NuGet package.
 
 JSON accepts kind names case-insensitively and rejects numeric, `None`, and unknown kinds. Its JSON
-Schema and exact `welcome`, `subscribed`, `event`, and `fault` fixtures are shipped under the
-package's `protocol/` directory.
+Schema and exact `welcome`, `subscribed`, `event`, `fault`, `ping`, and `pong` fixtures are shipped
+under the package's `protocol/` directory.
+
+`streamId`, `sessionId`, and `eventId` are `Guid` identifiers. JSON spells each as 32 lowercase
+hexadecimal digits with no separators, and the binary codecs carry the 16 big-endian bytes of
+RFC 4122, so all three subprotocols name the same identifier. The all-zero identifier addresses the
+session rather than a stream; it is valid only on `welcome`.
+
+The schema is the interoperability contract, so it never admits a frame one conformant
+implementation could not read. `welcome` is pinned to the all-zero stream; every other kind must use
+a different identifier; `sequence` stops at 9007199254740991, the largest integer JSON carries
+without loss; `credit`, `timeoutMilliseconds`, `maximumMessageSize`, and
+`maximumConcurrentRequests` stop at 2147483647. `payload` is constrained by a Base64 pattern,
+because Draft 2020-12 treats `contentEncoding` as an annotation that most validators do not
+enforce.
+
+The repository's dependency-free ESM
+[`@hostloom/websocket-client`](../../clients/hostloom-websocket-client/README.md) package consumes
+that schema and those fixtures in its conformance tests. It provides TypeScript frame types,
+direction-aware JSON-v1 encoding and decoding, runtime validation, and Base64 JSON payload helpers.
+Its injectable connection core validates the selected protocol and welcome frame, observes state
+and later server frames, sends validated client frames, and supports explicit close and manual
+reconnect plus an opt-in jittered exponential retry policy. Its request API allocates stream
+identifiers, correlates responses and typed faults, enforces the advertised concurrency limit,
+passes gateway timeouts, maps `AbortSignal` to a cancel frame, and never replays requests. Its
+subscription API shares stream allocation with requests, waits for `subscribed`, buffers within
+initial credit until a listener exists, replenishes credit at a configurable low watermark,
+acknowledges progress, maps cancellation to `unsubscribe`, and resubscribes retained logical handles
+after a replacement welcome. Close code `1008` retries only after the configured credential-refresh
+callback succeeds.
 
 The server rejects an upgrade when no supported subprotocol was offered. Changing a frame's
 WebSocket message type after negotiation closes the connection.
 
 ## Version-one frames
 
-Every client stream uses a non-zero `streamId`. A request stream lives until `response` or `fault`;
-a subscription stream lives until `unsubscribe` and `complete`.
+Every client stream picks its own `streamId`, which must not be the all-zero session identifier. A
+request stream lives until `response` or `fault`; a subscription stream lives until `unsubscribe`
+and `complete`. Identifiers are never reused within a session.
 
 | Direction | `kind` | Required fields | Meaning |
 |---|---|---|---|
@@ -231,10 +261,27 @@ a subscription stream lives until `unsubscribe` and `complete`.
 | client → server | `ack` | `streamId`, `sequence` | Records progress in session state; it does not enable replay. |
 | client → server | `unsubscribe` | `streamId` | Stops a subscription. |
 | server → client | `complete` | `streamId` | Confirms termination. |
+| client → server | `ping` | `streamId` | Requests an application-level liveness reply. |
+| server → client | `pong` | `streamId` | Echoes the ping `streamId`. |
 
 For JSON, enum names are camelCase (for example `"request"`). Malformed frames close the
 connection. A decodable frame kind that is not valid from a client returns an `invalid_frame`
 fault. Route errors are returned as `fault` frames with codes from `HubFaultCodes`.
+
+### Application-level ping
+
+`ping` and `pong` exist because browsers cannot observe RFC 6455 Ping and Pong control frames.
+Those transport-level frames remain the gateway's keep-alive and still detect an unresponsive peer;
+a client that can observe them does not need these application frames.
+
+The client picks a `streamId` and the gateway echoes it, so several pings may be in flight
+and each round-trip time is unambiguous. The session answers directly, without a dependency-injection
+scope, a registered operation, or a transport hop, which makes a `pong` evidence about the socket
+and the gateway loops rather than about broker health. The gateway retains no ping state, and a
+`ping` never reserves a stream, a request slot, or a subscription. A `ping` addressed to the
+all-zero session identifier returns `invalid_frame`, and a client-sent `pong` is rejected the same
+way. The reply is queued like
+any other outbound frame, so a connection too slow to drain its queue is aborted rather than served.
 
 ## Load and delivery semantics
 
@@ -247,6 +294,10 @@ Events consume one unit of subscription credit before entering the output queue.
 when credit is zero. Version one is deliberately a **live, process-local subscription protocol**:
 event IDs and sequences are generated by the gateway process, acknowledgements are not persisted,
 and reconnecting does not replay missed events.
+
+A session may hold several streams for the same topic and key. Registry membership is
+reference-counted per session and `(topic, key)`, so completing one stream does not stop delivery to
+its siblings; membership ends after the last matching stream is removed.
 
 HostLoom broker subscriptions still keep their broker-specific meaning. In a multi-node deployment,
 use a distinct HostLoom subscription name per gateway node if every node must see every event, or

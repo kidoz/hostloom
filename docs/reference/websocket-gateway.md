@@ -9,6 +9,18 @@ of request operations and event topics. Namespace:
 dotnet add package HostLoom.AspNetCore.WebSockets
 ```
 
+The repository also contains the dependency-free ESM
+[`@hostloom/websocket-client`](https://github.com/kidoz/hostloom/tree/main/clients/hostloom-websocket-client)
+package. It provides TypeScript frame types, JSON-v1 validation and encoding, Base64 JSON payload
+helpers, and an injectable connection core with validated welcome negotiation, observable state,
+explicit close, and opt-in jittered exponential reconnect. Its request API provides stream
+allocation, response and typed-fault correlation, advertised-concurrency enforcement, gateway
+timeouts, and `AbortSignal` cancellation; requests are never replayed. Its subscription API shares
+stream allocation with requests, waits for confirmation, buffers within initial credit until an
+event listener exists, replenishes credit at a configurable low watermark, acknowledges progress,
+maps cancellation to `unsubscribe`, and resubscribes retained logical handles after a replacement
+welcome. Close code `1008` requires a successful credential refresh before retry.
+
 ## Registration
 
 ```csharp
@@ -96,6 +108,10 @@ replica that accepted it; after reconnecting to any replica, a client refreshes 
 version one provides live delivery without replay. Reusing one RabbitMQ queue or Kafka consumer
 group load-balances events between replicas, and session affinity does not correct that topology.
 
+Multiple streams in one session may use the same topic and key. The gateway keeps one fan-out group
+membership for that session until its final matching stream ends, while encoding one event frame
+per active stream.
+
 Authentication happens before upgrade; when `RequireAuthenticatedUser` is
 on, the endpoint requires authorization and unauthenticated requests get
 401. Non-upgrade requests get 400, as does a client offering no
@@ -151,19 +167,34 @@ claim. The session is capped by `MaximumSessionLifetime` in either case and clos
 resolver before `AddWebSocketGateway` when the authentication system stores expiry elsewhere.
 
 `IWebSocketSessionDirectory` provides `Count`, `GetSessions()`, and
-`GetSessionsBySubject(subject)`. Each `WebSocketSessionInfo` snapshot contains session id, subject,
+`GetSessionsBySubject(subject)`. Each `WebSocketSessionInfo` snapshot contains the `Guid` session
+id, subject,
 negotiated protocol, connection and expiry times, and the current subscription count; no
 `ClaimsPrincipal` is exposed.
 
-`IWebSocketSessionControl.DisconnectAsync(sessionId, reason)` and
+`IWebSocketSessionControl.DisconnectAsync(Guid sessionId, reason)` and
 `DisconnectSubjectAsync(subject, reason)` close matched sessions with 1008 and wait for their
 lifecycle to finish. Use them when logout or a role change must revoke an already upgraded socket.
 The reason must fit the WebSocket 123-byte UTF-8 close-description limit. During host shutdown the
 gateway closes all sessions with 1001 `server_shutdown` before HostLoom's broker listeners stop.
 
 Client control frames are bounded independently from request concurrency. More than
-`MaximumControlFramesPerSecond` `cancel`, `subscribe`, `credit`, `ack`, or `unsubscribe` frames in
-one fixed one-second window closes the session with 1008 `rate_limited`.
+`MaximumControlFramesPerSecond` `cancel`, `subscribe`, `credit`, `ack`, `unsubscribe`, or `ping`
+frames in one fixed one-second window closes the session with 1008 `rate_limited`.
+
+## Application-level ping
+
+A client sends `ping` with a stream identifier of its own; the gateway replies `pong` echoing that
+`streamId`. The reply is produced by the session itself, so it measures the socket and the
+gateway's read and write loops without a dependency-injection scope, a registered operation, or a
+transport hop. The gateway keeps no ping state, and a `ping` never reserves a stream, a request
+slot, or a subscription.
+
+This exists because browsers cannot observe RFC 6455 Ping and Pong control frames. Those remain the
+transport-level keep-alive configured through `UseHostLoomWebSockets`, and they still detect an
+unresponsive peer independently. A client that can observe them does not need the application-level
+frames. A `pong` is queued like any other outbound frame, so a client too slow to drain its queue
+is aborted rather than served.
 
 ## Subprotocols
 
@@ -177,7 +208,9 @@ Custom protocols implement `IWebSocketHubProtocol`
 (`SubProtocol`, `MessageType`, `Decode`, `Encode`).
 
 JSON uses camelCase kind values, omits null optional fields, and keeps application payloads as
-Base64 bytes. The NuGet package includes its schema and conformance fixtures under `protocol/`.
+Base64 bytes. `StreamId`, `SessionId`, and `EventId` are `Guid` values: JSON spells each as 32
+lowercase hexadecimal digits, and the binary codecs carry the 16 big-endian bytes of RFC 4122. The
+NuGet package includes its schema and conformance fixtures under `protocol/`.
 
 ## Testing
 
@@ -189,9 +222,10 @@ It uses JSON v1 by default and accepts any `IWebSocketHubProtocol` in its constr
 
 `HubFrame` carries `Kind` (`Welcome`, `Request`, `Response`, `Fault`,
 `Cancel`, `Subscribe`, `Subscribed`, `Event`, `Credit`, `Ack`,
-`Unsubscribe`, `Complete`), a `StreamId`, and kind-dependent fields
+`Unsubscribe`, `Complete`, `Ping`, `Pong`), a `StreamId`, and kind-dependent fields
 (`Operation`, `Topic`, `Key`, `TimeoutMilliseconds`, `Credit`,
-`Sequence`, `EventId`, `Code`, `Message`, `Payload`, …).
+`Sequence`, `EventId`, `Code`, `Message`, `Payload`, …). `StreamId` is a `Guid`; `Guid.Empty`
+addresses the session rather than a stream, so every client stream must use another value.
 
 `HubFaultCodes` string constants: `invalid_frame`, `invalid_payload`,
 `operation_not_found`, `topic_not_found`, `forbidden`, `request_timeout`,
