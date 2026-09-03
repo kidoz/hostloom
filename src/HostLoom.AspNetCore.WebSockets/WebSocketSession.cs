@@ -94,6 +94,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         _registry.Register(this);
+        WebSocketDiagnostics.SessionOpened(_protocol.SubProtocol);
         using var expiryCancellation = new CancellationTokenSource();
         var expiry = ExpireAsync(expiryCancellation.Token);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
@@ -204,6 +205,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                 {
                     _registry.Unsubscribe(this, subscription.Topic, subscription.Key);
                     subscription.Stop(_outbound.Release);
+                    WebSocketDiagnostics.SubscriptionRemoved(subscription.Topic);
                 }
 
                 _subscriptions.Clear();
@@ -225,6 +227,11 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             finally
             {
                 _registry.Unregister(this);
+                WebSocketDiagnostics.SessionClosed(
+                    _protocol.SubProtocol,
+                    Math.Max(0, (_timeProvider.GetUtcNow() - _connectedAt).TotalSeconds),
+                    GetMetricCloseReason()
+                );
                 _stop.Dispose();
                 _completion.TrySetResult();
             }
@@ -265,6 +272,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             );
             if (encoded.Length > _configuration.Options.MaximumMessageSize)
             {
+                WebSocketDiagnostics.EventDropped(topic, "message_too_large");
                 accepted = false;
                 continue;
             }
@@ -281,12 +289,21 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                 case LiveEventDisposition.Buffered:
                     break;
                 case LiveEventDisposition.Active:
-                    accepted &= _outbound.TryWriteReserved(frame);
+                    if (!_outbound.TryWriteReserved(frame))
+                    {
+                        WebSocketDiagnostics.EventDropped(topic, "queue_unavailable");
+                        accepted = false;
+                    }
+
                     break;
                 case LiveEventDisposition.Dropped:
+                    WebSocketDiagnostics.EventDropped(topic, "no_credit");
+                    break;
                 case LiveEventDisposition.Stopped:
+                    WebSocketDiagnostics.EventDropped(topic, "subscription_stopped");
                     break;
                 case LiveEventDisposition.CapacityExceeded:
+                    WebSocketDiagnostics.EventDropped(topic, "queue_capacity");
                     accepted = false;
                     break;
                 default:
@@ -531,6 +548,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         }
 
         _registry.Subscribe(this, topic.Name, frame.Key);
+        WebSocketDiagnostics.SubscriptionAdded(topic.Name);
         if (
             !TryQueue(
                 new HubFrame
@@ -636,6 +654,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             {
                 _registry.Unsubscribe(this, state.Topic, state.Key);
                 state.Stop(_outbound.Release);
+                WebSocketDiagnostics.SubscriptionRemoved(state.Topic);
                 if (
                     !TryQueue(
                         WebSocketRequestRouter.Fault(
@@ -714,6 +733,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
 
         _registry.Unsubscribe(this, subscription.Topic, subscription.Key);
         subscription.Stop(_outbound.Release);
+        WebSocketDiagnostics.SubscriptionRemoved(subscription.Topic);
         if (sendComplete)
         {
             _ = TryQueue(new HubFrame { Kind = HubFrameKind.Complete, StreamId = streamId });
@@ -722,7 +742,27 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
 
     private bool TryQueue(HubFrame frame)
     {
-        return TryReserve(frame, out var reserved) && _outbound.TryWriteReserved(reserved);
+        if (frame.Kind is HubFrameKind.Fault && frame.Code is { } code)
+        {
+            WebSocketDiagnostics.FaultGenerated(code);
+        }
+
+        if (!TryReserve(frame, out var reserved))
+        {
+            return false;
+        }
+
+        if (_outbound.TryWriteReserved(reserved))
+        {
+            return true;
+        }
+
+        if (frame.Kind is HubFrameKind.Event && frame.Topic is { } topic)
+        {
+            WebSocketDiagnostics.EventDropped(topic, "queue_unavailable");
+        }
+
+        return false;
     }
 
     private bool TryReserve(HubFrame frame, out OutboundFrame reserved)
@@ -730,11 +770,27 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         var payload = _protocol.Encode(frame);
         if (payload.Length > _configuration.Options.MaximumMessageSize)
         {
+            if (frame.Kind is HubFrameKind.Event && frame.Topic is { } topic)
+            {
+                WebSocketDiagnostics.EventDropped(topic, "message_too_large");
+            }
+
             reserved = default;
             return false;
         }
 
-        return _outbound.TryReserve(payload, _protocol.MessageType, out reserved);
+        var eventTopic = frame.Kind is HubFrameKind.Event ? frame.Topic : null;
+        if (_outbound.TryReserve(payload, _protocol.MessageType, eventTopic, out reserved))
+        {
+            return true;
+        }
+
+        if (eventTopic is not null)
+        {
+            WebSocketDiagnostics.EventDropped(eventTopic, "queue_capacity");
+        }
+
+        return false;
     }
 
     private async Task WriteLoopAsync(CancellationToken cancellationToken)
@@ -750,6 +806,10 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                     await _socket
                         .SendAsync(frame.Payload, frame.MessageType, true, cancellationToken)
                         .ConfigureAwait(false);
+                    if (frame.EventTopic is { } topic)
+                    {
+                        WebSocketDiagnostics.EventSent(topic);
+                    }
                 }
                 finally
                 {
@@ -850,6 +910,31 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         }
 
         RequestDisconnect(WebSocketCloseStatus.PolicyViolation, "session_expired");
+    }
+
+    private string GetMetricCloseReason()
+    {
+        if (Volatile.Read(ref _aborted) != 0)
+        {
+            return "aborted";
+        }
+
+        return _closeReason switch
+        {
+            "session_expired" => "session_expired",
+            "server_shutdown" => "server_shutdown",
+            "rate_limited" => "rate_limited",
+            "The message exceeded the configured limit." => "message_too_large",
+            "The frame type does not match the negotiated subprotocol." => "invalid_message_type",
+            "The application frame could not be decoded."
+            or "The fragmented message was invalid." => "invalid_payload",
+            "Peer closed the session." => "peer_closed",
+            "Session completed." => "completed",
+            _ when _closeStatus is WebSocketCloseStatus.PolicyViolation => "policy_violation",
+            _ when _closeStatus is WebSocketCloseStatus.EndpointUnavailable =>
+                "endpoint_unavailable",
+            _ => "other",
+        };
     }
 
     private static bool IsControlFrame(HubFrameKind kind) =>

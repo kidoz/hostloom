@@ -52,7 +52,7 @@ internal sealed class SubscriptionState(
                 return LiveEventDisposition.Dropped;
             }
 
-            if (!outbound.TryReserve(payload, messageType, out frame))
+            if (!outbound.TryReserve(payload, messageType, Topic, out frame))
             {
                 return LiveEventDisposition.CapacityExceeded;
             }
@@ -76,7 +76,7 @@ internal sealed class SubscriptionState(
         {
             if (_stopped)
             {
-                ReleaseBuffered(release);
+                ReleaseBuffered(release, "subscription_stopped");
                 return true;
             }
 
@@ -85,12 +85,14 @@ internal sealed class SubscriptionState(
                 if (!TryConsumeCredit())
                 {
                     release(frame);
+                    WebSocketDiagnostics.EventDropped(Topic, "no_credit");
                     continue;
                 }
 
                 if (!write(frame))
                 {
-                    ReleaseBuffered(release);
+                    WebSocketDiagnostics.EventDropped(Topic, "queue_unavailable");
+                    ReleaseBuffered(release, "queue_unavailable");
                     FinishInitialization();
                     return false;
                 }
@@ -124,7 +126,7 @@ internal sealed class SubscriptionState(
             }
 
             _stopped = true;
-            ReleaseBuffered(release);
+            ReleaseBuffered(release, "subscription_stopped");
         }
 
         try
@@ -211,11 +213,12 @@ internal sealed class SubscriptionState(
         }
     }
 
-    private void ReleaseBuffered(Action<OutboundFrame> release)
+    private void ReleaseBuffered(Action<OutboundFrame> release, string reason)
     {
         while (_bufferedLiveEvents.TryDequeue(out var frame))
         {
             release(frame);
+            WebSocketDiagnostics.EventDropped(Topic, reason);
         }
     }
 
