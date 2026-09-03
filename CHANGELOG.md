@@ -50,6 +50,10 @@ upgrade rather than a silent change.
   denial, slow-client abort, handler-level handshake rejection, operation failure, and snapshot
   failure. Unknown client topics, subscription keys, payloads, credentials, handshake headers,
   caller-supplied close text, and remote fault messages are excluded from framework properties.
+- WebSocket request Server activities from the `HostLoom.AspNetCore.WebSockets` source, with
+  registered operation, protocol, bounded outcome, and fault-code tags. They parent the existing
+  HostLoom request activity without accepting unregistered client operation names as trace identity;
+  cross-process broker trace propagation remains outside this increment.
 - Live subscription credit replenishment no longer signals a completed snapshot initializer, which
   removes one caught `SemaphoreFullException` allocation per zero-to-positive refill.
 
