@@ -43,6 +43,28 @@ The analyzer package is optional and has no runtime dependency:
 dotnet add package HostLoom.Analyzers
 ```
 
+## Browser package
+
+The repository contains the separately versioned ESM package
+[`@hostloom/websocket-client`](https://github.com/kidoz/hostloom/tree/main/clients/hostloom-websocket-client).
+It provides dependency-free TypeScript types, validation, and encoding for `hostloom.json.v1`, plus
+Base64 UTF-8 JSON payload helpers. Its injectable connection core validates subprotocol and welcome
+negotiation, exposes connection-state and server-frame observers, sends validated client frames,
+and supports explicit close plus opt-in jittered exponential reconnect. Its request API allocates
+stream identifiers, correlates responses and typed remote faults, enforces the welcome-advertised
+concurrency limit, maps `AbortSignal` to a cancel frame, and never replays a request. Its
+subscription API waits for gateway confirmation, automatically replenishes credit at a configurable
+low watermark after an event listener attaches, maps cancellation to `unsubscribe`, and
+resubscribes retained logical handles after a replacement welcome. Close code `1008` retries only
+after the configured credential-refresh callback succeeds. The package uses an independent
+`websocket-client-vX.Y.Z` release stream. Its GitHub workflow verifies and uploads the immutable
+tarball before publishing it from the protected `npm` environment through npm trusted publishing;
+only the first publication requires a temporary bootstrap token because npm cannot attach an OIDC
+publisher to a package that does not yet exist.
+
+The package's conformance tests consume the schema and exact fixtures from
+`HostLoom.AspNetCore.WebSockets` instead of copying the wire contract.
+
 ## Dependency edges
 
 - `HostLoom` depends on `HostLoom.Pipelines`; each transport depends on
