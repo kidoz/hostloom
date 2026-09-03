@@ -33,6 +33,9 @@ middleware pipeline. The current slice implements:
 - an authenticated raw-WebSocket RPC and live-subscription gateway with JSON,
   MessagePack, and Protocol Buffers subprotocols, bounded per-connection memory,
   and explicit credit;
+- a dependency-free ESM TypeScript client with JSON-v1 framing, validated welcome negotiation,
+  observable connection state, an injectable WebSocket boundary, and correlated cancellable
+  requests plus reconnecting, credit-managed subscriptions;
 - .NET Generic Host startup with graceful endpoint disposal;
 - tests for typed round trips, behavior ordering, and fault propagation.
 
@@ -74,6 +77,21 @@ packages are versioned together:
 | `HostLoom.Locking.Testing` | Container-free lock composition, scripted, recording, and fault-injecting providers |
 | `HostLoom.Locking.Pipelines` | Distributed-lock filter for HostLoom pipelines |
 | `HostLoom.Redis` | Redis cache store, invalidation channel, lock provider, and health probes over one connection |
+
+The browser package source lives at
+[`@hostloom/websocket-client`](clients/hostloom-websocket-client/README.md). It provides typed
+JSON-v1 framing and payload helpers plus an injectable connection that reports `connected` only
+after validated welcome negotiation. Its opt-in retry policy uses jittered exponential backoff,
+refreshes credentials before retrying close code `1008`, and resubscribes logical subscription
+handles after a new welcome. Requests are never replayed. The subscription API waits for
+confirmation, buffers within initial credit until a listener exists, replenishes credit at a
+configurable low watermark, and maps unsubscription and cancellation to the gateway lifecycle. It
+has no runtime dependencies and is versioned separately from the .NET packages.
+
+Browser-client releases use `websocket-client-vX.Y.Z` tags. The release workflow verifies and
+uploads the exact npm tarball, then publishes it from the protected `npm` environment. After the
+one-time registry bootstrap, npm trusted publishing uses GitHub OIDC and automatic provenance
+without a stored write token; ordinary .NET `vX.Y.Z` releases remain independent.
 
 Install only the runtime and transport needed by the application, for example:
 
@@ -237,7 +255,16 @@ fan-out backplane; affinity does not repair a shared load-balancing queue or con
 
 Clients negotiate `hostloom.msgpack.v1`, `hostloom.protobuf.v1`, or `hostloom.json.v1`.
 JSON uses camelCase frame-kind values, omits null optional fields, and carries application payloads
-as Base64-encoded bytes.
+as Base64-encoded bytes. The repository's dependency-free
+[`@hostloom/websocket-client`](clients/hostloom-websocket-client/README.md) package now provides
+TypeScript frame types, direction-aware JSON-v1 encoding and decoding, runtime validation, and
+Base64 JSON payload helpers. Its injectable connection core negotiates the subprotocol, waits for a
+valid welcome frame, exposes state and validated-frame observers, and supports explicit close plus
+opt-in jittered exponential reconnect. Its request API correlates responses and typed faults,
+enforces the advertised concurrency limit, and supports `AbortSignal` cancellation without replay
+after connection loss. Its subscription API waits for `subscribed`, replenishes credit at a low
+watermark after an event listener attaches, acknowledges progress, maps cancellation to
+`unsubscribe`, and resubscribes retained logical handles after a replacement welcome.
 Authentication happens before upgrade and named ASP.NET Core policies are checked again for every
 operation and subscription. One receive loop, one socket writer, a byte-bounded outbound queue,
 concurrent-request limits, and subscription credit prevent a slow client from creating unbounded
