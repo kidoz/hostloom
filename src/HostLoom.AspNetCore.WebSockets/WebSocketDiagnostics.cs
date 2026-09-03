@@ -1,12 +1,25 @@
+using System.Diagnostics;
 using System.Diagnostics.Metrics;
 
 namespace HostLoom.AspNetCore.WebSockets;
 
-/// <summary>Metric names and tags emitted by the HostLoom WebSocket gateway.</summary>
+/// <summary>Tracing and metric names and tags emitted by the HostLoom WebSocket gateway.</summary>
 public static class WebSocketDiagnostics
 {
+    /// <summary>Activity source name to enable when configuring OpenTelemetry tracing.</summary>
+    public const string ActivitySourceName = "HostLoom.AspNetCore.WebSockets";
+
     /// <summary>Meter name to enable when configuring OpenTelemetry metrics.</summary>
     public const string MeterName = "HostLoom.AspNetCore.WebSockets";
+
+    /// <summary>Activity name used for a registered WebSocket request operation.</summary>
+    public const string RequestActivityName = "hostloom.websocket.request";
+
+    /// <summary>Tag carrying the registered public request operation name.</summary>
+    public const string OperationTag = "hostloom.websocket.operation";
+
+    /// <summary>Tag carrying a bounded request outcome.</summary>
+    public const string OutcomeTag = "hostloom.websocket.outcome";
 
     /// <summary>Tag carrying the negotiated WebSocket subprotocol.</summary>
     public const string ProtocolTag = "hostloom.websocket.protocol";
@@ -23,6 +36,7 @@ public static class WebSocketDiagnostics
     /// <summary>Tag carrying a public <see cref="HubFaultCodes"/> value.</summary>
     public const string FaultCodeTag = "hostloom.websocket.fault.code";
 
+    private static readonly ActivitySource Activities = new(ActivitySourceName);
     private static readonly Meter Meter = new(MeterName);
 
     private static readonly UpDownCounter<long> Sessions = Meter.CreateUpDownCounter<long>(
@@ -110,4 +124,16 @@ public static class WebSocketDiagnostics
 
     internal static void HandshakeWasRejected(string reason) =>
         HandshakeRejected.Add(1, new KeyValuePair<string, object?>(ReasonTag, reason));
+
+    internal static Activity? StartRequestActivity(string operation, string? protocol)
+    {
+        var activity = Activities.StartActivity(RequestActivityName, ActivityKind.Server);
+        activity?.SetTag(OperationTag, operation);
+        if (protocol is not null)
+        {
+            activity?.SetTag(ProtocolTag, protocol);
+        }
+
+        return activity;
+    }
 }

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
@@ -15,7 +16,8 @@ internal sealed class WebSocketRequestRouter(
     public async ValueTask<HubFrame> RouteAsync(
         HubFrame frame,
         ClaimsPrincipal user,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        string? protocol = null
     )
     {
         if (
@@ -30,109 +32,146 @@ internal sealed class WebSocketRequestRouter(
             );
         }
 
-        var scope = scopeFactory.CreateAsyncScope();
+        using var activity = WebSocketDiagnostics.StartRequestActivity(route.Name, protocol);
         try
         {
-            var resource = new WebSocketOperationResource(route.Name, route.Destination);
-            if (
-                !await IsAuthorizedAsync(
-                        scope.ServiceProvider,
-                        user,
-                        resource,
-                        route.AuthorizationPolicy
-                    )
-                    .ConfigureAwait(false)
-            )
-            {
-                return Fault(
-                    frame.StreamId,
-                    HubFaultCodes.Forbidden,
-                    "The caller is not authorized for this operation."
-                );
-            }
-
-            if (frame.Payload is not { } payload)
-            {
-                return Fault(
-                    frame.StreamId,
-                    HubFaultCodes.InvalidPayload,
-                    "A request payload is required."
-                );
-            }
-
-            var timeout = configuration.Options.DefaultRequestTimeout;
-            if (frame.TimeoutMilliseconds is { } milliseconds)
+            var scope = scopeFactory.CreateAsyncScope();
+            try
             {
                 if (
-                    milliseconds <= 0
-                    || milliseconds > configuration.Options.MaximumRequestTimeout.TotalMilliseconds
+                    !await IsAuthorizedAsync(
+                            scope.ServiceProvider,
+                            user,
+                            new WebSocketOperationResource(route.Name, route.Destination),
+                            route.AuthorizationPolicy
+                        )
+                        .ConfigureAwait(false)
                 )
                 {
-                    return Fault(
-                        frame.StreamId,
-                        HubFaultCodes.InvalidFrame,
-                        "The request timeout is outside the allowed range."
+                    return CompleteActivity(
+                        activity,
+                        Fault(
+                            frame.StreamId,
+                            HubFaultCodes.Forbidden,
+                            "The caller is not authorized for this operation."
+                        )
                     );
                 }
 
-                timeout = TimeSpan.FromMilliseconds(milliseconds);
-            }
-
-            try
-            {
-                var invoker = (IWebSocketRequestInvoker)
-                    scope.ServiceProvider.GetRequiredService(route.InvokerType);
-                var response = await invoker
-                    .InvokeAsync(payload, route.Destination, timeout, cancellationToken)
-                    .ConfigureAwait(false);
-                return new HubFrame
+                if (frame.Payload is not { } payload)
                 {
-                    Kind = HubFrameKind.Response,
-                    StreamId = frame.StreamId,
-                    Payload = response,
-                };
+                    return CompleteActivity(
+                        activity,
+                        Fault(
+                            frame.StreamId,
+                            HubFaultCodes.InvalidPayload,
+                            "A request payload is required."
+                        )
+                    );
+                }
+
+                var timeout = configuration.Options.DefaultRequestTimeout;
+                if (frame.TimeoutMilliseconds is { } milliseconds)
+                {
+                    if (
+                        milliseconds <= 0
+                        || milliseconds
+                            > configuration.Options.MaximumRequestTimeout.TotalMilliseconds
+                    )
+                    {
+                        return CompleteActivity(
+                            activity,
+                            Fault(
+                                frame.StreamId,
+                                HubFaultCodes.InvalidFrame,
+                                "The request timeout is outside the allowed range."
+                            )
+                        );
+                    }
+
+                    timeout = TimeSpan.FromMilliseconds(milliseconds);
+                }
+
+                try
+                {
+                    var invoker = (IWebSocketRequestInvoker)
+                        scope.ServiceProvider.GetRequiredService(route.InvokerType);
+                    var response = await invoker
+                        .InvokeAsync(payload, route.Destination, timeout, cancellationToken)
+                        .ConfigureAwait(false);
+                    return CompleteActivity(
+                        activity,
+                        new HubFrame
+                        {
+                            Kind = HubFrameKind.Response,
+                            StreamId = frame.StreamId,
+                            Payload = response,
+                        }
+                    );
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return CompleteActivity(
+                        activity,
+                        Fault(frame.StreamId, HubFaultCodes.Canceled, "The request was canceled.")
+                    );
+                }
+                catch (RequestTimeoutException)
+                {
+                    return CompleteActivity(
+                        activity,
+                        Fault(
+                            frame.StreamId,
+                            HubFaultCodes.RequestTimeout,
+                            "The downstream request timed out."
+                        )
+                    );
+                }
+                catch (Exception exception)
+                    when (exception is MalformedEnvelopeException or InvalidDataException)
+                {
+                    return CompleteActivity(
+                        activity,
+                        Fault(
+                            frame.StreamId,
+                            HubFaultCodes.InvalidPayload,
+                            "The request payload could not be decoded."
+                        )
+                    );
+                }
+                catch (RemoteRequestException exception)
+                {
+                    var message = configuration.Options.IncludeRemoteFaultMessages
+                        ? exception.Message
+                        : "The downstream request failed.";
+                    return CompleteActivity(
+                        activity,
+                        Fault(frame.StreamId, HubFaultCodes.RequestFailed, message)
+                    );
+                }
+                catch (Exception exception)
+                {
+                    WebSocketLog.OperationFailed(logger, route.Name, exception);
+                    return CompleteActivity(
+                        activity,
+                        Fault(
+                            frame.StreamId,
+                            HubFaultCodes.RequestFailed,
+                            "The request could not be completed."
+                        )
+                    );
+                }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            finally
             {
-                return Fault(frame.StreamId, HubFaultCodes.Canceled, "The request was canceled.");
-            }
-            catch (RequestTimeoutException)
-            {
-                return Fault(
-                    frame.StreamId,
-                    HubFaultCodes.RequestTimeout,
-                    "The downstream request timed out."
-                );
-            }
-            catch (Exception exception)
-                when (exception is MalformedEnvelopeException or InvalidDataException)
-            {
-                return Fault(
-                    frame.StreamId,
-                    HubFaultCodes.InvalidPayload,
-                    "The request payload could not be decoded."
-                );
-            }
-            catch (RemoteRequestException exception)
-            {
-                var message = configuration.Options.IncludeRemoteFaultMessages
-                    ? exception.Message
-                    : "The downstream request failed.";
-                return Fault(frame.StreamId, HubFaultCodes.RequestFailed, message);
-            }
-            catch (Exception exception)
-            {
-                WebSocketLog.OperationFailed(logger, route.Name, exception);
-                return Fault(
-                    frame.StreamId,
-                    HubFaultCodes.RequestFailed,
-                    "The request could not be completed."
-                );
+                await scope.DisposeAsync().ConfigureAwait(false);
             }
         }
-        finally
+        catch
         {
-            await scope.DisposeAsync().ConfigureAwait(false);
+            activity?.SetTag(WebSocketDiagnostics.OutcomeTag, "exception");
+            activity?.SetStatus(ActivityStatusCode.Error);
+            throw;
         }
     }
 
@@ -208,6 +247,27 @@ internal sealed class WebSocketRequestRouter(
             .AuthorizeAsync(user, resource, policy)
             .ConfigureAwait(false);
         return result.Succeeded;
+    }
+
+    private static HubFrame CompleteActivity(Activity? activity, HubFrame response)
+    {
+        if (response.Kind is not HubFrameKind.Fault)
+        {
+            activity?.SetTag(WebSocketDiagnostics.OutcomeTag, "success");
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return response;
+        }
+
+        activity?.SetTag(WebSocketDiagnostics.FaultCodeTag, response.Code);
+        if (response.Code is HubFaultCodes.Canceled)
+        {
+            activity?.SetTag(WebSocketDiagnostics.OutcomeTag, "canceled");
+            return response;
+        }
+
+        activity?.SetTag(WebSocketDiagnostics.OutcomeTag, "fault");
+        activity?.SetStatus(ActivityStatusCode.Error);
+        return response;
     }
 
     internal static HubFrame Fault(ulong streamId, string code, string message) =>
