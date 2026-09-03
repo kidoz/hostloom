@@ -22,16 +22,16 @@
   "job": "ShortRun(IterationCount=3, LaunchCount=1, WarmupCount=3)",
   "benchmarks": {
     "HostLoom.Benchmarks.WebSocketFanoutBenchmarks.PublishToReadySessions(SessionCount: 1)": {
-      "meanNanoseconds": 585.9268115361532,
-      "allocatedBytes": 1080.0
+      "meanNanoseconds": 608.5146794319153,
+      "allocatedBytes": 1272.0
     },
     "HostLoom.Benchmarks.WebSocketFanoutBenchmarks.PublishToReadySessions(SessionCount: 100)": {
-      "meanNanoseconds": 26327.571024576824,
-      "allocatedBytes": 91378.0
+      "meanNanoseconds": 29739.942342122395,
+      "allocatedBytes": 119294.0
     },
     "HostLoom.Benchmarks.WebSocketFanoutBenchmarks.PublishToReadySessions(SessionCount: 500)": {
-      "meanNanoseconds": 130698.51345486111,
-      "allocatedBytes": 455426.0
+      "meanNanoseconds": 149548.1189546131,
+      "allocatedBytes": 596152.0
     }
   }
 }
