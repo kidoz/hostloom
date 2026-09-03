@@ -15,6 +15,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -1648,6 +1649,51 @@ public sealed class WebSocketGatewayTests
     }
 
     [Fact]
+    public async Task Middleware_options_overload_applies_the_AspNetCore_origin_allowlist()
+    {
+        var middlewareOptions = new WebSocketOptions
+        {
+            KeepAliveInterval = TimeSpan.FromSeconds(45),
+            KeepAliveTimeout = TimeSpan.FromSeconds(15),
+        };
+        middlewareOptions.AllowedOrigins.Add("https://app.example");
+        using var services = new ServiceCollection().AddLogging().BuildServiceProvider();
+        var application = new ApplicationBuilder(services);
+        var terminalCalls = 0;
+        application.UseHostLoomWebSockets(middlewareOptions);
+        application.Run(context =>
+        {
+            terminalCalls++;
+            context.Response.StatusCode = StatusCodes.Status204NoContent;
+            return Task.CompletedTask;
+        });
+        var pipeline = application.Build();
+        var denied = CreateUpgradeContext(services, "https://foreign.example");
+
+        await pipeline(denied);
+
+        Assert.Equal(StatusCodes.Status403Forbidden, denied.Response.StatusCode);
+        Assert.Equal(0, terminalCalls);
+
+        var accepted = CreateUpgradeContext(services, "https://app.example");
+        await pipeline(accepted);
+
+        Assert.Equal(StatusCodes.Status204NoContent, accepted.Response.StatusCode);
+        Assert.Equal(1, terminalCalls);
+        Assert.Equal(TimeSpan.FromSeconds(45), middlewareOptions.KeepAliveInterval);
+        Assert.Equal(TimeSpan.FromSeconds(15), middlewareOptions.KeepAliveTimeout);
+    }
+
+    [Fact]
+    public void Middleware_options_overload_rejects_null_options()
+    {
+        using var services = new ServiceCollection().AddLogging().BuildServiceProvider();
+        var application = new ApplicationBuilder(services);
+
+        _ = Assert.Throws<ArgumentNullException>(() => application.UseHostLoomWebSockets(null!));
+    }
+
+    [Fact]
     public async Task Test_server_session_uses_the_registered_lifetime_resolver()
     {
         var clock = new TestClock();
@@ -2001,6 +2047,19 @@ public sealed class WebSocketGatewayTests
         return await builder.StartAsync(TestContext.Current.CancellationToken);
     }
 
+    private static DefaultHttpContext CreateUpgradeContext(IServiceProvider services, string origin)
+    {
+        var context = new DefaultHttpContext { RequestServices = services };
+        context.Features.Set<IHttpUpgradeFeature>(new TestHttpUpgradeFeature());
+        context.Request.Method = HttpMethods.Get;
+        context.Request.Headers.Connection = "Upgrade";
+        context.Request.Headers.Upgrade = "websocket";
+        context.Request.Headers.SecWebSocketVersion = "13";
+        context.Request.Headers.SecWebSocketKey = "dGhlIHNhbXBsZSBub25jZQ==";
+        context.Request.Headers.Origin = origin;
+        return context;
+    }
+
     public sealed record Greet(string Name) : IRequest<Greeting>;
 
     public sealed record Greeting(string Text);
@@ -2041,6 +2100,16 @@ public sealed class WebSocketGatewayTests
 
         public void Abort() =>
             throw new InvalidOperationException("The recording sink should not be aborted.");
+    }
+
+    private sealed class TestHttpUpgradeFeature : IHttpUpgradeFeature
+    {
+        public bool IsUpgradableRequest => true;
+
+        public Task<Stream> UpgradeAsync() =>
+            Task.FromException<Stream>(
+                new InvalidOperationException("The middleware-options test does not upgrade.")
+            );
     }
 
     private sealed class WebSocketMetricRecorder : IDisposable
