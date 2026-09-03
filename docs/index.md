@@ -31,7 +31,8 @@ builder.Services
 
 **Building messaging services?** Start with
 [Your first request/response](tutorials/getting-started.md), continue to
-[Publish and subscribe](tutorials/publish-subscribe.md), then move to a
+[Publish and subscribe](tutorials/publish-subscribe.md), expose local live state with the
+[in-memory WebSocket gateway](how-to/stream-process-local-events-to-websockets.md), then move to a
 real broker with [RabbitMQ](how-to/use-rabbitmq.md) or
 [Kafka](how-to/use-kafka.md) and harden delivery with the
 [receive pipeline](how-to/harden-receive-pipeline.md).
