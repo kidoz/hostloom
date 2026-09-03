@@ -16,6 +16,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace HostLoom.Tests;
@@ -108,6 +109,30 @@ public sealed class WebSocketGatewayTests
             ],
             protocols
         );
+    }
+
+    [Fact]
+    public void WebSocket_log_events_have_stable_ids_and_names()
+    {
+        Assert.Equal(new EventId(4100, "WebSocketSessionOpened"), WebSocketEvents.SessionOpened);
+        Assert.Equal(new EventId(4101, "WebSocketSessionClosed"), WebSocketEvents.SessionClosed);
+        Assert.Equal(
+            new EventId(4102, "WebSocketSubscriptionDenied"),
+            WebSocketEvents.SubscriptionDenied
+        );
+        Assert.Equal(
+            new EventId(4103, "WebSocketSlowClientAborted"),
+            WebSocketEvents.SlowClientAborted
+        );
+        Assert.Equal(
+            new EventId(4104, "WebSocketHandshakeRejected"),
+            WebSocketEvents.HandshakeRejected
+        );
+        Assert.Equal(
+            new EventId(4105, "WebSocketOperationFailed"),
+            WebSocketEvents.OperationFailed
+        );
+        Assert.Equal(new EventId(4106, "WebSocketSnapshotFailed"), WebSocketEvents.SnapshotFailed);
     }
 
     [Fact]
@@ -658,6 +683,140 @@ public sealed class WebSocketGatewayTests
     }
 
     [Fact]
+    public async Task Session_lifecycle_and_subscription_denial_emit_safe_structured_logs()
+    {
+        const string secretToken = "top-secret-token";
+        const string secretKey = "top-secret-key";
+        using var logs = new WebSocketLogRecorder();
+        var services = new ServiceCollection();
+        services.AddLogging(builder => builder.AddProvider(logs));
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false);
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var principal = new ClaimsPrincipal(
+            new ClaimsIdentity(
+                [
+                    new Claim(ClaimTypes.NameIdentifier, "customer-1"),
+                    new Claim("access_token", secretToken),
+                ],
+                "test"
+            )
+        );
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, principal);
+
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Subscribe,
+                    StreamId = 61,
+                    Topic = $"private.{secretToken}",
+                    Key = secretKey,
+                    Credit = 1,
+                }
+            ),
+            protocol.MessageType
+        );
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        socket.EnqueueClose();
+        await run;
+
+        var opened = Assert.Single(
+            logs.Entries,
+            entry => entry.Event == WebSocketEvents.SessionOpened
+        );
+        Assert.Equal(LogLevel.Information, opened.Level);
+        Assert.Equal(session.Id, opened.Property("SessionId"));
+        Assert.Equal("customer-1", opened.Property("Subject"));
+        Assert.Equal(JsonWebSocketHubProtocol.ProtocolName, opened.Property("Protocol"));
+
+        var denied = Assert.Single(
+            logs.Entries,
+            entry => entry.Event == WebSocketEvents.SubscriptionDenied
+        );
+        Assert.Equal(LogLevel.Warning, denied.Level);
+        Assert.Null(denied.Property("Topic"));
+        Assert.Equal("topic_not_found", denied.Property("Reason"));
+
+        var closed = Assert.Single(
+            logs.Entries,
+            entry => entry.Event == WebSocketEvents.SessionClosed
+        );
+        Assert.Equal("peer_closed", closed.Property("CloseReason"));
+        Assert.Equal(WebSocketCloseStatus.NormalClosure, closed.Property("CloseStatus"));
+        Assert.DoesNotContain(logs.Entries, entry => entry.Contains(secretToken));
+        Assert.DoesNotContain(logs.Entries, entry => entry.Contains(secretKey));
+    }
+
+    [Fact]
+    public async Task Outbound_capacity_aborts_once_with_a_stable_slow_client_event()
+    {
+        const string topic = "logs.orders.changed";
+        using var logs = new WebSocketLogRecorder();
+        var services = new ServiceCollection();
+        services.AddLogging(builder => builder.AddProvider(logs));
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options =>
+            {
+                options.RequireAuthenticatedUser = false;
+                options.MaximumQueuedFramesPerConnection = 2;
+            })
+            .AddTopic<OrderChanged>(topic, "orders", value => value.CustomerId);
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, new ClaimsPrincipal());
+
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Subscribe,
+                    StreamId = 62,
+                    Topic = topic,
+                    Credit = 3,
+                }
+            ),
+            protocol.MessageType
+        );
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+
+        socket.BlockSends();
+        var registry = provider.GetRequiredService<WebSocketSessionRegistry>();
+        registry.Publish(topic, key: null, new byte[] { 1 });
+        await socket.WaitForBlockedSendAsync(TestContext.Current.CancellationToken);
+        registry.Publish(topic, key: null, new byte[] { 2 });
+        registry.Publish(topic, key: null, new byte[] { 3 });
+
+        var aborted = Assert.Single(
+            logs.Entries,
+            entry => entry.Event == WebSocketEvents.SlowClientAborted
+        );
+        Assert.Equal(LogLevel.Warning, aborted.Level);
+        Assert.Equal(session.Id, aborted.Property("SessionId"));
+        Assert.Equal(HubFrameKind.Event, aborted.Property("FrameKind"));
+        Assert.Equal(topic, aborted.Property("Topic"));
+        Assert.Equal(2, aborted.Property("MaximumQueuedFrames"));
+
+        socket.EnqueueClose();
+        await run;
+    }
+
+    [Fact]
     public async Task Snapshot_is_queued_before_live_events_that_arrive_during_initialization()
     {
         var snapshots = new BlockingStatusSnapshotProvider(new StatusChanged("customer-1", 1));
@@ -910,7 +1069,9 @@ public sealed class WebSocketGatewayTests
     [Fact]
     public async Task Snapshot_failure_faults_only_the_subscription()
     {
+        using var logs = new WebSocketLogRecorder();
         var services = new ServiceCollection();
+        services.AddLogging(builder => builder.AddProvider(logs));
         services
             .AddHostLoom()
             .UseInMemory()
@@ -950,6 +1111,13 @@ public sealed class WebSocketGatewayTests
                 .Single(provider.GetRequiredService<IWebSocketSessionDirectory>().GetSessions())
                 .SubscriptionCount
         );
+        var failed = Assert.Single(
+            logs.Entries,
+            entry => entry.Event == WebSocketEvents.SnapshotFailed
+        );
+        Assert.Equal(LogLevel.Error, failed.Level);
+        Assert.Equal("status.changed", failed.Property("Topic"));
+        Assert.Equal(session.Id, failed.Property("SessionId"));
 
         socket.EnqueueClose();
         await run;
@@ -1326,7 +1494,10 @@ public sealed class WebSocketGatewayTests
     public async Task Same_origin_policy_rejects_a_foreign_browser_origin()
     {
         using var metrics = new WebSocketMetricRecorder();
-        using var host = await CreateTestHostAsync();
+        using var logs = new WebSocketLogRecorder();
+        using var host = await CreateTestHostAsync(configureServices: services =>
+            services.AddLogging(builder => builder.AddProvider(logs))
+        );
         await using var client = new WebSocketTestClient(host.GetTestServer())
         {
             ConfigureRequest = request => request.Headers.Origin = "https://foreign.example",
@@ -1343,6 +1514,13 @@ public sealed class WebSocketGatewayTests
             metrics.Measurements("hostloom.websocket.handshake.rejected"),
             measurement => measurement.Tag(WebSocketDiagnostics.ReasonTag) is "origin"
         );
+        var rejected = Assert.Single(
+            logs.Entries,
+            entry => entry.Event == WebSocketEvents.HandshakeRejected
+        );
+        Assert.Equal(LogLevel.Warning, rejected.Level);
+        Assert.Equal("origin", rejected.Property("Reason"));
+        Assert.DoesNotContain("foreign.example", rejected.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1695,6 +1873,88 @@ public sealed class WebSocketGatewayTests
         public object? Tag(string name) => Tags.GetValueOrDefault(name);
     }
 
+    private sealed class WebSocketLogRecorder : ILoggerProvider
+    {
+        private readonly List<LogEntry> _entries = [];
+        private readonly Lock _gate = new();
+
+        public IReadOnlyList<LogEntry> Entries
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _entries];
+                }
+            }
+        }
+
+        public ILogger CreateLogger(string categoryName) => new Recorder(this, categoryName);
+
+        public void Dispose() { }
+
+        private void Add(LogEntry entry)
+        {
+            lock (_gate)
+            {
+                _entries.Add(entry);
+            }
+        }
+
+        private sealed class Recorder(WebSocketLogRecorder owner, string category) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state)
+                where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => logLevel != LogLevel.None;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter
+            )
+            {
+                var properties = new Dictionary<string, object?>(StringComparer.Ordinal);
+                if (state is IEnumerable<KeyValuePair<string, object?>> values)
+                {
+                    foreach (var value in values)
+                    {
+                        properties[value.Key] = value.Value;
+                    }
+                }
+
+                owner.Add(
+                    new LogEntry(
+                        category,
+                        logLevel,
+                        eventId,
+                        formatter(state, exception),
+                        properties
+                    )
+                );
+            }
+        }
+    }
+
+    private sealed record LogEntry(
+        string Category,
+        LogLevel Level,
+        EventId Event,
+        string Message,
+        IReadOnlyDictionary<string, object?> Properties
+    )
+    {
+        public object? Property(string name) => Properties.GetValueOrDefault(name);
+
+        public bool Contains(string value) =>
+            Message.Contains(value, StringComparison.Ordinal)
+            || Properties
+                .Values.OfType<string>()
+                .Any(property => property.Contains(value, StringComparison.Ordinal));
+    }
+
     private sealed class ScriptedWebSocket : WebSocket
     {
         private readonly Channel<Inbound> _inbound = Channel.CreateUnbounded<Inbound>();
@@ -1704,6 +1964,13 @@ public sealed class WebSocketGatewayTests
         private WebSocketState _state = WebSocketState.Open;
         private WebSocketCloseStatus? _closeStatus;
         private string? _closeStatusDescription;
+        private readonly TaskCompletionSource _sendBlocked = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        private readonly TaskCompletionSource _releaseSends = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        private int _blockSends;
 
         public override WebSocketCloseStatus? CloseStatus => _closeStatus;
 
@@ -1721,10 +1988,19 @@ public sealed class WebSocketGatewayTests
                 new Inbound([], WebSocketMessageType.Close, WebSocketCloseStatus.NormalClosure)
             );
 
+        public void BlockSends() => Volatile.Write(ref _blockSends, 1);
+
+        public Task WaitForBlockedSendAsync(CancellationToken cancellationToken) =>
+            _sendBlocked.Task.WaitAsync(cancellationToken);
+
         public ValueTask<ReadOnlyMemory<byte>> ReadSentAsync(CancellationToken cancellationToken) =>
             _sent.Reader.ReadAsync(cancellationToken);
 
-        public override void Abort() => _state = WebSocketState.Aborted;
+        public override void Abort()
+        {
+            _state = WebSocketState.Aborted;
+            _releaseSends.TrySetResult();
+        }
 
         public override Task CloseAsync(
             WebSocketCloseStatus closeStatus,
@@ -1744,7 +2020,11 @@ public sealed class WebSocketGatewayTests
             return Task.CompletedTask;
         }
 
-        public override void Dispose() => _state = WebSocketState.Closed;
+        public override void Dispose()
+        {
+            _state = WebSocketState.Closed;
+            _releaseSends.TrySetResult();
+        }
 
         public override async Task<WebSocketReceiveResult> ReceiveAsync(
             ArraySegment<byte> buffer,
@@ -1768,15 +2048,20 @@ public sealed class WebSocketGatewayTests
             return new WebSocketReceiveResult(inbound.Payload.Length, inbound.MessageType, true);
         }
 
-        public override Task SendAsync(
+        public override async Task SendAsync(
             ArraySegment<byte> buffer,
             WebSocketMessageType messageType,
             bool endOfMessage,
             CancellationToken cancellationToken
         )
         {
+            if (Volatile.Read(ref _blockSends) != 0)
+            {
+                _sendBlocked.TrySetResult();
+                await _releaseSends.Task.WaitAsync(cancellationToken);
+            }
+
             _sent.Writer.TryWrite(buffer.ToArray());
-            return Task.CompletedTask;
         }
 
         private readonly record struct Inbound(
