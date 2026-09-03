@@ -59,6 +59,21 @@ app.UseHostLoomWebSockets();            // UseWebSockets, keep-alive 20 s / time
 app.MapHostLoomWebSocketHub("/hostloom");  // default pattern "/hostloom"
 ```
 
+The overload accepts the normal ASP.NET Core middleware options:
+
+```csharp
+app.UseHostLoomWebSockets(new WebSocketOptions
+{
+    KeepAliveInterval = TimeSpan.FromSeconds(30),
+    KeepAliveTimeout = TimeSpan.FromSeconds(15),
+});
+```
+
+If the application already called ASP.NET Core `UseWebSockets`, omit the HostLoom helper. Calling
+both installs the middleware twice; HostLoom does not attempt pipeline-presence detection because
+it is not reliable during composition. ASP.NET Core's `AllowedOrigins` and the gateway's own origin
+policy are independent and must agree when both are configured.
+
 Authentication happens before upgrade; when `RequireAuthenticatedUser` is
 on, the endpoint requires authorization and unauthenticated requests get
 401. Non-upgrade requests get 400, as does a client offering no

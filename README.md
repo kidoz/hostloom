@@ -224,6 +224,10 @@ app.UseHostLoomWebSockets();
 app.MapHostLoomWebSocketHub("/realtime");
 ```
 
+The parameterless middleware helper uses a 20-second keep-alive interval and a 10-second Pong
+timeout. An overload accepts ASP.NET Core `WebSocketOptions`; applications that already called
+`UseWebSockets` omit the HostLoom helper instead of installing the middleware twice.
+
 Clients negotiate `hostloom.msgpack.v1`, `hostloom.protobuf.v1`, or `hostloom.json.v1`.
 JSON uses camelCase frame-kind values, omits null optional fields, and carries application payloads
 as Base64-encoded bytes.
