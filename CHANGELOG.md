@@ -42,6 +42,10 @@ upgrade rather than a silent change.
 - A machine-guarded WebSocket fan-out regression baseline for one serialized 256-byte payload sent
   through JSON envelope encoding, subscription credit, and ready-writer bounded queue cycles at 1,
   100, and 500 sessions, with explicit separation from real-socket capacity evidence.
+- WebSocket gateway `System.Diagnostics.Metrics` for active sessions and subscriptions, successful
+  and dropped event delivery, queued event-frame sizes, session duration, generated faults, and
+  handler-level handshake rejection. Tags use only bounded protocol, topic, reason, and fault-code
+  values and exclude session, subject, key, payload, credential, and caller-supplied text.
 - Live subscription credit replenishment no longer signals a completed snapshot initializer, which
   removes one caught `SemaphoreFullException` allocation per zero-to-positive refill.
 
