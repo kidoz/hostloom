@@ -249,6 +249,11 @@ with a policy violation. `IWebSocketSessionDirectory` exposes safe active-sessio
 `IWebSocketSessionControl` disconnects one session or every session for a subject after logout or a
 role change. Host shutdown sends 1001 `server_shutdown` before broker subscriptions stop.
 
+Gateway lifecycle, delivery, bounded-drop, queue-size, fault, and handler-level handshake metrics
+are available from the `HostLoom.AspNetCore.WebSockets` meter. Its low-cardinality tags contain
+only protocol, registered topic, and library-controlled reason or fault values—never session ids,
+subjects, subscription keys, payloads, or credentials.
+
 The initial subscription protocol is live and process-local: acknowledgements record progress but
 do not provide replay, and gateway-generated event IDs are not broker offsets. Multi-node services
 must choose distinct broker subscription names per node or add a fan-out/backplane according to the
