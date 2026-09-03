@@ -20,6 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
+    outputs:
+      publish_nuget: ${{ steps.release.outputs.publish_nuget }}
+
     permissions:
       contents: read
 
@@ -28,11 +31,18 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Validate release tag and changelog
+        id: release
         shell: bash
         run: |
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME}" != "release" ]; then
             echo "Manual dispatch: skipping tag validation; packages are versioned 0.0.0-manual and never published."
+            echo "publish_nuget=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ "${GITHUB_REF_NAME}" == websocket-client-v* ]]; then
+            echo "WebSocket client release: skipping NuGet publication for the independent browser-package tag stream."
+            echo "publish_nuget=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
           tag="${GITHUB_REF_NAME}"
@@ -46,9 +56,11 @@ jobs:
             exit 1
           fi
           echo "Release tag '${tag}' is well-formed and CHANGELOG.md documents ${version}."
+          echo "publish_nuget=true" >> "${GITHUB_OUTPUT}"
 
   nuget:
     needs: validate
+    if: needs.validate.outputs.publish_nuget == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: nuget

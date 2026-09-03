@@ -1,0 +1,52 @@
+name: WebSocket client
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/websocket-client-release.yml"
+      - ".github/workflows/websocket-client.yml"
+      - "clients/hostloom-websocket-client/**"
+      - "src/HostLoom.AspNetCore.WebSockets/protocol/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/websocket-client-release.yml"
+      - ".github/workflows/websocket-client.yml"
+      - "clients/hostloom-websocket-client/**"
+      - "src/HostLoom.AspNetCore.WebSockets/protocol/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: websocket-client-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: clients/hostloom-websocket-client
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - name: Install trusted-publishing npm
+        run: npm install --global npm@11.19.1
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify
+        run: npm run verify
