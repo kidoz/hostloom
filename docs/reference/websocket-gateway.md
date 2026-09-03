@@ -188,6 +188,18 @@ session ids, subjects, subscription keys, payloads, credentials, or application-
 text. ASP.NET Core authorization middleware may reject a request before the gateway handler; use
 the framework's authorization metrics for that path.
 
+## Structured logs
+
+`WebSocketEvents` publishes stable event ids `4100`–`4106` for session open and close,
+subscription denial, slow-client abort, handshake rejection, operation failure, and snapshot
+failure. Session close logs use the same normalized reason vocabulary as the duration metric.
+
+Lifecycle entries carry a session id, protocol, optional configured subject, and bounded reason;
+subscription entries carry only a registered topic and never echo an unknown client topic. The
+gateway does not add subscription keys, payloads, credentials, handshake headers, caller-supplied
+close text, or remote fault messages to structured properties. The complete event-id, level, and
+property table is in the package README.
+
 ## Limitations
 
 - Subscriptions are live and process-local: acknowledgements record

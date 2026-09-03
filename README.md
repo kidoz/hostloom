@@ -254,6 +254,12 @@ are available from the `HostLoom.AspNetCore.WebSockets` meter. Its low-cardinali
 only protocol, registered topic, and library-controlled reason or fault values—never session ids,
 subjects, subscription keys, payloads, or credentials.
 
+Stable structured log events `4100`–`4106` cover session lifecycle, rejected subscriptions,
+slow-client aborts, handler-level handshake rejection, and operation or snapshot failures.
+Framework-controlled properties never include subscription keys, payloads, credentials, handshake
+headers, caller-supplied close text, or remote fault messages.
+
+
 The initial subscription protocol is live and process-local: acknowledgements record progress but
 do not provide replay, and gateway-generated event IDs are not broker offsets. Multi-node services
 must choose distinct broker subscription names per node or add a fan-out/backplane according to the
