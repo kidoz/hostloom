@@ -1,0 +1,123 @@
+name: WebSocket client release
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish from the selected websocket-client-vX.Y.Z tag
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: websocket-client-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'websocket-client-v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    defaults:
+      run:
+        working-directory: clients/hostloom-websocket-client
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - name: Install trusted-publishing npm
+        run: npm install --global npm@11.19.1
+
+      - name: Validate release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            tag="${{ github.event.release.tag_name }}"
+          elif [ "${{ inputs.publish }}" = "true" ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            version=$(node --print "require('./package.json').version")
+            echo "Manual package check for version ${version}; publication is disabled."
+            echo "version=${version}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          version=$(node scripts/check-release.ts "${tag}")
+          echo "Validated ${tag} for @hostloom/websocket-client ${version}."
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify
+        run: npm run verify
+
+      - name: Pack immutable artifact
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/artifacts/npm"
+          npm pack --pack-destination "${GITHUB_WORKSPACE}/artifacts/npm"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hostloom-websocket-client-${{ steps.version.outputs.version }}
+          path: artifacts/npm/hostloom-websocket-client-${{ steps.version.outputs.version }}.tgz
+          if-no-files-found: error
+
+  publish:
+    needs: package
+    if: github.event_name == 'release' || inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: npm
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Download package artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: hostloom-websocket-client-${{ needs.package.outputs.version }}
+          path: artifacts/npm
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.15.0
+          registry-url: https://registry.npmjs.org/
+          package-manager-cache: false
+
+      - name: Install trusted-publishing npm
+        run: npm install --global npm@11.19.1
+
+      - name: Publish to npm
+        run: npm publish "artifacts/npm/hostloom-websocket-client-${{ needs.package.outputs.version }}.tgz"
+        env:
+          # npm requires a token only for the first publication because trusted publishers can be
+          # configured only after a package exists. Delete this secret after the bootstrap release;
+          # npm 11.5.1+ then authenticates this same command through GitHub OIDC.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
