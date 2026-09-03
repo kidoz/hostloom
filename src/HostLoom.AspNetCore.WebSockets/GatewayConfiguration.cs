@@ -55,7 +55,12 @@ internal sealed class GatewayConfiguration(HostLoomWebSocketOptions options)
                 $"Event type '{eventType}' is not exposed by the WebSocket gateway."
             );
 
-    public void AddTopicSnapshot(string topic, Type eventType, Type invokerType)
+    public void AddTopicSnapshot(
+        string topic,
+        Type eventType,
+        Type invokerType,
+        Type snapshotProviderType
+    )
     {
         ValidateName(topic, nameof(topic));
         if (!_topics.TryGetValue(topic, out var route))
@@ -80,7 +85,75 @@ internal sealed class GatewayConfiguration(HostLoomWebSocketOptions options)
         }
 
         route.SnapshotInvokerType = invokerType;
+        route.SnapshotProviderType = snapshotProviderType;
     }
+
+    public WebSocketGatewayDescription Describe()
+    {
+        var requests = _requests
+            .Values.OrderBy(static route => route.Name, StringComparer.Ordinal)
+            .Select(static route => new WebSocketRequestDescription(
+                route.Name,
+                route.Destination.Value,
+                TypeName(route.RequestType),
+                TypeName(route.ResponseType),
+                route.AuthorizationPolicy
+            ))
+            .ToArray();
+        var topics = _topics
+            .Values.OrderBy(static route => route.Name, StringComparer.Ordinal)
+            .Select(static route => new WebSocketTopicDescription(
+                route.Name,
+                route.Source.Value,
+                route.Subscription,
+                TypeName(route.EventType),
+                route.Keyed,
+                route.AuthorizationPolicy,
+                route.SnapshotProviderType is null ? null : TypeName(route.SnapshotProviderType)
+            ))
+            .ToArray();
+
+        var decisions = new List<WebSocketCompositionDecision>(2 + topics.Length)
+        {
+            new(
+                "WebSockets:Gateway",
+                "Enabled",
+                $"registered requests={requests.Length}, topics={topics.Length}; "
+                    + $"WebSockets:RequireAuthenticatedUser={Options.RequireAuthenticatedUser}; "
+                    + $"WebSockets:IncludeRemoteFaultMessages={Options.IncludeRemoteFaultMessages}"
+            ),
+            new(
+                "WebSockets:Origins",
+                Options.OriginMode.ToString(),
+                $"WebSockets:OriginMode={Options.OriginMode}; "
+                    + $"WebSockets:AllowMissingOrigin={Options.AllowMissingOrigin}; "
+                    + $"WebSockets:AllowedOrigins.Count={Options.AllowedOrigins.Count}"
+            ),
+        };
+        decisions.AddRange(
+            topics.Select(static topic => new WebSocketCompositionDecision(
+                $"WebSockets:Topic:{topic.Topic}",
+                $"{topic.Source} via {topic.Subscription}",
+                $"AddTopic registered event={topic.EventType}; keyed={topic.Keyed}; "
+                    + $"policy={topic.AuthorizationPolicy ?? "(none)"}; "
+                    + $"snapshot={topic.SnapshotProvider ?? "(none)"}"
+            ))
+        );
+
+        return new WebSocketGatewayDescription(
+            Options.RequireAuthenticatedUser,
+            Options.IncludeRemoteFaultMessages,
+            Options.OriginMode,
+            Options.AllowMissingOrigin,
+            Options.AllowedOrigins.Count,
+            Options.ProtocolPreference.ToArray(),
+            requests,
+            topics,
+            decisions
+        );
+    }
+
+    private static string TypeName(Type type) => type.FullName ?? type.Name;
 
     private static void ValidateName(string value, string parameterName)
     {
@@ -103,16 +176,23 @@ internal sealed class GatewayConfiguration(HostLoomWebSocketOptions options)
 internal sealed record RequestRoute(
     string Name,
     RequestAddress Destination,
+    Type RequestType,
+    Type ResponseType,
     Type InvokerType,
     string? AuthorizationPolicy
 );
 
 internal sealed record TopicRoute(
     string Name,
+    RequestAddress Source,
+    string Subscription,
     Type EventType,
+    bool Keyed,
     Func<object, string?> KeySelector,
     string? AuthorizationPolicy
 )
 {
     public Type? SnapshotInvokerType { get; set; }
+
+    public Type? SnapshotProviderType { get; set; }
 }

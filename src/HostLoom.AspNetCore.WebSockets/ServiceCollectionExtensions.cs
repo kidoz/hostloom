@@ -33,6 +33,7 @@ public static class ServiceCollectionExtensions
         configuration = new GatewayConfiguration(options);
 
         hostLoom.Services.AddSingleton(configuration);
+        hostLoom.Services.TryAddSingleton(new WebSocketGatewayProbe(configuration));
         hostLoom.Services.AddAuthorization(options =>
             options.AddPolicy(
                 TopicKeyPolicy.SubjectOnly,

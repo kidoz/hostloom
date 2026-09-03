@@ -114,6 +114,131 @@ public sealed class WebSocketGatewayTests
     }
 
     [Fact]
+    public void Gateway_probe_is_immutable_execution_free_and_available_during_registration()
+    {
+        var snapshotProviderResolved = false;
+        var services = new ServiceCollection();
+        services.AddScoped<IWebSocketTopicSnapshotProvider<StatusChanged>>(_ =>
+        {
+            snapshotProviderResolved = true;
+            throw new InvalidOperationException("The probe must not resolve application services.");
+        });
+        var gateway = services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options =>
+            {
+                options.RequireAuthenticatedUser = false;
+                options.IncludeRemoteFaultMessages = true;
+                options.OriginMode = WebSocketOriginMode.AllowList;
+                options.AllowMissingOrigin = false;
+                options.AllowedOrigins.Add("https://app.example");
+                options.ProtocolPreference.Clear();
+                options.ProtocolPreference.Add(JsonWebSocketHubProtocol.ProtocolName);
+            });
+        gateway.AddRequest<Greet, Greeting>("greet", "greeter", "greetings.read");
+        gateway
+            .AddTopic<StatusChanged>(
+                "status.changed",
+                "status",
+                value => value.Key,
+                "dashboard",
+                "status.read"
+            )
+            .AddTopicSnapshot<StatusChanged, ListStatusSnapshotProvider>("status.changed");
+
+        var registrationDescription = gateway.Probe();
+
+        Assert.False(snapshotProviderResolved);
+        Assert.False(registrationDescription.RequireAuthenticatedUser);
+        Assert.True(registrationDescription.IncludeRemoteFaultMessages);
+        Assert.Equal(WebSocketOriginMode.AllowList, registrationDescription.OriginMode);
+        Assert.False(registrationDescription.AllowMissingOrigin);
+        Assert.Equal(1, registrationDescription.AllowedOriginCount);
+        Assert.Equal([JsonWebSocketHubProtocol.ProtocolName], registrationDescription.Protocols);
+
+        var request = Assert.Single(registrationDescription.Requests);
+        Assert.Equal("greet", request.Operation);
+        Assert.Equal("greeter", request.Destination);
+        Assert.Equal(typeof(Greet).FullName, request.RequestType);
+        Assert.Equal(typeof(Greeting).FullName, request.ResponseType);
+        Assert.Equal("greetings.read", request.AuthorizationPolicy);
+
+        var topic = Assert.Single(registrationDescription.Topics);
+        Assert.Equal("status.changed", topic.Topic);
+        Assert.Equal("status", topic.Source);
+        Assert.Equal("dashboard", topic.Subscription);
+        Assert.Equal(typeof(StatusChanged).FullName, topic.EventType);
+        Assert.True(topic.Keyed);
+        Assert.Equal("status.read", topic.AuthorizationPolicy);
+        Assert.Equal(typeof(ListStatusSnapshotProvider).FullName, topic.SnapshotProvider);
+
+        Assert.Collection(
+            registrationDescription.Decisions,
+            decision =>
+            {
+                Assert.Equal("WebSockets:Gateway", decision.Component);
+                Assert.Equal("Enabled", decision.Choice);
+                Assert.Contains(
+                    "registered requests=1, topics=1",
+                    decision.Reason,
+                    StringComparison.Ordinal
+                );
+            },
+            decision =>
+            {
+                Assert.Equal("WebSockets:Origins", decision.Component);
+                Assert.Equal("AllowList", decision.Choice);
+                Assert.Contains(
+                    "WebSockets:AllowedOrigins.Count=1",
+                    decision.Reason,
+                    StringComparison.Ordinal
+                );
+                Assert.DoesNotContain("app.example", decision.Reason, StringComparison.Ordinal);
+            },
+            decision =>
+            {
+                Assert.Equal("WebSockets:Topic:status.changed", decision.Component);
+                Assert.Equal("status via dashboard", decision.Choice);
+                Assert.Contains("keyed=True", decision.Reason, StringComparison.Ordinal);
+            }
+        );
+        var decisions = Assert.IsAssignableFrom<IList<WebSocketCompositionDecision>>(
+            registrationDescription.Decisions
+        );
+        _ = Assert.Throws<NotSupportedException>(() => decisions.Clear());
+
+        foreach (var decision in registrationDescription.Decisions)
+        {
+            services.RecordComposition(
+                decision.Component,
+                decision.Choice,
+                decision.Reason,
+                nameof(Gateway_probe_is_immutable_execution_free_and_available_during_registration)
+            );
+        }
+
+        var composition = services.CompositionLedger().Snapshot();
+        Assert.Equal(
+            registrationDescription.Decisions.Select(static decision => decision.Component),
+            composition.Decisions.Select(static decision => decision.Component)
+        );
+        Assert.Equal(
+            registrationDescription.Decisions.Select(static decision => decision.Choice),
+            composition.Decisions.Select(static decision => decision.Choice)
+        );
+
+        using var provider = services.BuildServiceProvider();
+        var runtimeDescription = provider.GetRequiredService<WebSocketGatewayProbe>().Describe();
+
+        Assert.Equal(registrationDescription.Protocols, runtimeDescription.Protocols);
+        Assert.Equal(registrationDescription.Requests, runtimeDescription.Requests);
+        Assert.Equal(registrationDescription.Topics, runtimeDescription.Topics);
+        Assert.Equal(registrationDescription.Decisions, runtimeDescription.Decisions);
+        Assert.False(snapshotProviderResolved);
+    }
+
+    [Fact]
     public void WebSocket_log_events_have_stable_ids_and_names()
     {
         Assert.Equal(new EventId(4100, "WebSocketSessionOpened"), WebSocketEvents.SessionOpened);
