@@ -264,6 +264,11 @@ Registered gateway requests create `hostloom.websocket.request` Server activitie
 providing same-process gateway-to-handler correlation without an OpenTelemetry package dependency;
 cross-process broker correlation still requires future trace-header propagation.
 
+`HostLoomWebSocketBuilder.Probe()` describes the configured options and routes during registration;
+the DI-resolved `WebSocketGatewayProbe` provides the same immutable, execution-free description for
+a protected debug endpoint. Its decisions can be copied explicitly into a composition ledger by an
+application that references the optional `HostLoom.Diagnostics` leaf; the gateway package itself
+does not take that dependency.
 
 The initial subscription protocol is live and process-local: acknowledgements record progress but
 do not provide replay, and gateway-generated event IDs are not broker offsets. Multi-node services

@@ -157,3 +157,7 @@ a liveness check: a store outage must not read as "restart me".
 - `LockingProbe.Describe(lock)` — a lock's namespace, provider (or
   `(disabled)`), lease defaults, retry policy with its derived maximum wait,
   and reentrancy detection.
+- `HostLoomWebSocketBuilder.Probe()` / `WebSocketGatewayProbe.Describe()` —
+  immutable registration-time or runtime snapshots of gateway options, request
+  routes, topic routes, and optional composition-ledger-shaped decisions;
+  neither resolves application services nor contacts a transport.
