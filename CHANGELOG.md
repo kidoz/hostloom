@@ -58,6 +58,9 @@ upgrade rather than a silent change.
   dependency injection. It describes options and registered routes without resolving application
   services or contacting a transport, and exposes ledger-shaped `WebSockets:*` decisions without
   adding a dependency on the optional diagnostics package.
+- A `UseHostLoomWebSockets(WebSocketOptions)` overload for caller-controlled ASP.NET Core WebSocket
+  middleware settings. The parameterless helper retains its 20-second keep-alive interval and
+  10-second Pong timeout; applications that already call `UseWebSockets` omit the HostLoom helper.
 - Live subscription credit replenishment no longer signals a completed snapshot initializer, which
   removes one caught `SemaphoreFullException` allocation per zero-to-positive refill.
 
