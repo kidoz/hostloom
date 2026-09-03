@@ -54,6 +54,10 @@ upgrade rather than a silent change.
   registered operation, protocol, bounded outcome, and fault-code tags. They parent the existing
   HostLoom request activity without accepting unregistered client operation names as trace identity;
   cross-process broker trace propagation remains outside this increment.
+- An immutable, execution-free WebSocket gateway probe available during registration and from
+  dependency injection. It describes options and registered routes without resolving application
+  services or contacting a transport, and exposes ledger-shaped `WebSockets:*` decisions without
+  adding a dependency on the optional diagnostics package.
 - Live subscription credit replenishment no longer signals a completed snapshot initializer, which
   removes one caught `SemaphoreFullException` allocation per zero-to-positive refill.
 
