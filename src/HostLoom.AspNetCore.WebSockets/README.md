@@ -221,6 +221,51 @@ Important limits are `MaximumMessageSize`, `MaximumQueuedBytesPerConnection`,
 conservative and should be load-tested with the actual event size distribution and client
 population.
 
+## Composition probe
+
+`HostLoomWebSocketBuilder.Probe()` returns an immutable description while the service collection is
+still being composed. The same execution-free snapshot is available later from the registered
+`WebSocketGatewayProbe`; neither entry point resolves handlers or snapshot providers, starts the
+host, or contacts a transport:
+
+```csharp
+var gateway = builder.Services
+    .AddHostLoom()
+    .UseInMemory()
+    .AddWebSocketGateway()
+    .AddRequest<GetOrder, OrderView>("orders.get", "orders-api");
+
+var registration = gateway.Probe();
+
+app.MapGet(
+        "/diagnostics/websockets",
+        (WebSocketGatewayProbe probe) => probe.Describe())
+    .RequireAuthorization("operations.read");
+```
+
+The description contains authentication and remote-fault settings, origin mode and allowlist
+count, protocol preference, request routes, and topic routes including source, subscription,
+authorization, keyed selection, and snapshot-provider metadata. Allowlisted origin values are not
+returned. Protect a runtime endpoint because route destinations and application type names describe
+the service topology.
+
+`Decisions` contains `WebSockets:Gateway`, `WebSockets:Origins`, and one
+`WebSockets:Topic:<name>` value per topic. The WebSocket package does not reference
+`HostLoom.Diagnostics`; an application that already references that optional leaf can record the
+values explicitly during composition:
+
+```csharp
+using HostLoom.Diagnostics;
+
+foreach (var decision in gateway.Probe().Decisions)
+{
+    gateway.Services.RecordComposition(
+        decision.Component,
+        decision.Choice,
+        decision.Reason);
+}
+```
+
 ## Tracing
 
 The `HostLoom.AspNetCore.WebSockets` activity source, exposed as

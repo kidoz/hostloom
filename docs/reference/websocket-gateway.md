@@ -165,6 +165,21 @@ Remote fault *messages* are withheld from clients unless
 `IncludeRemoteFaultMessages` is enabled; the code `request_failed` is
 returned either way.
 
+## Composition probe
+
+`HostLoomWebSocketBuilder.Probe()` describes the gateway during registration, and the singleton
+`WebSocketGatewayProbe.Describe()` provides the same immutable shape after the container is built.
+Both are execution-free: they do not resolve application services, start the host, or contact the
+configured transport.
+
+The result lists gateway and origin settings, preferred protocols, public request routes, and
+public topics with their source, subscription, policy, keyed-selection, and snapshot metadata.
+Configured allowlisted origins are represented only by their count. Its `Decisions` collection has
+stable `WebSockets:Gateway`, `WebSockets:Origins`, and `WebSockets:Topic:<name>` component names that
+applications may explicitly copy into an optional HostLoom composition ledger. Protect any HTTP
+endpoint exposing the result because destinations and contract type names describe application
+topology.
+
 ## Tracing
 
 Enable the `HostLoom.AspNetCore.WebSockets` activity source through
