@@ -74,6 +74,28 @@ both installs the middleware twice; HostLoom does not attempt pipeline-presence 
 it is not reliable during composition. ASP.NET Core's `AllowedOrigins` and the gateway's own origin
 policy are independent and must agree when both are configured.
 
+## Reverse proxy and load balancing
+
+The ingress contract is:
+
+| Input | Proxy responsibility |
+| --- | --- |
+| `Upgrade` and `Connection` | Support and preserve the HTTP/1.1 WebSocket upgrade. |
+| `Sec-WebSocket-Protocol` | Preserve the offered HostLoom protocol so the endpoint can select it. |
+| Authentication and `Origin` headers | Preserve the values used by the application's authentication and origin policy. |
+| Public scheme and host | Set forwarding headers; configure trusted ASP.NET Core forwarded-header middleware before authentication and the gateway endpoint. |
+
+The gateway reads ASP.NET Core's effective `Request.Scheme` and `Request.Host`; it does not process
+forwarding headers itself. With the default 20-second keep-alive interval, set the proxy idle
+timeout above 60 seconds. Leave equivalent operational margin when selecting a custom interval.
+The 10-second Pong timeout detects an unresponsive peer and does not replace the proxy idle timeout.
+
+Sticky sessions are not required when each gateway replica has a distinct broker subscription name
+or a backplane otherwise fans every event out to every replica. An open socket remains on the
+replica that accepted it; after reconnecting to any replica, a client refreshes current state because
+version one provides live delivery without replay. Reusing one RabbitMQ queue or Kafka consumer
+group load-balances events between replicas, and session affinity does not correct that topology.
+
 Authentication happens before upgrade; when `RequireAuthenticatedUser` is
 on, the endpoint requires authorization and unauthenticated requests get
 401. Non-upgrade requests get 400, as does a client offering no
