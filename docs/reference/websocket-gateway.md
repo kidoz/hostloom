@@ -273,5 +273,7 @@ property table is in the package README.
 - Multi-node services must choose distinct broker subscription names per
   node — or add a backplane per the broker's queue/consumer-group
   semantics ([transport semantics](../explanation/transports.md)).
+- A broker-free, per-replica deployment is covered by
+  [Stream process-local events to WebSocket clients](../how-to/stream-process-local-events-to-websockets.md).
 - The full wire protocol and operating notes live in
   `src/HostLoom.AspNetCore.WebSockets/README.md` in the repository.

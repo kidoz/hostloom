@@ -255,6 +255,9 @@ consumer group across gateway nodes intentionally load-balances events, which me
 different node will not see every event. The package does not claim cross-node presence, replay, or
 exactly-once delivery.
 
+For a broker-free topology where every replica produces events for its own connected clients, see
+[Stream process-local events to WebSocket clients](../../docs/how-to/stream-process-local-events-to-websockets.md).
+
 Important limits are `MaximumMessageSize`, `MaximumQueuedBytesPerConnection`,
 `MaximumQueuedFramesPerConnection`, `MaximumConcurrentRequestsPerConnection`,
 `MaximumSubscriptionsPerConnection`, `MaximumCreditPerSubscription`,

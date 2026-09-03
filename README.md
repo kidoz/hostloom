@@ -284,8 +284,9 @@ does not take that dependency.
 The initial subscription protocol is live and process-local: acknowledgements record progress but
 do not provide replay, and gateway-generated event IDs are not broker offsets. Multi-node services
 must choose distinct broker subscription names per node or add a fan-out/backplane according to the
-broker's actual queue or consumer-group semantics. See the
-[gateway protocol and operating notes](src/HostLoom.AspNetCore.WebSockets/README.md).
+broker's actual queue or consumer-group semantics. When every replica produces events only for its
+own connected clients, follow the
+[in-memory WebSocket gateway guide](docs/how-to/stream-process-local-events-to-websockets.md).
 
 Codec encode/decode throughput and allocations are measured separately with BenchmarkDotNet:
 

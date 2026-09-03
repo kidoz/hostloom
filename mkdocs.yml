@@ -56,6 +56,7 @@ nav:
       - Publish and subscribe: tutorials/publish-subscribe.md
       - Building a standalone pipeline: tutorials/first-pipeline.md
   - How-to guides:
+      - Stream process-local events to WebSockets: how-to/stream-process-local-events-to-websockets.md
       - Run over RabbitMQ: how-to/use-rabbitmq.md
       - Run over Kafka: how-to/use-kafka.md
       - Cache and lock over Redis: how-to/use-redis.md
