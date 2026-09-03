@@ -18,4 +18,6 @@ public enum HubFrameKind
     Ack = 10,
     Unsubscribe = 11,
     Complete = 12,
+    Ping = 13,
+    Pong = 14,
 }

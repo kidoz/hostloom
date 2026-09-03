@@ -270,7 +270,7 @@ internal sealed class WebSocketRequestRouter(
         return response;
     }
 
-    internal static HubFrame Fault(ulong streamId, string code, string message) =>
+    internal static HubFrame Fault(Guid streamId, string code, string message) =>
         new()
         {
             Kind = HubFrameKind.Fault,

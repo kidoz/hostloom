@@ -21,7 +21,7 @@ public interface IWebSocketSessionDirectory
 /// <param name="ExpiresAt">The UTC time at which the session will be closed.</param>
 /// <param name="SubscriptionCount">The number of currently active subscriptions.</param>
 public sealed record WebSocketSessionInfo(
-    string SessionId,
+    Guid SessionId,
     string? Subject,
     string Protocol,
     DateTimeOffset ConnectedAt,

@@ -16,19 +16,23 @@ enum HubFrameKind {
   HUB_FRAME_KIND_ACK = 10;
   HUB_FRAME_KIND_UNSUBSCRIBE = 11;
   HUB_FRAME_KIND_COMPLETE = 12;
+  HUB_FRAME_KIND_PING = 13;
+  HUB_FRAME_KIND_PONG = 14;
 }
 
+// Every identifier is the 16 big-endian bytes of RFC 4122, which the JSON contract spells as the
+// same 32 hexadecimal digits. An all-zero stream_id addresses the session rather than a stream.
 message HubFrame {
   HubFrameKind kind = 1;
-  uint64 stream_id = 2;
-  optional string session_id = 3;
+  bytes stream_id = 2;
+  optional bytes session_id = 3;
   optional string operation = 4;
   optional string topic = 5;
   optional string key = 6;
   optional int32 timeout_milliseconds = 7;
   optional int32 credit = 8;
   optional int64 sequence = 9;
-  optional string event_id = 10;
+  optional bytes event_id = 10;
   optional string code = 11;
   optional string message = 12;
   optional bytes payload = 13;

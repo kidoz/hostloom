@@ -3,7 +3,7 @@ using System.Net.WebSockets;
 namespace HostLoom.AspNetCore.WebSockets;
 
 internal sealed class SubscriptionState(
-    ulong streamId,
+    Guid streamId,
     string topic,
     string? key,
     int initialCredit,
@@ -20,7 +20,7 @@ internal sealed class SubscriptionState(
     private bool _initializing = true;
     private bool _stopped;
 
-    public ulong StreamId { get; } = streamId;
+    public Guid StreamId { get; } = streamId;
 
     public string Topic { get; } = topic;
 

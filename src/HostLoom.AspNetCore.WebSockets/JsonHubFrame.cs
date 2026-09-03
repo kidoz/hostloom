@@ -6,9 +6,9 @@ internal sealed class JsonHubFrame
 {
     public required string Kind { get; init; }
 
-    public ulong StreamId { get; init; }
+    public Guid StreamId { get; init; }
 
-    public string? SessionId { get; init; }
+    public Guid? SessionId { get; init; }
 
     public string? Operation { get; init; }
 
@@ -22,7 +22,7 @@ internal sealed class JsonHubFrame
 
     public long? Sequence { get; init; }
 
-    public string? EventId { get; init; }
+    public Guid? EventId { get; init; }
 
     public string? Code { get; init; }
 

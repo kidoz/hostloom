@@ -1,11 +1,13 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using System.Globalization;
 using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using HostLoom.AspNetCore.WebSockets;
 using HostLoom.AspNetCore.WebSockets.Testing;
@@ -26,6 +28,20 @@ namespace HostLoom.Tests;
 
 public sealed class WebSocketGatewayTests
 {
+    private const string JsonV1Schema = "hostloom-websocket-json-v1.schema.json";
+
+    private static readonly Guid FixtureSession = new("11111111111111111111111111111111");
+    private static readonly Guid FixtureSubscription = new("22222222222222222222222222222222");
+    private static readonly Guid FixtureRequest = new("33333333333333333333333333333333");
+    private static readonly Guid FixturePing = new("44444444444444444444444444444444");
+    private static readonly Guid FixtureLiveEvent = new("55555555555555555555555555555555");
+    private static readonly Guid FixtureSnapshotEvent = new("66666666666666666666666666666666");
+
+    /// <summary>The published JSON-v1 schema, read once so bound assertions cannot drift from it.</summary>
+    private static readonly JsonDocument JsonV1SchemaDocument = JsonDocument.Parse(
+        File.ReadAllBytes(ProtocolFile(JsonV1Schema))
+    );
+
     [Fact]
     public void Json_protocol_round_trips_the_common_frame()
     {
@@ -40,13 +56,15 @@ public sealed class WebSocketGatewayTests
     [InlineData("event")]
     [InlineData("snapshot-event")]
     [InlineData("fault")]
+    [InlineData("ping")]
+    [InlineData("pong")]
     public void Json_v1_protocol_matches_published_fixtures(string fixture)
     {
         AssertFixture(new JsonWebSocketHubProtocol(), "json-v1", fixture);
     }
 
     [Theory]
-    [InlineData("hostloom-websocket-json-v1.schema.json")]
+    [InlineData(JsonV1Schema)]
     public void Published_json_schema_is_well_formed(string schema)
     {
         using var document = JsonDocument.Parse(File.ReadAllBytes(ProtocolFile(schema)));
@@ -54,9 +72,216 @@ public sealed class WebSocketGatewayTests
     }
 
     [Theory]
-    [InlineData("{\"kind\":1,\"streamId\":1}")]
-    [InlineData("{\"kind\":\"Unknown\",\"streamId\":1}")]
-    [InlineData("{\"kind\":\"None\",\"streamId\":1}")]
+    [InlineData(
+        "timeoutMilliseconds",
+        """{"kind":"request","streamId":"33333333333333333333333333333333","operation":"orders.get","timeoutMilliseconds":$,"payload":"AQID"}"""
+    )]
+    [InlineData(
+        "credit",
+        """{"kind":"credit","streamId":"33333333333333333333333333333333","credit":$}"""
+    )]
+    [InlineData(
+        "sequence",
+        """{"kind":"ack","streamId":"33333333333333333333333333333333","sequence":$}"""
+    )]
+    [InlineData(
+        "maximumMessageSize",
+        """{"kind":"welcome","streamId":"00000000000000000000000000000000","sessionId":"11111111111111111111111111111111","credit":1,"maximumMessageSize":$,"maximumConcurrentRequests":1}"""
+    )]
+    [InlineData(
+        "maximumConcurrentRequests",
+        """{"kind":"welcome","streamId":"00000000000000000000000000000000","sessionId":"11111111111111111111111111111111","credit":1,"maximumMessageSize":1,"maximumConcurrentRequests":$}"""
+    )]
+    public void Json_protocol_decodes_the_upper_bound_the_published_schema_allows(
+        string property,
+        string template
+    )
+    {
+        var maximum = SchemaProperty(property).GetProperty("maximum").GetInt64();
+        var json = template.Replace(
+            "$",
+            maximum.ToString(CultureInfo.InvariantCulture),
+            StringComparison.Ordinal
+        );
+
+        var frame = new JsonWebSocketHubProtocol().Decode(Encoding.UTF8.GetBytes(json));
+
+        Assert.NotEqual(HubFrameKind.None, frame.Kind);
+    }
+
+    [Theory]
+    [InlineData("""{"kind":"ping","streamId":9}""")]
+    [InlineData("""{"kind":"ping","streamId":"3333"}""")]
+    [InlineData("""{"kind":"ping","streamId":"33333333-3333-3333-3333-333333333333"}""")]
+    [InlineData("""{"kind":"ping","streamId":"3333333333333333333333333333333G"}""")]
+    [InlineData(
+        """{"kind":"credit","streamId":"33333333333333333333333333333333","credit":2147483648}"""
+    )]
+    [InlineData(
+        """{"kind":"ack","streamId":"33333333333333333333333333333333","sequence":9223372036854775808}"""
+    )]
+    [InlineData(
+        """{"kind":"response","streamId":"33333333333333333333333333333333","payload":"not base64"}"""
+    )]
+    public void Json_protocol_rejects_frames_the_published_schema_excludes(string json)
+    {
+        _ = Assert.Throws<InvalidDataException>(() =>
+            new JsonWebSocketHubProtocol().Decode(Encoding.UTF8.GetBytes(json))
+        );
+    }
+
+    [Fact]
+    public void Published_json_schema_payload_pattern_matches_the_encoded_fixtures()
+    {
+        var pattern = new Regex(
+            SchemaProperty("payload").GetProperty("pattern").GetString()!,
+            RegexOptions.None,
+            TimeSpan.FromSeconds(1)
+        );
+
+        var matched = 0;
+        foreach (
+            var file in Directory.EnumerateFiles(ProtocolFile("fixtures", "json-v1"), "*.json")
+        )
+        {
+            using var document = JsonDocument.Parse(File.ReadAllBytes(file));
+            if (document.RootElement.TryGetProperty("payload", out var payload))
+            {
+                Assert.Matches(pattern, payload.GetString()!);
+                matched++;
+            }
+        }
+
+        Assert.NotEqual(0, matched);
+        Assert.DoesNotMatch(pattern, "not base64");
+    }
+
+    [Fact]
+    public void Published_json_schema_identifier_pattern_matches_every_fixture_identifier()
+    {
+        var pattern = new Regex(
+            JsonV1SchemaDocument
+                .RootElement.GetProperty("$defs")
+                .GetProperty("identifier")
+                .GetProperty("pattern")
+                .GetString()!,
+            RegexOptions.None,
+            TimeSpan.FromSeconds(1)
+        );
+
+        var matched = 0;
+        foreach (
+            var file in Directory.EnumerateFiles(ProtocolFile("fixtures", "json-v1"), "*.json")
+        )
+        {
+            using var document = JsonDocument.Parse(File.ReadAllBytes(file));
+            foreach (var property in new[] { "streamId", "sessionId", "eventId" })
+            {
+                if (document.RootElement.TryGetProperty(property, out var identifier))
+                {
+                    Assert.Matches(pattern, identifier.GetString()!);
+                    matched++;
+                }
+            }
+        }
+
+        Assert.NotEqual(0, matched);
+        Assert.DoesNotMatch(pattern, Guid.NewGuid().ToString("D"));
+    }
+
+    [Fact]
+    public void Every_codec_round_trips_the_same_identifiers()
+    {
+        var frame = new HubFrame
+        {
+            Kind = HubFrameKind.Event,
+            StreamId = FixtureSubscription,
+            SessionId = FixtureSession,
+            EventId = FixtureLiveEvent,
+            Sequence = 7,
+            Payload = new byte[] { 1, 2, 3 },
+        };
+
+        IWebSocketHubProtocol[] protocols =
+        [
+            new JsonWebSocketHubProtocol(),
+            new MessagePackWebSocketHubProtocol(),
+            new ProtobufWebSocketHubProtocol(),
+        ];
+
+        foreach (var protocol in protocols)
+        {
+            var decoded = protocol.Decode(protocol.Encode(frame));
+
+            Assert.Equal(frame.StreamId, decoded.StreamId);
+            Assert.Equal(frame.SessionId, decoded.SessionId);
+            Assert.Equal(frame.EventId, decoded.EventId);
+        }
+    }
+
+    [Fact]
+    public void Binary_codecs_carry_identifiers_as_sixteen_big_endian_bytes()
+    {
+        var identifier = FixtureSubscription;
+        var expected = identifier.ToByteArray(bigEndian: true);
+        var frame = new HubFrame { Kind = HubFrameKind.Ping, StreamId = identifier };
+
+        // The published Protocol Buffers contract declares `bytes stream_id`, so a non-.NET client
+        // reading those 16 bytes must see exactly the digits the JSON contract spells.
+        Assert.Contains(expected, SearchWindows(new ProtobufWebSocketHubProtocol().Encode(frame)));
+        Assert.Contains(
+            expected,
+            SearchWindows(new MessagePackWebSocketHubProtocol().Encode(frame))
+        );
+        Assert.Equal(identifier.ToString("N"), Convert.ToHexStringLower(expected));
+    }
+
+    private static IEnumerable<byte[]> SearchWindows(byte[] encoded)
+    {
+        for (var offset = 0; offset + 16 <= encoded.Length; offset++)
+        {
+            yield return encoded[offset..(offset + 16)];
+        }
+    }
+
+    [Fact]
+    public void Published_json_schema_pins_the_welcome_stream_to_zero()
+    {
+        var welcome = JsonV1SchemaDocument
+            .RootElement.GetProperty("allOf")
+            .EnumerateArray()
+            .Single(branch =>
+                branch
+                    .GetProperty("if")
+                    .GetProperty("properties")
+                    .GetProperty("kind")
+                    .TryGetProperty("const", out var kind)
+                && kind.GetString() == "welcome"
+            );
+
+        Assert.Equal(
+            "#/$defs/sessionStream",
+            welcome
+                .GetProperty("then")
+                .GetProperty("properties")
+                .GetProperty("streamId")
+                .GetProperty("$ref")
+                .GetString()
+        );
+        Assert.Equal(
+            Guid.Empty.ToString("N"),
+            JsonV1SchemaDocument
+                .RootElement.GetProperty("$defs")
+                .GetProperty("sessionStream")
+                .GetProperty("const")
+                .GetString()
+        );
+    }
+
+    [Theory]
+    [InlineData("{\"kind\":1,\"streamId\":\"33333333333333333333333333333333\"}")]
+    [InlineData("{\"kind\":\"Unknown\",\"streamId\":\"33333333333333333333333333333333\"}")]
+    [InlineData("{\"kind\":\"None\",\"streamId\":\"33333333333333333333333333333333\"}")]
     public void Json_protocols_reject_non_contract_frame_kinds(string json)
     {
         var payload = Encoding.UTF8.GetBytes(json);
@@ -69,7 +294,7 @@ public sealed class WebSocketGatewayTests
     public void Json_protocol_reads_legacy_kind_casing_case_insensitively()
     {
         var frame = new JsonWebSocketHubProtocol().Decode(
-            "{\"kind\":\"Welcome\",\"streamId\":0}"u8
+            "{\"kind\":\"Welcome\",\"streamId\":\"00000000000000000000000000000000\"}"u8
         );
 
         Assert.Equal(HubFrameKind.Welcome, frame.Kind);
@@ -296,7 +521,7 @@ public sealed class WebSocketGatewayTests
             new HubFrame
             {
                 Kind = HubFrameKind.Request,
-                StreamId = 17,
+                StreamId = Stream(17),
                 Operation = "greet",
                 Payload = serializer.Serialize(new Greet("Ada")),
             },
@@ -306,7 +531,7 @@ public sealed class WebSocketGatewayTests
         );
 
         Assert.Equal(HubFrameKind.Response, response.Kind);
-        Assert.Equal((ulong)17, response.StreamId);
+        Assert.Equal(Stream(17), response.StreamId);
         var greeting = serializer.Deserialize<Greeting>(response.Payload!.Value.Span);
         Assert.Equal("Hello, Ada!", greeting?.Text);
 
@@ -371,7 +596,7 @@ public sealed class WebSocketGatewayTests
             new HubFrame
             {
                 Kind = HubFrameKind.Request,
-                StreamId = 18,
+                StreamId = Stream(18),
                 Operation = "greet",
                 Payload = "not-json"u8.ToArray(),
             },
@@ -416,7 +641,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Request,
-                    StreamId = 19,
+                    StreamId = Stream(19),
                     Operation = untrustedOperation,
                     Payload = ReadOnlyMemory<byte>.Empty,
                 },
@@ -466,7 +691,7 @@ public sealed class WebSocketGatewayTests
             new HubFrame
             {
                 Kind = HubFrameKind.Request,
-                StreamId = 3,
+                StreamId = Stream(3),
                 Operation = "greet",
                 Payload = serializer.Serialize(new Greet("Ada")),
             },
@@ -546,7 +771,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Subscribe,
-                    StreamId = 1,
+                    StreamId = Stream(1),
                     Topic = "orders.changed",
                     Key = "TENANT-1",
                     Credit = 1,
@@ -571,7 +796,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Subscribe,
-                    StreamId = 2,
+                    StreamId = Stream(2),
                     Topic = "orders.changed",
                     Key = "tenant-1",
                     Credit = 1,
@@ -583,7 +808,7 @@ public sealed class WebSocketGatewayTests
             (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
         );
         Assert.Equal(HubFrameKind.Subscribed, subscribed.Kind);
-        Assert.Equal((ulong)2, subscribed.StreamId);
+        Assert.Equal(Stream(2), subscribed.StreamId);
 
         socket.EnqueueClose();
         await run;
@@ -649,9 +874,9 @@ public sealed class WebSocketGatewayTests
     public void Registry_routes_keyed_events_to_wildcard_and_matching_subscribers()
     {
         var registry = new WebSocketSessionRegistry();
-        var wildcard = new RecordingSink("wildcard");
-        var matching = new RecordingSink("matching");
-        var other = new RecordingSink("other");
+        var wildcard = new RecordingSink(Guid.NewGuid());
+        var matching = new RecordingSink(Guid.NewGuid());
+        var other = new RecordingSink(Guid.NewGuid());
         registry.Subscribe(wildcard, "orders", null);
         registry.Subscribe(matching, "orders", "customer-1");
         registry.Subscribe(other, "orders", "customer-2");
@@ -661,6 +886,23 @@ public sealed class WebSocketGatewayTests
         Assert.Single(wildcard.Events);
         Assert.Single(matching.Events);
         Assert.Empty(other.Events);
+    }
+
+    [Fact]
+    public void Registry_keeps_a_session_group_until_its_last_matching_subscription_ends()
+    {
+        var registry = new WebSocketSessionRegistry();
+        var session = new RecordingSink(Guid.NewGuid());
+        registry.Subscribe(session, "orders.changed", "customer-1");
+        registry.Subscribe(session, "orders.changed", "customer-1");
+
+        registry.Unsubscribe(session, "orders.changed", "customer-1");
+        registry.Publish("orders.changed", "customer-1", new byte[] { 7 });
+        Assert.Single(session.Events);
+
+        registry.Unsubscribe(session, "orders.changed", "customer-1");
+        registry.Publish("orders.changed", "customer-1", new byte[] { 8 });
+        Assert.Single(session.Events);
     }
 
     [Fact]
@@ -692,7 +934,7 @@ public sealed class WebSocketGatewayTests
     public void Active_subscription_drops_no_credit_event_without_reserving_queue_capacity()
     {
         var queue = new ByteBoundedOutboundQueue(maximumBytes: 16, maximumFrames: 1);
-        var state = new SubscriptionState(1, "orders.changed", null, initialCredit: 0);
+        var state = new SubscriptionState(Stream(1), "orders.changed", null, initialCredit: 0);
         Assert.True(state.CompleteInitialization(queue.TryWriteReserved, queue.Release));
         Assert.True(queue.TryWrite(new byte[] { 1 }, WebSocketMessageType.Binary));
 
@@ -712,7 +954,7 @@ public sealed class WebSocketGatewayTests
     [Fact]
     public void Subscription_credit_is_atomic_and_bounded()
     {
-        var subscription = new SubscriptionState(1, "orders", null, initialCredit: 1);
+        var subscription = new SubscriptionState(Stream(1), "orders", null, initialCredit: 1);
 
         Assert.True(subscription.TryConsumeCredit());
         Assert.False(subscription.TryConsumeCredit());
@@ -733,7 +975,7 @@ public sealed class WebSocketGatewayTests
             .AddTopic<OrderChanged>("orders.changed", "orders", value => value.CustomerId);
         using var host = builder.Build();
         await host.StartAsync(TestContext.Current.CancellationToken);
-        var sink = new RecordingSink("browser");
+        var sink = new RecordingSink(Guid.NewGuid());
         host.Services.GetRequiredService<WebSocketSessionRegistry>()
             .Subscribe(sink, "orders.changed", "customer-1");
 
@@ -773,7 +1015,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Subscribe,
-                    StreamId = 41,
+                    StreamId = Stream(41),
                     Topic = "orders.changed",
                     Key = "customer-1",
                     Credit = 1,
@@ -805,7 +1047,7 @@ public sealed class WebSocketGatewayTests
             (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
         );
         Assert.Equal(HubFrameKind.Event, delivered.Kind);
-        Assert.Equal((ulong)41, delivered.StreamId);
+        Assert.Equal(Stream(41), delivered.StreamId);
         Assert.Equal("customer-1", delivered.Key);
         Assert.Equal(new byte[] { 9, 8 }, delivered.Payload!.Value.ToArray());
 
@@ -813,6 +1055,80 @@ public sealed class WebSocketGatewayTests
         await run;
         Assert.Equal(WebSocketCloseStatus.NormalClosure, socket.CloseStatus);
         Assert.Equal(0, provider.GetRequiredService<IWebSocketSessionDirectory>().Count);
+    }
+
+    [Fact]
+    public async Task Unsubscribing_one_duplicate_topic_key_stream_keeps_the_sibling_live()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
+            .AddTopic<OrderChanged>("orders.changed", "orders", value => value.CustomerId);
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, new ClaimsPrincipal());
+
+        foreach (var streamId in new[] { Stream(41), Stream(42) })
+        {
+            socket.Enqueue(
+                protocol.Encode(
+                    new HubFrame
+                    {
+                        Kind = HubFrameKind.Subscribe,
+                        StreamId = streamId,
+                        Topic = "orders.changed",
+                        Key = "customer-1",
+                        Credit = 1,
+                    }
+                ),
+                protocol.MessageType
+            );
+        }
+
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(
+            HubFrameKind.Subscribed,
+            protocol
+                .Decode((await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span)
+                .Kind
+        );
+        Assert.Equal(
+            HubFrameKind.Subscribed,
+            protocol
+                .Decode((await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span)
+                .Kind
+        );
+
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame { Kind = HubFrameKind.Unsubscribe, StreamId = Stream(41) }
+            ),
+            protocol.MessageType
+        );
+        Assert.Equal(
+            HubFrameKind.Complete,
+            protocol
+                .Decode((await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span)
+                .Kind
+        );
+
+        provider
+            .GetRequiredService<WebSocketSessionRegistry>()
+            .Publish("orders.changed", "customer-1", new byte[] { 9, 8 });
+        var delivered = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        Assert.Equal(HubFrameKind.Event, delivered.Kind);
+        Assert.Equal(Stream(42), delivered.StreamId);
+
+        socket.EnqueueClose();
+        await run;
     }
 
     [Fact]
@@ -838,7 +1154,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Subscribe,
-                    StreamId = 51,
+                    StreamId = Stream(51),
                     Topic = topic,
                     Credit = 1,
                 }
@@ -855,12 +1171,14 @@ public sealed class WebSocketGatewayTests
         registry.Publish(topic, key: null, new byte[] { 7, 6 });
 
         socket.Enqueue(
-            protocol.Encode(new HubFrame { Kind = HubFrameKind.Response, StreamId = 52 }),
+            protocol.Encode(new HubFrame { Kind = HubFrameKind.Response, StreamId = Stream(52) }),
             protocol.MessageType
         );
         _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
         socket.Enqueue(
-            protocol.Encode(new HubFrame { Kind = HubFrameKind.Unsubscribe, StreamId = 51 }),
+            protocol.Encode(
+                new HubFrame { Kind = HubFrameKind.Unsubscribe, StreamId = Stream(51) }
+            ),
             protocol.MessageType
         );
         _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
@@ -950,7 +1268,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Subscribe,
-                    StreamId = 61,
+                    StreamId = Stream(61),
                     Topic = $"private.{secretToken}",
                     Key = secretKey,
                     Credit = 1,
@@ -1019,7 +1337,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Subscribe,
-                    StreamId = 62,
+                    StreamId = Stream(62),
                     Topic = topic,
                     Credit = 3,
                 }
@@ -1074,7 +1392,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Subscribe,
-                    StreamId = 51,
+                    StreamId = Stream(51),
                     Topic = "status.changed",
                     Key = "customer-1",
                     Credit = 2,
@@ -1145,7 +1463,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Subscribe,
-                    StreamId = 52,
+                    StreamId = Stream(52),
                     Topic = "status.changed",
                     Key = "customer-1",
                     Credit = 1,
@@ -1166,7 +1484,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Credit,
-                    StreamId = 52,
+                    StreamId = Stream(52),
                     Credit = 1,
                 }
             ),
@@ -1214,7 +1532,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Subscribe,
-                    StreamId = 53,
+                    StreamId = Stream(53),
                     Topic = "status.changed",
                     Credit = 2,
                 }
@@ -1265,7 +1583,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Subscribe,
-                    StreamId = 56,
+                    StreamId = Stream(56),
                     Topic = "status.changed",
                     Key = "customer-1",
                     Credit = 2,
@@ -1324,7 +1642,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Subscribe,
-                    StreamId = 54,
+                    StreamId = Stream(54),
                     Topic = "status.changed",
                     Credit = 1,
                 }
@@ -1381,7 +1699,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Subscribe,
-                    StreamId = 55,
+                    StreamId = Stream(55),
                     Topic = "status.changed",
                     Key = "customer-1",
                     Credit = 1,
@@ -1395,7 +1713,9 @@ public sealed class WebSocketGatewayTests
         await snapshots.Started.WaitAsync(TestContext.Current.CancellationToken);
 
         socket.Enqueue(
-            protocol.Encode(new HubFrame { Kind = HubFrameKind.Unsubscribe, StreamId = 55 }),
+            protocol.Encode(
+                new HubFrame { Kind = HubFrameKind.Unsubscribe, StreamId = Stream(55) }
+            ),
             protocol.MessageType
         );
         var complete = protocol.Decode(
@@ -1503,7 +1823,7 @@ public sealed class WebSocketGatewayTests
 
         Assert.False(
             await control.DisconnectAsync(
-                "missing",
+                Guid.NewGuid(),
                 "logout",
                 TestContext.Current.CancellationToken
             )
@@ -1525,6 +1845,131 @@ public sealed class WebSocketGatewayTests
         Assert.Equal("logout", firstSocket.CloseStatusDescription);
         Assert.Equal(WebSocketCloseStatus.PolicyViolation, secondSocket.CloseStatus);
         Assert.Equal("roles_changed", secondSocket.CloseStatusDescription);
+    }
+
+    [Fact]
+    public async Task Ping_is_answered_with_a_pong_that_echoes_the_stream_id()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false);
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, new ClaimsPrincipal());
+
+        socket.Enqueue(
+            protocol.Encode(new HubFrame { Kind = HubFrameKind.Ping, StreamId = Stream(9) }),
+            protocol.MessageType
+        );
+        socket.Enqueue(
+            protocol.Encode(new HubFrame { Kind = HubFrameKind.Ping, StreamId = Stream(10) }),
+            protocol.MessageType
+        );
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        var first = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        var second = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+
+        Assert.Equal(HubFrameKind.Pong, first.Kind);
+        Assert.Equal(Stream(9), first.StreamId);
+        Assert.Equal(HubFrameKind.Pong, second.Kind);
+        Assert.Equal(Stream(10), second.StreamId);
+        Assert.Null(first.Payload);
+        Assert.Null(first.Topic);
+        Assert.DoesNotContain(
+            provider.GetRequiredService<IWebSocketSessionDirectory>().GetSessions(),
+            static snapshot => snapshot.SubscriptionCount != 0
+        );
+
+        socket.EnqueueClose();
+        await run;
+    }
+
+    [Theory]
+    [InlineData(HubFrameKind.Ping, 0)]
+    [InlineData(HubFrameKind.Pong, 9)]
+    public async Task Invalid_ping_or_client_sent_pong_returns_an_invalid_frame_fault(
+        HubFrameKind kind,
+        int stream
+    )
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false);
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, new ClaimsPrincipal());
+
+        socket.Enqueue(
+            protocol.Encode(new HubFrame { Kind = kind, StreamId = Stream(stream) }),
+            protocol.MessageType
+        );
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        var fault = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+
+        Assert.Equal(HubFrameKind.Fault, fault.Kind);
+        Assert.Equal(HubFaultCodes.InvalidFrame, fault.Code);
+
+        socket.EnqueueClose();
+        await run;
+    }
+
+    [Fact]
+    public async Task Ping_shares_the_control_frame_rate_window()
+    {
+        var clock = new TestClock();
+        var services = new ServiceCollection();
+        services.AddSingleton<TimeProvider>(clock);
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options =>
+            {
+                options.RequireAuthenticatedUser = false;
+                options.MaximumControlFramesPerSecond = 2;
+            });
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, new ClaimsPrincipal());
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+
+        for (var stream = 1; stream <= 3; stream++)
+        {
+            socket.Enqueue(
+                protocol.Encode(
+                    new HubFrame { Kind = HubFrameKind.Ping, StreamId = Stream(stream) }
+                ),
+                protocol.MessageType
+            );
+        }
+
+        await run.WaitAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(WebSocketCloseStatus.PolicyViolation, socket.CloseStatus);
+        Assert.Equal("rate_limited", socket.CloseStatusDescription);
     }
 
     [Fact]
@@ -1560,7 +2005,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Credit,
-                    StreamId = 5,
+                    StreamId = Stream(5),
                     Credit = 1,
                 }
             ),
@@ -1733,19 +2178,19 @@ public sealed class WebSocketGatewayTests
             new HubFrame
             {
                 Kind = HubFrameKind.Subscribe,
-                StreamId = 7,
+                StreamId = Stream(7),
                 Topic = "orders.changed",
                 Key = "customer-1",
                 Credit = 1,
             },
             cancellationToken
         );
-        _ = await client.AwaitSubscribedAsync(7, cancellationToken);
+        _ = await client.AwaitSubscribedAsync(Stream(7), cancellationToken);
 
         await host
             .Services.GetRequiredService<IPublishEndpoint>()
             .PublishAsync("orders", new OrderChanged("customer-1"), cancellationToken);
-        var delivered = await client.AwaitEventAsync(7, cancellationToken);
+        var delivered = await client.AwaitEventAsync(Stream(7), cancellationToken);
         var value = host
             .Services.GetRequiredService<IMessageSerializer>()
             .Deserialize<OrderChanged>(delivered.Payload!.Value.Span);
@@ -1883,7 +2328,7 @@ public sealed class WebSocketGatewayTests
                 new HubFrame
                 {
                     Kind = HubFrameKind.Credit,
-                    StreamId = 5,
+                    StreamId = Stream(5),
                     Credit = 1,
                 }
             ),
@@ -1901,15 +2346,15 @@ public sealed class WebSocketGatewayTests
             new HubFrame
             {
                 Kind = HubFrameKind.Request,
-                StreamId = 12,
-                SessionId = "session-1",
+                StreamId = Stream(12),
+                SessionId = FixtureSession,
                 Operation = "orders.get",
                 Topic = "orders.changed",
                 Key = "customer-1",
                 TimeoutMilliseconds = 5000,
                 Credit = 32,
                 Sequence = 123456789,
-                EventId = "event-1",
+                EventId = FixtureLiveEvent,
                 Code = "test_code",
                 Message = "test message",
                 Payload = new byte[] { 1, 2, 3 },
@@ -1920,15 +2365,15 @@ public sealed class WebSocketGatewayTests
         var decoded = protocol.Decode(encoded);
 
         Assert.Equal(HubFrameKind.Request, decoded.Kind);
-        Assert.Equal((ulong)12, decoded.StreamId);
-        Assert.Equal("session-1", decoded.SessionId);
+        Assert.Equal(Stream(12), decoded.StreamId);
+        Assert.Equal(FixtureSession, decoded.SessionId);
         Assert.Equal("orders.get", decoded.Operation);
         Assert.Equal("orders.changed", decoded.Topic);
         Assert.Equal("customer-1", decoded.Key);
         Assert.Equal(5000, decoded.TimeoutMilliseconds);
         Assert.Equal(32, decoded.Credit);
         Assert.Equal(123456789, decoded.Sequence);
-        Assert.Equal("event-1", decoded.EventId);
+        Assert.Equal(FixtureLiveEvent, decoded.EventId);
         Assert.Equal("test_code", decoded.Code);
         Assert.Equal("test message", decoded.Message);
         Assert.Equal(new byte[] { 1, 2, 3 }, decoded.Payload!.Value.ToArray());
@@ -1961,7 +2406,7 @@ public sealed class WebSocketGatewayTests
             "welcome" => new HubFrame
             {
                 Kind = HubFrameKind.Welcome,
-                SessionId = "session-1",
+                SessionId = FixtureSession,
                 Credit = 1024,
                 MaximumMessageSize = 65536,
                 MaximumConcurrentRequests = 8,
@@ -1969,7 +2414,7 @@ public sealed class WebSocketGatewayTests
             "subscribed" => new HubFrame
             {
                 Kind = HubFrameKind.Subscribed,
-                StreamId = 41,
+                StreamId = FixtureSubscription,
                 Topic = "orders.changed",
                 Key = "customer-1",
                 Credit = 32,
@@ -1977,35 +2422,43 @@ public sealed class WebSocketGatewayTests
             "event" => new HubFrame
             {
                 Kind = HubFrameKind.Event,
-                StreamId = 41,
+                StreamId = FixtureSubscription,
                 Topic = "orders.changed",
                 Key = "customer-1",
                 Sequence = 7,
-                EventId = "event-1",
+                EventId = FixtureLiveEvent,
                 Payload = new byte[] { 1, 2, 3 },
             },
             "snapshot-event" => new HubFrame
             {
                 Kind = HubFrameKind.Event,
-                StreamId = 41,
+                StreamId = FixtureSubscription,
                 Topic = "orders.changed",
                 Key = "customer-1",
                 Sequence = 0,
-                EventId = "snapshot-1",
+                EventId = FixtureSnapshotEvent,
                 Payload = new byte[] { 1, 2, 3 },
             },
             "fault" => new HubFrame
             {
                 Kind = HubFrameKind.Fault,
-                StreamId = 12,
+                StreamId = FixtureRequest,
                 Code = "forbidden",
                 Message = "The caller is not authorized.",
             },
+            "ping" => new HubFrame { Kind = HubFrameKind.Ping, StreamId = FixturePing },
+            "pong" => new HubFrame { Kind = HubFrameKind.Pong, StreamId = FixturePing },
             _ => throw new ArgumentOutOfRangeException(nameof(fixture), fixture, null),
         };
 
+    /// <summary>Builds a distinct, readable stream identifier for a test.</summary>
+    private static Guid Stream(int value) => new(value, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+
     private static string ProtocolFile(params string[] segments) =>
         Path.Combine([AppContext.BaseDirectory, "protocol", .. segments]);
+
+    private static JsonElement SchemaProperty(string property) =>
+        JsonV1SchemaDocument.RootElement.GetProperty("properties").GetProperty(property);
 
     private static async Task<IHost> CreateTestHostAsync(
         Action<HostLoomWebSocketOptions>? configure = null,
@@ -2076,9 +2529,9 @@ public sealed class WebSocketGatewayTests
         ) => ValueTask.FromResult(new Greeting($"Hello, {request.Name}!"));
     }
 
-    private sealed class RecordingSink(string id) : IWebSocketEventSink
+    private sealed class RecordingSink(Guid id) : IWebSocketEventSink
     {
-        public string Id { get; } = id;
+        public Guid Id { get; } = id;
 
         public ConcurrentQueue<string?> Events { get; } = new();
 
@@ -2089,7 +2542,7 @@ public sealed class WebSocketGatewayTests
             string? subscriptionKey,
             string? eventKey,
             ReadOnlyMemory<byte> payload,
-            string eventId,
+            Guid eventId,
             long sequence
         )
         {

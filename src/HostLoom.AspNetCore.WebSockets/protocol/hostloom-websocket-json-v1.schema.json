@@ -5,40 +5,60 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["kind", "streamId"],
+  "$defs": {
+    "identifier": {
+      "description": "An RFC 4122 identifier as 32 lowercase hexadecimal digits without separators.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "sessionStream": { "const": "00000000000000000000000000000000" },
+    "clientStream": {
+      "description": "A stream identifier. The all-zero identifier addresses the session, never a stream.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "not": { "const": "00000000000000000000000000000000" }
+    }
+  },
   "properties": {
     "kind": {
       "type": "string",
       "enum": [
         "welcome", "request", "response", "fault", "cancel", "subscribe",
-        "subscribed", "event", "credit", "ack", "unsubscribe", "complete"
+        "subscribed", "event", "credit", "ack", "unsubscribe", "complete",
+        "ping", "pong"
       ]
     },
-    "streamId": { "type": "integer", "minimum": 0 },
-    "sessionId": { "type": "string" },
+    "streamId": { "$ref": "#/$defs/identifier" },
+    "sessionId": { "$ref": "#/$defs/identifier" },
     "operation": { "type": "string" },
     "topic": { "type": "string" },
     "key": { "type": "string" },
-    "timeoutMilliseconds": { "type": "integer", "minimum": 1 },
-    "credit": { "type": "integer", "minimum": 0 },
-    "sequence": { "type": "integer", "minimum": 0 },
-    "eventId": { "type": "string" },
+    "timeoutMilliseconds": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+    "credit": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
+    "sequence": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "eventId": { "$ref": "#/$defs/identifier" },
     "code": { "type": "string" },
     "message": { "type": "string" },
-    "payload": { "type": "string", "contentEncoding": "base64" },
-    "maximumMessageSize": { "type": "integer", "minimum": 1 },
-    "maximumConcurrentRequests": { "type": "integer", "minimum": 1 }
+    "payload": {
+      "type": "string",
+      "contentEncoding": "base64",
+      "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+    },
+    "maximumMessageSize": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+    "maximumConcurrentRequests": { "type": "integer", "minimum": 1, "maximum": 2147483647 }
   },
   "allOf": [
-    { "if": { "properties": { "kind": { "const": "welcome" } } }, "then": { "required": ["sessionId", "credit", "maximumMessageSize", "maximumConcurrentRequests"] } },
-    { "if": { "properties": { "kind": { "const": "request" } } }, "then": { "required": ["streamId", "operation", "payload"], "properties": { "streamId": { "minimum": 1 } } } },
-    { "if": { "properties": { "kind": { "const": "response" } } }, "then": { "required": ["streamId", "payload"], "properties": { "streamId": { "minimum": 1 } } } },
+    { "if": { "properties": { "kind": { "const": "welcome" } } }, "then": { "required": ["sessionId", "credit", "maximumMessageSize", "maximumConcurrentRequests"], "properties": { "streamId": { "$ref": "#/$defs/sessionStream" } } } },
+    { "if": { "properties": { "kind": { "const": "request" } } }, "then": { "required": ["streamId", "operation", "payload"], "properties": { "streamId": { "$ref": "#/$defs/clientStream" } } } },
+    { "if": { "properties": { "kind": { "const": "response" } } }, "then": { "required": ["streamId", "payload"], "properties": { "streamId": { "$ref": "#/$defs/clientStream" } } } },
     { "if": { "properties": { "kind": { "const": "fault" } } }, "then": { "required": ["streamId", "code", "message"] } },
-    { "if": { "properties": { "kind": { "const": "subscribe" } } }, "then": { "required": ["streamId", "topic", "credit"], "properties": { "streamId": { "minimum": 1 } } } },
-    { "if": { "properties": { "kind": { "const": "subscribed" } } }, "then": { "required": ["streamId", "topic", "credit"], "properties": { "streamId": { "minimum": 1 } } } },
-    { "if": { "properties": { "kind": { "const": "event" } } }, "then": { "required": ["streamId", "eventId", "sequence", "payload"], "properties": { "streamId": { "minimum": 1 } } } },
-    { "if": { "properties": { "kind": { "const": "cancel" } } }, "then": { "properties": { "streamId": { "minimum": 1 } } } },
-    { "if": { "properties": { "kind": { "const": "credit" } } }, "then": { "required": ["credit"], "properties": { "streamId": { "minimum": 1 } } } },
-    { "if": { "properties": { "kind": { "const": "ack" } } }, "then": { "required": ["sequence"], "properties": { "streamId": { "minimum": 1 } } } },
-    { "if": { "properties": { "kind": { "enum": ["unsubscribe", "complete"] } } }, "then": { "properties": { "streamId": { "minimum": 1 } } } }
+    { "if": { "properties": { "kind": { "const": "subscribe" } } }, "then": { "required": ["streamId", "topic", "credit"], "properties": { "streamId": { "$ref": "#/$defs/clientStream" } } } },
+    { "if": { "properties": { "kind": { "const": "subscribed" } } }, "then": { "required": ["streamId", "topic", "credit"], "properties": { "streamId": { "$ref": "#/$defs/clientStream" } } } },
+    { "if": { "properties": { "kind": { "const": "event" } } }, "then": { "required": ["streamId", "eventId", "sequence", "payload"], "properties": { "streamId": { "$ref": "#/$defs/clientStream" } } } },
+    { "if": { "properties": { "kind": { "const": "cancel" } } }, "then": { "properties": { "streamId": { "$ref": "#/$defs/clientStream" } } } },
+    { "if": { "properties": { "kind": { "const": "credit" } } }, "then": { "required": ["credit"], "properties": { "streamId": { "$ref": "#/$defs/clientStream" } } } },
+    { "if": { "properties": { "kind": { "const": "ack" } } }, "then": { "required": ["sequence"], "properties": { "streamId": { "$ref": "#/$defs/clientStream" } } } },
+    { "if": { "properties": { "kind": { "enum": ["unsubscribe", "complete"] } } }, "then": { "properties": { "streamId": { "$ref": "#/$defs/clientStream" } } } },
+    { "if": { "properties": { "kind": { "enum": ["ping", "pong"] } } }, "then": { "properties": { "streamId": { "$ref": "#/$defs/clientStream" } } } }
   ]
 }

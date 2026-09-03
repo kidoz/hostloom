@@ -80,11 +80,11 @@ internal static class WebSocketBenchmarkFrame
         new()
         {
             Kind = HubFrameKind.Event,
-            StreamId = 42,
+            StreamId = new("22222222222222222222222222222222"),
             Topic = "orders.changed",
             Key = "customer-12345",
             Sequence = 987654321,
-            EventId = "01K3F2S6JQ8Z0V3M4N5P6R7T8W",
+            EventId = new("55555555555555555555555555555555"),
             Payload = payload,
         };
 }

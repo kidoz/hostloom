@@ -1,12 +1,24 @@
 using System.Net.WebSockets;
 using MessagePack;
+using MessagePack.Formatters;
+using MessagePack.Resolvers;
 
 namespace HostLoom.AspNetCore.WebSockets;
 
 public sealed class MessagePackWebSocketHubProtocol : IWebSocketHubProtocol
 {
     private static readonly MessagePackSerializerOptions SerializerOptions =
-        MessagePackSerializerOptions.Standard.WithSecurity(MessagePackSecurity.UntrustedData);
+        MessagePackSerializerOptions
+            .Standard.WithResolver(
+                CompositeResolver.Create(
+                    [
+                        BinaryGuidMessagePackFormatter.Instance,
+                        NullableBinaryGuidMessagePackFormatter.Instance,
+                    ],
+                    [StandardResolver.Instance]
+                )
+            )
+            .WithSecurity(MessagePackSecurity.UntrustedData);
 
     public const string ProtocolName = "hostloom.msgpack.v1";
 

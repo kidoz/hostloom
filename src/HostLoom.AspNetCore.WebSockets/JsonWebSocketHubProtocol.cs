@@ -12,6 +12,7 @@ public sealed class JsonWebSocketHubProtocol : IWebSocketHubProtocol
     {
         MaxDepth = 32,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Converters = { new HexGuidJsonConverter() },
     };
 
     public const string ProtocolName = "hostloom.json.v1";

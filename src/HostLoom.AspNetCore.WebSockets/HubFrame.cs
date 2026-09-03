@@ -9,11 +9,12 @@ public sealed class HubFrame
     [Key(0)]
     public HubFrameKind Kind { get; init; }
 
+    /// <summary>The client-chosen stream identifier. <see cref="Guid.Empty"/> addresses the session itself.</summary>
     [Key(1)]
-    public ulong StreamId { get; init; }
+    public Guid StreamId { get; init; }
 
     [Key(2)]
-    public string? SessionId { get; init; }
+    public Guid? SessionId { get; init; }
 
     [Key(3)]
     public string? Operation { get; init; }
@@ -34,7 +35,7 @@ public sealed class HubFrame
     public long? Sequence { get; init; }
 
     [Key(9)]
-    public string? EventId { get; init; }
+    public Guid? EventId { get; init; }
 
     [Key(10)]
     public string? Code { get; init; }
