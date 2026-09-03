@@ -259,6 +259,11 @@ slow-client aborts, handler-level handshake rejection, and operation or snapshot
 Framework-controlled properties never include subscription keys, payloads, credentials, handshake
 headers, caller-supplied close text, or remote fault messages.
 
+Registered gateway requests create `hostloom.websocket.request` Server activities from the
+`HostLoom.AspNetCore.WebSockets` source. The existing core request activity is a direct child,
+providing same-process gateway-to-handler correlation without an OpenTelemetry package dependency;
+cross-process broker correlation still requires future trace-header propagation.
+
 
 The initial subscription protocol is live and process-local: acknowledgements record progress but
 do not provide replay, and gateway-generated event IDs are not broker offsets. Multi-node services
