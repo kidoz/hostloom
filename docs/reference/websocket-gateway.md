@@ -165,6 +165,29 @@ Remote fault *messages* are withheld from clients unless
 `IncludeRemoteFaultMessages` is enabled; the code `request_failed` is
 returned either way.
 
+## Metrics
+
+Enable the `HostLoom.AspNetCore.WebSockets` meter (also exposed as
+`WebSocketDiagnostics.MeterName`) to collect these `System.Diagnostics.Metrics` instruments:
+
+| Instrument | Type | Tags |
+| --- | --- | --- |
+| `hostloom.websocket.sessions` | up-down counter | `hostloom.websocket.protocol` |
+| `hostloom.websocket.subscriptions` | up-down counter | `hostloom.websocket.topic` |
+| `hostloom.websocket.events.sent` | counter | `hostloom.websocket.topic` |
+| `hostloom.websocket.events.dropped` | counter | `hostloom.websocket.topic`, `hostloom.websocket.reason` |
+| `hostloom.websocket.queue.bytes` | byte histogram | `hostloom.websocket.topic` |
+| `hostloom.websocket.session.duration` | seconds histogram | `hostloom.websocket.close_reason` |
+| `hostloom.websocket.faults` | counter | `hostloom.websocket.fault.code` |
+| `hostloom.websocket.handshake.rejected` | counter | `hostloom.websocket.reason` |
+
+Queue bytes are encoded event-frame sizes accepted into the bounded outbound budget, not a queue
+occupancy gauge. Sent events are counted only after the socket write succeeds; faults are counted
+when generated. Reason values are a bounded library-controlled vocabulary. Metric tags never carry
+session ids, subjects, subscription keys, payloads, credentials, or application-supplied close
+text. ASP.NET Core authorization middleware may reject a request before the gateway handler; use
+the framework's authorization metrics for that path.
+
 ## Limitations
 
 - Subscriptions are live and process-local: acknowledgements record

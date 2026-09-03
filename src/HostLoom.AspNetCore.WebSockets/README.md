@@ -221,6 +221,38 @@ Important limits are `MaximumMessageSize`, `MaximumQueuedBytesPerConnection`,
 conservative and should be load-tested with the actual event size distribution and client
 population.
 
+## Metrics
+
+The gateway publishes `System.Diagnostics.Metrics` instruments from the
+`HostLoom.AspNetCore.WebSockets` meter. `WebSocketDiagnostics.MeterName` and its public tag-name
+constants can be used when configuring a collector. No OpenTelemetry package dependency is
+required.
+
+| Instrument | Type / unit | Tags | Meaning |
+| --- | --- | --- | --- |
+| `hostloom.websocket.sessions` | up-down counter / `{session}` | `hostloom.websocket.protocol` | Active accepted sessions. |
+| `hostloom.websocket.subscriptions` | up-down counter / `{subscription}` | `hostloom.websocket.topic` | Active authorized subscriptions. |
+| `hostloom.websocket.events.sent` | counter / `{event}` | `hostloom.websocket.topic` | Event frames successfully written to a socket. |
+| `hostloom.websocket.events.dropped` | counter / `{event}` | `hostloom.websocket.topic`, `hostloom.websocket.reason` | Event frames not delivered. |
+| `hostloom.websocket.queue.bytes` | histogram / `By` | `hostloom.websocket.topic` | Encoded event-frame sizes accepted into the connection's bounded outbound budget; this is not current queue occupancy. |
+| `hostloom.websocket.session.duration` | histogram / `s` | `hostloom.websocket.close_reason` | Completed session lifetimes. |
+| `hostloom.websocket.faults` | counter / `{fault}` | `hostloom.websocket.fault.code` | Fault frames generated, whether or not the socket remains writable. |
+| `hostloom.websocket.handshake.rejected` | counter / `{rejection}` | `hostloom.websocket.reason` | Upgrade requests rejected inside the gateway handler. |
+
+Drop reasons are bounded to `no_credit`, `message_too_large`, `queue_capacity`,
+`queue_unavailable`, and `subscription_stopped`. Handshake reasons are `unauthenticated`,
+`not_websocket`, `origin`, and `subprotocol`. Close reasons are normalized to `aborted`,
+`session_expired`, `server_shutdown`, `rate_limited`, `message_too_large`,
+`invalid_message_type`, `invalid_payload`, `peer_closed`, `completed`, `policy_violation`,
+`endpoint_unavailable`, or `other`; an application-supplied administrative close description is
+never used as a tag.
+
+Tags contain only negotiated protocol, registered public topic, and library-controlled reason or
+fault values. They never contain session ids, subjects, subscription keys, payloads, credentials,
+or caller-supplied text. Authorization middleware can reject a request before the gateway handler
+runs; observe ASP.NET Core authorization metrics for those rejections rather than expecting a
+gateway handshake measurement.
+
 Codec throughput and allocations can be measured with the repository's BenchmarkDotNet project:
 
 ```text
