@@ -65,6 +65,9 @@ upgrade rather than a silent change.
   authentication and origin preservation, trusted public scheme/host reconstruction, an idle
   timeout above 60 seconds for the default keep-alive, and the exact per-replica fan-out condition
   under which session affinity is unnecessary.
+- An in-memory transport and WebSocket gateway how-to for the broker-free per-replica topology,
+  including a browser verification path, reconnect and startup boundaries, operational checks, and
+  explicit triggers for moving to RabbitMQ, Kafka, or a backplane.
 - Live subscription credit replenishment no longer signals a completed snapshot initializer, which
   removes one caught `SemaphoreFullException` allocation per zero-to-positive refill.
 
