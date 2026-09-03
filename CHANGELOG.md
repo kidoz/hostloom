@@ -46,6 +46,10 @@ upgrade rather than a silent change.
   and dropped event delivery, queued event-frame sizes, session duration, generated faults, and
   handler-level handshake rejection. Tags use only bounded protocol, topic, reason, and fault-code
   values and exclude session, subject, key, payload, credential, and caller-supplied text.
+- Stable WebSocket structured-log event ids `4100`–`4106` for session lifecycle, subscription
+  denial, slow-client abort, handler-level handshake rejection, operation failure, and snapshot
+  failure. Unknown client topics, subscription keys, payloads, credentials, handshake headers,
+  caller-supplied close text, and remote fault messages are excluded from framework properties.
 - Live subscription credit replenishment no longer signals a completed snapshot initializer, which
   removes one caught `SemaphoreFullException` allocation per zero-to-positive refill.
 
