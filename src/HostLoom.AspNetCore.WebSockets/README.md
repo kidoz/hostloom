@@ -253,6 +253,30 @@ or caller-supplied text. Authorization middleware can reject a request before th
 runs; observe ASP.NET Core authorization metrics for those rejections rather than expecting a
 gateway handshake measurement.
 
+## Structured logging
+
+`WebSocketEvents` exposes stable `EventId` values for every gateway log. The hot lifecycle paths
+use cached `LoggerMessage` delegates.
+
+| Id / name | Level | Structured properties |
+| --- | --- | --- |
+| `4100` / `WebSocketSessionOpened` | Information | `SessionId`, `Protocol`, `Subject` |
+| `4101` / `WebSocketSessionClosed` | Information | `SessionId`, `Protocol`, `Subject`, `CloseReason`, `CloseStatus`, `DurationMilliseconds` |
+| `4102` / `WebSocketSubscriptionDenied` | Warning | `SessionId`, `Topic`, `Reason` |
+| `4103` / `WebSocketSlowClientAborted` | Warning | `SessionId`, `FrameKind`, `Topic`, `MaximumQueuedFrames`, `MaximumQueuedBytes` |
+| `4104` / `WebSocketHandshakeRejected` | Warning | `Reason` |
+| `4105` / `WebSocketOperationFailed` | Error | `Operation`, exception |
+| `4106` / `WebSocketSnapshotFailed` | Error | `Topic`, `SessionId`, exception |
+
+Session close reasons use the same normalized vocabulary as
+`hostloom.websocket.session.duration`. Subscription-denial reasons are `topic_not_found`,
+`key_too_long`, `invalid_credit`, `capacity`, `forbidden`, and `duplicate_stream`. Only a registered
+topic is logged; an unknown client-supplied topic is represented as null. Subscription keys,
+payloads, credentials, handshake headers, caller-supplied close text, and remote fault messages are
+never added as structured properties. `Subject` is the configured subject claim and should remain
+a non-secret identifier. Exceptions on operation and snapshot-provider failures originate from
+application code and remain subject to the application's exception-message policy.
+
 Codec throughput and allocations can be measured with the repository's BenchmarkDotNet project:
 
 ```text
