@@ -125,7 +125,7 @@ socket.addEventListener("message", ({ data }) => {
   if (frame.kind === "welcome") {
     socket.send(JSON.stringify({
       kind: "subscribe",
-      streamId: 1,
+      streamId: crypto.randomUUID().replaceAll("-", ""),
       topic: "inventory.level.changed",
       key: "item-42",
       credit: 16,
