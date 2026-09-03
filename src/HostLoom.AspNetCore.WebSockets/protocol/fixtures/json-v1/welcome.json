@@ -1,1 +1,1 @@
-{"kind":"welcome","streamId":0,"sessionId":"session-1","credit":1024,"maximumMessageSize":65536,"maximumConcurrentRequests":8}
+{"kind":"welcome","streamId":"00000000000000000000000000000000","sessionId":"11111111111111111111111111111111","credit":1024,"maximumMessageSize":65536,"maximumConcurrentRequests":8}

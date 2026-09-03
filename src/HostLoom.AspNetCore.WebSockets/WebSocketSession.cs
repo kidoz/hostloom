@@ -29,10 +29,10 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
     // Both are keyed by stream id and emptied as each request completes. Append-only collections
     // here would grow with the total number of requests a connection ever made, not the number in
     // flight, which is the opposite of the bounded per-connection memory the gateway promises.
-    private readonly ConcurrentDictionary<ulong, CancellationTokenSource> _requests = [];
-    private readonly ConcurrentDictionary<ulong, Task> _requestTasks = [];
-    private readonly ConcurrentDictionary<ulong, SubscriptionState> _subscriptions = [];
-    private readonly ConcurrentDictionary<ulong, Task> _subscriptionTasks = [];
+    private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _requests = [];
+    private readonly ConcurrentDictionary<Guid, Task> _requestTasks = [];
+    private readonly ConcurrentDictionary<Guid, SubscriptionState> _subscriptions = [];
+    private readonly ConcurrentDictionary<Guid, Task> _subscriptionTasks = [];
     private WebSocketCloseStatus _closeStatus = WebSocketCloseStatus.NormalClosure;
     private string _closeReason = "Session completed.";
     private int _aborted;
@@ -69,10 +69,10 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             configuration.Options.MaximumQueuedBytesPerConnection,
             configuration.Options.MaximumQueuedFramesPerConnection
         );
-        Id = Guid.NewGuid().ToString("N");
+        Id = Guid.NewGuid();
     }
 
-    public string Id { get; }
+    public Guid Id { get; }
 
     public Task Completion => _completion.Task;
 
@@ -252,7 +252,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         string? subscriptionKey,
         string? eventKey,
         ReadOnlyMemory<byte> payload,
-        string eventId,
+        Guid eventId,
         long sequence
     )
     {
@@ -378,6 +378,9 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             case HubFrameKind.Unsubscribe:
                 Unsubscribe(frame.StreamId, sendComplete: true);
                 break;
+            case HubFrameKind.Ping:
+                Pong(frame);
+                break;
             default:
                 _ = TryQueue(
                     WebSocketRequestRouter.Fault(
@@ -390,15 +393,35 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         }
     }
 
-    private void StartRequest(HubFrame frame)
+    private void Pong(HubFrame frame)
     {
-        if (frame.StreamId == 0)
+        if (frame.StreamId == Guid.Empty)
         {
             _ = TryQueue(
                 WebSocketRequestRouter.Fault(
-                    0,
+                    Guid.Empty,
                     HubFaultCodes.InvalidFrame,
-                    "A non-zero stream id is required."
+                    "A stream identifier other than the session identifier is required."
+                )
+            );
+            return;
+        }
+
+        // A ping carries no state: the reply echoes only the client's correlation id, so a ping
+        // never reserves a stream, a request slot, or a subscription. It shares the control-frame
+        // rate window with the other client control kinds.
+        _ = TryQueue(new HubFrame { Kind = HubFrameKind.Pong, StreamId = frame.StreamId });
+    }
+
+    private void StartRequest(HubFrame frame)
+    {
+        if (frame.StreamId == Guid.Empty)
+        {
+            _ = TryQueue(
+                WebSocketRequestRouter.Fault(
+                    Guid.Empty,
+                    HubFaultCodes.InvalidFrame,
+                    "A stream identifier other than the session identifier is required."
                 )
             );
             return;
@@ -474,7 +497,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
     private async ValueTask SubscribeAsync(HubFrame frame)
     {
         if (
-            frame.StreamId == 0
+            frame.StreamId == Guid.Empty
             || string.IsNullOrWhiteSpace(frame.Topic)
             || !_configuration.TryGetTopic(frame.Topic, out var topic)
         )
@@ -622,7 +645,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                             StreamId = state.StreamId,
                             Topic = topic.Name,
                             Key = item.Key,
-                            EventId = Guid.NewGuid().ToString("N"),
+                            EventId = Guid.NewGuid(),
                             Sequence = 0,
                             Payload = item.Payload,
                         }
@@ -653,7 +676,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             WebSocketLog.SnapshotFailed(_logger, topic.Name, Id, exception);
             if (
                 _subscriptions.TryRemove(
-                    new KeyValuePair<ulong, SubscriptionState>(state.StreamId, state)
+                    new KeyValuePair<Guid, SubscriptionState>(state.StreamId, state)
                 )
             )
             {
@@ -722,7 +745,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         subscription.Acknowledge(sequence);
     }
 
-    private void Unsubscribe(ulong streamId, bool sendComplete)
+    private void Unsubscribe(Guid streamId, bool sendComplete)
     {
         if (!_subscriptions.TryRemove(streamId, out var subscription))
         {
@@ -746,7 +769,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
     }
 
     private void DenySubscription(
-        ulong streamId,
+        Guid streamId,
         string? topic,
         string reason,
         string faultCode,
@@ -980,7 +1003,8 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                 or HubFrameKind.Subscribe
                 or HubFrameKind.Credit
                 or HubFrameKind.Ack
-                or HubFrameKind.Unsubscribe;
+                or HubFrameKind.Unsubscribe
+                or HubFrameKind.Ping;
 
     private readonly record struct InboundMessage(
         ReadOnlyMemory<byte> Payload,

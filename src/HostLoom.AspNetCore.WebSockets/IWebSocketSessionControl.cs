@@ -5,7 +5,7 @@ public interface IWebSocketSessionControl
 {
     /// <summary>Disconnects one session and waits for its lifecycle to finish.</summary>
     ValueTask<bool> DisconnectAsync(
-        string sessionId,
+        Guid sessionId,
         string reason,
         CancellationToken cancellationToken = default
     );

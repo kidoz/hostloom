@@ -40,10 +40,10 @@ public sealed class ProtobufWebSocketHubProtocol : IWebSocketHubProtocol
         public HubFrameKind Kind { get; set; }
 
         [ProtoMember(2)]
-        public ulong StreamId { get; set; }
+        public byte[]? StreamId { get; set; }
 
         [ProtoMember(3)]
-        public string? SessionId { get; set; }
+        public byte[]? SessionId { get; set; }
 
         [ProtoMember(4)]
         public string? Operation { get; set; }
@@ -64,7 +64,7 @@ public sealed class ProtobufWebSocketHubProtocol : IWebSocketHubProtocol
         public long? Sequence { get; set; }
 
         [ProtoMember(10)]
-        public string? EventId { get; set; }
+        public byte[]? EventId { get; set; }
 
         [ProtoMember(11)]
         public string? Code { get; set; }
@@ -85,15 +85,15 @@ public sealed class ProtobufWebSocketHubProtocol : IWebSocketHubProtocol
             new()
             {
                 Kind = frame.Kind,
-                StreamId = frame.StreamId,
-                SessionId = frame.SessionId,
+                StreamId = ToBytes(frame.StreamId),
+                SessionId = ToOptionalBytes(frame.SessionId),
                 Operation = frame.Operation,
                 Topic = frame.Topic,
                 Key = frame.Key,
                 TimeoutMilliseconds = frame.TimeoutMilliseconds,
                 Credit = frame.Credit,
                 Sequence = frame.Sequence,
-                EventId = frame.EventId,
+                EventId = ToOptionalBytes(frame.EventId),
                 Code = frame.Code,
                 Message = frame.Message,
                 Payload = frame.Payload?.ToArray(),
@@ -105,20 +105,40 @@ public sealed class ProtobufWebSocketHubProtocol : IWebSocketHubProtocol
             new()
             {
                 Kind = frame.Kind,
-                StreamId = frame.StreamId,
-                SessionId = frame.SessionId,
+                StreamId = ToIdentifier(frame.StreamId) ?? Guid.Empty,
+                SessionId = ToIdentifier(frame.SessionId),
                 Operation = frame.Operation,
                 Topic = frame.Topic,
                 Key = frame.Key,
                 TimeoutMilliseconds = frame.TimeoutMilliseconds,
                 Credit = frame.Credit,
                 Sequence = frame.Sequence,
-                EventId = frame.EventId,
+                EventId = ToIdentifier(frame.EventId),
                 Code = frame.Code,
                 Message = frame.Message,
                 Payload = frame.Payload,
                 MaximumMessageSize = frame.MaximumMessageSize,
                 MaximumConcurrentRequests = frame.MaximumConcurrentRequests,
+            };
+
+        // The wire form is the 16 big-endian bytes of RFC 4122, so a non-.NET client reads the
+        // same identifier the JSON contract spells as 32 hex digits.
+        private static byte[] ToBytes(Guid identifier)
+        {
+            var bytes = new byte[16];
+            _ = identifier.TryWriteBytes(bytes, bigEndian: true, out _);
+            return bytes;
+        }
+
+        private static byte[]? ToOptionalBytes(Guid? identifier) =>
+            identifier is { } value ? ToBytes(value) : null;
+
+        private static Guid? ToIdentifier(byte[]? bytes) =>
+            bytes switch
+            {
+                null => null,
+                { Length: 16 } => new Guid(bytes, bigEndian: true),
+                _ => throw new InvalidDataException("A frame identifier must be 16 bytes."),
             };
     }
 }

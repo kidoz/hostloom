@@ -9,11 +9,11 @@ internal static class WebSocketLog
 
     private static readonly Action<
         ILogger,
-        string,
+        Guid,
         string,
         string?,
         Exception?
-    > SessionOpenedMessage = LoggerMessage.Define<string, string, string?>(
+    > SessionOpenedMessage = LoggerMessage.Define<Guid, string, string?>(
         LogLevel.Information,
         WebSocketEvents.SessionOpened,
         "WebSocket session {SessionId} opened with protocol {Protocol} for subject {Subject}."
@@ -21,7 +21,7 @@ internal static class WebSocketLog
 
     private static readonly Action<
         ILogger,
-        string,
+        Guid,
         string,
         string?,
         string,
@@ -29,7 +29,7 @@ internal static class WebSocketLog
         double,
         Exception?
     > SessionClosedMessage = LoggerMessage.Define<
-        string,
+        Guid,
         string,
         string?,
         string,
@@ -43,11 +43,11 @@ internal static class WebSocketLog
 
     private static readonly Action<
         ILogger,
-        string,
+        Guid,
         string?,
         string,
         Exception?
-    > SubscriptionDeniedMessage = LoggerMessage.Define<string, string?, string>(
+    > SubscriptionDeniedMessage = LoggerMessage.Define<Guid, string?, string>(
         LogLevel.Warning,
         WebSocketEvents.SubscriptionDenied,
         "WebSocket session {SessionId} subscription to registered topic {Topic} was denied with reason {Reason}."
@@ -55,13 +55,13 @@ internal static class WebSocketLog
 
     private static readonly Action<
         ILogger,
-        string,
+        Guid,
         HubFrameKind,
         string?,
         int,
         int,
         Exception?
-    > SlowClientAbortedMessage = LoggerMessage.Define<string, HubFrameKind, string?, int, int>(
+    > SlowClientAbortedMessage = LoggerMessage.Define<Guid, HubFrameKind, string?, int, int>(
         LogLevel.Warning,
         WebSocketEvents.SlowClientAborted,
         "WebSocket session {SessionId} was aborted after outbound capacity was exhausted while queueing {FrameKind} for registered topic {Topic}; limits are {MaximumQueuedFrames} frames and {MaximumQueuedBytes} bytes."
@@ -81,8 +81,8 @@ internal static class WebSocketLog
             "WebSocket operation {Operation} failed before a response was produced."
         );
 
-    private static readonly Action<ILogger, string, string, Exception?> SnapshotFailedMessage =
-        LoggerMessage.Define<string, string>(
+    private static readonly Action<ILogger, string, Guid, Exception?> SnapshotFailedMessage =
+        LoggerMessage.Define<string, Guid>(
             LogLevel.Error,
             WebSocketEvents.SnapshotFailed,
             "WebSocket topic {Topic} snapshot failed for session {SessionId}."
@@ -90,14 +90,14 @@ internal static class WebSocketLog
 
     public static void SessionOpened(
         ILogger logger,
-        string sessionId,
+        Guid sessionId,
         string protocol,
         string? subject
     ) => SessionOpenedMessage(logger, sessionId, protocol, subject, null);
 
     public static void SessionClosed(
         ILogger logger,
-        string sessionId,
+        Guid sessionId,
         string protocol,
         string? subject,
         string closeReason,
@@ -117,14 +117,14 @@ internal static class WebSocketLog
 
     public static void SubscriptionDenied(
         ILogger logger,
-        string sessionId,
+        Guid sessionId,
         string? topic,
         string reason
     ) => SubscriptionDeniedMessage(logger, sessionId, topic, reason, null);
 
     public static void SlowClientAborted(
         ILogger logger,
-        string sessionId,
+        Guid sessionId,
         HubFrameKind frameKind,
         string? topic,
         int maximumQueuedFrames,
@@ -149,7 +149,7 @@ internal static class WebSocketLog
     public static void SnapshotFailed(
         ILogger logger,
         string topic,
-        string sessionId,
+        Guid sessionId,
         Exception exception
     ) => SnapshotFailedMessage(logger, topic, sessionId, exception);
 }

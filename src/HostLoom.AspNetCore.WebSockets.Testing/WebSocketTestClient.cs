@@ -141,7 +141,7 @@ public sealed class WebSocketTestClient : IAsyncDisposable
 
     /// <summary>Receives a subscribed frame and validates its stream id.</summary>
     public async ValueTask<HubFrame> AwaitSubscribedAsync(
-        ulong streamId,
+        Guid streamId,
         CancellationToken cancellationToken = default
     )
     {
@@ -155,7 +155,7 @@ public sealed class WebSocketTestClient : IAsyncDisposable
 
     /// <summary>Receives an event frame and validates its stream id.</summary>
     public async ValueTask<HubFrame> AwaitEventAsync(
-        ulong streamId,
+        Guid streamId,
         CancellationToken cancellationToken = default
     )
     {
@@ -166,7 +166,7 @@ public sealed class WebSocketTestClient : IAsyncDisposable
 
     /// <summary>Receives a fault frame and validates its stream id.</summary>
     public async ValueTask<HubFrame> AwaitFaultAsync(
-        ulong streamId,
+        Guid streamId,
         CancellationToken cancellationToken = default
     )
     {
@@ -183,7 +183,7 @@ public sealed class WebSocketTestClient : IAsyncDisposable
         return ValueTask.CompletedTask;
     }
 
-    private static HubFrame RequireStream(HubFrame frame, ulong streamId)
+    private static HubFrame RequireStream(HubFrame frame, Guid streamId)
     {
         if (frame.StreamId != streamId)
         {

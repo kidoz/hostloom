@@ -70,9 +70,9 @@ public class WebSocketFanoutBenchmarks
 
         public BenchmarkSession(int index)
         {
-            Id = $"session-{index}";
+            Id = Guid.NewGuid();
             _subscription = new SubscriptionState(
-                streamId: (ulong)index + 1,
+                streamId: new Guid(index + 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
                 Topic,
                 key: null,
                 initialCredit: 1
@@ -85,14 +85,14 @@ public class WebSocketFanoutBenchmarks
             }
         }
 
-        public string Id { get; }
+        public Guid Id { get; }
 
         public bool TryQueueEvent(
             string topic,
             string? subscriptionKey,
             string? eventKey,
             ReadOnlyMemory<byte> payload,
-            string eventId,
+            Guid eventId,
             long sequence
         )
         {

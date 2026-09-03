@@ -6,14 +6,14 @@ namespace HostLoom.AspNetCore.WebSockets;
 
 internal interface IWebSocketEventSink
 {
-    string Id { get; }
+    Guid Id { get; }
 
     bool TryQueueEvent(
         string topic,
         string? subscriptionKey,
         string? eventKey,
         ReadOnlyMemory<byte> payload,
-        string eventId,
+        Guid eventId,
         long sequence
     );
 
@@ -34,9 +34,8 @@ internal sealed class WebSocketSessionRegistry
         IWebSocketSessionControl
 {
     private readonly ConcurrentDictionary<SubscriptionGroup, GroupState> _groups = [];
-    private readonly ConcurrentDictionary<string, IWebSocketSessionHandle> _sessions = new(
-        StringComparer.Ordinal
-    );
+    private readonly Lock _groupsGate = new();
+    private readonly ConcurrentDictionary<Guid, IWebSocketSessionHandle> _sessions = [];
 
     public int Count => _sessions.Count;
 
@@ -55,12 +54,11 @@ internal sealed class WebSocketSessionRegistry
     }
 
     public async ValueTask<bool> DisconnectAsync(
-        string sessionId,
+        Guid sessionId,
         string reason,
         CancellationToken cancellationToken = default
     )
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ValidateReason(reason);
         if (!_sessions.TryGetValue(sessionId, out var session))
         {
@@ -105,7 +103,7 @@ internal sealed class WebSocketSessionRegistry
     }
 
     internal void Unregister(IWebSocketSessionHandle session) =>
-        _sessions.TryRemove(new KeyValuePair<string, IWebSocketSessionHandle>(session.Id, session));
+        _sessions.TryRemove(new KeyValuePair<Guid, IWebSocketSessionHandle>(session.Id, session));
 
     internal async Task DisconnectAllAsync(
         WebSocketCloseStatus status,
@@ -127,19 +125,43 @@ internal sealed class WebSocketSessionRegistry
 
     public void Subscribe(IWebSocketEventSink session, string topic, string? key)
     {
-        var group = _groups.GetOrAdd(
-            new SubscriptionGroup(topic, key),
-            static _ => new GroupState()
-        );
-        group.Sessions[session.Id] = session;
+        lock (_groupsGate)
+        {
+            var group = _groups.GetOrAdd(
+                new SubscriptionGroup(topic, key),
+                static _ => new GroupState()
+            );
+            if (group.Sessions.TryGetValue(session.Id, out var membership))
+            {
+                membership.AddReference();
+            }
+            else
+            {
+                group.Sessions[session.Id] = new SessionMembership(session);
+            }
+        }
     }
 
     public void Unsubscribe(IWebSocketEventSink session, string topic, string? key)
     {
         var groupKey = new SubscriptionGroup(topic, key);
-        if (_groups.TryGetValue(groupKey, out var group))
+        lock (_groupsGate)
         {
-            group.Sessions.TryRemove(session.Id, out _);
+            if (!_groups.TryGetValue(groupKey, out var group))
+            {
+                return;
+            }
+
+            if (
+                group.Sessions.TryGetValue(session.Id, out var membership)
+                && membership.ReleaseReference()
+            )
+            {
+                group.Sessions.TryRemove(
+                    new KeyValuePair<Guid, SessionMembership>(session.Id, membership)
+                );
+            }
+
             if (group.Sessions.IsEmpty)
             {
                 _groups.TryRemove(new KeyValuePair<SubscriptionGroup, GroupState>(groupKey, group));
@@ -149,7 +171,7 @@ internal sealed class WebSocketSessionRegistry
 
     public void Publish(string topic, string? key, ReadOnlyMemory<byte> payload)
     {
-        var eventId = Guid.NewGuid().ToString("N");
+        var eventId = Guid.NewGuid();
         PublishGroup(new SubscriptionGroup(topic, null), topic, key, payload, eventId);
         if (key is not null)
         {
@@ -162,7 +184,7 @@ internal sealed class WebSocketSessionRegistry
         string topic,
         string? eventKey,
         ReadOnlyMemory<byte> payload,
-        string eventId
+        Guid eventId
     )
     {
         if (!_groups.TryGetValue(groupKey, out var group))
@@ -171,8 +193,9 @@ internal sealed class WebSocketSessionRegistry
         }
 
         var sequence = Interlocked.Increment(ref group.Sequence);
-        foreach (var session in group.Sessions.Values)
+        foreach (var membership in group.Sessions.Values)
         {
+            var session = membership.Session;
             if (!session.TryQueueEvent(topic, groupKey.Key, eventKey, payload, eventId, sequence))
             {
                 session.Abort();
@@ -196,9 +219,19 @@ internal sealed class WebSocketSessionRegistry
 
     private sealed class GroupState
     {
-        public ConcurrentDictionary<string, IWebSocketEventSink> Sessions { get; } =
-            new(StringComparer.Ordinal);
+        public ConcurrentDictionary<Guid, SessionMembership> Sessions { get; } = [];
 
         public long Sequence;
+    }
+
+    private sealed class SessionMembership(IWebSocketEventSink session)
+    {
+        private int _references = 1;
+
+        public IWebSocketEventSink Session { get; } = session;
+
+        public void AddReference() => _references++;
+
+        public bool ReleaseReference() => --_references == 0;
     }
 }
