@@ -151,6 +151,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Every packable project must appear here; the list is verified against the packed
+          # output below, because a missing id publishes nothing and fails nothing.
           packages=(
             HostLoom.Pipelines
             HostLoom.Logging
@@ -161,12 +163,32 @@ jobs:
             HostLoom.Transport.RabbitMq
             HostLoom.Transport.Kafka
             HostLoom.AspNetCore.WebSockets
+            HostLoom.AspNetCore.WebSockets.Testing
             HostLoom.Analyzers
             HostLoom.Diagnostics
             HostLoom.Mapping
             HostLoom.Mapping.DependencyInjection
             HostLoom.Mapping.Testing
+            HostLoom.Caching
+            HostLoom.Caching.DependencyInjection
+            HostLoom.Caching.Testing
+            HostLoom.Caching.Pipelines
+            HostLoom.Locking
+            HostLoom.Locking.DependencyInjection
+            HostLoom.Locking.Testing
+            HostLoom.Locking.Pipelines
+            HostLoom.Redis
           )
+
+          missing=()
+          for package_file in artifacts/packages/*.nupkg; do
+            packed="$(basename "${package_file}" ".${{ steps.version.outputs.version }}.nupkg")"
+            printf '%s\n' "${packages[@]}" | grep -qxF "${packed}" || missing+=("${packed}")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Packed but not in the publish list: ${missing[*]}"
+            exit 1
+          fi
           for package_id in "${packages[@]}"; do
             package="artifacts/packages/${package_id}.${{ steps.version.outputs.version }}.nupkg"
             dotnet nuget push "${package}" \
