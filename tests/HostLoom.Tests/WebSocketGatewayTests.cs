@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
@@ -8,6 +9,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using HostLoom.AspNetCore.WebSockets;
 using HostLoom.AspNetCore.WebSockets.Testing;
+using HostLoom.Diagnostics;
 using HostLoom.Transport.InMemory;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
@@ -146,6 +148,7 @@ public sealed class WebSocketGatewayTests
     [Fact]
     public async Task Registered_request_is_dispatched_through_HostLoom()
     {
+        using var activities = new WebSocketActivityRecorder();
         var builder = Host.CreateApplicationBuilder();
         builder
             .Services.AddHostLoom()
@@ -158,6 +161,10 @@ public sealed class WebSocketGatewayTests
         await host.StartAsync(TestContext.Current.CancellationToken);
         var serializer = host.Services.GetRequiredService<IMessageSerializer>();
         var router = host.Services.GetRequiredService<WebSocketRequestRouter>();
+        using var traceRoot = new Activity("websocket trace test");
+        traceRoot.SetIdFormat(ActivityIdFormat.W3C);
+        traceRoot.Start();
+        var traceId = traceRoot.TraceId;
 
         var response = await router.RouteAsync(
             new HubFrame
@@ -168,18 +175,56 @@ public sealed class WebSocketGatewayTests
                 Payload = serializer.Serialize(new Greet("Ada")),
             },
             new ClaimsPrincipal(),
-            TestContext.Current.CancellationToken
+            TestContext.Current.CancellationToken,
+            JsonWebSocketHubProtocol.ProtocolName
         );
 
         Assert.Equal(HubFrameKind.Response, response.Kind);
         Assert.Equal((ulong)17, response.StreamId);
         var greeting = serializer.Deserialize<Greeting>(response.Payload!.Value.Span);
         Assert.Equal("Hello, Ada!", greeting?.Text);
+
+        var gateway = Assert.Single(
+            activities.Activities,
+            activity =>
+                activity.Source == WebSocketDiagnostics.ActivitySourceName
+                && activity.TraceId == traceId
+                && activity.Tag(WebSocketDiagnostics.OperationTag) is "greet"
+        );
+        Assert.Equal(WebSocketDiagnostics.RequestActivityName, gateway.Name);
+        Assert.Equal(ActivityKind.Server, gateway.Kind);
+        Assert.Equal(ActivityStatusCode.Ok, gateway.Status);
+        Assert.Equal("success", gateway.Tag(WebSocketDiagnostics.OutcomeTag));
+        Assert.Equal(
+            JsonWebSocketHubProtocol.ProtocolName,
+            gateway.Tag(WebSocketDiagnostics.ProtocolTag)
+        );
+
+        var brokerSend = Assert.Single(
+            activities.Activities,
+            activity =>
+                activity.TraceId == traceId
+                && activity.Source == HostLoomDiagnostics.ActivitySourceName
+                && activity.Name == "hostloom request"
+        );
+        Assert.Equal(gateway.TraceId, brokerSend.TraceId);
+        Assert.Equal(gateway.SpanId, brokerSend.ParentSpanId);
+
+        var dispatch = Assert.Single(
+            activities.Activities,
+            activity =>
+                activity.TraceId == traceId
+                && activity.Source == HostLoomDiagnostics.ActivitySourceName
+                && activity.Name == "hostloom handle request"
+        );
+        Assert.Equal(brokerSend.TraceId, dispatch.TraceId);
+        Assert.Equal(brokerSend.SpanId, dispatch.ParentSpanId);
     }
 
     [Fact]
     public async Task Malformed_request_payload_returns_an_invalid_payload_fault()
     {
+        using var activities = new WebSocketActivityRecorder();
         var builder = Host.CreateApplicationBuilder();
         builder
             .Services.AddHostLoom()
@@ -191,6 +236,10 @@ public sealed class WebSocketGatewayTests
         using var host = builder.Build();
         await host.StartAsync(TestContext.Current.CancellationToken);
         var router = host.Services.GetRequiredService<WebSocketRequestRouter>();
+        using var traceRoot = new Activity("websocket fault trace test");
+        traceRoot.SetIdFormat(ActivityIdFormat.W3C);
+        traceRoot.Start();
+        var traceId = traceRoot.TraceId;
 
         var response = await router.RouteAsync(
             new HubFrame
@@ -201,11 +250,71 @@ public sealed class WebSocketGatewayTests
                 Payload = "not-json"u8.ToArray(),
             },
             new ClaimsPrincipal(),
-            TestContext.Current.CancellationToken
+            TestContext.Current.CancellationToken,
+            JsonWebSocketHubProtocol.ProtocolName
         );
 
         Assert.Equal(HubFrameKind.Fault, response.Kind);
         Assert.Equal(HubFaultCodes.InvalidPayload, response.Code);
+        var gateway = Assert.Single(
+            activities.Activities,
+            activity =>
+                activity.Source == WebSocketDiagnostics.ActivitySourceName
+                && activity.TraceId == traceId
+                && activity.Tag(WebSocketDiagnostics.OperationTag) is "greet"
+        );
+        Assert.Equal(ActivityStatusCode.Error, gateway.Status);
+        Assert.Equal("fault", gateway.Tag(WebSocketDiagnostics.OutcomeTag));
+        Assert.Equal(HubFaultCodes.InvalidPayload, gateway.Tag(WebSocketDiagnostics.FaultCodeTag));
+    }
+
+    [Fact]
+    public async Task Unregistered_operation_does_not_become_trace_identity()
+    {
+        const string untrustedOperation = "private.top-secret-token";
+        using var activities = new WebSocketActivityRecorder();
+        var services = new ServiceCollection();
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false);
+        await using var provider = services.BuildServiceProvider();
+        using var traceRoot = new Activity("unregistered websocket trace test");
+        traceRoot.SetIdFormat(ActivityIdFormat.W3C);
+        traceRoot.Start();
+        var traceId = traceRoot.TraceId;
+
+        var response = await provider
+            .GetRequiredService<WebSocketRequestRouter>()
+            .RouteAsync(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Request,
+                    StreamId = 19,
+                    Operation = untrustedOperation,
+                    Payload = ReadOnlyMemory<byte>.Empty,
+                },
+                new ClaimsPrincipal(),
+                TestContext.Current.CancellationToken,
+                JsonWebSocketHubProtocol.ProtocolName
+            );
+
+        Assert.Equal(HubFaultCodes.OperationNotFound, response.Code);
+        Assert.DoesNotContain(
+            activities.Activities,
+            activity =>
+                activity.TraceId == traceId
+                && activity.Source == WebSocketDiagnostics.ActivitySourceName
+        );
+        Assert.DoesNotContain(
+            activities.Activities,
+            activity =>
+                activity.TraceId == traceId
+                && (
+                    activity.Name.Contains(untrustedOperation, StringComparison.Ordinal)
+                    || activity.Tags.Values.OfType<string>().Contains(untrustedOperation)
+                )
+        );
     }
 
     [Fact]
@@ -1867,6 +1976,78 @@ public sealed class WebSocketGatewayTests
     private sealed record MetricMeasurement(
         string Name,
         double Value,
+        IReadOnlyDictionary<string, object?> Tags
+    )
+    {
+        public object? Tag(string name) => Tags.GetValueOrDefault(name);
+    }
+
+    private sealed class WebSocketActivityRecorder : IDisposable
+    {
+        private readonly List<ActivityRecord> _activities = [];
+        private readonly Lock _gate = new();
+        private readonly ActivityListener _listener;
+
+        public WebSocketActivityRecorder()
+        {
+            _listener = new ActivityListener
+            {
+                ShouldListenTo = source =>
+                    source.Name == WebSocketDiagnostics.ActivitySourceName
+                    || source.Name == HostLoomDiagnostics.ActivitySourceName,
+                Sample = (ref ActivityCreationOptions<ActivityContext> _) =>
+                    ActivitySamplingResult.AllDataAndRecorded,
+                SampleUsingParentId = (ref ActivityCreationOptions<string> _) =>
+                    ActivitySamplingResult.AllDataAndRecorded,
+                ActivityStopped = activity =>
+                {
+                    var tags = activity.TagObjects.ToDictionary(
+                        static tag => tag.Key,
+                        static tag => tag.Value,
+                        StringComparer.Ordinal
+                    );
+                    lock (_gate)
+                    {
+                        _activities.Add(
+                            new ActivityRecord(
+                                activity.Source.Name,
+                                activity.DisplayName,
+                                activity.Kind,
+                                activity.Status,
+                                activity.TraceId,
+                                activity.SpanId,
+                                activity.ParentSpanId,
+                                tags
+                            )
+                        );
+                    }
+                },
+            };
+            ActivitySource.AddActivityListener(_listener);
+        }
+
+        public IReadOnlyList<ActivityRecord> Activities
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _activities];
+                }
+            }
+        }
+
+        public void Dispose() => _listener.Dispose();
+    }
+
+    private sealed record ActivityRecord(
+        string Source,
+        string Name,
+        ActivityKind Kind,
+        ActivityStatusCode Status,
+        ActivityTraceId TraceId,
+        ActivitySpanId SpanId,
+        ActivitySpanId ParentSpanId,
         IReadOnlyDictionary<string, object?> Tags
     )
     {

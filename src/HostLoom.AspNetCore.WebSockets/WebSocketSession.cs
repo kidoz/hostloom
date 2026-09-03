@@ -450,7 +450,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         try
         {
             var response = await _router
-                .RouteAsync(frame, _user, cancellation.Token)
+                .RouteAsync(frame, _user, cancellation.Token, _protocol.SubProtocol)
                 .ConfigureAwait(false);
             if (!_stop.IsCancellationRequested && !TryQueue(response))
             {
