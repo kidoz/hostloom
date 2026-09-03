@@ -15,6 +15,7 @@ recorded in `CHANGELOG.md`.
 | `HostLoom.Transport.RabbitMq` | RabbitMQ request and fan-out event transport |
 | `HostLoom.Transport.Kafka` | Kafka request and consumer-group event transport |
 | `HostLoom.AspNetCore.WebSockets` | Authenticated WebSocket RPC and subscriptions |
+| `HostLoom.AspNetCore.WebSockets.Testing` | In-process TestServer client for gateway tests |
 | `HostLoom.Logging` | Allocation-free UTF-8 logging provider |
 | `HostLoom.Diagnostics` | Composition ledger and startup report of registration decisions |
 | `HostLoom.Mapping` | Explicit, compile-time-safe, AOT-friendly object mapping |
