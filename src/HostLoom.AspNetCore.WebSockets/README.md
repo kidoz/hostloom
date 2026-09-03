@@ -45,6 +45,24 @@ app.MapHostLoomWebSocketHub("/realtime");
 app.Run();
 ```
 
+The parameterless `UseHostLoomWebSockets()` uses a 20-second keep-alive interval and a 10-second
+Pong timeout. Pass ASP.NET Core `WebSocketOptions` when the host needs different middleware
+settings:
+
+```csharp
+app.UseHostLoomWebSockets(new WebSocketOptions
+{
+    KeepAliveInterval = TimeSpan.FromSeconds(30),
+    KeepAliveTimeout = TimeSpan.FromSeconds(15),
+});
+```
+
+This helper delegates to ASP.NET Core `UseWebSockets`. If the application already called
+`UseWebSockets`, omit `UseHostLoomWebSockets`; registering both would add the middleware twice, and
+the gateway does not attempt unreliable pipeline-presence detection. ASP.NET Core
+`WebSocketOptions.AllowedOrigins` and the gateway's `HostLoomWebSocketOptions.OriginMode` are
+independent checks, so configure them consistently when both are enabled.
+
 The endpoint requires an authenticated ASP.NET Core principal by default. Authentication is
 completed before the upgrade; each request operation and subscription can additionally name an
 ASP.NET Core policy. Policy handlers receive `WebSocketOperationResource` or
