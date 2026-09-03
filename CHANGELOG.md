@@ -61,6 +61,10 @@ upgrade rather than a silent change.
 - A `UseHostLoomWebSockets(WebSocketOptions)` overload for caller-controlled ASP.NET Core WebSocket
   middleware settings. The parameterless helper retains its 20-second keep-alive interval and
   10-second Pong timeout; applications that already call `UseWebSockets` omit the HostLoom helper.
+- Reverse-proxy deployment guidance covering HTTP/1.1 upgrade and subprotocol forwarding,
+  authentication and origin preservation, trusted public scheme/host reconstruction, an idle
+  timeout above 60 seconds for the default keep-alive, and the exact per-replica fan-out condition
+  under which session affinity is unnecessary.
 - Live subscription credit replenishment no longer signals a completed snapshot initializer, which
   removes one caught `SemaphoreFullException` allocation per zero-to-positive refill.
 
