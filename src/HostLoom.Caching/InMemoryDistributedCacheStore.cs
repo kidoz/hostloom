@@ -55,15 +55,7 @@ public sealed class InMemoryDistributedCacheStore
     {
         cancellationToken.ThrowIfCancellationRequested();
         Write(key, payload, timeToLive);
-        if (tagKeys is not null)
-        {
-            foreach (var tagKey in tagKeys)
-            {
-                _tags.GetOrAdd(tagKey, static _ => new ConcurrentDictionary<string, byte>())[key] =
-                    0;
-            }
-        }
-
+        Index(key, tagKeys);
         return ValueTask.CompletedTask;
     }
 
@@ -72,6 +64,7 @@ public sealed class InMemoryDistributedCacheStore
         string key,
         ReadOnlyMemory<byte> payload,
         TimeSpan timeToLive,
+        IReadOnlyCollection<string>? tagKeys = null,
         CancellationToken cancellationToken = default
     )
     {
@@ -82,6 +75,7 @@ public sealed class InMemoryDistributedCacheStore
         {
             if (_entries.TryAdd(key, entry))
             {
+                Index(key, tagKeys);
                 return ValueTask.FromResult(true);
             }
 
@@ -94,6 +88,7 @@ public sealed class InMemoryDistributedCacheStore
 
                 if (_entries.TryUpdate(key, entry, existing))
                 {
+                    Index(key, tagKeys);
                     return ValueTask.FromResult(true);
                 }
             }
@@ -208,6 +203,19 @@ public sealed class InMemoryDistributedCacheStore
         }
 
         return new CacheStoreEntry(entry.Payload, TimeSpan.FromTicks(remaining));
+    }
+
+    private void Index(string key, IReadOnlyCollection<string>? tagKeys)
+    {
+        if (tagKeys is null)
+        {
+            return;
+        }
+
+        foreach (var tagKey in tagKeys)
+        {
+            _tags.GetOrAdd(tagKey, static _ => new ConcurrentDictionary<string, byte>())[key] = 0;
+        }
     }
 
     private void Write(string key, ReadOnlyMemory<byte> payload, TimeSpan timeToLive)

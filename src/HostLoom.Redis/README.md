@@ -29,7 +29,7 @@ password is never logged; probe output and the startup line redact it.
 |---|---|
 | cache entry | `SET … PX`, `GET` with `PTTL` pipelined, `MGET` with `PTTL`, `UNLINK` |
 | set-if-absent and stampede lease | `SET … NX PX` |
-| tag index | `SADD`, `EXPIRE NX` then `EXPIRE GT`, `SMEMBERS`, `UNLINK` in batches |
+| tag index | `SADD`, `EXPIRE NX` then `EXPIRE GT`, `SMEMBERS`, `UNLINK` in batches; a tagged set-if-absent indexes only after the write is known to have happened |
 | invalidation | `PUBLISH` and `SUBSCRIBE` on `{namespace}:cache:invalidate`; `CLIENT LIST` and `CLIENT TRACKING` in tracking mode; `PSUBSCRIBE __keyspace@{db}__:…` in broadcast mode |
 | lock | `SET {namespace}:lock:{key} owner NX PX lease`; release and extend are Lua compare-and-set, sent as `EVALSHA` with `EVAL` fallback |
 | readiness | `PING` bounded by `Redis:HealthTimeout` |
@@ -38,6 +38,11 @@ Nothing relies on `SELECT`: `DatabaseIndex` is passed per command and exists onl
 can coexist with keys from a previous library during a migration. `UseHashTags` wraps the
 namespace segment in `{…}` so every key of a service lands in one Redis Cluster slot. Keys are the
 kernels' fully prefixed keys, so a cache entry, a lease, a tag index, and a lock can never collide.
+
+A tag set gains members and loses them only when the whole index is removed, so an entry rewritten
+under different tags stays in its earlier sets and `RemoveByTagAsync` on one of those tags removes
+it too. Reading an entry's current tags before every write would cost a round trip on the hot path
+to save a refill on the cold one, which is the wrong trade for a cache.
 
 ## Fail-open
 

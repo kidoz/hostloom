@@ -465,7 +465,7 @@ public sealed class TieredCacheTests
             "lease:cache:lease:k",
             new byte[] { 1 },
             TimeSpan.FromSeconds(30),
-            TestContext.Current.CancellationToken
+            cancellationToken: TestContext.Current.CancellationToken
         );
 
         var value = await cache.GetOrCreateAsync(
@@ -684,6 +684,53 @@ public sealed class TieredCacheTests
         var entry = Assert.Single(logger.Entries);
         Assert.Equal(1002, entry.Event.Id);
         Assert.IsType<InvalidDataException>(entry.Exception);
+    }
+
+    [Fact]
+    public async Task SetIfAbsent_WithTags_IsRemovedByTagInBothTiers()
+    {
+        var store = new InMemoryDistributedCacheStore(_clock);
+        await using var cache = new TieredCache(
+            Options(),
+            store,
+            _serializer,
+            timeProvider: _clock
+        );
+
+        Assert.True(
+            await cache.SetIfAbsentAsync(
+                "k",
+                1,
+                new CacheEntryOptions(TimeSpan.FromMinutes(1)) { Tags = ["t"] },
+                TestContext.Current.CancellationToken
+            )
+        );
+        await cache.RemoveByTagAsync("t", TestContext.Current.CancellationToken);
+
+        Assert.Null(
+            await store.GetAsync("svc:cache:data:k", TestContext.Current.CancellationToken)
+        );
+        Assert.False(
+            (await cache.TryGetAsync<int>("k", TestContext.Current.CancellationToken)).Found
+        );
+    }
+
+    [Fact]
+    public async Task SetIfAbsent_WithoutAStore_TagsTheInProcessEntry()
+    {
+        await using var cache = new TieredCache(Options(), timeProvider: _clock);
+        await cache.SetIfAbsentAsync(
+            "k",
+            1,
+            new CacheEntryOptions(TimeSpan.FromMinutes(1)) { Tags = ["t"] },
+            TestContext.Current.CancellationToken
+        );
+
+        await cache.RemoveByTagAsync("t", TestContext.Current.CancellationToken);
+
+        Assert.False(
+            (await cache.TryGetAsync<int>("k", TestContext.Current.CancellationToken)).Found
+        );
     }
 
     [Fact]

@@ -324,6 +324,7 @@ public sealed class CachingPipelineTests
             string key,
             ReadOnlyMemory<byte> payload,
             TimeSpan timeToLive,
+            IReadOnlyCollection<string>? tagKeys = null,
             CancellationToken cancellationToken = default
         ) => throw Down();
 

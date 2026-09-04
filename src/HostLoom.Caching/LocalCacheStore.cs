@@ -117,7 +117,13 @@ public sealed class LocalCacheStore : IDisposable
     }
 
     /// <summary>Writes <paramref name="value"/> only when <paramref name="key"/> is absent or expired.</summary>
-    public bool SetIfAbsent<T>(string key, T value, TimeSpan timeToLive, long? size = null)
+    public bool SetIfAbsent<T>(
+        string key,
+        T value,
+        TimeSpan timeToLive,
+        IReadOnlyCollection<string>? tags = null,
+        long? size = null
+    )
     {
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(value);
@@ -128,7 +134,7 @@ public sealed class LocalCacheStore : IDisposable
         }
 
         var now = _time.GetUtcNow().UtcTicks;
-        var entry = new Entry(value, now + timeToLive.Ticks, now, size ?? 0, null);
+        var entry = new Entry(value, now + timeToLive.Ticks, now, size ?? 0, tags);
         while (true)
         {
             if (_entries.TryAdd(key, entry))

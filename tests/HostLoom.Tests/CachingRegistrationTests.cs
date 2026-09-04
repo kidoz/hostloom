@@ -333,8 +333,9 @@ public sealed class CachingRegistrationTests
             string key,
             ReadOnlyMemory<byte> payload,
             TimeSpan timeToLive,
+            IReadOnlyCollection<string>? tagKeys = null,
             CancellationToken cancellationToken = default
-        ) => _inner.SetIfAbsentAsync(key, payload, timeToLive, cancellationToken);
+        ) => _inner.SetIfAbsentAsync(key, payload, timeToLive, tagKeys, cancellationToken);
 
         public ValueTask RemoveAsync(
             IReadOnlyCollection<string> keys,

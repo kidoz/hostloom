@@ -267,7 +267,13 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         var start = Stopwatch.GetTimestamp();
         if (_store is null)
         {
-            var added = _local!.SetIfAbsent(key, value, options.Expiration, options.Size);
+            var added = _local!.SetIfAbsent(
+                key,
+                value,
+                options.Expiration,
+                options.Tags,
+                options.Size
+            );
             RecordOperation("set_if_absent", added ? "miss" : "hit_l1", start);
             return added;
         }
@@ -287,6 +293,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                     DataKey(key),
                     payload.WrittenMemory,
                     options.Expiration,
+                    TagKeys(options.Tags),
                     cancellationToken
                 )
                 .ConfigureAwait(false);
@@ -677,7 +684,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                         leaseKey,
                         LeasePayload,
                         _options.Stampede.LeaseDuration,
-                        cancellationToken
+                        cancellationToken: cancellationToken
                     )
                     .ConfigureAwait(false);
             }

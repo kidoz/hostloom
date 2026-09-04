@@ -51,6 +51,12 @@ public interface IDistributedCacheStore
     ValueTask<CacheStoreEntry?> GetAsync(string key, CancellationToken cancellationToken = default);
 
     /// <summary>Writes one entry with an absolute time to live and optional tag-index keys.</summary>
+    /// <remarks>
+    /// A tag index gains the key and never loses it before the index itself is removed, so
+    /// rewriting an entry under different tags leaves the earlier memberships in place and
+    /// <see cref="RemoveByTagAsync"/> may remove more entries than currently carry the tag. For a
+    /// cache that costs a refill, never a wrong value.
+    /// </remarks>
     ValueTask SetAsync(
         string key,
         ReadOnlyMemory<byte> payload,
@@ -59,11 +65,15 @@ public interface IDistributedCacheStore
         CancellationToken cancellationToken = default
     );
 
-    /// <summary>Writes one entry only when the key is absent; atomic in the backend.</summary>
+    /// <summary>
+    /// Writes one entry only when the key is absent; atomic in the backend. Tag indexes gain the
+    /// key only when the write happened, and follow the same rule as <see cref="SetAsync"/>.
+    /// </summary>
     ValueTask<bool> SetIfAbsentAsync(
         string key,
         ReadOnlyMemory<byte> payload,
         TimeSpan timeToLive,
+        IReadOnlyCollection<string>? tagKeys = null,
         CancellationToken cancellationToken = default
     );
 
@@ -86,6 +96,9 @@ public interface IDistributedCacheStore
         CancellationToken cancellationToken = default
     );
 
-    /// <summary>Removes every member of the tag index <paramref name="tagKey"/>.</summary>
+    /// <summary>
+    /// Removes every member of the tag index <paramref name="tagKey"/>, then the index itself.
+    /// Membership is monotonic, so the members may include entries rewritten under other tags.
+    /// </summary>
     ValueTask RemoveByTagAsync(string tagKey, CancellationToken cancellationToken = default);
 }
