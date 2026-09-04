@@ -734,6 +734,38 @@ public sealed class TieredCacheTests
     }
 
     [Fact]
+    public async Task AFactoryThatOutlivesTheLease_DoesNotReleaseItsSuccessor()
+    {
+        var store = new InMemoryDistributedCacheStore(_clock);
+        var options = Options();
+        options.Stampede.LeaseDuration = TimeSpan.FromSeconds(30);
+        await using var cache = new TieredCache(options, store, _serializer, timeProvider: _clock);
+
+        await cache.GetOrCreateAsync(
+            "k",
+            async _ =>
+            {
+                // The lease runs out while the factory is still working, and another instance
+                // takes it. Releasing on the way out would delete that instance's lease.
+                _clock.Advance(TimeSpan.FromSeconds(31));
+                await store.SetIfAbsentAsync(
+                    "svc:cache:lease:k",
+                    new byte[] { 1 },
+                    TimeSpan.FromSeconds(30),
+                    cancellationToken: TestContext.Current.CancellationToken
+                );
+                return 7;
+            },
+            TimeSpan.FromMinutes(1),
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.NotNull(
+            await store.GetAsync("svc:cache:lease:k", TestContext.Current.CancellationToken)
+        );
+    }
+
+    [Fact]
     public async Task DegradedWarning_IsRateLimitedPerKey()
     {
         var logger = new RecordingLogger<TieredCache>();

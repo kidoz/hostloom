@@ -674,9 +674,11 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
         string? leaseKey = null;
         var leaseHeld = false;
+        var leaseTaken = 0L;
         if (_store is not null && options.Expiration > TimeSpan.Zero)
         {
             leaseKey = _leasePrefix + key + _versionSuffix;
+            leaseTaken = _time.GetTimestamp();
             try
             {
                 leaseHeld = await _store
@@ -769,7 +771,14 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         }
         finally
         {
-            if (leaseHeld && leaseKey is not null)
+            // A factory that outlived the lease no longer owns it: the release is an unconditional
+            // delete, so releasing now would remove whichever instance holds it next and let two
+            // more factories run. The expired lease is already gone or belongs to someone else.
+            if (
+                leaseHeld
+                && leaseKey is not null
+                && _time.GetElapsedTime(leaseTaken) < _options.Stampede.LeaseDuration
+            )
             {
                 await ReleaseLeaseAsync(leaseKey).ConfigureAwait(false);
             }
