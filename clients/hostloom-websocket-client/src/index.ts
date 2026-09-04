@@ -2,6 +2,7 @@ export {
     HostLoomConnection,
     HostLoomConnectionClosedError,
     HostLoomConnectionError,
+    HostLoomMessageSizeError,
     HostLoomRemoteFaultError,
     HostLoomRequestCanceledError,
     HostLoomRequestCapacityError,

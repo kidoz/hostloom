@@ -9,6 +9,7 @@ import {
     HostLoomConnection,
     HostLoomConnectionClosedError,
     HostLoomConnectionError,
+    HostLoomMessageSizeError,
     HostLoomProtocolError,
     HostLoomRemoteFaultError,
     HostLoomRequestCanceledError,
@@ -124,6 +125,13 @@ function welcomeWithRequestLimit(limit: number): string {
     return JSON.stringify({
         ...(JSON.parse(welcomeJson) as WelcomeFrame),
         maximumConcurrentRequests: limit,
+    });
+}
+
+function welcomeWithMessageSize(maximumMessageSize: number): string {
+    return JSON.stringify({
+        ...(JSON.parse(welcomeJson) as WelcomeFrame),
+        maximumMessageSize,
     });
 }
 
@@ -403,6 +411,26 @@ test("request validates local preconditions without leaking concurrency", async 
         connection.request("inventory.get", "e30=", { timeoutMilliseconds: 0 }),
         HostLoomProtocolError,
     );
+
+    const valid = connection.request("inventory.get", "e30=");
+    assert.equal(socket.sent.length, 1);
+    socket.message(`{"kind":"response","streamId":"${sentStream(socket, 0)}","payload":"e30="}`);
+    await valid;
+});
+
+test("request rejects an oversized frame locally without consuming request capacity", async () => {
+    const { connection, socket } = createHarness();
+    await connectHarness(connection, socket, welcomeWithMessageSize(160));
+
+    await assert.rejects(
+        connection.request("inventory.get", "A".repeat(4_096)),
+        (error) =>
+            error instanceof HostLoomMessageSizeError &&
+            error.actualSize > error.maximumSize &&
+            error.maximumSize === 160,
+    );
+    assert.deepEqual(socket.sent, []);
+    assert.equal(connection.state, "connected");
 
     const valid = connection.request("inventory.get", "e30=");
     assert.equal(socket.sent.length, 1);

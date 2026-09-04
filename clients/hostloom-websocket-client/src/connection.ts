@@ -144,6 +144,20 @@ export class HostLoomRequestCapacityError extends HostLoomConnectionError {
     }
 }
 
+export class HostLoomMessageSizeError extends HostLoomConnectionError {
+    public readonly actualSize: number;
+    public readonly maximumSize: number;
+
+    public constructor(actualSize: number, maximumSize: number) {
+        super(
+            `The encoded client frame is ${actualSize} UTF-8 bytes, exceeding the gateway maximum of ${maximumSize}.`,
+        );
+        this.name = "HostLoomMessageSizeError";
+        this.actualSize = actualSize;
+        this.maximumSize = maximumSize;
+    }
+}
+
 interface PendingRequest {
     readonly resolve: (payload: string) => void;
     readonly reject: (error: Error) => void;
@@ -273,11 +287,7 @@ export class HostLoomConnection {
 
     /** Sends one validated client frame. The connection must have received its welcome frame. */
     public send(frame: ClientFrame): void {
-        if (this.#state !== "connected" || this.#socket === undefined) {
-            throw new HostLoomConnectionError("A client frame can be sent only while connected.");
-        }
-
-        this.#socket.send(encodeClientFrame(frame));
+        this.#sendClientFrame(frame);
     }
 
     /**
@@ -341,7 +351,7 @@ export class HostLoomConnection {
         options.signal?.addEventListener("abort", abortListener as () => void, { once: true });
 
         try {
-            this.send({
+            this.#sendClientFrame({
                 kind: "request",
                 streamId,
                 operation,
@@ -435,7 +445,7 @@ export class HostLoomConnection {
             credit: options.credit,
             lowWatermark,
             signal: options.signal,
-            send: (frame) => this.send(frame),
+            send: (frame) => this.#sendClientFrame(frame),
             onProtocolError: (error) => this.#failProtocol(error),
             onTerminal: () => this.#removeSubscription(controller),
         });
@@ -848,7 +858,7 @@ export class HostLoomConnection {
         this.#removeAbortListener(pending);
         if (this.#state === "connected") {
             try {
-                this.send({ kind: "cancel", streamId });
+                this.#sendClientFrame({ kind: "cancel", streamId });
             } catch {
                 // The request is already canceled locally; the connection lifecycle owns send failures.
             }
@@ -868,6 +878,22 @@ export class HostLoomConnection {
         } else {
             pending.reject(new HostLoomRemoteFaultError(frame));
         }
+    }
+
+    #sendClientFrame(frame: ClientFrame): void {
+        const socket = this.#socket;
+        const welcome = this.#welcome;
+        if (this.#state !== "connected" || socket === undefined || welcome === undefined) {
+            throw new HostLoomConnectionError("A client frame can be sent only while connected.");
+        }
+
+        const encoded = encodeClientFrame(frame);
+        const actualSize = UTF8_ENCODER.encode(encoded).byteLength;
+        if (actualSize > welcome.maximumMessageSize) {
+            throw new HostLoomMessageSizeError(actualSize, welcome.maximumMessageSize);
+        }
+
+        socket.send(encoded);
     }
 
     #rejectRequest(streamId: string, error: Error): void {
@@ -971,6 +997,7 @@ const DEFAULT_RECONNECT_INITIAL_DELAY = 1_000;
 const DEFAULT_RECONNECT_MAXIMUM_DELAY = 30_000;
 const DEFAULT_RECONNECT_MULTIPLIER = 2;
 const DEFAULT_RECONNECT_JITTER_RATIO = 0.2;
+const UTF8_ENCODER = new TextEncoder();
 
 function resolveReconnectOptions(
     options: HostLoomReconnectOptions | undefined,
