@@ -32,6 +32,11 @@ the invariant.
 `ExtendAsync(lease, ct)`, which returns `false` when the lease was already
 lost. Disposing releases; a release failure is logged, never thrown.
 
+A lease starts when the provider accepts the request, not when its answer
+arrives, so `LeaseEnd` and the local expiry timer count the round trip as
+spent lease. An answer that takes longer than the lease itself yields a handle
+that is already lost, on acquisition and on extension alike.
+
 ## Outcomes
 
 | Type | When |

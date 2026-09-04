@@ -103,6 +103,49 @@ internal sealed class HangingLockProvider : ILockProvider
     ) => ValueTask.FromResult(false);
 }
 
+/// <summary>
+/// Answers acquire and extend <c>latency</c> after the inner provider decided them, which is what
+/// a backend round trip does: the lease starts when the request is accepted, not when the answer
+/// arrives. Release is left alone so disposal does not move the clock.
+/// </summary>
+internal sealed class SlowLockProvider(ILockProvider inner, TestClock clock, TimeSpan latency)
+    : ILockProvider
+{
+    public async ValueTask<bool> TryAcquireAsync(
+        string key,
+        string owner,
+        TimeSpan lease,
+        CancellationToken cancellationToken = default
+    )
+    {
+        var acquired = await inner
+            .TryAcquireAsync(key, owner, lease, cancellationToken)
+            .ConfigureAwait(false);
+        clock.Advance(latency);
+        return acquired;
+    }
+
+    public ValueTask<bool> ReleaseAsync(
+        string key,
+        string owner,
+        CancellationToken cancellationToken = default
+    ) => inner.ReleaseAsync(key, owner, cancellationToken);
+
+    public async ValueTask<bool> ExtendAsync(
+        string key,
+        string owner,
+        TimeSpan lease,
+        CancellationToken cancellationToken = default
+    )
+    {
+        var extended = await inner
+            .ExtendAsync(key, owner, lease, cancellationToken)
+            .ConfigureAwait(false);
+        clock.Advance(latency);
+        return extended;
+    }
+}
+
 /// <summary>An in-memory provider that also reports health, for the readiness tests.</summary>
 internal sealed class ProbingLockProvider(TimeProvider clock)
     : ILockProvider,

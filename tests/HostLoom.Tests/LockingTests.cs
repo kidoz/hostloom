@@ -339,6 +339,58 @@ public sealed class LockingTests
     }
 
     [Fact]
+    public async Task A_slow_answer_is_spent_lease_and_not_added_to_it()
+    {
+        var clock = new TestClock();
+        var provider = new InMemoryLockProvider(clock);
+        var latency = TimeSpan.FromMilliseconds(400);
+        await using var first = Compose(clock, new SlowLockProvider(provider, clock, latency));
+        await using var second = Compose(clock, provider);
+
+        await using var handle = await first.TryAcquireAsync(
+            "k",
+            new LockOptions { Lease = OneSecond },
+            TestContext.Current.CancellationToken
+        );
+
+        // The provider started the lease when it accepted the request, so it ends one second after
+        // the epoch, not one second after the answer arrived at 400 ms.
+        Assert.NotNull(handle);
+        Assert.Equal(DateTimeOffset.UnixEpoch + OneSecond, handle.LeaseEnd);
+
+        clock.Advance(TimeSpan.FromMilliseconds(600));
+
+        Assert.False(handle.IsHeld);
+        await using var takeover = await second.TryAcquireAsync(
+            "k",
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        Assert.NotNull(takeover);
+    }
+
+    [Fact]
+    public async Task A_slow_extend_answer_is_spent_lease_too()
+    {
+        var clock = new TestClock();
+        var latency = TimeSpan.FromMilliseconds(400);
+        await using var locks = Compose(
+            clock,
+            new SlowLockProvider(new InMemoryLockProvider(clock), clock, latency)
+        );
+
+        await using var handle = await locks.TryAcquireAsync(
+            "k",
+            new LockOptions { Lease = OneSecond },
+            TestContext.Current.CancellationToken
+        );
+        Assert.NotNull(handle);
+        Assert.True(await handle.ExtendAsync(OneSecond, TestContext.Current.CancellationToken));
+
+        // Extension was accepted at 400 ms and answered at 800 ms; the lease ends at 1 400 ms.
+        Assert.Equal(DateTimeOffset.UnixEpoch + TimeSpan.FromMilliseconds(1400), handle.LeaseEnd);
+    }
+
+    [Fact]
     public async Task Extend_moves_the_lease_end_and_is_capped_by_MaxLease()
     {
         var clock = new TestClock();
