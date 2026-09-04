@@ -71,7 +71,10 @@ Payloads go through `ICacheValueSerializer`, generic over `T` so a source-genera
 opt-out. Each payload carries a one-byte header with the format version and flags; payloads at or
 above `Caching:Compression:ThresholdBytes` are Brotli-compressed. A payload from another format
 version is a silent miss so a rolling deploy does not log errors; a payload that fails to
-deserialize is a miss logged at error level and overwritten by the next factory result.
+deserialize is a miss logged at error level and overwritten by the next factory result. The
+uncompressed length a compressed payload declares comes from the store, so it is believed only up
+to `Caching:MaxPayloadBytes`; the same bound is applied to the body when writing, so an entry this
+cache wrote always reads back.
 
 ## Composing without a container
 

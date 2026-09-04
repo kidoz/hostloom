@@ -198,6 +198,8 @@ public sealed class LocalCacheStoreTests
 
 public sealed class CachePayloadCodecTests
 {
+    private const long Limit = 10 * 1024 * 1024;
+
     private static readonly ICacheValueSerializer Serializer =
         SystemTextJsonCacheValueSerializer.CreateReflectionBased();
 
@@ -205,13 +207,22 @@ public sealed class CachePayloadCodecTests
     public void Encode_SmallPayload_WritesVersionHeaderWithoutCompression()
     {
         using var writer = new PooledBufferWriter();
-        var compressed = CachePayloadCodec.Encode(Serializer, new Sample("x"), null, 1_024, writer);
+        var compressed = CachePayloadCodec.Encode(
+            Serializer,
+            new Sample("x"),
+            null,
+            1_024,
+            writer,
+            out var bodyLength
+        );
 
         Assert.False(compressed);
+        Assert.Equal(writer.WrittenCount - 1, bodyLength);
         Assert.Equal(0x10, writer.WrittenSpan[0]);
         var status = CachePayloadCodec.TryDecode<Sample>(
             Serializer,
             writer.WrittenSpan,
+            Limit,
             out var value,
             out var tags,
             out _
@@ -226,14 +237,23 @@ public sealed class CachePayloadCodecTests
     {
         var sample = new Sample(new string('a', 5_000));
         using var writer = new PooledBufferWriter();
-        var compressed = CachePayloadCodec.Encode(Serializer, sample, ["a", "b"], 1_024, writer);
+        var compressed = CachePayloadCodec.Encode(
+            Serializer,
+            sample,
+            ["a", "b"],
+            1_024,
+            writer,
+            out var bodyLength
+        );
 
         Assert.True(compressed);
         Assert.Equal(0x13, writer.WrittenSpan[0]);
         Assert.True(writer.WrittenCount < 5_000);
+        Assert.True(bodyLength > 5_000);
         var status = CachePayloadCodec.TryDecode<Sample>(
             Serializer,
             writer.WrittenSpan,
+            Limit,
             out var value,
             out var tags,
             out _
@@ -250,6 +270,7 @@ public sealed class CachePayloadCodecTests
         var status = CachePayloadCodec.TryDecode<Sample>(
             Serializer,
             payload,
+            Limit,
             out _,
             out _,
             out var failure
@@ -268,6 +289,7 @@ public sealed class CachePayloadCodecTests
         var status = CachePayloadCodec.TryDecode<Sample>(
             Serializer,
             payload,
+            Limit,
             out _,
             out _,
             out var failure
@@ -275,6 +297,48 @@ public sealed class CachePayloadCodecTests
 
         Assert.Equal(PayloadDecodeStatus.Corrupt, status);
         Assert.NotNull(failure);
+    }
+
+    [Fact]
+    public void TryDecode_DeclaredLengthAboveTheLimit_IsCorruptAndAllocatesNothing()
+    {
+        // A poisoned entry: the compressed-flag header, then a declared uncompressed length of
+        // 4 GB. Trusting it would rent the buffer before a single byte is decompressed.
+        byte[] payload = [0x11, 0xFF, 0xFF, 0xFF, 0xFF, 0x00];
+
+        var status = CachePayloadCodec.TryDecode<Sample>(
+            Serializer,
+            payload,
+            1_024,
+            out var value,
+            out _,
+            out var failure
+        );
+
+        Assert.Equal(PayloadDecodeStatus.Corrupt, status);
+        Assert.Null(value);
+        Assert.IsType<InvalidDataException>(failure);
+        Assert.Contains("Caching:MaxPayloadBytes", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TryDecode_BodyWithinTheLimit_StillRoundTrips()
+    {
+        var sample = new Sample(new string('a', 5_000));
+        using var writer = new PooledBufferWriter();
+        CachePayloadCodec.Encode(Serializer, sample, null, 1_024, writer, out var bodyLength);
+
+        var status = CachePayloadCodec.TryDecode<Sample>(
+            Serializer,
+            writer.WrittenSpan,
+            bodyLength,
+            out var value,
+            out _,
+            out _
+        );
+
+        Assert.Equal(PayloadDecodeStatus.Ok, status);
+        Assert.Equal(sample, value);
     }
 
     private sealed record Sample(string Text);
@@ -556,6 +620,70 @@ public sealed class TieredCacheTests
                 )
             ).Tier
         );
+    }
+
+    [Fact]
+    public async Task MaxPayloadBytes_CountsTheBodyBeforeCompression()
+    {
+        var store = new InMemoryDistributedCacheStore(_clock);
+        var options = Options();
+        options.MaxPayloadBytes = 1_000;
+        var logger = new RecordingLogger<TieredCache>();
+        await using var cache = new TieredCache(
+            options,
+            store,
+            _serializer,
+            timeProvider: _clock,
+            logger: logger
+        );
+
+        // Compresses to well under the bound, but a reader would have to rent the whole body: the
+        // two sides of the bound have to agree or such an entry could never be read back.
+        await cache.SetAsync(
+            "k",
+            new CachingTestPayload(new string('z', 8_000), 1),
+            new CacheEntryOptions(TimeSpan.FromMinutes(1)),
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Null(
+            await store.GetAsync("svc:cache:data:k", TestContext.Current.CancellationToken)
+        );
+        Assert.Equal(1003, Assert.Single(logger.Entries).Event.Id);
+    }
+
+    [Fact]
+    public async Task PoisonedLengthPrefix_IsAMissAndRentsNothing()
+    {
+        var logger = new RecordingLogger<TieredCache>();
+        var store = new InMemoryDistributedCacheStore(_clock);
+        var options = Options();
+        options.MaxPayloadBytes = 4_096;
+        await using var cache = new TieredCache(
+            options,
+            store,
+            _serializer,
+            timeProvider: _clock,
+            logger: logger
+        );
+
+        // Compressed flag, then a declared uncompressed length of 4 GB.
+        await store.SetAsync(
+            "svc:cache:data:k",
+            new byte[] { 0x11, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 },
+            TimeSpan.FromMinutes(1),
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        var lookup = await cache.TryGetAsync<CachingTestPayload>(
+            "k",
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.False(lookup.Found);
+        var entry = Assert.Single(logger.Entries);
+        Assert.Equal(1002, entry.Event.Id);
+        Assert.IsType<InvalidDataException>(entry.Exception);
     }
 
     [Fact]

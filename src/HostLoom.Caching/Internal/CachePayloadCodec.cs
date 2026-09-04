@@ -34,18 +34,24 @@ internal static class CachePayloadCodec
     private const int MaxTags = ushort.MaxValue;
 
     /// <summary>Serializes and wraps <paramref name="value"/>; the caller disposes the writer.</summary>
+    /// <param name="bodyLength">
+    /// The serialized body before compression. The caller bounds it, because a decoder trusts the
+    /// declared uncompressed length only up to the same bound.
+    /// </param>
     /// <returns>Whether the body was compressed.</returns>
     public static bool Encode<T>(
         ICacheValueSerializer serializer,
         T value,
         IReadOnlyCollection<string>? tags,
         int compressionThreshold,
-        PooledBufferWriter destination
+        PooledBufferWriter destination,
+        out int bodyLength
     )
     {
         using var raw = new PooledBufferWriter();
         serializer.Serialize(raw, value);
         var body = raw.WrittenSpan;
+        bodyLength = body.Length;
         var tagged = tags is { Count: > 0 };
 
         // Compress first, into a scratch buffer, so the header is written once with the right
@@ -94,9 +100,15 @@ internal static class CachePayloadCodec
     }
 
     /// <summary>Unwraps and deserializes <paramref name="payload"/>.</summary>
+    /// <param name="maxBodyBytes">
+    /// Largest uncompressed body accepted. The length prefix comes from the store and a poisoned or
+    /// truncated value can declare any size, so it buys a buffer only up to the bound the writer
+    /// enforces.
+    /// </param>
     public static PayloadDecodeStatus TryDecode<T>(
         ICacheValueSerializer serializer,
         ReadOnlySpan<byte> payload,
+        long maxBodyBytes,
         out T? value,
         out string[]? tags,
         out Exception? failure
@@ -132,7 +144,17 @@ internal static class CachePayloadCodec
                     return PayloadDecodeStatus.Corrupt;
                 }
 
-                var length = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(body));
+                var declared = BinaryPrimitives.ReadUInt32LittleEndian(body);
+                var cap = Math.Min(maxBodyBytes, Array.MaxLength);
+                if (declared > cap)
+                {
+                    failure = new InvalidDataException(
+                        $"The payload declares an uncompressed length of {declared} bytes, above the {cap} bytes Caching:MaxPayloadBytes allows."
+                    );
+                    return PayloadDecodeStatus.Corrupt;
+                }
+
+                var length = (int)declared;
                 rented = ArrayPool<byte>.Shared.Rent(length);
                 if (
                     !BrotliDecoder.TryDecompress(

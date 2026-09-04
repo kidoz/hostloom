@@ -80,7 +80,7 @@ option key, and the `DependencyInjection` package runs it at startup.
 | `Caching:Warmup:BlocksReadiness` | `false` | readiness waits for registered warmups |
 | `Caching:Diagnostics:DegradedLogInterval` | 1 min | one degraded warning per key per interval |
 | `Caching:MaxKeyLength` | 512 | longest consumer key |
-| `Caching:MaxPayloadBytes` | 10 MB | oversize values stay in-process only, logged at error |
+| `Caching:MaxPayloadBytes` | 10 MB | bounds the serialized body and the stored payload; oversize values stay in-process only, logged at error, and a stored entry declaring more is read as corrupt |
 | `Caching:PayloadVersion` | none | appended to every entry key |
 
 ## Keys
@@ -127,7 +127,11 @@ annotated opt-out. Each payload carries a one-byte header (format version and
 flags), the tag names when tagged, and the body, Brotli-compressed at or above
 the threshold. A payload from another format version is a silent miss; one
 that fails to deserialize is a miss logged at error level and overwritten by
-the next factory result.
+the next factory result. A compressed payload carries its uncompressed length,
+which comes from the store and is therefore not trusted past
+`Caching:MaxPayloadBytes`: a larger declared length is corrupt rather than a
+buffer to allocate, which is why the same bound is applied to the body when
+writing.
 
 ## Registration (DependencyInjection)
 
