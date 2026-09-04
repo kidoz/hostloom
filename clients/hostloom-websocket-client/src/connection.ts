@@ -192,6 +192,8 @@ export class HostLoomConnection {
     readonly #pendingRequests = new Map<string, PendingRequest>();
     readonly #subscriptions = new Map<string, SubscriptionController>();
     readonly #logicalSubscriptions = new Set<SubscriptionController>();
+    readonly #manualSubscriptions = new Set<string>();
+    readonly #orphanedSubscriptions = new Set<string>();
 
     #state: HostLoomConnectionState = "disconnected";
     #socket: HostLoomWebSocket | undefined;
@@ -287,7 +289,7 @@ export class HostLoomConnection {
 
     /** Sends one validated client frame. The connection must have received its welcome frame. */
     public send(frame: ClientFrame): void {
-        this.#sendClientFrame(frame);
+        this.#sendClientFrame(frame, true);
     }
 
     /**
@@ -594,14 +596,18 @@ export class HostLoomConnection {
         }
 
         const subscription = this.#subscriptions.get(frame.streamId);
-        if (frame.kind === "subscribed") {
-            subscription?.acceptSubscribed(frame);
-        } else if (frame.kind === "event") {
-            subscription?.acceptEvent(frame);
-        } else if (frame.kind === "complete") {
-            subscription?.complete();
-        } else if (frame.kind === "fault") {
-            subscription?.fail(new HostLoomRemoteFaultError(frame));
+        if (subscription !== undefined) {
+            if (frame.kind === "subscribed") {
+                subscription.acceptSubscribed(frame);
+            } else if (frame.kind === "event") {
+                subscription.acceptEvent(frame);
+            } else if (frame.kind === "complete") {
+                subscription.complete();
+            } else if (frame.kind === "fault") {
+                subscription.fail(new HostLoomRemoteFaultError(frame));
+            }
+        } else {
+            this.#handleUnroutedSubscriptionFrame(frame);
         }
 
         if (this.#isClosing()) {
@@ -652,6 +658,8 @@ export class HostLoomConnection {
         this.#socket = undefined;
         this.#opened = false;
         this.#welcome = undefined;
+        this.#manualSubscriptions.clear();
+        this.#orphanedSubscriptions.clear();
         this.#lastClose = close;
         if (this.#canReconnect(close, disposition)) {
             this.#suspendAllSubscriptions(closeError);
@@ -838,7 +846,12 @@ export class HostLoomConnection {
         // mistaken for a fresh one after a reconnect.
         for (let attempt = 0; attempt < 4; attempt++) {
             const streamId = this.#streamIdFactory();
-            if (!this.#pendingRequests.has(streamId) && !this.#subscriptions.has(streamId)) {
+            if (
+                !this.#pendingRequests.has(streamId) &&
+                !this.#subscriptions.has(streamId) &&
+                !this.#manualSubscriptions.has(streamId) &&
+                !this.#orphanedSubscriptions.has(streamId)
+            ) {
                 return streamId;
             }
         }
@@ -880,7 +893,7 @@ export class HostLoomConnection {
         }
     }
 
-    #sendClientFrame(frame: ClientFrame): void {
+    #sendClientFrame(frame: ClientFrame, trackManualSubscription = false): void {
         const socket = this.#socket;
         const welcome = this.#welcome;
         if (this.#state !== "connected" || socket === undefined || welcome === undefined) {
@@ -893,7 +906,53 @@ export class HostLoomConnection {
             throw new HostLoomMessageSizeError(actualSize, welcome.maximumMessageSize);
         }
 
-        socket.send(encoded);
+        const newlyTracked =
+            trackManualSubscription &&
+            frame.kind === "subscribe" &&
+            !this.#manualSubscriptions.has(frame.streamId);
+        if (newlyTracked) {
+            this.#manualSubscriptions.add(frame.streamId);
+        }
+
+        try {
+            socket.send(encoded);
+        } catch (error) {
+            if (newlyTracked) {
+                this.#manualSubscriptions.delete(frame.streamId);
+            }
+            throw new HostLoomConnectionError("The client frame could not be sent.", {
+                cause: error,
+            });
+        }
+    }
+
+    #handleUnroutedSubscriptionFrame(frame: Exclude<ServerFrame, WelcomeFrame>): void {
+        if (frame.kind === "complete" || frame.kind === "fault") {
+            this.#manualSubscriptions.delete(frame.streamId);
+            this.#orphanedSubscriptions.delete(frame.streamId);
+            return;
+        }
+
+        if (
+            (frame.kind !== "subscribed" && frame.kind !== "event") ||
+            this.#manualSubscriptions.has(frame.streamId) ||
+            this.#orphanedSubscriptions.has(frame.streamId)
+        ) {
+            return;
+        }
+
+        this.#orphanedSubscriptions.add(frame.streamId);
+        try {
+            this.#sendClientFrame({ kind: "unsubscribe", streamId: frame.streamId });
+        } catch (error) {
+            this.#orphanedSubscriptions.delete(frame.streamId);
+            this.#failProtocol(
+                new HostLoomProtocolError(
+                    "The client could not stop an unowned subscription stream.",
+                    { cause: error },
+                ),
+            );
+        }
     }
 
     #rejectRequest(streamId: string, error: Error): void {
