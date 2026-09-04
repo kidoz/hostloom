@@ -258,11 +258,21 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
         {
             attempts++;
             bool acquired;
+
+            // MaxWait bounds the provider call too, or a backend that never answers turns the
+            // documented bound into an unbounded wait. An attempt cancelled this way may have
+            // taken the lock in the backend; that orphan expires with its lease.
+            using var bounded = Budget.ForAttempt(maxWait, start, Clock, cancellationToken);
             try
             {
                 acquired = await Provider
-                    .TryAcquireAsync(prefixed, owner, lease, cancellationToken)
+                    .TryAcquireAsync(prefixed, owner, lease, bounded?.Token ?? cancellationToken)
                     .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (!cancellationToken.IsCancellationRequested && bounded is { Expired: true })
+            {
+                break;
             }
             catch (OperationCanceledException)
             {
@@ -297,18 +307,11 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
             }
 
             var delay = retry.GetDelay(attempts);
-            if (maxWait is { } bound)
+            if (maxWait is { } bound && delay >= bound - waited)
             {
-                var remaining = bound - waited;
-                if (remaining <= TimeSpan.Zero)
-                {
-                    break;
-                }
-
-                if (delay > remaining)
-                {
-                    delay = remaining;
-                }
+                // The next attempt would start on or after the bound, so waiting for it would buy
+                // nothing: stop now rather than sleeping out a budget nothing can use.
+                break;
             }
 
             if (delay > TimeSpan.Zero)
@@ -337,6 +340,57 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
             );
             activity?.SetTag("hostloom.lock.acquired", false);
             return new LockProviderUnavailableException(key, waited, attempts, kind, cause);
+        }
+    }
+
+    /// <summary>
+    /// What is left of <see cref="LockOptions.MaxWait"/> for one attempt, as a token the provider
+    /// call runs under. Null when the caller set no bound, or set a zero one: skip-if-busy makes
+    /// exactly one attempt and bounds it by the caller's token alone.
+    /// </summary>
+    private sealed class Budget : IDisposable
+    {
+        private readonly CancellationTokenSource _expiry;
+        private readonly CancellationTokenSource _linked;
+
+        private Budget(TimeSpan remaining, TimeProvider clock, CancellationToken cancellationToken)
+        {
+            _expiry = new CancellationTokenSource(remaining, clock);
+            _linked = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                _expiry.Token
+            );
+        }
+
+        public CancellationToken Token => _linked.Token;
+
+        /// <summary>Whether the bound, rather than the caller, ended the attempt.</summary>
+        public bool Expired => _expiry.IsCancellationRequested;
+
+        public static Budget? ForAttempt(
+            TimeSpan? maxWait,
+            long start,
+            TimeProvider clock,
+            CancellationToken cancellationToken
+        )
+        {
+            if (maxWait is not { } bound || bound <= TimeSpan.Zero)
+            {
+                return null;
+            }
+
+            var remaining = bound - clock.GetElapsedTime(start);
+            return new Budget(
+                remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero,
+                clock,
+                cancellationToken
+            );
+        }
+
+        public void Dispose()
+        {
+            _linked.Dispose();
+            _expiry.Dispose();
         }
     }
 

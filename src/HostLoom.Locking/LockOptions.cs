@@ -9,9 +9,11 @@ public sealed class LockOptions
     public TimeSpan? Lease { get; set; }
 
     /// <summary>
-    /// Hard wall-clock bound on acquisition: no attempt and no delay crosses it.
-    /// <see cref="TimeSpan.Zero"/> makes exactly one attempt (skip-if-busy). <see langword="null"/>
-    /// bounds acquisition by the retry policy alone.
+    /// Hard wall-clock bound on acquisition: no attempt starts on or after it, no delay reaches it,
+    /// and a provider call still running at it is cancelled, so a backend that never answers cannot
+    /// stretch the wait. <see cref="TimeSpan.Zero"/> makes exactly one attempt (skip-if-busy),
+    /// bounded only by the caller's token. <see langword="null"/> bounds acquisition by the retry
+    /// policy alone.
     /// </summary>
     public TimeSpan? MaxWait { get; set; }
 

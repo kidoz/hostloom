@@ -48,7 +48,7 @@ lost. Disposing releases; a release failure is logged, never thrown.
 | Property | Meaning |
 | --- | --- |
 | `Lease` | time the provider holds the key for this owner; defaults to `Locking:DefaultLease`, capped by `Locking:MaxLease` |
-| `MaxWait` | hard wall-clock bound on acquisition; `TimeSpan.Zero` is one attempt; null is bounded by the retry policy alone |
+| `MaxWait` | hard wall-clock bound on acquisition: no attempt starts on or after it, no delay reaches it, and a provider call still running at it is cancelled; `TimeSpan.Zero` is one attempt bounded only by the caller's token; null is bounded by the retry policy alone |
 | `Retry` | a `LockRetryPolicy`; defaults to `Locking:Retry` |
 | `AutoExtend` | heartbeat at half the lease, bounded by `Locking:MaxHold` |
 | `OnLost` | `Observe` (default; the action keeps running while `IsHeld` and `LostToken` report the loss) or `Cancel` (the action's token is cancelled) |

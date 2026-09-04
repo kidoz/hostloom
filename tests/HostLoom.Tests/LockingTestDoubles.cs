@@ -72,6 +72,37 @@ internal sealed class FaultingLockProvider(
     }
 }
 
+/// <summary>
+/// A provider whose acquire never answers, so a test can show what bounds the wait. Release and
+/// extend answer normally: nothing is ever held.
+/// </summary>
+internal sealed class HangingLockProvider : ILockProvider
+{
+    public async ValueTask<bool> TryAcquireAsync(
+        string key,
+        string owner,
+        TimeSpan lease,
+        CancellationToken cancellationToken = default
+    )
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+        return false;
+    }
+
+    public ValueTask<bool> ReleaseAsync(
+        string key,
+        string owner,
+        CancellationToken cancellationToken = default
+    ) => ValueTask.FromResult(false);
+
+    public ValueTask<bool> ExtendAsync(
+        string key,
+        string owner,
+        TimeSpan lease,
+        CancellationToken cancellationToken = default
+    ) => ValueTask.FromResult(false);
+}
+
 /// <summary>An in-memory provider that also reports health, for the readiness tests.</summary>
 internal sealed class ProbingLockProvider(TimeProvider clock)
     : ILockProvider,

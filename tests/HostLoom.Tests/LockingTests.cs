@@ -195,17 +195,37 @@ public sealed class LockingTests
             )
             .AsTask();
 
-        // 0 ms, 40 ms, 80 ms fail; the last delay is truncated to 20 ms so the final attempt lands
-        // on the bound rather than past it.
+        // 0 ms, 40 ms and 80 ms fail; the fourth attempt would start at 120 ms, and waiting out
+        // the remaining 20 ms to make no attempt buys nothing, so acquisition ends at 80 ms.
         clock.Advance(TimeSpan.FromMilliseconds(40));
         clock.Advance(TimeSpan.FromMilliseconds(40));
-        clock.Advance(TimeSpan.FromMilliseconds(20));
 
         var failure = await Assert.ThrowsAsync<LockNotAcquiredException>(() => pending);
         Assert.Equal("k", failure.Key);
-        Assert.Equal(4, failure.Attempts);
-        Assert.Equal(TimeSpan.FromMilliseconds(100), failure.Waited);
+        Assert.Equal(3, failure.Attempts);
+        Assert.Equal(TimeSpan.FromMilliseconds(80), failure.Waited);
         Assert.Equal(1, provider.Count);
+    }
+
+    [Fact]
+    public async Task MaxWait_bounds_a_provider_that_never_answers()
+    {
+        var clock = new TestClock();
+        await using var locks = Compose(clock, new HangingLockProvider());
+
+        var pending = locks
+            .TryAcquireAsync(
+                "k",
+                new LockOptions { MaxWait = TimeSpan.FromMilliseconds(100) },
+                TestContext.Current.CancellationToken
+            )
+            .AsTask();
+        Assert.False(pending.IsCompleted);
+
+        clock.Advance(TimeSpan.FromMilliseconds(100));
+
+        // The bound cancels the call itself; without that the wait is the provider's to decide.
+        Assert.Null(await pending);
     }
 
     [Fact]
