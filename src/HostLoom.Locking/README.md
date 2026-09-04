@@ -47,7 +47,8 @@ cancelled too; the default, `Observe`, keeps the action running and only reports
 `LockRetryPolicy` shapes the wait between attempts and never depends on `HostLoom.Pipelines`. The
 default reproduces the platform's historical behaviour: ten retries at a linear 50 ms step with up
 to 50 ms of additive jitter, about 3 s in total; `LockOptions.MaxWait` is a hard wall-clock bound
-on top of it, and `TimeSpan.Zero` makes exactly one attempt. `LockingOptions.Enabled = false` is
+on top of it, cancelling the provider call it would otherwise outlive, and `TimeSpan.Zero` makes
+exactly one attempt. `LockingOptions.Enabled = false` is
 single-instance mode: a startup warning, `hostloom.lock.enabled = 0`, and every action running
 immediately.
 
