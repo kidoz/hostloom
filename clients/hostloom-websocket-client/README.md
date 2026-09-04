@@ -12,7 +12,8 @@ This package currently provides:
   connection-state and server-frame observers, supports explicit close and manual reconnect, and
   can opt into jittered exponential reconnect;
 - a request API with automatic stream identifiers, response correlation, typed remote faults,
-  welcome-advertised concurrency enforcement, gateway timeouts, and `AbortSignal` cancellation;
+  welcome-advertised concurrency and message-size enforcement, gateway timeouts, and `AbortSignal`
+  cancellation;
 - a subscription API with shared stream allocation, confirmation gating, bounded pre-listener event
   buffering, automatic low-watermark credit replenishment, acknowledgements, typed terminal faults,
   `AbortSignal` unsubscription, and automatic resubscription on a replacement socket;
@@ -81,7 +82,10 @@ await subscription.unsubscribe();
 `connect()` is idempotent while an attempt is in progress and reports `connected` only after the
 server selects `hostloom.json.v1` and sends a valid `welcome`. Without the `reconnect` option, a
 close returns the connection to `disconnected`; call `connect()` again when the application chooses
-to retry.
+to retry. When `connect()` is called while a caller-requested close is still in progress, repeated
+calls share one promise: the client waits for the close event before opening exactly one replacement
+socket. A close caused by a protocol failure remains terminal and rejects `connect()` until teardown
+finishes.
 
 Providing `reconnect` enables automatic retry after unexpected connection loss. The delay starts at
 1 second, doubles after each failed attempt, is capped at 30 seconds, and applies ±20% jitter by
@@ -94,7 +98,9 @@ socket. A rejected refresh ends reconnection. Browser handshake failures remain 
 `request()` allocates a new stream identifier for each request and resolves with the opaque Base64
 response payload. It rejects with `HostLoomRemoteFaultError` when the gateway sends a fault, and
 with `HostLoomRequestCapacityError` before sending when the welcome-advertised concurrency limit is
-already occupied. Pass an `AbortSignal` to send one `cancel` frame and reject locally with
+already occupied. Every client frame is measured as encoded UTF-8 before it reaches the socket;
+`HostLoomMessageSizeError` reports the actual and advertised maximum sizes when it is too large.
+Pass an `AbortSignal` to send one `cancel` frame and reject locally with
 `HostLoomRequestCanceledError`; the slot remains reserved until the gateway sends the terminal
 response or fault because the request is still active on the server until then.
 
@@ -113,16 +119,24 @@ connection loss. An unsubscribe that was already waiting for `complete` still re
 failure interrupts that in-flight operation.
 
 `acknowledge(sequence)` records positive live-event progress in the current gateway session; it
-does not enable replay. With automatic reconnect enabled, a logical subscription and its listeners
-enter `reconnecting`, discard buffered events and session credit, and resubscribe with a new
-session-scoped stream identifier after the replacement socket receives `welcome`. It becomes
-`active` only after the matching `subscribed` frame. Missed events are not replayed, so applications
-must still use their snapshot/version contract; a gateway snapshot provider may supply a fresh
-sequence-zero snapshot during resubscription. Pending requests fail on connection loss and are
-never replayed, avoiding duplicate side effects. Without automatic reconnect, connection loss ends
-subscriptions as before. The low-level `send()` API remains available; callers using it own their
-stream identifiers and must keep them distinct from automatically allocated request and
-subscription streams; `newStreamId()` is exported for that purpose.
+does not enable replay. An acknowledgement made while the subscription is `reconnecting` is a
+no-op because an old session's sequence cannot be applied to its replacement. Other invalid
+lifecycle states throw `HostLoomSubscriptionStateError` with the current public state. With
+automatic reconnect enabled, a logical subscription and its listeners enter `reconnecting`,
+discard buffered events and session credit, and resubscribe with a new session-scoped stream
+identifier after the replacement socket receives `welcome`. It becomes `active` only after the
+matching `subscribed` frame. Missed events are not replayed, so applications must still use their
+snapshot/version contract; a gateway snapshot provider may supply a fresh sequence-zero snapshot
+during resubscription. Pending requests fail on connection loss and are never replayed, avoiding
+duplicate side effects. Without automatic reconnect, connection loss ends subscriptions as before.
+
+The low-level `send()` API remains available; callers using it own their stream identifiers and
+must keep them distinct from automatically allocated request and subscription streams;
+`newStreamId()` is exported for that purpose. The connection tracks a low-level `subscribe` until
+its terminal `complete` or `fault`, so its server frames remain caller-owned and visible through
+`onFrame`. A `subscribed` or `event` frame owned by neither API is treated as an orphan: the client
+sends exactly one `unsubscribe` for that stream so a desynchronized gateway subscription cannot
+leak for the session lifetime.
 
 Tests can supply `webSocketFactory` in the constructor options. The returned object implements the
 small exported `HostLoomWebSocket` interface, so lifecycle behavior is testable without a browser

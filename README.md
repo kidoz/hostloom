@@ -285,11 +285,12 @@ and Pong frames cannot expose to it. The repository's dependency-free
 TypeScript frame types, direction-aware JSON-v1 encoding and decoding, runtime validation, and
 Base64 JSON payload helpers. Its injectable connection core negotiates the subprotocol, waits for a
 valid welcome frame, exposes state and validated-frame observers, and supports explicit close plus
-opt-in jittered exponential reconnect. Its request API correlates responses and typed faults,
-enforces the advertised concurrency limit, and supports `AbortSignal` cancellation without replay
-after connection loss. Its subscription API waits for `subscribed`, replenishes credit at a low
-watermark after an event listener attaches, acknowledges progress, maps cancellation to
-`unsubscribe`, and resubscribes retained logical handles after a replacement welcome.
+deferred manual reconnect and opt-in jittered exponential reconnect. Its request API correlates
+responses and typed faults, enforces the advertised concurrency and encoded-message limits, and
+supports `AbortSignal` cancellation without replay after connection loss. Its subscription API
+waits for `subscribed`, replenishes credit at a low watermark after an event listener attaches,
+acknowledges current-session progress, cleans up unowned subscription streams, maps cancellation
+to `unsubscribe`, and resubscribes retained logical handles after a replacement welcome.
 Authentication happens before upgrade and named ASP.NET Core policies are checked again for every
 operation and subscription. One receive loop, one socket writer, a byte-bounded outbound queue,
 concurrent-request limits, and subscription credit prevent a slow client from creating unbounded

@@ -229,14 +229,15 @@ that schema and those fixtures in its conformance tests. It provides TypeScript 
 direction-aware JSON-v1 encoding and decoding, runtime validation, and Base64 JSON payload helpers.
 Its injectable connection core validates the selected protocol and welcome frame, observes state
 and later server frames, sends validated client frames, and supports explicit close and manual
-reconnect plus an opt-in jittered exponential retry policy. Its request API allocates stream
-identifiers, correlates responses and typed faults, enforces the advertised concurrency limit,
-passes gateway timeouts, maps `AbortSignal` to a cancel frame, and never replays requests. Its
-subscription API shares stream allocation with requests, waits for `subscribed`, buffers within
-initial credit until a listener exists, replenishes credit at a configurable low watermark,
-acknowledges progress, maps cancellation to `unsubscribe`, and resubscribes retained logical handles
-after a replacement welcome. Close code `1008` retries only after the configured credential-refresh
-callback succeeds.
+reconnect, including calls made during close teardown, plus an opt-in jittered exponential retry
+policy. Its request API allocates stream identifiers, correlates responses and typed faults,
+enforces the advertised concurrency and encoded-message limits, passes gateway timeouts, maps
+`AbortSignal` to a cancel frame, and never replays requests. Its subscription API shares stream
+allocation with requests, waits for `subscribed`, buffers within initial credit until a listener
+exists, replenishes credit at a configurable low watermark, acknowledges current-session progress,
+cleans up unowned subscription streams, maps cancellation to `unsubscribe`, and resubscribes
+retained logical handles after a replacement welcome. Close code `1008` retries only after the
+configured credential-refresh callback succeeds.
 
 The server rejects an upgrade when no supported subprotocol was offered. Changing a frame's
 WebSocket message type after negotiation closes the connection.
