@@ -438,6 +438,47 @@ test("request rejects an oversized frame locally without consuming request capac
     await valid;
 });
 
+test("unowned subscription traffic triggers one cleanup frame per stream", async () => {
+    const { connection, socket } = createHarness();
+    await connectHarness(connection, socket);
+
+    socket.message(
+        `{"kind":"subscribed","streamId":"${CALLER_STREAM}","topic":"inventory.changed","credit":2}`,
+    );
+    socket.message(
+        `{"kind":"event","streamId":"${CALLER_STREAM}","topic":"inventory.changed","sequence":1,"eventId":"11111111111111111111111111111111","payload":"e30="}`,
+    );
+
+    assert.deepEqual(socket.sent, [`{"kind":"unsubscribe","streamId":"${CALLER_STREAM}"}`]);
+    assert.equal(connection.state, "connected");
+});
+
+test("low-level subscriptions remain caller-owned instead of being treated as orphans", async () => {
+    const { connection, socket } = createHarness();
+    await connectHarness(connection, socket);
+
+    connection.send({
+        kind: "subscribe",
+        streamId: CALLER_STREAM,
+        topic: "inventory.changed",
+        credit: 2,
+    });
+    socket.message(
+        `{"kind":"subscribed","streamId":"${CALLER_STREAM}","topic":"inventory.changed","credit":2}`,
+    );
+    socket.message(
+        `{"kind":"event","streamId":"${CALLER_STREAM}","topic":"inventory.changed","sequence":1,"eventId":"11111111111111111111111111111111","payload":"e30="}`,
+    );
+
+    assert.deepEqual(socket.sent, [
+        `{"kind":"subscribe","streamId":"${CALLER_STREAM}","topic":"inventory.changed","credit":2}`,
+    ]);
+
+    connection.send({ kind: "unsubscribe", streamId: CALLER_STREAM });
+    socket.message(`{"kind":"complete","streamId":"${CALLER_STREAM}"}`);
+    assert.equal(connection.state, "connected");
+});
+
 test("close is observable and a closed connection can reconnect manually", async () => {
     const firstSocket = new FakeWebSocket();
     const secondSocket = new FakeWebSocket();
