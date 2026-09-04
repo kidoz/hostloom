@@ -22,7 +22,10 @@ export type {
     HostLoomWebSocketFactory,
 } from "./connection.js";
 
-export { HostLoomSubscriptionCanceledError } from "./subscription.js";
+export {
+    HostLoomSubscriptionCanceledError,
+    HostLoomSubscriptionStateError,
+} from "./subscription.js";
 
 export type {
     HostLoomSubscribeOptions,

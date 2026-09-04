@@ -12,7 +12,8 @@ export interface HostLoomSubscribeOptions {
     readonly signal?: AbortSignal;
 }
 
-export type HostLoomSubscriptionState = "active" | "reconnecting" | "unsubscribing" | "closed";
+export type HostLoomSubscriptionState =
+    "subscribing" | "active" | "reconnecting" | "unsubscribing" | "closed";
 
 export interface HostLoomSubscriptionClose {
     readonly error?: Error;
@@ -37,6 +38,16 @@ export class HostLoomSubscriptionCanceledError extends Error {
     public constructor(options?: ErrorOptions) {
         super("The subscription was canceled by the caller.", options);
         this.name = "HostLoomSubscriptionCanceledError";
+    }
+}
+
+export class HostLoomSubscriptionStateError extends Error {
+    public readonly state: HostLoomSubscriptionState;
+
+    public constructor(state: HostLoomSubscriptionState, message: string) {
+        super(message);
+        this.name = "HostLoomSubscriptionStateError";
+        this.state = state;
     }
 }
 
@@ -323,14 +334,19 @@ export class SubscriptionController {
     }
 
     #acknowledge(sequence: number): void {
-        if (this.#state !== "active") {
-            throw new Error(
-                "A sequence can be acknowledged only while the subscription is active.",
-            );
-        }
-
         if (!Number.isSafeInteger(sequence) || sequence <= 0) {
             throw new RangeError("The acknowledged sequence must be a positive safe integer.");
+        }
+
+        if (this.#state === "reconnecting" || this.#state === "resubscribing") {
+            return;
+        }
+
+        if (this.#state !== "active") {
+            throw new HostLoomSubscriptionStateError(
+                this.#publicState,
+                "A sequence can be acknowledged only while the subscription is active.",
+            );
         }
 
         this.#send({ kind: "ack", streamId: this.#streamId, sequence });
@@ -436,7 +452,12 @@ export class SubscriptionController {
         if (!this.#readySettled) {
             this.#readySettled = true;
             if (error === undefined) {
-                this.#rejectReady(new Error("The subscription ended before it was confirmed."));
+                this.#rejectReady(
+                    new HostLoomSubscriptionStateError(
+                        "closed",
+                        "The subscription ended before it was confirmed.",
+                    ),
+                );
             } else {
                 this.#rejectReady(error);
             }
@@ -461,10 +482,6 @@ export class SubscriptionController {
     }
 
     get #publicState(): HostLoomSubscriptionState {
-        if (this.#state === "subscribing") {
-            return "active";
-        }
-
         return this.#state === "resubscribing" ? "reconnecting" : this.#state;
     }
 }
