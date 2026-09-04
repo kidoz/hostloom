@@ -82,11 +82,12 @@ public sealed class RecordingCacheStore(
         string key,
         ReadOnlyMemory<byte> payload,
         TimeSpan timeToLive,
+        IReadOnlyCollection<string>? tagKeys = null,
         CancellationToken cancellationToken = default
     )
     {
         Record("set-if-absent", key);
-        return Inner.SetIfAbsentAsync(key, payload, timeToLive, cancellationToken);
+        return Inner.SetIfAbsentAsync(key, payload, timeToLive, tagKeys, cancellationToken);
     }
 
     /// <inheritdoc />

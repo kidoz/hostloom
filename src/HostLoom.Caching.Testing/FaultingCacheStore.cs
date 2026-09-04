@@ -86,11 +86,12 @@ public sealed class FaultingCacheStore(
         string key,
         ReadOnlyMemory<byte> payload,
         TimeSpan timeToLive,
+        IReadOnlyCollection<string>? tagKeys = null,
         CancellationToken cancellationToken = default
     )
     {
         Gate("set-if-absent");
-        return Inner.SetIfAbsentAsync(key, payload, timeToLive, cancellationToken);
+        return Inner.SetIfAbsentAsync(key, payload, timeToLive, tagKeys, cancellationToken);
     }
 
     /// <inheritdoc />

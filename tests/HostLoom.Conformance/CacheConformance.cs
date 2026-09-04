@@ -41,6 +41,8 @@ public static class CacheConformance
             [nameof(Remove_InvalidatesL1OnEveryInstance)] = Remove_InvalidatesL1OnEveryInstance,
             [nameof(RemoveByTag_EvictsTaggedEntriesEverywhere)] =
                 RemoveByTag_EvictsTaggedEntriesEverywhere,
+            [nameof(RemoveByTag_EvictsAnEntryWrittenBySetIfAbsent)] =
+                RemoveByTag_EvictsAnEntryWrittenBySetIfAbsent,
             [nameof(StoreUnavailable_GetOrCreateServesFactoryAndKeepsL1)] =
                 StoreUnavailable_GetOrCreateServesFactoryAndKeepsL1,
             [nameof(StoreUnavailable_SetIfAbsentObeysOnUnavailable)] =
@@ -176,6 +178,31 @@ public static class CacheConformance
         {
             await WaitUntilAsync(async () => !(await b.TryGetAsync<Payload>("tagged-1")).Found);
         }
+    }
+
+    public static async Task RemoveByTag_EvictsAnEntryWrittenBySetIfAbsent(
+        CacheConformanceFixture fixture
+    )
+    {
+        var a = fixture.CreateCache();
+        var b = fixture.CreateCache();
+        var tagged = new CacheEntryOptions(TimeSpan.FromMinutes(5)) { Tags = ["inventory"] };
+        Assert.True(await a.SetIfAbsentAsync("inventory:eu", new Payload("1"), tagged));
+        if (fixture.HasDistributedTier)
+        {
+            Assert.True((await b.TryGetAsync<Payload>("inventory:eu")).Found);
+        }
+
+        await a.RemoveByTagAsync("inventory");
+
+        Assert.False((await a.TryGetAsync<Payload>("inventory:eu")).Found);
+        if (fixture.HasDistributedTier)
+        {
+            await WaitUntilAsync(async () => !(await b.TryGetAsync<Payload>("inventory:eu")).Found);
+        }
+
+        // The entry left the distributed tier too, so the key is free to claim again.
+        Assert.True(await a.SetIfAbsentAsync("inventory:eu", new Payload("2"), tagged));
     }
 
     public static async Task StoreUnavailable_GetOrCreateServesFactoryAndKeepsL1(

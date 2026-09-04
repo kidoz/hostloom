@@ -10,6 +10,11 @@ namespace HostLoom.Redis;
 /// under the tag-index keys the cache hands in, expiring no sooner than their longest member.
 /// Every failure surfaces as <see cref="CacheStoreException"/> with a backend-neutral kind.
 /// </summary>
+/// <remarks>
+/// A tag set gains members and loses them only when the whole index is removed, so an entry
+/// rewritten under different tags stays in its earlier sets and removing one of those tags removes
+/// it too. Over-removal costs a refill, which is why it is not worth a read before every write.
+/// </remarks>
 public sealed class RedisCacheStore
     : IDistributedCacheStore,
         ICacheStoreHealthProbe,
@@ -100,16 +105,7 @@ public sealed class RedisCacheStore
             {
                 batch.StringSetAsync(redisKey, payload, timeToLive),
             };
-            foreach (var tagKey in tagKeys)
-            {
-                var tag = Key(tagKey);
-                pending.Add(batch.SetAddAsync(tag, (byte[])redisKey!));
-                pending.Add(batch.KeyExpireAsync(tag, timeToLive, ExpireWhen.HasNoExpiry));
-                pending.Add(
-                    batch.KeyExpireAsync(tag, timeToLive, ExpireWhen.GreaterThanCurrentExpiry)
-                );
-            }
-
+            AppendTagIndexes(batch, pending, redisKey, tagKeys, timeToLive);
             batch.Execute();
             await Task.WhenAll(pending).WaitAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -125,15 +121,30 @@ public sealed class RedisCacheStore
         string key,
         ReadOnlyMemory<byte> payload,
         TimeSpan timeToLive,
+        IReadOnlyCollection<string>? tagKeys = null,
         CancellationToken cancellationToken = default
     )
     {
         try
         {
             var db = await _connection.GetDatabaseAsync(cancellationToken).ConfigureAwait(false);
-            return await db.StringSetAsync(Key(key), payload, timeToLive, When.NotExists)
+            var redisKey = Key(key);
+            var written = await db.StringSetAsync(redisKey, payload, timeToLive, When.NotExists)
                 .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
+            if (!written || tagKeys is not { Count: > 0 })
+            {
+                return written;
+            }
+
+            // A second round trip on purpose: the memberships must not appear when the atomic
+            // write lost the race and the value belongs to another writer.
+            var batch = db.CreateBatch();
+            var pending = new List<Task>(tagKeys.Count * 3);
+            AppendTagIndexes(batch, pending, redisKey, tagKeys, timeToLive);
+            batch.Execute();
+            await Task.WhenAll(pending).WaitAsync(cancellationToken).ConfigureAwait(false);
+            return true;
         }
         catch (Exception exception)
             when (!RedisFailures.IsCallerCancellation(exception, cancellationToken))
@@ -305,6 +316,23 @@ public sealed class RedisCacheStore
             return CacheStoreHealth.Unhealthy(
                 $"Redis did not answer PING within {timeout} ({_connection.Describe()}): {exception.GetType().Name}."
             );
+        }
+    }
+
+    private void AppendTagIndexes(
+        IBatch batch,
+        List<Task> pending,
+        RedisKey redisKey,
+        IReadOnlyCollection<string> tagKeys,
+        TimeSpan timeToLive
+    )
+    {
+        foreach (var tagKey in tagKeys)
+        {
+            var tag = Key(tagKey);
+            pending.Add(batch.SetAddAsync(tag, (byte[])redisKey!));
+            pending.Add(batch.KeyExpireAsync(tag, timeToLive, ExpireWhen.HasNoExpiry));
+            pending.Add(batch.KeyExpireAsync(tag, timeToLive, ExpireWhen.GreaterThanCurrentExpiry));
         }
     }
 

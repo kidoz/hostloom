@@ -28,7 +28,7 @@ Every member returns `ValueTask`, takes a trailing optional
 | `TryGetAsync<T>(key, ct)` | `CacheLookup<T>` with `Found`, `Value`, `Tier` (`None`, `L1`, `L2`), and `Degraded`. The member new code uses. |
 | `GetAsync<T>(key, ct)` | `default(T)` on a miss or under degradation. For a value type a cached `0` is indistinguishable from a miss; kept for call sites written against that contract. |
 | `SetAsync<T>(key, value, options, ct)` | Distributed tier, then in-process tier. Null throws `ArgumentNullException`. |
-| `SetIfAbsentAsync<T>(key, value, options \| expiration, ct)` | Atomic in the distributed tier (in-process when there is none). `false` when present, or when the store is unavailable and `OnUnavailable` is `ReturnFalse`; `CacheUnavailableException` under `Throw`. |
+| `SetIfAbsentAsync<T>(key, value, options \| expiration, ct)` | Atomic in the distributed tier (in-process when there is none). Tags are indexed in both tiers when the write happened. `false` when present, or when the store is unavailable and `OnUnavailable` is `ReturnFalse`; `CacheUnavailableException` under `Throw`. |
 | `RemoveAsync(key \| keys, ct)` | In-process tier first, then one batched distributed call, then one invalidation message. |
 | `RemoveByTagAsync(tag, ct)` | Evicts every entry written with the tag, on every instance. |
 | `GetManyAsync<T>(keys, ct)` | In-process tier, then one batched distributed read; only found entries; partial under failure, never throws. |
@@ -43,7 +43,7 @@ factory result, or a non-positive expiration, is returned and not stored.
 | --- | --- |
 | `Expiration` | Absolute time to live in both tiers; non-positive means "do not store". |
 | `LocalExpiration` | Shorter time to live for the in-process tier; must not exceed `Expiration`. |
-| `Tags` | Tag names for `RemoveByTagAsync`; carried in the distributed payload so another instance indexes them too. |
+| `Tags` | Tag names for `RemoveByTagAsync`; carried in the distributed payload so another instance indexes them too. A distributed tag index only gains members, so an entry rewritten under different tags stays in its earlier indexes and `RemoveByTagAsync` may evict more than currently carries the tag — a refill, never a wrong value. |
 | `Size` | Approximate bytes for the in-process byte bound when the value did not arrive serialized. |
 | `OnUnavailable` | `ReturnFalse` (default) or `Throw` for set-if-absent under a store failure. |
 
@@ -149,7 +149,7 @@ CachingBuilder AddHostLoomCaching(this IServiceCollection services,
 | `UseReflectionSerialization()` | the annotated non-AOT opt-out |
 | `AddWarmup<TWarmup>()` | runs an `ICacheWarmup` after startup, with the readiness contributor `Caching:Warmup:BlocksReadiness` governs |
 | `AddHealthChecks(name)` | readiness check tagged `ready` over the store's probe; never liveness |
-| `AddDistributedCacheAdapter(defaultExpiration)` | `IDistributedCache` and `IBufferDistributedCache` over the store for `HybridCache`; asynchronous members only |
+| `AddDistributedCacheAdapter(defaultExpiration)` | `IDistributedCache` and `IBufferDistributedCache` over the store for `HybridCache`; asynchronous members only; store failures answer as a miss, counted on `hostloom.cache.errors` and logged once per key per `Caching:Diagnostics:DegradedLogInterval` |
 
 Exactly one store per builder; a second choice throws naming the first.
 Repeated `AddHostLoomCaching` calls return a builder over the same
