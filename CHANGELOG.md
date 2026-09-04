@@ -27,6 +27,15 @@ are derived from release tags at publish time.
 
 ### Fixed
 
+- The TypeScript WebSocket client now enforces `maximumMessageSize` against encoded UTF-8 before a
+  frame reaches the socket and reports a typed error without consuming request capacity.
+  Acknowledgements made during reconnect are safe no-ops because old-session sequences cannot be
+  applied to a replacement session; other invalid subscription states use a typed error. The client
+  also sends one `unsubscribe` for an unowned `subscribed` or `event` stream while preserving
+  subscriptions deliberately created through its low-level frame API.
+- Calling the TypeScript client's `connect()` during a caller-requested close now queues one shared
+  reconnect until the close event completes teardown instead of rejecting with a transient
+  still-closing error. Protocol-failure closes remain terminal.
 - A malformed or poisoned distributed-cache payload can no longer force a large allocation. The
   uncompressed length a compressed payload declares is believed only up to
   `Caching:MaxPayloadBytes`; beyond it the entry is a miss logged as corrupt. The same bound now
