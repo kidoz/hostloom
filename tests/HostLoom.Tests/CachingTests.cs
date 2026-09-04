@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Diagnostics.Metrics;
 using System.Text;
 using System.Text.Json;
@@ -766,6 +767,49 @@ public sealed class TieredCacheTests
     }
 
     [Fact]
+    public async Task AFullInvalidationQueue_ReportsTheDropRatherThanSwallowingIt()
+    {
+        using var metrics = new CacheMetricRecorder("drops");
+        var logger = new RecordingLogger<TieredCache>();
+        var store = new InMemoryDistributedCacheStore(_clock);
+        var options = Options("drops");
+        options.Invalidation.MaxPending = 1;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var cache = new TieredCache(
+            options,
+            store,
+            _serializer,
+            timeProvider: _clock,
+            logger: logger
+        );
+
+        // The first message is taken by the applying loop, which then stops inside it: the queue
+        // holds the second and has to drop the third. DropWrite reports that write as a success,
+        // which is exactly what used to make the loss invisible.
+        await store.PublishAsync(
+            new CacheInvalidation(new BlockingKeys(entered, release), []),
+            TestContext.Current.CancellationToken
+        );
+        await entered.Task.WaitAsync(
+            TimeSpan.FromSeconds(10),
+            TestContext.Current.CancellationToken
+        );
+        await store.PublishAsync(
+            new CacheInvalidation(["queued"], []),
+            TestContext.Current.CancellationToken
+        );
+        await store.PublishAsync(
+            new CacheInvalidation(["dropped"], []),
+            TestContext.Current.CancellationToken
+        );
+        release.SetResult();
+
+        Assert.Equal(1, logger.Entries.Count(entry => entry.Event.Id == 1005));
+        Assert.Contains(("hostloom.cache.invalidations", "dropped"), metrics.Directions);
+    }
+
+    [Fact]
     public async Task DegradedWarning_IsRateLimitedPerKey()
     {
         var logger = new RecordingLogger<TieredCache>();
@@ -1006,12 +1050,36 @@ public sealed class TieredCacheTests
         );
     }
 
+    /// <summary>
+    /// Keys whose enumeration stops the applying loop, so a test can fill the queue behind it
+    /// instead of racing it.
+    /// </summary>
+    private sealed class BlockingKeys(TaskCompletionSource entered, TaskCompletionSource release)
+        : IReadOnlyCollection<string>
+    {
+        public int Count => 1;
+
+        public IEnumerator<string> GetEnumerator()
+        {
+            entered.TrySetResult();
+            release.Task.Wait();
+            yield return "blocked";
+        }
+
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
     private sealed class CacheMetricRecorder : IDisposable
     {
         private readonly string _namespace;
         private readonly MeterListener _listener = new();
         private readonly Lock _gate = new();
-        private readonly List<(string Name, double Value, string? Outcome)> _measurements = [];
+        private readonly List<(
+            string Name,
+            double Value,
+            string? Outcome,
+            string? Direction
+        )> _measurements = [];
 
         public CacheMetricRecorder(string ns)
         {
@@ -1043,6 +1111,17 @@ public sealed class TieredCacheTests
             }
         }
 
+        public IReadOnlyList<(string Name, string? Direction)> Directions
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _measurements.Select(m => (m.Name, m.Direction)).ToList();
+                }
+            }
+        }
+
         public List<double> Values(string name)
         {
             lock (_gate)
@@ -1061,6 +1140,7 @@ public sealed class TieredCacheTests
         {
             string? ns = null;
             string? outcome = null;
+            string? direction = null;
             foreach (var tag in tags)
             {
                 if (tag.Key == "hostloom.cache.namespace")
@@ -1071,6 +1151,10 @@ public sealed class TieredCacheTests
                 {
                     outcome = tag.Value as string;
                 }
+                else if (tag.Key == "hostloom.cache.direction")
+                {
+                    direction = tag.Value as string;
+                }
             }
 
             if (ns != _namespace)
@@ -1080,7 +1164,7 @@ public sealed class TieredCacheTests
 
             lock (_gate)
             {
-                _measurements.Add((instrument.Name, value, outcome));
+                _measurements.Add((instrument.Name, value, outcome, direction));
             }
         }
     }

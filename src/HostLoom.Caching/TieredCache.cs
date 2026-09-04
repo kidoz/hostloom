@@ -20,6 +20,9 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     private const string LeaseSegment = ":cache:lease:";
     private const string DataSegment = ":cache:data:";
     private const string TagSegment = ":cache:tag:";
+
+    /// <summary>Throttle key for the invalidation queue; a validated cache key never has a space.</summary>
+    private const string InvalidationThrottleKey = "invalidation queue";
     private static readonly ReadOnlyMemory<byte> LeasePayload = new byte[] { 1 };
 
     private readonly CachingOptions _options;
@@ -105,7 +108,10 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 {
                     FullMode = BoundedChannelFullMode.DropWrite,
                     SingleReader = true,
-                }
+                },
+                // DropWrite discards the item and still reports the write as successful, so this
+                // callback is the only place the loss is observable.
+                itemDropped: _ => ReportDroppedInvalidation()
             );
             _invalidationLoop = Task.Run(() => ApplyInvalidationsAsync(_disposal.Token));
             _subscription = _channel.Subscribe(OnInvalidation);
@@ -1104,18 +1110,26 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
     private void OnInvalidation(CacheInvalidation invalidation)
     {
-        if (_pending is null)
-        {
-            return;
-        }
+        // A refusal means the queue was completed by disposal, which needs no warning; a full queue
+        // reports itself through the drop callback instead.
+        _ = _pending?.Writer.TryWrite(invalidation);
+    }
 
-        if (!_pending.Writer.TryWrite(invalidation))
+    private void ReportDroppedInvalidation()
+    {
+        CachingDiagnostics.Invalidations.Add(
+            1,
+            _namespaceTag,
+            new KeyValuePair<string, object?>(CachingDiagnostics.DirectionTag, "dropped")
+        );
+        if (_throttle.ShouldLog(InvalidationThrottleKey))
         {
             _logger.LogWarning(
                 new EventId(1005, "CacheInvalidationDropped"),
-                "Invalidation queue for namespace '{Namespace}' is full (Caching:Invalidation:MaxPending = {MaxPending}); a message was dropped and the in-process tier relies on expiry for it.",
+                "Invalidation queue for namespace '{Namespace}' is full (Caching:Invalidation:MaxPending = {MaxPending}); messages are being dropped and the in-process tier relies on expiry for them. Further warnings are suppressed for {Interval}.",
                 _options.Namespace,
-                _options.Invalidation.MaxPending
+                _options.Invalidation.MaxPending,
+                _options.Diagnostics.DegradedLogInterval
             );
         }
     }
