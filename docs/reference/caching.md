@@ -103,8 +103,8 @@ whitespace or control characters.
 
 The store sees fully prefixed keys and byte payloads, never CLR types,
 namespaces, or serializers. Members: `GetAsync` (payload and remaining time
-to live), `SetAsync` (with tag-index keys), `SetIfAbsentAsync`, `RemoveAsync`
-(batched), `GetManyAsync`, `SetManyAsync`, `RemoveByTagAsync`, and a
+to live), `SetAsync` and `SetIfAbsentAsync` (both with tag-index keys),
+`RemoveAsync` (batched), `GetManyAsync`, `SetManyAsync`, `RemoveByTagAsync`, and a
 `Capabilities` flags value (`Tags`, `InvalidationChannel`,
 `ServerAssistedTracking`). A failure is `CacheStoreException` carrying a
 `CacheFailureKind` (`Unavailable`, `Timeout`, `Other`); cancellation

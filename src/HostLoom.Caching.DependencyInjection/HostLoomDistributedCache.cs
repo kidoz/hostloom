@@ -1,4 +1,5 @@
 using System.Buffers;
+using HostLoom.Caching.Internal;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Logging;
 
@@ -15,7 +16,9 @@ namespace HostLoom.Caching.DependencyInjection;
 /// asynchronous and blocking over it is exactly what the HostLoom analyzers forbid.
 /// <c>RefreshAsync</c> completes as a no-op because the store has no touch operation, so the
 /// adapter offers no sliding expiration. Store failures are fail-open here as everywhere: a read
-/// returns null and a write returns, each logged.
+/// returns null and a write returns, each counted on <c>hostloom.cache.errors</c> and logged once
+/// per key per <c>Caching:Diagnostics:DegradedLogInterval</c>, because an outage otherwise turns
+/// every request into a log line.
 /// </remarks>
 internal sealed class HostLoomDistributedCache(
     IDistributedCacheStore store,
@@ -29,6 +32,10 @@ internal sealed class HostLoomDistributedCache(
         "The HostLoom distributed cache adapter is asynchronous only; use the *Async member.";
 
     private readonly string _prefix = options.Namespace + ":cache:external:";
+    private readonly DegradedLogThrottle _throttle = new(
+        time,
+        options.Diagnostics.DegradedLogInterval
+    );
 
     /// <inheritdoc />
     public byte[]? Get(string key) => throw new NotSupportedException(NotSupported);
@@ -184,15 +191,26 @@ internal sealed class HostLoomDistributedCache(
         return options.SlidingExpiration ?? defaultExpiration;
     }
 
-    private void Degraded(Exception exception, string operation, string key) =>
+    private void Degraded(Exception exception, string operation, string key)
+    {
+        var kind = exception is CacheStoreException store ? store.Kind : CacheFailureKind.Other;
+        CachingDiagnostics.RecordStoreFailure(options.Namespace, kind);
+        if (!_throttle.ShouldLog(key))
+        {
+            return;
+        }
+
         logger.LogWarning(
             new EventId(1007, "DistributedCacheAdapterDegraded"),
             exception,
-            "The distributed cache store failed during {Operation} of '{Key}' in namespace '{Namespace}'; the adapter answered as a miss.",
+            "The distributed cache store failed ({Kind}) during {Operation} of '{Key}' in namespace '{Namespace}'; the adapter answered as a miss. Further warnings for this key are suppressed for {Interval}.",
+            kind,
             operation,
             key,
-            options.Namespace
+            options.Namespace,
+            options.Diagnostics.DegradedLogInterval
         );
+    }
 
     private static bool IsCallerCancellation(Exception exception, CancellationToken token) =>
         exception is OperationCanceledException && token.IsCancellationRequested;
