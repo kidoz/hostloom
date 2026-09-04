@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics.Metrics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -8,6 +9,7 @@ using HostLoom.Caching.Testing;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace HostLoom.Tests;
@@ -165,6 +167,42 @@ public sealed class DistributedCacheAdapterTests
     }
 
     [Fact]
+    public async Task RepeatedStoreFailures_AreCountedAndLoggedOncePerInterval()
+    {
+        var clock = new TestClock();
+        var faults = new FaultingCacheStore(new InMemoryDistributedCacheStore(clock));
+        using var logs = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddSingleton(faults);
+        services.AddSingleton<TimeProvider>(clock);
+        services.AddLogging(logging => logging.AddProvider(logs));
+        services
+            .AddHostLoomCaching(caching => caching.Namespace = "adapter-storm")
+            .UseStore<FaultingCacheStore>("Faulting")
+            .UseSystemTextJson(Json())
+            .AddDistributedCacheAdapter();
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<IDistributedCache>();
+        using var errors = new ErrorRecorder("adapter-storm");
+        faults.FailAll(CacheFailureKind.Unavailable);
+
+        for (var i = 0; i < 5; i++)
+        {
+            await cache.GetAsync("k", Token);
+        }
+
+        var duringTheOutage = logs.Count(1007);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        await cache.GetAsync("k", Token);
+
+        // An outage must not turn every request into a log line; the metric still counts them all.
+        Assert.Equal(1, duringTheOutage);
+        Assert.Equal(2, logs.Count(1007));
+        Assert.Equal(6, errors.Total);
+        Assert.Equal(["unavailable"], errors.Kinds);
+    }
+
+    [Fact]
     public void WithoutADistributedStore_ResolvingTheAdapterExplainsWhat()
     {
         var services = new ServiceCollection();
@@ -216,4 +254,119 @@ public sealed class DistributedCacheAdapterTests
     }
 
     private sealed record Catalog(string Region, int Items);
+
+    /// <summary>Captures every event the adapter logs, whatever category it was created under.</summary>
+    private sealed class CapturingLoggerProvider : ILoggerProvider
+    {
+        private readonly Lock _gate = new();
+        private readonly List<EventId> _events = [];
+
+        public int Count(int eventId)
+        {
+            lock (_gate)
+            {
+                return _events.Count(entry => entry.Id == eventId);
+            }
+        }
+
+        public ILogger CreateLogger(string categoryName) => new Capturing(this);
+
+        public void Dispose() { }
+
+        private void Add(EventId eventId)
+        {
+            lock (_gate)
+            {
+                _events.Add(eventId);
+            }
+        }
+
+        private sealed class Capturing(CapturingLoggerProvider owner) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state)
+                where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter
+            ) => owner.Add(eventId);
+        }
+    }
+
+    /// <summary>Reads <c>hostloom.cache.errors</c> for one namespace.</summary>
+    private sealed class ErrorRecorder : IDisposable
+    {
+        private readonly MeterListener _listener = new();
+        private readonly Lock _gate = new();
+        private readonly List<string> _kinds = [];
+
+        public ErrorRecorder(string @namespace)
+        {
+            _listener.InstrumentPublished = (instrument, listener) =>
+            {
+                if (instrument.Name == "hostloom.cache.errors")
+                {
+                    listener.EnableMeasurementEvents(instrument);
+                }
+            };
+            _listener.SetMeasurementEventCallback<long>(
+                (_, _, tags, _) =>
+                {
+                    string? ns = null;
+                    string? kind = null;
+                    foreach (var tag in tags)
+                    {
+                        if (tag.Key == "hostloom.cache.namespace")
+                        {
+                            ns = tag.Value as string;
+                        }
+                        else if (tag.Key == "hostloom.cache.kind")
+                        {
+                            kind = tag.Value as string;
+                        }
+                    }
+
+                    if (ns != @namespace)
+                    {
+                        return;
+                    }
+
+                    lock (_gate)
+                    {
+                        _kinds.Add(kind ?? "");
+                    }
+                }
+            );
+            _listener.Start();
+        }
+
+        public int Total
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _kinds.Count;
+                }
+            }
+        }
+
+        public IReadOnlyList<string> Kinds
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _kinds.Distinct()];
+                }
+            }
+        }
+
+        public void Dispose() => _listener.Dispose();
+    }
 }

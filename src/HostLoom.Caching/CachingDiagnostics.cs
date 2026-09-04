@@ -100,6 +100,22 @@ public static class CachingDiagnostics
             new KeyValuePair<string, object?>(NamespaceTag, @namespace)
         );
 
+    /// <summary>Counts one distributed-store failure for a composition that keeps no tag of its own.</summary>
+    internal static void RecordStoreFailure(string @namespace, CacheFailureKind kind) =>
+        Errors.Add(
+            1,
+            new KeyValuePair<string, object?>(NamespaceTag, @namespace),
+            new KeyValuePair<string, object?>(KindTag, KindName(kind))
+        );
+
+    internal static string KindName(CacheFailureKind kind) =>
+        kind switch
+        {
+            CacheFailureKind.Unavailable => "unavailable",
+            CacheFailureKind.Timeout => "timeout",
+            _ => "other",
+        };
+
     internal static void Register(TieredCache cache) => LiveCaches[cache] = 0;
 
     internal static void Unregister(TieredCache cache) => LiveCaches.TryRemove(cache, out _);

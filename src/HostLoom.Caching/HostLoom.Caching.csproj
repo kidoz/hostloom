@@ -13,6 +13,7 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="HostLoom.Caching.DependencyInjection" />
     <InternalsVisibleTo Include="HostLoom.Tests" />
   </ItemGroup>
 </Project>

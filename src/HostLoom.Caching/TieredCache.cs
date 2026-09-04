@@ -1168,7 +1168,10 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         CachingDiagnostics.Errors.Add(
             1,
             _namespaceTag,
-            new KeyValuePair<string, object?>(CachingDiagnostics.KindTag, KindName(kind))
+            new KeyValuePair<string, object?>(
+                CachingDiagnostics.KindTag,
+                CachingDiagnostics.KindName(kind)
+            )
         );
         if (_throttle.ShouldLog(key))
         {
@@ -1186,14 +1189,6 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
         return kind;
     }
-
-    private static string KindName(CacheFailureKind kind) =>
-        kind switch
-        {
-            CacheFailureKind.Unavailable => "unavailable",
-            CacheFailureKind.Timeout => "timeout",
-            _ => "other",
-        };
 
     private static bool IsCallerCancellation(Exception exception, CancellationToken token) =>
         exception is OperationCanceledException && token.IsCancellationRequested;

@@ -85,7 +85,7 @@ instrument name, so one dashboard serves every cache.
 | `hostloom.cache.stampede.lease_missed` | counter | Factories run without the cluster-wide lease |
 | `hostloom.cache.invalidations` | counter | Invalidation messages, tagged `hostloom.cache.direction` (`sent`, `received`, `dropped`); `dropped` means the queue was at `Caching:Invalidation:MaxPending` and the in-process tier falls back to expiry for that message |
 | `hostloom.cache.invalidation.resubscribed` | counter | Subscription re-established after a reconnect |
-| `hostloom.cache.errors` | counter | Store and serialization failures, tagged `hostloom.cache.kind` (`unavailable`, `timeout`, `serialization`, `other`) |
+| `hostloom.cache.errors` | counter | Store and serialization failures, from the tiered cache and from the `IDistributedCache` adapter, tagged `hostloom.cache.kind` (`unavailable`, `timeout`, `serialization`, `other`) |
 | `hostloom.cache.compressions` | counter | Payloads compressed before the distributed write |
 
 Activities: `cache.get_or_create`, `cache.get`, `cache.set`, `cache.remove`,
