@@ -83,7 +83,7 @@ instrument name, so one dashboard serves every cache.
 | `hostloom.cache.entries` | observable gauge | Entries in the in-process tier |
 | `hostloom.cache.guards.active` | observable gauge | Single-flight guards held or awaited |
 | `hostloom.cache.stampede.lease_missed` | counter | Factories run without the cluster-wide lease |
-| `hostloom.cache.invalidations` | counter | Invalidation messages, tagged `hostloom.cache.direction` (`sent`, `received`) |
+| `hostloom.cache.invalidations` | counter | Invalidation messages, tagged `hostloom.cache.direction` (`sent`, `received`, `dropped`); `dropped` means the queue was at `Caching:Invalidation:MaxPending` and the in-process tier falls back to expiry for that message |
 | `hostloom.cache.invalidation.resubscribed` | counter | Subscription re-established after a reconnect |
 | `hostloom.cache.errors` | counter | Store and serialization failures, tagged `hostloom.cache.kind` (`unavailable`, `timeout`, `serialization`, `other`) |
 | `hostloom.cache.compressions` | counter | Payloads compressed before the distributed write |
