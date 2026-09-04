@@ -166,6 +166,12 @@ interface PendingRequest {
     settled: boolean;
 }
 
+interface QueuedConnect {
+    readonly promise: Promise<WelcomeFrame>;
+    readonly resolve: (welcome: WelcomeFrame) => void;
+    readonly reject: (error: Error) => void;
+}
+
 interface ResolvedReconnectOptions {
     readonly initialDelayMilliseconds: number;
     readonly maximumDelayMilliseconds: number;
@@ -206,6 +212,7 @@ export class HostLoomConnection {
     #reconnectPromise: Promise<WelcomeFrame> | undefined;
     #resolveReconnect: ((welcome: WelcomeFrame) => void) | undefined;
     #rejectReconnect: ((error: Error) => void) | undefined;
+    #queuedConnect: QueuedConnect | undefined;
     #reconnectTimer: number | undefined;
     #nextReconnectDelay: number;
     #closeDisposition: CloseDisposition | undefined;
@@ -248,6 +255,10 @@ export class HostLoomConnection {
         if (this.#state === "closing") {
             if (this.#reconnectPromise !== undefined && this.#closeDisposition === undefined) {
                 return this.#reconnectPromise;
+            }
+
+            if (this.#closeDisposition === "manual") {
+                return this.#queueConnectAfterClose();
             }
 
             return Promise.reject(
@@ -501,6 +512,8 @@ export class HostLoomConnection {
                     cause: error,
                 },
             );
+            this.#closeDisposition = undefined;
+            this.#rejectQueuedConnect(connectionError);
             this.#transition(previousState, { error: connectionError });
             throw connectionError;
         }
@@ -671,6 +684,7 @@ export class HostLoomConnection {
             this.#rejectReconnectPromise(closeError);
             this.#rejectAllSubscriptions(closeError);
             this.#transition("disconnected", { close });
+            this.#resumeQueuedConnect();
         }
     };
 
@@ -724,6 +738,41 @@ export class HostLoomConnection {
         this.#connectPromise = undefined;
         this.#resolveConnect = undefined;
         this.#rejectConnect = undefined;
+    }
+
+    #queueConnectAfterClose(): Promise<WelcomeFrame> {
+        if (this.#queuedConnect !== undefined) {
+            return this.#queuedConnect.promise;
+        }
+
+        let resolveConnect: (welcome: WelcomeFrame) => void;
+        let rejectConnect: (error: Error) => void;
+        const promise = new Promise<WelcomeFrame>((resolve, reject) => {
+            resolveConnect = resolve;
+            rejectConnect = reject;
+        });
+        this.#queuedConnect = {
+            promise,
+            resolve: resolveConnect!,
+            reject: rejectConnect!,
+        };
+        return promise;
+    }
+
+    #resumeQueuedConnect(): void {
+        const queued = this.#queuedConnect;
+        if (queued === undefined) {
+            return;
+        }
+
+        this.#queuedConnect = undefined;
+        void this.connect().then(queued.resolve, queued.reject);
+    }
+
+    #rejectQueuedConnect(error: Error): void {
+        const queued = this.#queuedConnect;
+        this.#queuedConnect = undefined;
+        queued?.reject(error);
     }
 
     #ensureReconnectPromise(): void {
