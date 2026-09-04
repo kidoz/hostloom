@@ -45,6 +45,7 @@ class FakeWebSocket implements HostLoomWebSocket {
     public protocol = "";
     public readonly sent: string[] = [];
     public readonly closeCalls: CloseCall[] = [];
+    public closeError: unknown;
     readonly #listeners = new Map<keyof HostLoomWebSocketEventMap, Set<EventListener>>();
 
     public send(data: string): void {
@@ -52,6 +53,10 @@ class FakeWebSocket implements HostLoomWebSocket {
     }
 
     public close(code?: number, reason?: string): void {
+        if (this.closeError !== undefined) {
+            throw this.closeError;
+        }
+
         this.closeCalls.push({ code, reason });
     }
 
@@ -515,6 +520,65 @@ test("close is observable and a closed connection can reconnect manually", async
     );
 });
 
+test("connect during a manual close waits for teardown before opening one replacement", async () => {
+    const firstSocket = new FakeWebSocket();
+    const secondSocket = new FakeWebSocket();
+    const sockets = [firstSocket, secondSocket];
+    const states: HostLoomConnectionState[] = [];
+    const connection = new HostLoomConnection("wss://inventory.example.com/realtime", {
+        webSocketFactory: () => nextSocket(sockets),
+    });
+    connection.onStateChange(({ state }) => states.push(state));
+    await connectHarness(connection, firstSocket);
+
+    connection.close(3001, "client_shutdown");
+    const queued = connection.connect();
+    assert.equal(connection.connect(), queued);
+    assert.equal(connection.state, "closing");
+    assert.equal(sockets.length, 1, "the replacement must wait for the close event");
+
+    firstSocket.closed(1000, "closed", true);
+    assert.equal(connection.state, "connecting");
+    assert.equal(sockets.length, 0, "exactly one replacement socket must be created");
+
+    secondSocket.open();
+    secondSocket.message(welcomeJson);
+    assert.equal((await queued).kind, "welcome");
+    assert.equal(connection.state, "connected");
+    assert.deepEqual(states, [
+        "connecting",
+        "connected",
+        "closing",
+        "disconnected",
+        "connecting",
+        "connected",
+    ]);
+});
+
+test("a queued reconnect rejects if the manual close cannot start", async () => {
+    const closeFailure = new Error("close failed");
+    const { connection, socket } = createHarness();
+    await connectHarness(connection, socket);
+    socket.closeError = closeFailure;
+    let queued: Promise<WelcomeFrame> | undefined;
+    connection.onStateChange(({ state }) => {
+        if (state === "closing") {
+            queued = connection.connect();
+        }
+    });
+
+    assert.throws(
+        () => connection.close(),
+        (error) => error instanceof HostLoomConnectionError && error.cause === closeFailure,
+    );
+    await assert.rejects(
+        queued as Promise<WelcomeFrame>,
+        (error) => error instanceof HostLoomConnectionError && error.cause === closeFailure,
+    );
+    assert.equal(connection.state, "connected");
+    assert.equal((await connection.connect()).kind, "welcome");
+});
+
 test("connect rejects a server-selected subprotocol mismatch", async () => {
     const { connection, socket } = createHarness();
     const pending = connection.connect();
@@ -523,6 +587,7 @@ test("connect rejects a server-selected subprotocol mismatch", async () => {
 
     await assert.rejects(pending, HostLoomProtocolError);
     assert.equal(connection.state, "closing");
+    await assert.rejects(connection.connect(), HostLoomConnectionError);
     assert.deepEqual(socket.closeCalls, [{ code: undefined, reason: undefined }]);
     socket.closed(1006, "", false);
     assert.equal(connection.state, "disconnected");
