@@ -13,13 +13,15 @@ The repository also contains the dependency-free ESM
 [`@hostloom/websocket-client`](https://github.com/kidoz/hostloom/tree/main/clients/hostloom-websocket-client)
 package. It provides TypeScript frame types, JSON-v1 validation and encoding, Base64 JSON payload
 helpers, and an injectable connection core with validated welcome negotiation, observable state,
-explicit close, and opt-in jittered exponential reconnect. Its request API provides stream
-allocation, response and typed-fault correlation, advertised-concurrency enforcement, gateway
-timeouts, and `AbortSignal` cancellation; requests are never replayed. Its subscription API shares
-stream allocation with requests, waits for confirmation, buffers within initial credit until an
-event listener exists, replenishes credit at a configurable low watermark, acknowledges progress,
-maps cancellation to `unsubscribe`, and resubscribes retained logical handles after a replacement
-welcome. Close code `1008` requires a successful credential refresh before retry.
+explicit close, deferred manual reconnect, and opt-in jittered exponential reconnect. Its request
+API provides stream allocation, response and typed-fault correlation, advertised-concurrency
+enforcement, gateway timeouts, local enforcement of the advertised encoded-message limit, and
+`AbortSignal` cancellation; requests are never replayed. Its subscription API shares stream
+allocation with requests, waits for confirmation, buffers within initial credit until an event
+listener exists, replenishes credit at a configurable low watermark, acknowledges current-session
+progress, cleans up unowned subscription streams, maps cancellation to `unsubscribe`, and
+resubscribes retained logical handles after a replacement welcome. Close code `1008` requires a
+successful credential refresh before retry.
 
 ## Registration
 
