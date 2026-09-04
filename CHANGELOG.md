@@ -8,6 +8,45 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking.** `IDistributedCacheStore.SetIfAbsentAsync` takes the tag-index keys `SetAsync`
+  already took, so an entry written with `Tags` is reachable by `RemoveByTagAsync` in the
+  distributed tier as well as the in-process one. A custom store implementation gains the
+  parameter; a caller that passed a `CancellationToken` positionally names it instead.
+  `LocalCacheStore.SetIfAbsent` gains the same `tags` parameter before its `size` one.
+- `LockOptions.MaxWait` is the hard bound it documented. Provider calls run under it and are
+  cancelled at it, so a backend that never answers can no longer stretch the wait; no attempt
+  starts on or after the bound, which means acquisition can now end slightly before it rather than
+  making one last attempt exactly on it. `TimeSpan.Zero` still makes exactly one attempt, bounded
+  only by the caller's token.
+- The distributed tag index is documented as monotonic: it gains members and loses them only when
+  the whole index is removed, so an entry rewritten under different tags stays in its earlier
+  indexes and `RemoveByTagAsync` may evict more than currently carries the tag. Over-eviction costs
+  a refill; reading an entry's tags before every write would cost a round trip on the hot path.
+
+### Fixed
+
+- A malformed or poisoned distributed-cache payload can no longer force a large allocation. The
+  uncompressed length a compressed payload declares is believed only up to
+  `Caching:MaxPayloadBytes`; beyond it the entry is a miss logged as corrupt. The same bound now
+  applies to the serialized body when writing, not only to the encoded payload, so an entry this
+  cache wrote always reads back.
+- A lock lease is measured from the request rather than from the answer. A provider starts the
+  lease when it accepts the call, so `LeaseEnd`, the local expiry timer, and `ExtendAsync` all
+  count the round trip as spent lease, and `IsHeld` can no longer stay true after the backend's key
+  expired and another instance took it.
+- A full invalidation queue is reported. `BoundedChannelFullMode.DropWrite` drops the message and
+  still reports the write as successful, so the warning that watched the return value never fired;
+  drops now count on `hostloom.cache.invalidations` with direction `dropped` and log once per
+  `Caching:Diagnostics:DegradedLogInterval`.
+- A get-or-create factory that outlives the stampede lease no longer releases it. The release is an
+  unconditional delete, so releasing an expired lease removed whichever instance held it next and
+  let further factories run concurrently.
+- The `IDistributedCache` adapter counts store failures on `hostloom.cache.errors` and logs one
+  warning per key per `Caching:Diagnostics:DegradedLogInterval`, instead of one unthrottled warning
+  per failed operation during an outage.
+
 ## [0.4.0] - 2026-09-03
 
 Upgrading adds two analyzer rules — `HLM0007` and `HLM0008` — which report as warnings by
