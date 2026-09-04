@@ -816,6 +816,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         var status = CachePayloadCodec.TryDecode<T>(
             _serializer!,
             entry.Payload.Span,
+            _options.MaxPayloadBytes,
             out var value,
             out var tags,
             out var failure
@@ -974,6 +975,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     )
     {
         var writer = new PooledBufferWriter();
+        int bodyLength;
         try
         {
             compressed = CachePayloadCodec.Encode(
@@ -981,7 +983,8 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 value,
                 options.Tags,
                 _options.Compression.ThresholdBytes,
-                writer
+                writer,
+                out bodyLength
             );
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -1004,14 +1007,18 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             return null;
         }
 
-        if (writer.WrittenCount > _options.MaxPayloadBytes)
+        // Both sizes are bounded: the encoded one because it is what the store holds, the body
+        // because a reader allocates the declared uncompressed length and trusts it only this far.
+        var oversize = Math.Max(writer.WrittenCount, bodyLength);
+        if (oversize > _options.MaxPayloadBytes)
         {
             writer.Dispose();
             _logger.LogError(
                 new EventId(1003, "CachePayloadTooLarge"),
-                "Value for '{Key}' in namespace '{Namespace}' serializes to {Bytes} bytes, above Caching:MaxPayloadBytes ({MaxPayloadBytes}); it is kept in the in-process tier only.",
+                "Value for '{Key}' in namespace '{Namespace}' serializes to {Bytes} bytes ({EncodedBytes} encoded), above Caching:MaxPayloadBytes ({MaxPayloadBytes}); it is kept in the in-process tier only.",
                 key,
                 _options.Namespace,
+                bodyLength,
                 writer.WrittenCount,
                 _options.MaxPayloadBytes
             );
