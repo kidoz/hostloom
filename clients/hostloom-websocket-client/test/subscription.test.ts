@@ -11,6 +11,7 @@ import {
     HostLoomProtocolError,
     HostLoomRemoteFaultError,
     HostLoomSubscriptionCanceledError,
+    HostLoomSubscriptionStateError,
     type EventFrame,
     type HostLoomSubscriptionClose,
     type HostLoomWebSocket,
@@ -471,7 +472,11 @@ test("acknowledge validates positive sequences and sends an ack while active", a
     });
 
     const closing = subscription.unsubscribe();
-    assert.throws(() => subscription.acknowledge(8), /only while the subscription is active/);
+    assert.throws(
+        () => subscription.acknowledge(8),
+        (error) =>
+            error instanceof HostLoomSubscriptionStateError && error.state === "unsubscribing",
+    );
     socket.message({ kind: "complete", streamId: stream(1) });
     await closing;
 });

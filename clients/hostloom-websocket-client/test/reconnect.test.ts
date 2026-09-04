@@ -172,6 +172,8 @@ test("an unexpected close retries and restores a logical subscription without re
     await assert.rejects(request, HostLoomConnectionClosedError);
     assert.equal(connection.state, "reconnecting");
     assert.equal(subscription.state, "reconnecting");
+    assert.doesNotThrow(() => subscription.acknowledge(1));
+    assert.equal(sentFrames(firstSocket).filter(({ kind }) => kind === "ack").length, 0);
     assert.deepEqual(closes, []);
     const recovered = connection.connect();
 
@@ -186,6 +188,7 @@ test("an unexpected close retries and restores a logical subscription without re
     assert.equal((await recovered).sessionId, stream(0xf0f1));
     assert.equal(connection.state, "connected");
     assert.equal(subscription.state, "reconnecting");
+    assert.doesNotThrow(() => subscription.acknowledge(2));
 
     // Restoration takes a fresh identifier rather than reusing the abandoned one, so a late frame
     // from the closed session can never be mistaken for the restored stream.
@@ -206,6 +209,12 @@ test("an unexpected close retries and restores a logical subscription without re
         credit: 4,
     });
     assert.equal(subscription.state, "active");
+    subscription.acknowledge(3);
+    assert.deepEqual(sentFrames(secondSocket).at(-1), {
+        kind: "ack",
+        streamId: stream(3),
+        sequence: 3,
+    });
     secondSocket.message({
         kind: "event",
         streamId: stream(3),
