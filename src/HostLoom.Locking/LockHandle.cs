@@ -7,6 +7,11 @@ namespace HostLoom.Locking;
 /// optional heartbeat. State moves Held → Lost or Held → Released once; every transition out of
 /// Held decrements <c>hostloom.lock.active</c> exactly once.
 /// </summary>
+/// <remarks>
+/// A provider starts the lease when it accepts the request, so the local timers run from the
+/// moment the request was sent rather than the moment its answer arrived. The round trip is spent
+/// lease; counting it out is what keeps <see cref="IsHeld"/> from outliving the backend's key.
+/// </remarks>
 internal sealed class LockHandle : ILockHandle
 {
     private const int HeldState = 0;
@@ -28,12 +33,17 @@ internal sealed class LockHandle : ILockHandle
     private int _state;
     private bool _counted = true;
 
+    /// <param name="requestedAt">
+    /// The timestamp taken before the acquiring provider call, which is the earliest instant the
+    /// backend can have started the lease.
+    /// </param>
     public LockHandle(
         DistributedLock owner,
         string key,
         string prefixedKey,
         string token,
         TimeSpan lease,
+        long requestedAt,
         bool autoExtend
     )
     {
@@ -43,27 +53,30 @@ internal sealed class LockHandle : ILockHandle
         _token = token;
         _lease = lease;
         _autoExtend = autoExtend;
-        _acquiredAt = owner.Clock.GetTimestamp();
-        _leaseEnd = owner.Clock.GetUtcNow() + lease;
+        _acquiredAt = requestedAt;
+        var remaining = lease - owner.Clock.GetElapsedTime(requestedAt);
+        _leaseEnd = owner.Clock.GetUtcNow() + remaining;
 
         // Timers last, so a lease short enough to fire immediately still finds a complete handle.
+        // A round trip that outlasted the lease leaves nothing to hold: the expiry timer fires at
+        // once and the handle reports the loss through the usual path.
         _leaseTimer = owner.Clock.CreateTimer(
             static state => ((LockHandle)state!).OnLeaseExpired(),
             this,
-            lease,
+            NotBefore(remaining),
             Timeout.InfiniteTimeSpan
         );
         _warnTimer = owner.Clock.CreateTimer(
             static state => ((LockHandle)state!).OnHoldThreshold(),
             this,
-            lease * 0.8,
+            NotBefore(remaining * 0.8),
             Timeout.InfiniteTimeSpan
         );
         _extendTimer = autoExtend
             ? owner.Clock.CreateTimer(
                 static state => ((LockHandle)state!).OnHeartbeat(),
                 this,
-                lease / 2,
+                NotBefore(remaining / 2),
                 Timeout.InfiniteTimeSpan
             )
             : null;
@@ -107,6 +120,7 @@ internal sealed class LockHandle : ILockHandle
         }
 
         bool extended;
+        var requestedAt = _owner.Clock.GetTimestamp();
         try
         {
             extended = await _owner
@@ -134,6 +148,15 @@ internal sealed class LockHandle : ILockHandle
             return false;
         }
 
+        // The extended lease also started when the request was accepted, so a round trip longer
+        // than the lease itself leaves nothing extended.
+        var remaining = lease - _owner.Clock.GetElapsedTime(requestedAt);
+        if (remaining <= TimeSpan.Zero)
+        {
+            MarkLost("the extended lease was already spent when the provider answered");
+            return false;
+        }
+
         lock (_gate)
         {
             if (_state != HeldState)
@@ -142,10 +165,10 @@ internal sealed class LockHandle : ILockHandle
             }
 
             _lease = lease;
-            _leaseEnd = _owner.Clock.GetUtcNow() + lease;
-            _leaseTimer.Change(lease, Timeout.InfiniteTimeSpan);
-            _warnTimer.Change(lease * 0.8, Timeout.InfiniteTimeSpan);
-            _extendTimer?.Change(lease / 2, Timeout.InfiniteTimeSpan);
+            _leaseEnd = _owner.Clock.GetUtcNow() + remaining;
+            _leaseTimer.Change(remaining, Timeout.InfiniteTimeSpan);
+            _warnTimer.Change(remaining * 0.8, Timeout.InfiniteTimeSpan);
+            _extendTimer?.Change(remaining / 2, Timeout.InfiniteTimeSpan);
         }
 
         return true;
@@ -197,6 +220,8 @@ internal sealed class LockHandle : ILockHandle
         Decrement();
         _lost.Dispose();
     }
+
+    private static TimeSpan NotBefore(TimeSpan due) => due > TimeSpan.Zero ? due : TimeSpan.Zero;
 
     private void OnLeaseExpired() => MarkLost("the lease expired on the local clock");
 

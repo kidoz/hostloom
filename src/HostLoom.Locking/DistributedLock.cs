@@ -263,6 +263,7 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
             // documented bound into an unbounded wait. An attempt cancelled this way may have
             // taken the lock in the backend; that orphan expires with its lease.
             using var bounded = Budget.ForAttempt(maxWait, start, Clock, cancellationToken);
+            var requestedAt = Clock.GetTimestamp();
             try
             {
                 acquired = await Provider
@@ -298,7 +299,7 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
                 LockingDiagnostics.Active.Add(1, _namespaceTag);
                 activity?.SetTag("hostloom.lock.acquired", true);
                 activity?.SetTag("hostloom.lock.wait_ms", waited.TotalMilliseconds);
-                return new LockHandle(this, key, prefixed, owner, lease, autoExtend);
+                return new LockHandle(this, key, prefixed, owner, lease, requestedAt, autoExtend);
             }
 
             if (attempts > retry.RetryLimit)

@@ -41,7 +41,8 @@ reaches the provider, a log line, or a span.
 Every lease has an owner token generated per acquisition; release and extension succeed only for
 the owner. The handle's `LostToken` is cancelled, `IsHeld` turns false, and `hostloom.lock.lost`
 increments when the lease expires on the local clock or the provider refuses an extend or a
-release. With `LockOptions.OnLost = LostLeaseBehavior.Cancel` the token handed to the action is
+release. The local clock starts at the request, not at the answer: a provider begins the lease
+when it accepts the call, so the round trip is subtracted from the lease the handle reports. With `LockOptions.OnLost = LostLeaseBehavior.Cancel` the token handed to the action is
 cancelled too; the default, `Observe`, keeps the action running and only reports the loss.
 
 `LockRetryPolicy` shapes the wait between attempts and never depends on `HostLoom.Pipelines`. The
