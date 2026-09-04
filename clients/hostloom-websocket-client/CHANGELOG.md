@@ -3,6 +3,18 @@
 All notable changes to `@hostloom/websocket-client` are documented in this file. The package uses
 independent [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Enforce the welcome-advertised UTF-8 message-size limit before sending, with a typed error that
+  reports both sizes. Acknowledgements are safe no-ops during reconnect and invalid lifecycle uses
+  now throw a typed subscription-state error. Unowned subscription frames trigger one cleanup
+  `unsubscribe`, while subscriptions created through the low-level API remain caller-owned.
+- `connect()` called during a caller-requested close now waits for the close event and opens one
+  replacement socket; repeated calls share the same pending promise. Protocol-failure closes remain
+  terminal.
+
 ## [0.1.0] - 2026-09-03
 
 ### Added
