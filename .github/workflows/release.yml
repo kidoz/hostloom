@@ -124,7 +124,7 @@ jobs:
         run: dotnet pack HostLoom.slnx --configuration Release --no-build --no-restore --output artifacts/packages -p:Version=${{ steps.version.outputs.version }}
 
       - name: Verify packed composition consumer
-        run: python3 eng/verify-composition-package.py --packages artifacts/packages --version ${{ steps.version.outputs.version }}
+        run: python3 scripts/verify-composition-package.py --packages artifacts/packages --version ${{ steps.version.outputs.version }}
 
       - name: Attest package provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4

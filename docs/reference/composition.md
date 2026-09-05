@@ -305,8 +305,8 @@ Scrutor and Roslyn driver dependencies belong only to the measurement executable
 From a repository checkout, verify local NuGet artifacts and optional native execution:
 
 ```sh
-python3 eng/verify-composition-package.py
-python3 eng/verify-composition-package.py --runtime osx-arm64
+python3 scripts/verify-composition-package.py
+python3 scripts/verify-composition-package.py --runtime osx-arm64
 ```
 
 Use a runtime matching the host. The verifier checks isolated application-only and testing-only

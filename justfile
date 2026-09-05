@@ -77,8 +77,8 @@ benchmark-redis:
 # Measure composition on the reference machine; preserve raw evidence outside the checkout.
 benchmark-composition output:
     dotnet build benchmarks/HostLoom.Composition.Benchmarks -c Release
-    python3 eng/measure-composition.py --output "{{output}}"
+    python3 scripts/measure-composition.py --output "{{output}}"
 
 # Check existing measurements without changing the reviewed baseline.
 benchmark-composition-check results:
-    python3 eng/check-composition-baseline.py --results "{{results}}"
+    python3 scripts/check-composition-baseline.py --results "{{results}}"

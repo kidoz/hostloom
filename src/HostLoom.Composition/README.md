@@ -185,9 +185,9 @@ references diagnostics, and applying a plan never writes a ledger automatically.
 Verify local packages without publishing:
 
 ```sh
-python3 eng/verify-composition-package.py
+python3 scripts/verify-composition-package.py
 # On a matching local host, also publish and execute runtime and testing AOT consumers:
-python3 eng/verify-composition-package.py --runtime osx-arm64
+python3 scripts/verify-composition-package.py --runtime osx-arm64
 ```
 
 The verifier retains packages, fresh consumer sources and command logs in an OS temporary directory.
