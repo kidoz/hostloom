@@ -66,6 +66,7 @@ nav:
       - Test pipelines deterministically: how-to/test-pipelines.md
       - Expose health checks and metrics: how-to/health-and-metrics.md
       - Map objects explicitly: how-to/explicit-mapping.md
+      - Migrate registration discovery: how-to/migrate-composition.md
       - Record composition decisions: how-to/composition-diagnostics.md
   - Reference:
       - Packages: reference/packages.md
@@ -77,6 +78,8 @@ nav:
       - Locking: reference/locking.md
       - Logging: reference/logging.md
       - WebSocket gateway: reference/websocket-gateway.md
+      - Composition plans: reference/composition.md
+      - Composition performance: reference/composition-performance.md
       - Composition diagnostics: reference/composition-diagnostics.md
       - Analyzer rules: reference/analyzer-rules.md
       - Observability surface: reference/observability.md
@@ -84,6 +87,7 @@ nav:
   - Explanation:
       - Architecture and package layering: explanation/architecture.md
       - Honest transport semantics: explanation/transports.md
+      - Why composition is a plan: explanation/composition-plans.md
       - The pipeline model: explanation/pipeline-model.md
       - Faults, retries, and delivery: explanation/faults-and-retries.md
   - About the docs: meta/about-these-docs.md

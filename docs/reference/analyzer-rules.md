@@ -57,7 +57,7 @@ usage; conflicts also carry the other rule location.
 | `HLM0015` | Unsupported open-generic mapping, constraints or trimming requirements |
 | `HLM0016` | Proven singleton capture through known plan constructor paths |
 
-See the [generator reference](https://github.com/kidoz/hostloom/tree/main/src/HostLoom.Composition.Generators) for supported
+See the [composition reference](composition.md) for supported
 syntax and validation limits. Constructor dependency resolution remains a final-provider check.
 
 The existing HLM0003 does not inspect generated code. Capture diagnostics examine known plan

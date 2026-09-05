@@ -42,6 +42,11 @@ real broker with [RabbitMQ](how-to/use-rabbitmq.md) or
 [register pipelines with stages](how-to/register-pipelines.md) and
 [test them deterministically](how-to/test-pipelines.md).
 
+**Replacing registration discovery?** Read the
+[composition reference](reference/composition.md), follow the
+[migration guide](how-to/migrate-composition.md), and review
+[measured startup and compiler costs](reference/composition-performance.md).
+
 ## How this documentation is organized
 
 The documentation follows the [Diátaxis](https://diataxis.fr/) model: each

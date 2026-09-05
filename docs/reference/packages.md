@@ -70,7 +70,7 @@ The package's conformance tests consume the schema and exact fixtures from
 
 ## Dependency edges
 
-- `HostLoom.Composition` currently provides the explicit plan runtime and depends only on
+- [`HostLoom.Composition`](composition.md) provides the explicit plan runtime and depends only on
   `Microsoft.Extensions.DependencyInjection.Abstractions`. It does not reference diagnostics,
   hosting or the messaging core. Its NuGet bundles the generator as a compiler-only analyzer asset
   and supplies project-directory build props. `HostLoom.Composition.Testing` optionally depends on

@@ -533,6 +533,18 @@ to stdout — same formatter, masking policy, timestamps, and static fields — 
 level supplied at construction. Dispose it once the hosted provider is up; it retains
 nothing, so the hand-off neither replays nor duplicates events.
 
+## Composition plans
+
+`HostLoom.Composition` bundles an incremental generator that turns bounded registration rules into
+explicit DI plans. Probe intent before creating a provider, apply cardinality and collision policies,
+and compare registration semantics with the optional `HostLoom.Composition.Testing` package.
+
+See the [reference](docs/reference/composition.md),
+[migration guide](docs/how-to/migrate-composition.md), and
+[composition model](docs/explanation/composition-plans.md). The
+[performance evidence](docs/reference/composition-performance.md) reports plan/provenance overhead,
+optional ledger cost and added compiler time, with numeric budgets on the documented reference host.
+
 ## Composition diagnostics
 
 Registration builds a plan and executes nothing, so the moment a branch is taken is the
@@ -824,6 +836,8 @@ src/HostLoom/                    messaging kernel
   Serialization/                 System.Text.Json serialization boundary
   Wire/                          envelope, logical type names, codec
 src/HostLoom.Analyzers/          Roslyn usage analyzers and rule documentation
+src/HostLoom.Composition/        explicit DI plans and bundled compile-time generator
+src/HostLoom.Composition.Testing/ container-free registration assertions
 src/HostLoom.Diagnostics/        composition ledger, report, and startup reporter
 src/HostLoom.Logging/            bounded-queue structured logging provider and formatters
 src/HostLoom.Mapping/            dependency-free explicit mapping contracts
@@ -853,6 +867,7 @@ src/HostLoom.AspNetCore.WebSockets.Testing/ TestServer gateway integration clien
 clients/hostloom-websocket-client/ dependency-free browser client for the JSON-v1 protocol
 docs/                            tutorials, how-to guides, reference, and explanations
 benchmarks/HostLoom.Benchmarks/    cache, lock, codec, logging, and mapping benchmarks
+benchmarks/HostLoom.Composition.Benchmarks/ phased runtime and incremental build measurements
 benchmarks/HostLoom.Redis.Benchmarks/ real-Redis cache and lock comparisons
 examples/HostLoom.Examples.Pipelines/ runnable pipeline tour: DI stages, manual and standalone composition
 examples/HostLoom.Examples.CachingAot/ Native AOT sample for caching and locking
