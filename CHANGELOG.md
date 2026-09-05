@@ -8,6 +8,20 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-05
+
+Upgrading changes one backend contract: `IDistributedCacheStore.SetIfAbsentAsync` takes the
+tag-index keys `SetAsync` already took. A custom store implementation gains the parameter, and a
+caller that passed a `CancellationToken` positionally names it instead. Applications that use the
+packaged stores are unaffected, and `LockOptions.MaxWait` becomes the hard bound it documented.
+Each break is stated under **Changed** below.
+
+Two packages are published for the first time: `HostLoom.Composition` and
+`HostLoom.Composition.Testing`. The generator and its declaration-use analyzer ship inside
+`HostLoom.Composition` as compiler-only analyzer assets, so an application needs one package
+reference and gains no runtime dependency beyond
+`Microsoft.Extensions.DependencyInjection.Abstractions`.
+
 ### Added
 
 - Composition performance harness with separate creation/application/probe/ledger phases, handwritten
@@ -16,7 +30,6 @@ are derived from release tags at publish time.
   include cold startup overhead; deterministic gate tests reject regressions and invalid evidence.
 - Complete composition reference, migration and explanation guides, plus incremental regression tests
   for inherited attribute/interface, accessibility and rule changes with output restoration.
-
 - `HostLoom.Composition.Testing`: container-free registration multiset/sequence, matched-type,
   service policy and provenance assertions, with explicit semantic identities for opaque activations.
 - Bundled composition generator/analyzer and build-transitive provenance props in the application
@@ -24,22 +37,19 @@ are derived from release tags at publish time.
   consumption and optional native execution; the release workflow verifies the packed artifacts.
 - Application-owned composition ledger example aggregating enumerable implementations without
   false conflicts and retaining skip/replacement/rejection details.
-
 - Composition rule semantics: inherited attribute filters, namespace guards, all-interface and self
   alias projections, implementation counts, explicit strategies and positional open-generic pairs.
   Diagnostics HLM0014–HLM0016 cover counts, generic shape and proven singleton capture. Probes retain
   selectors, rejected candidates and known alias targets. The native sample executes generated
   aliases, open generics and synchronous/asynchronous disposal.
-
 - Initial composition source generator and declaration DSL: explicit type sets, compile-time
   class discovery with inherited generic matching, groups, service projection, explicit lifetimes
   and cardinality, diagnostics `HLM0009`–`HLM0013`, and reviewable source snapshots. The AOT sample
   now resolves generated services.
-
 - `HostLoom.Composition` runtime foundation: immutable explicit DI plans, rejection provenance,
   passive application reports, explicit cardinality and registration strategies, and validation
-  before collection mutation. An executable Native AOT
-  sample exercises explicit plans, scoped aliases and known closed open-generic resolution.
+  before collection mutation. An executable Native AOT sample exercises explicit plans, scoped
+  aliases and known closed open-generic resolution.
 
 ### Changed
 
