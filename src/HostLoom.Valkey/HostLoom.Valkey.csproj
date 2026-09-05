@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Standalone Valkey backend for HostLoom caching and coordination locks over ValkeyDotNet.</Description>
+    <PackageId>HostLoom.Valkey</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>hostloom;valkey;cache;distributed-lock</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+    <PackageReference Include="ValkeyDotNet" />
+    <ProjectReference Include="../HostLoom.Caching.DependencyInjection/HostLoom.Caching.DependencyInjection.csproj" />
+    <ProjectReference Include="../HostLoom.Locking.DependencyInjection/HostLoom.Locking.DependencyInjection.csproj" />
+    <InternalsVisibleTo Include="HostLoom.Tests" />
+    <InternalsVisibleTo Include="HostLoom.IntegrationTests" />
+  </ItemGroup>
+</Project>
