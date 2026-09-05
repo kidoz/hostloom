@@ -69,3 +69,15 @@ services:
       timeout: 3s
       retries: 15
       start_period: 2s
+
+  valkey:
+    image: valkey/valkey:9.1
+    ports:
+      - "127.0.0.1:16379:6379"
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s
