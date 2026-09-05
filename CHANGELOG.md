@@ -10,6 +10,11 @@ are derived from release tags at publish time.
 
 ### Added
 
+- Initial composition source generator and declaration DSL: explicit type sets, compile-time
+  class discovery with inherited generic matching, groups, service projection, explicit lifetimes
+  and cardinality, diagnostics `HLM0009`–`HLM0013`, and reviewable source snapshots. The AOT sample
+  now resolves generated services. Advanced rules and NuGet bundling remain under development.
+
 - `HostLoom.Composition` runtime foundation: immutable explicit DI plans, rejection provenance,
   passive application reports, explicit cardinality and registration strategies, and validation
   before collection mutation. The generator remains under development. An executable Native AOT
