@@ -30,14 +30,16 @@ public sealed class MappingCompletenessAnalyzerTests
 
     // -- Verified: shape A, the destination returned directly -----------------------------------
 
-    [Fact]
-    public async Task An_object_initializer_assigning_every_member_is_accepted()
+    [Theory]
+    [InlineData("public Destination Map")]
+    [InlineData("Destination IMapper<Source, Destination>.Map")]
+    public async Task An_object_initializer_assigning_every_member_is_accepted(string signature)
     {
         Diagnostic[] diagnostics = await AnalyzeAsync(
-            """
+            $$"""
             public sealed class Mapper : IMapper<Source, Destination>
             {
-                public Destination Map(Source source) =>
+                {{signature}}(Source source) =>
                     new Destination { Name = source.Name, City = source.City, Mask = source.Mask };
             }
             """
@@ -46,14 +48,16 @@ public sealed class MappingCompletenessAnalyzerTests
         Assert.Empty(diagnostics);
     }
 
-    [Fact]
-    public async Task An_object_initializer_missing_a_member_names_it()
+    [Theory]
+    [InlineData("public Destination Map")]
+    [InlineData("Destination IMapper<Source, Destination>.Map")]
+    public async Task An_object_initializer_missing_a_member_names_it(string signature)
     {
         Diagnostic[] diagnostics = await AnalyzeAsync(
-            """
+            $$"""
             public sealed class Mapper : IMapper<Source, Destination>
             {
-                public Destination Map(Source source) =>
+                {{signature}}(Source source) =>
                     new Destination { Name = source.Name, City = source.City };
             }
             """
@@ -227,15 +231,17 @@ public sealed class MappingCompletenessAnalyzerTests
         Assert.Equal(HostLoomDiagnosticDescriptors.MappingNotVerifiableDiagnosticId, diagnostic.Id);
     }
 
-    [Fact]
-    public async Task A_destination_from_elsewhere_drops_to_not_verifiable()
+    [Theory]
+    [InlineData("public Destination Map")]
+    [InlineData("Destination IMapper<Source, Destination>.Map")]
+    public async Task A_destination_from_elsewhere_drops_to_not_verifiable(string signature)
     {
         // Nothing was constructed here, so there is no assignment set to compare against.
         Diagnostic[] diagnostics = await AnalyzeAsync(
-            """
+            $$"""
             public sealed class Mapper : IMapper<Source, Destination>
             {
-                public Destination Map(Source source) => Cached;
+                {{signature}}(Source source) => Cached;
 
                 private static Destination Cached { get; } = new Destination();
             }
@@ -306,15 +312,17 @@ public sealed class MappingCompletenessAnalyzerTests
 
     // -- The named opt-out ------------------------------------------------------------------------
 
-    [Fact]
-    public async Task A_named_unmapped_member_is_excused()
+    [Theory]
+    [InlineData("public Destination Map")]
+    [InlineData("Destination IMapper<Source, Destination>.Map")]
+    public async Task A_named_unmapped_member_is_excused(string signature)
     {
         Diagnostic[] diagnostics = await AnalyzeAsync(
-            """
+            $$"""
             [UnmappedMembers(nameof(Destination.Mask))]
             public sealed class Mapper : IMapper<Source, Destination>
             {
-                public Destination Map(Source source) =>
+                {{signature}}(Source source) =>
                     new Destination { Name = source.Name, City = source.City };
             }
             """
@@ -360,6 +368,24 @@ public sealed class MappingCompletenessAnalyzerTests
             """
             public sealed class NotAMapper
             {
+                public Destination Map(Source source) => new Destination { Name = source.Name };
+            }
+            """
+        );
+
+        Assert.Empty(diagnostics);
+    }
+
+    [Fact]
+    public async Task A_public_Map_that_does_not_implement_the_interface_is_ignored()
+    {
+        Diagnostic[] diagnostics = await AnalyzeAsync(
+            """
+            public sealed class Mapper : IMapper<Source, Destination>
+            {
+                Destination IMapper<Source, Destination>.Map(Source source) =>
+                    new Destination { Name = source.Name, City = source.City, Mask = source.Mask };
+
                 public Destination Map(Source source) => new Destination { Name = source.Name };
             }
             """

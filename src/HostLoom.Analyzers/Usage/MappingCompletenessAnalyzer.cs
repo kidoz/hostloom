@@ -414,11 +414,7 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
 
     private static bool IsMapImplementation(IMethodSymbol method)
     {
-        if (
-            !string.Equals(method.Name, "Map", StringComparison.Ordinal)
-            || method.Parameters.Length != 1
-            || method.IsStatic
-        )
+        if (method.Parameters.Length != 1 || method.IsStatic)
         {
             return false;
         }
@@ -441,18 +437,17 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
                 continue;
             }
 
-            if (
-                SymbolEqualityComparer.Default.Equals(
-                    @interface.TypeArguments[1],
-                    method.ReturnType
-                )
-                && SymbolEqualityComparer.Default.Equals(
-                    @interface.TypeArguments[0],
-                    method.Parameters[0].Type
-                )
-            )
+            foreach (ISymbol member in @interface.GetMembers("Map"))
             {
-                return true;
+                if (
+                    SymbolEqualityComparer.Default.Equals(
+                        method.ContainingType.FindImplementationForInterfaceMember(member),
+                        method
+                    )
+                )
+                {
+                    return true;
+                }
             }
         }
 
