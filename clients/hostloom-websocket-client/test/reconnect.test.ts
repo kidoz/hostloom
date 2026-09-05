@@ -466,6 +466,145 @@ test("manual close and protocol failure never start automatic reconnect", async 
     assert.equal(protocol.sockets.length, 1);
 });
 
+test("a connected observer can close without triggering automatic reconnect", async () => {
+    vi.useFakeTimers();
+    const { connection, sockets } = createHarness();
+    connection.onStateChange(({ state }) => {
+        if (state === "connected") {
+            connection.close();
+        }
+    });
+    const socket = await connect(connection, sockets);
+    assert.equal(connection.state, "closing");
+    socket.closed(1000);
+
+    assert.equal(connection.state, "disconnected");
+    await vi.advanceTimersByTimeAsync(60_000);
+    assert.equal(sockets.length, 1);
+});
+
+test("closing from a replacement welcome observer preserves a queued manual connect", async () => {
+    vi.useFakeTimers();
+    const { connection, sockets } = createHarness();
+    const first = await connect(connection, sockets);
+    const ready = connection.subscribe("inventory.changed", { credit: 2 });
+    first.message({
+        kind: "subscribed",
+        streamId: stream(1),
+        topic: "inventory.changed",
+        credit: 2,
+    });
+    const subscription = await ready;
+    first.closed(1001);
+    const recovered = connection.connect();
+    let queued: Promise<WelcomeFrame> | undefined;
+    const removeListener = connection.onStateChange(({ state }) => {
+        if (state === "connected") {
+            connection.close();
+            queued = connection.connect();
+        }
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const replacement = socketAt(sockets, 1);
+    replacement.open();
+    replacement.message(welcome);
+    await recovered;
+    assert.equal(connection.state, "closing");
+    assert.equal(subscription.state, "reconnecting");
+    assert.deepEqual(replacement.sent, []);
+    assert.ok(queued);
+    assert.equal(connection.connect(), queued);
+    removeListener();
+    replacement.closed(1000);
+    assert.equal(subscription.state, "closed");
+    const manual = socketAt(sockets, 2);
+    manual.open();
+    manual.message(welcome);
+    await queued;
+    assert.equal(connection.state, "connected");
+    await vi.advanceTimersByTimeAsync(60_000);
+    assert.equal(sockets.length, 3);
+});
+
+test("a canceled refresh rejection cannot disconnect a newer live session", async () => {
+    vi.useFakeTimers();
+    let rejectRefresh!: (error: Error) => void;
+    const refresh = new Promise<void>((_resolve, reject) => {
+        rejectRefresh = reject;
+    });
+    const refreshCredentials = vi.fn(() => refresh);
+    const { connection, sockets } = createHarness({ jitterRatio: 0, refreshCredentials });
+    const first = await connect(connection, sockets);
+    first.closed(1008);
+    await vi.advanceTimersByTimeAsync(1_000);
+    assert.equal(refreshCredentials.mock.calls.length, 1);
+    connection.close();
+    const replacement = await connect(connection, sockets);
+    const ready = connection.subscribe("inventory.changed", { credit: 2 });
+    replacement.message({
+        kind: "subscribed",
+        streamId: stream(1),
+        topic: "inventory.changed",
+        credit: 2,
+    });
+    const subscription = await ready;
+    const request = connection.request("inventory.get", "e30=");
+
+    rejectRefresh(new Error("identity provider unavailable"));
+    await vi.advanceTimersByTimeAsync(0);
+    assert.equal(connection.state, "connected");
+    assert.equal(subscription.state, "active");
+    replacement.message({ kind: "response", streamId: stream(2), payload: "e30=" });
+    assert.equal(await request, "e30=");
+    await vi.advanceTimersByTimeAsync(60_000);
+    assert.equal(sockets.length, 2);
+});
+
+for (const outcome of ["resolve", "reject"] as const) {
+    test(`a canceled refresh ${outcome} cannot take over a newer reconnect cycle`, async () => {
+        vi.useFakeTimers();
+        let resolveOld!: () => void;
+        let rejectOld!: (error: Error) => void;
+        let resolveCurrent!: () => void;
+        const old = new Promise<void>((resolve, reject) => {
+            resolveOld = resolve;
+            rejectOld = reject;
+        });
+        const current = new Promise<void>((resolve) => {
+            resolveCurrent = resolve;
+        });
+        const refreshCredentials = vi.fn().mockReturnValueOnce(old).mockReturnValueOnce(current);
+        const { connection, sockets } = createHarness({ jitterRatio: 0, refreshCredentials });
+        const first = await connect(connection, sockets);
+        first.closed(1008);
+        await vi.advanceTimersByTimeAsync(1_000);
+        connection.close();
+        const second = await connect(connection, sockets);
+        second.closed(1008);
+        const recovered = connection.connect();
+        await vi.advanceTimersByTimeAsync(1_000);
+        assert.equal(refreshCredentials.mock.calls.length, 2);
+
+        if (outcome === "resolve") {
+            resolveOld();
+        } else {
+            rejectOld(new Error("old credentials rejected"));
+        }
+        await vi.advanceTimersByTimeAsync(0);
+        assert.equal(connection.state, "reconnecting");
+        assert.equal(connection.connect(), recovered);
+        assert.equal(sockets.length, 2);
+
+        resolveCurrent();
+        await vi.advanceTimersByTimeAsync(0);
+        const replacement = socketAt(sockets, 2);
+        replacement.open();
+        replacement.message(welcome);
+        await recovered;
+        assert.equal(connection.state, "connected");
+    });
+}
+
 test("manual close while a failed socket is closing cancels the pending retry", async () => {
     vi.useFakeTimers();
     const { connection, sockets } = createHarness();
