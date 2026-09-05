@@ -1,7 +1,7 @@
 [project]
 name = "hostloom-docs"
 version = "0.1.0"
-description = "Documentation tooling for HostLoom"
+description = "Documentation and Python script tooling for HostLoom"
 requires-python = ">=3.14"
 dependencies = [
     # mkdocs 2.0 removes the plugin/theming system Material depends on.
@@ -10,5 +10,27 @@ dependencies = [
 ]
 
 [tool.uv]
-# Docs-only project: no Python package to build or install.
+# Tooling-only project: no Python package to build or install.
 package = false
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.4",
+    "ty>=0.0.74",
+]
+
+[tool.ruff]
+# Project-owned Python tooling; explicit scope also keeps vendored tools out.
+include = ["scripts/**/*.py", "benchmarks/**/*.py"]
+extend-exclude = ["**/bin", "**/obj"]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "ANN"]
+
+[tool.ty.src]
+include = ["scripts", "benchmarks"]
+exclude = ["**/bin", "**/obj"]
+
+[tool.ty.environment]
+python-version = "3.14"

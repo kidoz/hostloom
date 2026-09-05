@@ -800,6 +800,21 @@ just build
 just test
 ```
 
+Python tooling uses Python 3.14+ and [uv](https://docs.astral.sh/uv/), with development
+dependencies locked in `uv.lock`. [Ruff](https://docs.astral.sh/ruff/configuration/) handles
+formatting, imports, lint rules and required function annotations;
+[ty](https://docs.astral.sh/ty/configuration/) checks types. Both are configured in
+`pyproject.toml` for project-owned scripts under `scripts/` and `benchmarks/`.
+
+```sh
+uv sync --locked
+just python-format
+just python-check
+```
+
+`python-check` checks formatting without changing files, runs Ruff and ty, and executes the
+composition budget checker tests. It does not run performance measurements or external services.
+
 The suite above is deterministic and in-process. The RabbitMQ and Kafka adapters
 and the Redis cache and lock backend are additionally exercised against real
 servers, which `docker-compose.yml` provides:

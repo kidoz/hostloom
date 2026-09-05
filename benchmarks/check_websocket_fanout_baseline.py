@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 REPORT_NAME = "HostLoom.Benchmarks.WebSocketFanoutBenchmarks-report-full-compressed.json"
 ENVIRONMENT_FIELDS = (
     "BenchmarkDotNetVersion",
@@ -50,9 +49,7 @@ def load_report(results: Path) -> tuple[dict[str, str], str, dict[str, dict[str,
     with path.open(encoding="utf-8") as stream:
         report: dict[str, Any] = json.load(stream)
 
-    environment = {
-        field: str(report["HostEnvironmentInfo"][field]) for field in ENVIRONMENT_FIELDS
-    }
+    environment = {field: str(report["HostEnvironmentInfo"][field]) for field in ENVIRONMENT_FIELDS}
     benchmarks: dict[str, dict[str, float]] = {}
     jobs: set[str] = set()
     for benchmark in report["Benchmarks"]:
