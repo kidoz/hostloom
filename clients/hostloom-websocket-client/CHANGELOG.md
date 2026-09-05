@@ -7,6 +7,10 @@ independent [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Ignore credential-refresh results after their reconnect cycle has ended, and preserve manual
+  closes made by connected-state observers without resubscribing on a closing socket.
+- Enforce the JSON-v1 integer bounds and Base64 payload syntax before sending client frames or
+  delivering server frames. Payload bytes remain opaque and need not contain JSON.
 - Enforce the welcome-advertised UTF-8 message-size limit before sending, with a typed error that
   reports both sizes. Acknowledgements are safe no-ops during reconnect and invalid lifecycle uses
   now throw a typed subscription-state error. Unowned subscription frames trigger one cleanup
