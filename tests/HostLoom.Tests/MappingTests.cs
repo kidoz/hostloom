@@ -382,7 +382,7 @@ public sealed class MappingTests
         var services = new ServiceCollection();
         services.AddHostLoomMapping(mapping =>
         {
-            // The FSA shape: one generic map class, two directions per call, closed at the call
+            // One generic map class, two directions per call, closed at the call
             // site so the compiler still sees every type argument.
             AddEntityMap<ProductEntity, ProductModel, ProductTranslation>(
                 mapping,
@@ -739,6 +739,99 @@ public sealed class MappingTests
 
         Assert.Contains("Singleton", exception.Message, StringComparison.Ordinal);
         Assert.Contains("root provider", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(false, ServiceLifetime.Transient)]
+    [InlineData(true, ServiceLifetime.Transient)]
+    [InlineData(false, ServiceLifetime.Scoped)]
+    [InlineData(true, ServiceLifetime.Scoped)]
+    public void Repeated_registration_uses_the_existing_singleton_dispatcher_lifetime(
+        bool useCallback,
+        ServiceLifetime mapLifetime
+    )
+    {
+        Action<MappingBuilder>[] registrations =
+        [
+            mapping => mapping.Add<StampedCustomerMapper>(mapLifetime),
+            mapping =>
+                mapping.Add<Customer, StampedCustomerDto, StampedCustomerMapper>(mapLifetime),
+            mapping =>
+                mapping.Add<Customer, StampedCustomerDto>(
+                    provider => new StampedCustomerMapper(
+                        provider.GetRequiredService<MappingStamp>()
+                    ),
+                    mapLifetime
+                ),
+        ];
+
+        foreach (var register in registrations)
+        {
+            var services = new ServiceCollection();
+            services.AddScoped<MappingStamp>();
+            services.AddHostLoomMapping(ServiceLifetime.Singleton);
+
+            var exception = Assert.Throws<InvalidOperationException>(() =>
+            {
+                if (useCallback)
+                {
+                    services.AddHostLoomMapping(register);
+                }
+                else
+                {
+                    register(services.AddHostLoomMapping());
+                }
+            });
+
+            Assert.Contains("Singleton", exception.Message, StringComparison.Ordinal);
+            Assert.Empty(services.GetMappedPairs().Pairs);
+            Assert.DoesNotContain(
+                services,
+                descriptor =>
+                    descriptor.ServiceType == typeof(IMapper<Customer, StampedCustomerDto>)
+            );
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Repeated_registration_keeps_scoped_maps_safe_when_singleton_is_requested_later(
+        bool useCallback
+    )
+    {
+        var services = new ServiceCollection();
+        services.AddScoped<MappingStamp>();
+        services.AddHostLoomMapping();
+        if (useCallback)
+        {
+            services.AddHostLoomMapping(
+                mapping => mapping.Add<StampedCustomerMapper>(),
+                ServiceLifetime.Singleton
+            );
+        }
+        else
+        {
+            services.AddHostLoomMapping(ServiceLifetime.Singleton).Add<StampedCustomerMapper>();
+        }
+
+        using var provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true }
+        );
+        using var firstScope = provider.CreateScope();
+        using var secondScope = provider.CreateScope();
+        var first = firstScope.ServiceProvider.GetRequiredService<IMapper>();
+        var second = secondScope.ServiceProvider.GetRequiredService<IMapper>();
+        var customer = new Customer("Ada");
+
+        Assert.Equal(
+            firstScope.ServiceProvider.GetRequiredService<MappingStamp>().Value,
+            first.Map<Customer, StampedCustomerDto>(customer).Stamp
+        );
+        Assert.NotEqual(
+            first.Map<Customer, StampedCustomerDto>(customer).Stamp,
+            second.Map<Customer, StampedCustomerDto>(customer).Stamp
+        );
     }
 
     [Fact]

@@ -22,6 +22,7 @@ public static class ServiceCollectionExtensions
     /// creates for the life of the process and captures any scoped dependency reached through the
     /// map. Prefer injecting a closed <see cref="IMapper{TSource, TDestination}"/> whose own graph
     /// is singleton-safe.
+    /// Repeated calls retain the existing unkeyed dispatcher's lifetime and validate maps against it.
     /// </param>
     public static IServiceCollection AddHostLoomMapping(
         this IServiceCollection services,
@@ -32,13 +33,7 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configure);
 
-        configure(
-            new MappingBuilder(
-                services,
-                AddDispatcher(services, dispatcherLifetime),
-                dispatcherLifetime
-            )
-        );
+        configure(services.AddHostLoomMapping(dispatcherLifetime));
         return services;
     }
 
@@ -55,11 +50,7 @@ public static class ServiceCollectionExtensions
     )
     {
         ArgumentNullException.ThrowIfNull(services);
-        return new MappingBuilder(
-            services,
-            AddDispatcher(services, dispatcherLifetime),
-            dispatcherLifetime
-        );
+        return CreateBuilder(services, dispatcherLifetime);
     }
 
     /// <summary>
@@ -72,7 +63,7 @@ public static class ServiceCollectionExtensions
         return FindRegistry(services) ?? new MappedPairRegistry();
     }
 
-    private static MappedPairRegistry AddDispatcher(
+    private static MappingBuilder CreateBuilder(
         IServiceCollection services,
         ServiceLifetime dispatcherLifetime
     )
@@ -94,7 +85,12 @@ public static class ServiceCollectionExtensions
                 dispatcherLifetime
             )
         );
-        return registry;
+        // Resolution uses the last unkeyed descriptor. Validate against that actual lifetime,
+        // including when TryAdd retained a dispatcher from an earlier registration call.
+        var dispatcher = services.Last(service =>
+            service.IsKeyedService is false && service.ServiceType == typeof(IMapper)
+        );
+        return new MappingBuilder(services, registry, dispatcher.Lifetime);
     }
 
     private static MappedPairRegistry? FindRegistry(IServiceCollection services)
