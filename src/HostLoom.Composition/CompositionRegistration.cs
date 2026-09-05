@@ -59,7 +59,8 @@ public sealed class CompositionRegistration
         CompositionOrigin origin,
         CompositionRegistrationStrategy strategy = CompositionRegistrationStrategy.Default,
         CompositionReplacementBehavior replacementBehavior =
-            CompositionReplacementBehavior.ServiceType
+            CompositionReplacementBehavior.ServiceType,
+        Type? aliasTargetType = null
     )
     {
         ArgumentNullException.ThrowIfNull(descriptor);
@@ -88,6 +89,14 @@ public sealed class CompositionRegistration
             throw new ArgumentException("The descriptor lifetime is invalid.", nameof(descriptor));
         }
 
+        if (aliasTargetType is not null && descriptor.ImplementationFactory is null)
+        {
+            throw new ArgumentException(
+                "Alias targets require a forwarding factory descriptor.",
+                nameof(aliasTargetType)
+            );
+        }
+        AliasTargetType = aliasTargetType;
         Descriptor = descriptor;
         Cardinality = cardinality;
         Origin = origin;
@@ -97,6 +106,12 @@ public sealed class CompositionRegistration
 
     /// <summary>The immutable DI descriptor; inspecting it never invokes its factory.</summary>
     public ServiceDescriptor Descriptor { get; }
+
+    /// <summary>The explicit self type targeted by a generated forwarding factory; null for ordinary descriptors.</summary>
+    public Type? AliasTargetType { get; }
+
+    /// <summary>The declared implementation or alias target, without inspecting a factory or instance.</summary>
+    public Type? ImplementationType => Descriptor.ImplementationType ?? AliasTargetType;
 
     /// <summary>The required service cardinality.</summary>
     public CompositionCardinality Cardinality { get; }
