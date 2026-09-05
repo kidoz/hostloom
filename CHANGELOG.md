@@ -8,6 +8,14 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- `HostLoom.Valkey`: standalone ValkeyDotNet 1.1.0 cache store, tag indexes, atomic
+  value/TTL reads, owner-checked coordination leases, explicit Pub/Sub invalidation,
+  connection recovery, DI integration and readiness. Ambiguous writes are never replayed.
+  Invalidation gaps rely on L1 expiry; tracking, keyspace notifications and cluster
+  routing are outside this first adapter. Includes conformance tests and a Native AOT sample.
+
 ## [0.5.0] - 2026-09-05
 
 Upgrading changes one backend contract: `IDistributedCacheStore.SetIfAbsentAsync` takes the
