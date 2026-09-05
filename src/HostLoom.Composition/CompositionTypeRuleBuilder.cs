@@ -21,6 +21,47 @@ public sealed class CompositionTypeRuleBuilder
     public CompositionTypeRuleBuilder AssignableToAny(params Type[] types) =>
         throw CompositionRuleBuilder.DeclarationOnly();
 
+    /// <summary>Requires each eligible match to be in this namespace or a child namespace.</summary>
+    public CompositionTypeRuleBuilder RequireNamespace(string name) =>
+        throw CompositionRuleBuilder.DeclarationOnly();
+
+    /// <summary>Requires a marker, honoring AttributeUsage.Inherited through base classes.</summary>
+    public CompositionTypeRuleBuilder WithAttribute<TAttribute>()
+        where TAttribute : Attribute => throw CompositionRuleBuilder.DeclarationOnly();
+
+    /// <summary>Excludes a marker, honoring AttributeUsage.Inherited through base classes.</summary>
+    public CompositionTypeRuleBuilder WithoutAttribute<TAttribute>()
+        where TAttribute : Attribute => throw CompositionRuleBuilder.DeclarationOnly();
+
+    /// <summary>Explicitly projects every implemented interface, including incidental interfaces.</summary>
+    public CompositionTypeRuleBuilder AsAllImplementedInterfaces() =>
+        throw CompositionRuleBuilder.DeclarationOnly();
+
+    /// <summary>Registers self and forwards matched interfaces to it with the declared lifetime.</summary>
+    public CompositionTypeRuleBuilder AsSelfWithInterfaces() =>
+        throw CompositionRuleBuilder.DeclarationOnly();
+
+    /// <summary>Requires exactly this many distinct eligible implementations before projection.</summary>
+    public CompositionTypeRuleBuilder ExpectExactly(int count) =>
+        throw CompositionRuleBuilder.DeclarationOnly();
+
+    /// <summary>Requires at least this many distinct eligible implementations before projection.</summary>
+    public CompositionTypeRuleBuilder ExpectAtLeast(int count) =>
+        throw CompositionRuleBuilder.DeclarationOnly();
+
+    /// <summary>Appends subject to cardinality, duplicate and lifetime validation.</summary>
+    public CompositionTypeRuleBuilder Append() => throw CompositionRuleBuilder.DeclarationOnly();
+
+    /// <summary>Keeps existing registrations of each projected service.</summary>
+    public CompositionTypeRuleBuilder Skip() => throw CompositionRuleBuilder.DeclarationOnly();
+
+    /// <summary>Rejects existing registrations of each projected service.</summary>
+    public CompositionTypeRuleBuilder Throw() => throw CompositionRuleBuilder.DeclarationOnly();
+
+    /// <summary>Replaces existing descriptors selected by a constant replacement predicate.</summary>
+    public CompositionTypeRuleBuilder Replace(CompositionReplacementBehavior behavior) =>
+        throw CompositionRuleBuilder.DeclarationOnly();
+
     /// <summary>Registers each selected class as itself.</summary>
     public CompositionTypeRuleBuilder AsSelf() => throw CompositionRuleBuilder.DeclarationOnly();
 
