@@ -8,7 +8,8 @@ public sealed record CompositionOrigin
         string rule,
         string? group = null,
         string? filePath = null,
-        int? line = null
+        int? line = null,
+        string? selector = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rule);
@@ -21,10 +22,14 @@ public sealed record CompositionOrigin
         Group = group;
         FilePath = filePath;
         Line = line;
+        Selector = selector;
     }
 
     /// <summary>The declaring method or rule identifier.</summary>
     public string Rule { get; }
+
+    /// <summary>The normalized candidate source and filter declaration, without runtime evaluation.</summary>
+    public string? Selector { get; }
 
     /// <summary>The optional group within the plan.</summary>
     public string? Group { get; }
