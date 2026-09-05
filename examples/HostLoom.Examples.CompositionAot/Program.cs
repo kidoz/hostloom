@@ -39,6 +39,12 @@ if (applied.Probe().Count != 3)
 {
     throw new InvalidOperationException("The application report is incomplete.");
 }
+CompositionPlan generated = GeneratedCatalogComposition.CreatePlan();
+if (generated.Probe().Registrations.Count != 3)
+{
+    throw new InvalidOperationException("The generated plan inventory is incomplete.");
+}
+generated.ApplyTo(services);
 using ServiceProvider provider = services.BuildServiceProvider(
     new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true }
 );
@@ -48,6 +54,22 @@ using (IServiceScope scope = provider.CreateScope())
     first = scope.ServiceProvider.GetRequiredService<CatalogSession>();
     var alias = scope.ServiceProvider.GetRequiredService<ICatalogSession>();
     var repository = scope.ServiceProvider.GetRequiredService<IRepository<CatalogItem>>();
+    var catalogConverter = scope.ServiceProvider.GetRequiredService<
+        ICatalogConverter<CatalogItem>
+    >();
+    var inventoryConverter = scope.ServiceProvider.GetRequiredService<
+        ICatalogConverter<InventoryItem>
+    >();
+    if (
+        !ReferenceEquals(first, catalogConverter.Session)
+        || !ReferenceEquals(first, inventoryConverter.Session)
+    )
+    {
+        throw new InvalidOperationException(
+            "Generated inherited registrations lost scope identity."
+        );
+    }
+    scope.ServiceProvider.GetRequiredService<GeneratedCatalogProbe>();
     if (!ReferenceEquals(first, alias) || !ReferenceEquals(first, repository.Session))
     {
         throw new InvalidOperationException("Scope identity was lost.");
@@ -65,7 +87,7 @@ using (IServiceScope scope = provider.CreateScope())
     }
 }
 Console.WriteLine(
-    "Composition AOT passed: passive plan, application report, scoped alias, open generic resolution, disposal."
+    "Composition AOT passed: explicit and generated plans, inherited generic matching, application reports, scoped alias, open generic resolution, disposal."
 );
 
 internal interface ICatalogSession;
