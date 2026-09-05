@@ -11,8 +11,23 @@ public sealed class CompositionCandidateRejection
         CompositionOrigin origin,
         IEnumerable<string> reasons
     )
+        : this(
+            candidateType?.ToString() ?? throw new ArgumentNullException(nameof(candidateType)),
+            origin,
+            reasons
+        )
     {
-        ArgumentNullException.ThrowIfNull(candidateType);
+        CandidateType = candidateType;
+    }
+
+    /// <summary>Records a source identity even when a rejected type cannot be named in generated C#.</summary>
+    public CompositionCandidateRejection(
+        string candidateIdentity,
+        CompositionOrigin origin,
+        IEnumerable<string> reasons
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(candidateIdentity);
         ArgumentNullException.ThrowIfNull(origin);
         ArgumentNullException.ThrowIfNull(reasons);
         var copy = reasons.ToArray();
@@ -24,13 +39,16 @@ public sealed class CompositionCandidateRejection
             );
         }
 
-        CandidateType = candidateType;
+        CandidateIdentity = candidateIdentity;
         Origin = origin;
         Reasons = new ReadOnlyCollection<string>(copy);
     }
 
-    /// <summary>The excluded candidate, without member inspection.</summary>
-    public Type CandidateType { get; }
+    /// <summary>The excluded candidate when representable from the factory; otherwise null.</summary>
+    public Type? CandidateType { get; }
+
+    /// <summary>The stable candidate identity; available also for inaccessible source types.</summary>
+    public string CandidateIdentity { get; }
 
     /// <summary>The rule that excluded the candidate.</summary>
     public CompositionOrigin Origin { get; }
