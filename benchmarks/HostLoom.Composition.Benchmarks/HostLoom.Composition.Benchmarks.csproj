@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <Description>Reproducible composition runtime phases and Roslyn incremental generator measurements.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Scrutor" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <ProjectReference Include="../../src/HostLoom.Composition/HostLoom.Composition.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Composition.Testing/HostLoom.Composition.Testing.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Composition.Generators/HostLoom.Composition.Generators.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Diagnostics/HostLoom.Diagnostics.csproj" />
+    <Analyzer Include="../../src/HostLoom.Composition.Generators/bin/$(Configuration)/netstandard2.0/HostLoom.Composition.Generators.dll" />
+    <Compile Include="../../examples/HostLoom.Examples.CompositionDiagnostics/ApplicationCompositionLedger.cs" Link="ApplicationCompositionLedger.cs" />
+    <CompilerVisibleProperty Include="MSBuildProjectDirectory" />
+  </ItemGroup>
+</Project>

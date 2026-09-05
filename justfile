@@ -73,3 +73,12 @@ benchmark-websocket-fanout-update: benchmark-websocket-fanout
 # Compare Redis-backed caches and locks. Configure HOSTLOOM_BENCHMARK_REDIS when not local.
 benchmark-redis:
     dotnet run --project benchmarks/HostLoom.Redis.Benchmarks -c Release -- --filter "*"
+
+# Measure composition on the reference machine; preserve raw evidence outside the checkout.
+benchmark-composition output:
+    dotnet build benchmarks/HostLoom.Composition.Benchmarks -c Release
+    python3 eng/measure-composition.py --output "{{output}}"
+
+# Check existing measurements without changing the reviewed baseline.
+benchmark-composition-check results:
+    python3 eng/check-composition-baseline.py --results "{{results}}"
