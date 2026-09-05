@@ -3,10 +3,9 @@
 An explicit dependency-injection plan can be inspected before a provider exists, applied to a
 service collection once, and reported without executing factories or constructors.
 
-The development tree includes an initial compile-time generator for central rule declarations,
+The development tree includes an compile-time generator for central rule declarations,
 plus the explicit runtime API below. There is no runtime assembly scanning. Use project references
-during development; package packing stays disabled until the complete rule set and packaged-consumer
-verification are ready. The generator's supported syntax and diagnostics are documented in its
+during development; package packing stays disabled until packaged-consumer verification is ready. The generator's supported syntax and diagnostics are documented in its
 [README](../HostLoom.Composition.Generators/README.md).
 
 ```csharp
@@ -34,7 +33,7 @@ external changes to the collection.
 
 `One` requires one unkeyed descriptor per service. Its default strategy rejects existing
 registrations. `Many` appends distinct activations of one lifetime; duplicate implementation types,
-identical factory references or identical instance references are errors. Distinct factory bodies
+identical factory references, known alias targets or identical instance references are errors. Distinct factory bodies
 are opaque: planning never executes them to decide whether they create the same implementation.
 
 | Strategy | Collision behavior |
@@ -118,14 +117,46 @@ Call `CatalogComposition.CreatePlan().ApplyTo(services)` from the composition ro
 method is declaration-only: executing it or capturing it as a delegate is a compile error when the
 analyzer is present; DSL members also throw if executed without the generator/analyzer.
 
-The current generator supports groups, explicit types, assignability selectors, self/matched/explicit
-service projections, lifetimes, cardinality, and intentional empty rules. Attribute/namespace filters,
-self aliases, explicit open-generic implementation registration, count assertions, configurable
-strategies and capture analysis are follow-up work. The explicit plan runtime still supports its
-existing strategies and manually specified descriptors. Rejected-candidate generation and full
-project-relative path normalization are also pending; current origins use a relative syntax path
-when supplied, otherwise the source filename, and never an absolute checkout path.
+The generator supports groups, explicit types, bounded discovery, inherited attribute filters,
+namespace guards, matched/all/explicit projections, self aliases, lifetimes, cardinality, count
+assertions, strategies and positional open-generic registration. For example:
 
-The AOT sample now executes both manually authored and generated plans. Generated source can be
-inspected with `EmitCompilerGeneratedFiles=true`; direct its output under `obj` to avoid compiling
-persisted output a second time.
+```csharp
+rules.AddClasses()
+    .AssignableTo<ICatalog>()
+    .WithAttribute<CatalogComponentAttribute>()
+    .RequireNamespace("Catalog.Services")
+    .AsSelfWithInterfaces()
+    .WithScopedLifetime()
+    .ExpectMany()
+    .ExpectAtLeast(1);
+
+rules.AddOpenGeneric(typeof(IRepository<>), typeof(Repository<>))
+    .WithScopedLifetime()
+    .ExpectOne();
+```
+
+Types and markers in these snippets belong to the application. Namespace guards fail on misplaced
+matches; they do not filter them out. Counts apply to distinct eligible implementations before
+projection. Open generics require equal arity, positional mapping and supported compatible constraints.
+The generator reports proven singleton capture through known constructor paths; unknown dependencies
+and uncertain constructor choices still require final-provider checks.
+
+Self aliases forward to the self descriptor. Singleton/scoped identity follows provider/scope
+boundaries; transient alias resolutions each create a fresh object. The container may capture and
+dispose self and aliases repeatedly, so disposal must be idempotent. `AliasTargetType` exposes the
+known target and `ImplementationType` exposes either a type descriptor's implementation or an alias
+target without executing it. Explicit factory callers can supply `aliasTargetType` only when their
+factory forwards to that self type; this metadata is a caller assertion, not runtime introspection.
+
+Origins include normalized selector text. Rejections retain ordered reasons and a stable identity;
+`CandidateType` is null when a rejected source type cannot be referenced by the generated factory.
+Add `<CompilerVisibleProperty Include="MSBuildProjectDirectory" />` in a consuming project's
+`ItemGroup` for project-relative paths. Linked files outside the root and hosts without this property
+use a filename fallback for absolute paths. No absolute checkout paths enter generated code.
+
+The AOT sample executes generated aliases, open generics and synchronous/asynchronous disposal.
+Generated source can be inspected with `EmitCompilerGeneratedFiles=true`; direct its output under
+`obj` to avoid compiling persisted output twice. NuGet bundling and packaged-consumer verification
+remain outstanding. See the [generator reference](../HostLoom.Composition.Generators/README.md) for
+supported shapes, diagnostics and validation limits.
