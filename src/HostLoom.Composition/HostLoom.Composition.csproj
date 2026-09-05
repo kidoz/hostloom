@@ -5,11 +5,14 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>hostloom;composition;dependency-injection;aot</PackageTags>
     <IsAotCompatible>true</IsAotCompatible>
-    <!-- Enable packaging when the bundled generator and packed-consumer gate are complete. -->
-    <IsPackable>false</IsPackable>
+    <IsPackable>true</IsPackable>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../HostLoom.Composition.Generators/HostLoom.Composition.Generators.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <None Include="../HostLoom.Composition.Generators/bin/$(Configuration)/netstandard2.0/HostLoom.Composition.Generators.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="../HostLoom.Composition.Generators/README.md" Pack="true" PackagePath="docs/generator.md" />
+    <None Include="buildTransitive/HostLoom.Composition.props" Pack="true" PackagePath="buildTransitive/" />
     <None Include="README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 </Project>
