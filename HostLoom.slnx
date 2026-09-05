@@ -6,6 +6,7 @@
     <Project Path="benchmarks/HostLoom.Redis.Benchmarks/HostLoom.Redis.Benchmarks.csproj" />
   </Folder>
   <Folder Name="/examples/">
+    <Project Path="examples/HostLoom.Examples.ValkeyAot/HostLoom.Examples.ValkeyAot.csproj" />
     <Project Path="examples/HostLoom.Examples.CachingAot/HostLoom.Examples.CachingAot.csproj" />
     <Project Path="examples/HostLoom.Examples.CompositionDiagnostics/HostLoom.Examples.CompositionDiagnostics.csproj" />
     <Project Path="examples/HostLoom.Examples.CompositionAot/HostLoom.Examples.CompositionAot.csproj" />
