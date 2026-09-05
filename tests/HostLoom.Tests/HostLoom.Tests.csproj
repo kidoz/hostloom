@@ -24,6 +24,7 @@
     <ProjectReference Include="../../src/HostLoom.Caching.Pipelines/HostLoom.Caching.Pipelines.csproj" />
     <ProjectReference Include="../../src/HostLoom.Caching.Testing/HostLoom.Caching.Testing.csproj" />
     <ProjectReference Include="../../src/HostLoom.Caching/HostLoom.Caching.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Composition.Testing/HostLoom.Composition.Testing.csproj" />
     <ProjectReference Include="../../src/HostLoom.Composition/HostLoom.Composition.csproj" />
     <ProjectReference Include="../../src/HostLoom.Diagnostics/HostLoom.Diagnostics.csproj" />
     <ProjectReference Include="../../src/HostLoom.Locking.DependencyInjection/HostLoom.Locking.DependencyInjection.csproj" />
@@ -44,6 +45,7 @@
     <ProjectReference Include="../HostLoom.Conformance/HostLoom.Conformance.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="../../examples/HostLoom.Examples.CompositionDiagnostics/ApplicationCompositionLedger.cs" Link="Examples/ApplicationCompositionLedger.cs" />
     <None
       Include="../../src/HostLoom.AspNetCore.WebSockets/protocol/**/*.json"
       Link="protocol/%(RecursiveDir)%(Filename)%(Extension)"
