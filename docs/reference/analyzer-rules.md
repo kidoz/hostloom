@@ -39,11 +39,11 @@ repository.
   work stops with the request; declaring the token and ignoring it keeps the
   work, and the per-key guard, alive after the caller has gone.
 
-## Composition generator diagnostics (in development)
+## Composition generator diagnostics
 
 These diagnostics come from the `HostLoom.Composition.Generators` analyzer project, separately from
-`HostLoom.Analyzers`. The generator is currently consumed by project reference and is not packaged
-for release yet. All eight diagnostics have error severity and point to authored declarations or
+`HostLoom.Analyzers`. The application package `HostLoom.Composition` bundles the generator and
+analyzer under `analyzers/dotnet/cs`; a separate analyzer reference is unnecessary for NuGet consumers. All eight diagnostics have error severity and point to authored declarations or
 usage; conflicts also carry the other rule location.
 
 | Rule | Reports |
@@ -57,7 +57,7 @@ usage; conflicts also carry the other rule location.
 | `HLM0015` | Unsupported open-generic mapping, constraints or trimming requirements |
 | `HLM0016` | Proven singleton capture through known plan constructor paths |
 
-See the [generator reference](../../src/HostLoom.Composition.Generators/README.md) for supported
+See the [generator reference](https://github.com/kidoz/hostloom/tree/main/src/HostLoom.Composition.Generators) for supported
 syntax and validation limits. Constructor dependency resolution remains a final-provider check.
 
 The existing HLM0003 does not inspect generated code. Capture diagnostics examine known plan
