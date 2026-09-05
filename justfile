@@ -18,6 +18,18 @@ format: tools
 format-check: tools
     dotnet csharpier check .
 
+# Format Python scripts and organize their imports.
+python-format:
+    uv run --locked ruff check --select I --fix
+    uv run --locked ruff format
+
+# Verify Python formatting, lint rules, types and the budget checker's tests.
+python-check:
+    uv run --locked ruff format --check
+    uv run --locked ruff check
+    uv run --locked ty check
+    uv run --locked python -B scripts/test-composition-baseline.py
+
 # Restore the solution's package graph.
 restore:
     dotnet restore {{ solution }}

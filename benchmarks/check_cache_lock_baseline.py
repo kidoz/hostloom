@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 REPORT_NAMES = (
     "HostLoom.Benchmarks.CachingBenchmarks-report-full-compressed.json",
     "HostLoom.Benchmarks.LockingBenchmarks-report-full-compressed.json",
