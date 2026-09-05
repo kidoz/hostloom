@@ -40,7 +40,7 @@ if (applied.Probe().Count != 3)
     throw new InvalidOperationException("The application report is incomplete.");
 }
 CompositionPlan generated = GeneratedCatalogComposition.CreatePlan();
-if (generated.Probe().Registrations.Count != 3)
+if (generated.Probe().Registrations.Count != 8)
 {
     throw new InvalidOperationException("The generated plan inventory is incomplete.");
 }
@@ -49,6 +49,7 @@ using ServiceProvider provider = services.BuildServiceProvider(
     new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true }
 );
 CatalogSession first;
+CatalogConverter generatedConverter;
 using (IServiceScope scope = provider.CreateScope())
 {
     first = scope.ServiceProvider.GetRequiredService<CatalogSession>();
@@ -69,12 +70,27 @@ using (IServiceScope scope = provider.CreateScope())
             "Generated inherited registrations lost scope identity."
         );
     }
+    generatedConverter = scope.ServiceProvider.GetRequiredService<CatalogConverter>();
+    if (
+        !ReferenceEquals(generatedConverter, catalogConverter)
+        || !ReferenceEquals(
+            first,
+            scope.ServiceProvider.GetRequiredService<IGeneratedRepository<CatalogItem>>().Session
+        )
+    )
+        throw new InvalidOperationException(
+            "Generated aliases or open-generic dependencies lost scope identity."
+        );
     scope.ServiceProvider.GetRequiredService<GeneratedCatalogProbe>();
     if (!ReferenceEquals(first, alias) || !ReferenceEquals(first, repository.Session))
     {
         throw new InvalidOperationException("Scope identity was lost.");
     }
 }
+if (generatedConverter.Disposals != 2)
+    throw new InvalidOperationException(
+        "Generated alias disposal did not match container ownership."
+    );
 if (!first.Disposed)
 {
     throw new InvalidOperationException("The container did not dispose its scoped instance.");
@@ -86,8 +102,25 @@ using (IServiceScope scope = provider.CreateScope())
         throw new InvalidOperationException("Separate scopes shared an instance.");
     }
 }
+GeneratedAsyncProbe asyncProbe;
+var asyncScope = provider.CreateAsyncScope();
+await using (asyncScope.ConfigureAwait(false))
+{
+    asyncProbe = asyncScope.ServiceProvider.GetRequiredService<GeneratedAsyncProbe>();
+    if (
+        !ReferenceEquals(
+            asyncProbe,
+            asyncScope.ServiceProvider.GetRequiredService<IAsyncCatalogProbe>()
+        )
+    )
+        throw new InvalidOperationException("Generated asynchronous alias lost identity.");
+}
+if (asyncProbe.Disposals != 2)
+    throw new InvalidOperationException(
+        "Asynchronous alias disposal did not match container ownership."
+    );
 Console.WriteLine(
-    "Composition AOT passed: explicit and generated plans, inherited generic matching, application reports, scoped alias, open generic resolution, disposal."
+    "Composition AOT passed: explicit and generated plans, inherited generic matching, application reports, generated scoped aliases, generated open generic resolution, sync/async disposal."
 );
 
 internal interface ICatalogSession;
