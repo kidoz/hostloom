@@ -23,6 +23,8 @@ export type HostLoomFrameKind = (typeof HOSTLOOM_JSON_V1_FRAME_KINDS)[number];
 export const HOSTLOOM_SESSION_STREAM = "00000000000000000000000000000000";
 
 const IDENTIFIER_PATTERN = /^[0-9a-f]{32}$/;
+const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
+const MAXIMUM_INT32 = 2_147_483_647;
 
 /**
  * Allocates a random stream identifier in the 32 hex digit form the protocol carries. The bytes
@@ -357,6 +359,15 @@ function validateProvidedProperties(frame: JsonObject): void {
         }
     }
 
+    if (Object.hasOwn(frame, "payload")) {
+        const payload = frame.payload as string;
+        if (payload.length % 4 !== 0 || BASE64_PATTERN.exec(payload)?.[0] !== payload) {
+            throw new HostLoomProtocolError(
+                "The WebSocket frame property 'payload' must be a Base64 string.",
+            );
+        }
+    }
+
     for (const property of IDENTIFIER_PROPERTIES) {
         if (Object.hasOwn(frame, property)) {
             requireIdentifier(frame, property);
@@ -404,9 +415,14 @@ function requireInteger(frame: JsonObject, property: FrameProperty, minimum: num
 }
 
 function assertInteger(value: unknown, property: FrameProperty, minimum: number): number {
-    if (!Number.isSafeInteger(value) || (value as number) < minimum) {
+    const maximum = property === "sequence" ? Number.MAX_SAFE_INTEGER : MAXIMUM_INT32;
+    if (
+        !Number.isSafeInteger(value) ||
+        (value as number) < minimum ||
+        (value as number) > maximum
+    ) {
         throw new HostLoomProtocolError(
-            `The WebSocket frame property '${property}' must be a safe integer greater than or equal to ${minimum}.`,
+            `The WebSocket frame property '${property}' must be a safe integer from ${minimum} to ${maximum}.`,
         );
     }
 

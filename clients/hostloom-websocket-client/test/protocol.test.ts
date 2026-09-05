@@ -114,6 +114,115 @@ test("numeric bounds remain synchronized with the published schema", async () =>
     assert.equal(properties.maximumConcurrentRequests.maximum, 2_147_483_647);
 });
 
+test("the codecs enforce the published numeric boundaries in both directions", async () => {
+    const { properties } = await readFrameSchema();
+    for (const property of [
+        "timeoutMilliseconds",
+        "credit",
+        "sequence",
+        "maximumMessageSize",
+        "maximumConcurrentRequests",
+    ] as const) {
+        const { minimum, maximum } = properties[property];
+        for (const value of [minimum, maximum]) {
+            assert.doesNotThrow(() =>
+                encodeClientFrame(
+                    untypedClientFrame({ kind: "ping", streamId: STREAM, [property]: value }),
+                ),
+            );
+            assert.doesNotThrow(() =>
+                decodeServerFrame(
+                    JSON.stringify({ kind: "pong", streamId: STREAM, [property]: value }),
+                ),
+            );
+        }
+        for (const value of [minimum - 1, maximum + 1, 1.5]) {
+            assert.throws(
+                () =>
+                    encodeClientFrame(
+                        untypedClientFrame({ kind: "ping", streamId: STREAM, [property]: value }),
+                    ),
+                HostLoomProtocolError,
+                `${property}=${value} must not be encoded`,
+            );
+            assert.throws(
+                () =>
+                    decodeServerFrame(
+                        JSON.stringify({ kind: "pong", streamId: STREAM, [property]: value }),
+                    ),
+                HostLoomProtocolError,
+                `${property}=${value} must not be decoded`,
+            );
+        }
+    }
+});
+
+test("frame payloads require Base64 syntax while preserving opaque bytes", () => {
+    for (const payload of ["", "AA==", "//8=", "AQID", "AAAA".repeat(100_000)]) {
+        const encoded = encodeClientFrame({
+            kind: "request",
+            streamId: STREAM,
+            operation: "inventory.get",
+            payload,
+        });
+        assert.equal((JSON.parse(encoded) as { payload: string }).payload, payload);
+        for (const kind of ["response", "event"]) {
+            const frame = decodeServerFrame(
+                JSON.stringify({
+                    kind,
+                    streamId: STREAM,
+                    sequence: 0,
+                    eventId: EVENT,
+                    payload,
+                }),
+            );
+            assert.ok("payload" in frame);
+            assert.equal(frame.payload, payload);
+        }
+    }
+    for (const payload of [
+        "not base64",
+        "A",
+        "AAA",
+        "A===",
+        "====",
+        "AA=A",
+        "AA-_",
+        "AA==\n",
+        "AAA\n",
+        "AAA\r",
+        "AAA\u2028",
+        " AAA",
+        "AA==AAAA",
+    ]) {
+        assert.throws(
+            () =>
+                encodeClientFrame({
+                    kind: "request",
+                    streamId: STREAM,
+                    operation: "inventory.get",
+                    payload,
+                }),
+            HostLoomProtocolError,
+        );
+        for (const kind of ["response", "event"]) {
+            assert.throws(
+                () =>
+                    decodeServerFrame(
+                        JSON.stringify({
+                            kind,
+                            streamId: STREAM,
+                            sequence: 0,
+                            eventId: EVENT,
+                            payload,
+                        }),
+                    ),
+                HostLoomProtocolError,
+            );
+        }
+    }
+});
+
 test("the published schema pins the welcome stream to the session identifier", async () => {
     const schema = await readFrameSchema();
     const welcome = schema.allOf.find((branch) => branch.if.properties.kind.const === "welcome");
