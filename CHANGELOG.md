@@ -10,6 +10,12 @@ are derived from release tags at publish time.
 
 ### Added
 
+- Composition rule semantics: inherited attribute filters, namespace guards, all-interface and self
+  alias projections, implementation counts, explicit strategies and positional open-generic pairs.
+  Diagnostics HLM0014–HLM0016 cover counts, generic shape and proven singleton capture. Probes retain
+  selectors, rejected candidates and known alias targets. The native sample executes generated
+  aliases, open generics and synchronous/asynchronous disposal; NuGet bundling remains pending.
+
 - Initial composition source generator and declaration DSL: explicit type sets, compile-time
   class discovery with inherited generic matching, groups, service projection, explicit lifetimes
   and cardinality, diagnostics `HLM0009`–`HLM0013`, and reviewable source snapshots. The AOT sample
