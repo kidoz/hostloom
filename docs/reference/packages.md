@@ -17,6 +17,7 @@ recorded in `CHANGELOG.md`.
 | `HostLoom.AspNetCore.WebSockets` | Authenticated WebSocket RPC and subscriptions |
 | `HostLoom.AspNetCore.WebSockets.Testing` | In-process TestServer client for gateway tests |
 | `HostLoom.Logging` | Allocation-free UTF-8 logging provider |
+| `HostLoom.Composition` | Explicit DI plan runtime and passive application reports; generator under development |
 | `HostLoom.Diagnostics` | Composition ledger and startup report of registration decisions |
 | `HostLoom.Mapping` | Explicit, compile-time-safe, AOT-friendly object mapping |
 | `HostLoom.Mapping.DependencyInjection` | Scoped mapper dispatch and explicit map registration |
@@ -67,6 +68,10 @@ The package's conformance tests consume the schema and exact fixtures from
 `HostLoom.AspNetCore.WebSockets` instead of copying the wire contract.
 
 ## Dependency edges
+
+- `HostLoom.Composition` currently provides the explicit plan runtime and depends only on
+  `Microsoft.Extensions.DependencyInjection.Abstractions`. It does not reference diagnostics,
+  hosting or the messaging core. The bundled compile-time generator is not implemented yet.
 
 - `HostLoom` depends on `HostLoom.Pipelines`; each transport depends on
   `HostLoom`.

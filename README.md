@@ -36,6 +36,8 @@ implements:
 - an OpenTelemetry-compatible `ActivitySource` and `Meter`, both named `HostLoom`;
 - a structured logging provider with a bounded queue, a background writer,
   destructuring, and fail-closed masking of protected members;
+- immutable explicit DI composition plans with passive probes, cardinality checks and application
+  reports; compile-time composition generation is still under development;
 - a composition ledger that reports registration decisions, including the
   components deliberately left out, once at host startup;
 - compile-time analyzers `HLM0001`–`HLM0008` for asynchronous, dependency-injection,
@@ -82,6 +84,7 @@ packages are versioned together:
 | `HostLoom.AspNetCore.WebSockets` | Authenticated WebSocket RPC and subscriptions |
 | `HostLoom.AspNetCore.WebSockets.Testing` | In-process TestServer client for gateway tests |
 | `HostLoom.Logging` | Allocation-free UTF-8 logging provider |
+| `HostLoom.Composition` | Explicit DI plan runtime; generator under development |
 | `HostLoom.Diagnostics` | Composition ledger and startup report of registration decisions |
 | `HostLoom.Mapping` | Explicit, compile-time-safe, AOT-friendly object mapping |
 | `HostLoom.Mapping.DependencyInjection` | Scoped mapper dispatch and explicit map registration |
