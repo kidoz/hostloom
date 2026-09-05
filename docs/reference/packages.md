@@ -31,6 +31,7 @@ recorded in `CHANGELOG.md`.
 | `HostLoom.Locking.DependencyInjection` | Lock registration, options validation, and health checks |
 | `HostLoom.Locking.Testing` | Container-free lock composition, scripted, recording, and fault-injecting providers |
 | `HostLoom.Locking.Pipelines` | Distributed-lock filter for HostLoom pipelines |
+| `HostLoom.Valkey` | Standalone Valkey cache, explicit invalidation, coordination locks, and health probes over ValkeyDotNet |
 | `HostLoom.Redis` | Redis cache store, invalidation channel, lock provider, and health probes over one connection |
 | `HostLoom.Analyzers` | Compile-time checks for asynchronous, DI, mapping, and caching usage |
 
@@ -95,6 +96,9 @@ The package's conformance tests consume the schema and exact fixtures from
   `HostLoom.Caching`; `HostLoom.Locking.Pipelines` on `HostLoom.Pipelines`
   and `HostLoom.Locking`. Neither references a `DependencyInjection` package
   or the messaging core.
+- `HostLoom.Valkey` depends on both caching/locking `DependencyInjection` packages and
+  `ValkeyDotNet` 1.1.0. SDK types stay in this adapter. Its Native AOT sample executes
+  serialized L2, leases and explicit invalidation against a real standalone server.
 - `HostLoom.Redis` depends on both `DependencyInjection` packages, for its
   `UseRedis` extensions, and on `StackExchange.Redis`; its store, channel,
   and provider keep public constructors over a multiplexer, so they compose

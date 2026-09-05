@@ -59,6 +59,7 @@ nav:
       - Stream process-local events to WebSockets: how-to/stream-process-local-events-to-websockets.md
       - Run over RabbitMQ: how-to/use-rabbitmq.md
       - Run over Kafka: how-to/use-kafka.md
+      - Cache and lock over Valkey: how-to/use-valkey.md
       - Cache and lock over Redis: how-to/use-redis.md
       - Keep serving when the cache backend is down: how-to/cache-and-lock-fail-open.md
       - Harden the receive pipeline: how-to/harden-receive-pipeline.md

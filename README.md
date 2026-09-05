@@ -23,7 +23,7 @@ implements:
   reflection-free, Native AOT-compatible map dispatch;
 - a two-tier cache with per-key single-flight, cross-instance invalidation, and
   fail-open reads, and a distributed lock with leases, owner tokens, bounded
-  retry, and lost-lease detection, both backed by Redis over one connection;
+  retry, and lost-lease detection, backed by Redis or standalone Valkey;
 - typed `IRequest<TResponse>` contracts with handler, behavior, and client
   abstractions;
 - typed `IEvent` contracts published to a topic and fanned out to named
@@ -99,6 +99,7 @@ packages are versioned together:
 | `HostLoom.Locking.DependencyInjection` | Lock registration, options validation, and health checks |
 | `HostLoom.Locking.Testing` | Container-free lock composition, scripted, recording, and fault-injecting providers |
 | `HostLoom.Locking.Pipelines` | Distributed-lock filter for HostLoom pipelines |
+| `HostLoom.Valkey` | Standalone Valkey cache store, explicit invalidation, coordination locks, and health probes over ValkeyDotNet |
 | `HostLoom.Redis` | Redis cache store, invalidation channel, lock provider, and health probes over one connection |
 
 The browser package source lives at
@@ -866,6 +867,7 @@ src/HostLoom.Locking/            distributed lock kernel: contracts, retry polic
 src/HostLoom.Locking.DependencyInjection/ lock registration, validation, health checks
 src/HostLoom.Locking.Testing/    container-free lock composition, scripted, recording, faulting providers
 src/HostLoom.Locking.Pipelines/  distributed-lock filter for generic pipelines
+src/HostLoom.Valkey/             standalone Valkey cache, invalidation, locks, and connection owner
 src/HostLoom.Redis/              Redis store, invalidation channel, lock provider, owned connection
 src/HostLoom.Pipelines/          transport-neutral middleware pipelines
   Contexts/                      pipe context and thread-safe typed payloads
