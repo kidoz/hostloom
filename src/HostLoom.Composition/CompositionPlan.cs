@@ -269,7 +269,10 @@ public sealed class CompositionPlan
                 {
                     ServiceDescriptor current = matching[i].Item.Descriptor;
                     ServiceDescriptor previous = matching[j].Item.Descriptor;
-                    if (current.Lifetime != previous.Lifetime || SameActivation(current, previous))
+                    if (
+                        current.Lifetime != previous.Lifetime
+                        || SameActivation(matching[i].Item, matching[j].Item)
+                    )
                     {
                         throw Error(
                             phase,
@@ -294,7 +297,7 @@ public sealed class CompositionPlan
         Error(
             CompositionValidationPhase.Application,
             $"{reason} Incoming service '{incoming.Descriptor.ServiceType}', implementation "
-                + $"'{incoming.Descriptor.ImplementationType?.ToString() ?? "opaque factory/instance"}', "
+                + $"'{incoming.ImplementationType?.ToString() ?? "opaque factory/instance"}', "
                 + $"{incoming.Descriptor.Lifetime}, from '{incoming.Origin}'; "
                 + Describe(existing, index),
             incoming.Origin,
@@ -309,18 +312,30 @@ public sealed class CompositionPlan
     ) => new(Identity, phase, message, origin, existingOrigin);
 
     private static string Describe(TrackedDescriptor item, int index) =>
-        $"collection index {index}: '{item.Descriptor.ImplementationType?.ToString() ?? "opaque factory/instance"}', "
+        $"collection index {index}: '{(item.Registration?.ImplementationType ?? item.Descriptor.ImplementationType)?.ToString() ?? "opaque factory/instance"}', "
         + $"{item.Descriptor.Lifetime}, origin '{item.Registration?.Origin.ToString() ?? "external descriptor"}'";
 
     private static bool SameService(ServiceDescriptor left, ServiceDescriptor right) =>
         !left.IsKeyedService && !right.IsKeyedService && left.ServiceType == right.ServiceType;
 
-    private static bool SameActivation(ServiceDescriptor left, ServiceDescriptor right) =>
-        left.ImplementationType is not null && left.ImplementationType == right.ImplementationType
-        || left.ImplementationFactory is not null
-            && ReferenceEquals(left.ImplementationFactory, right.ImplementationFactory)
-        || left.ImplementationInstance is not null
-            && ReferenceEquals(left.ImplementationInstance, right.ImplementationInstance);
+    private static bool SameActivation(TrackedDescriptor left, TrackedDescriptor right)
+    {
+        Type? leftType =
+            left.Registration?.ImplementationType ?? left.Descriptor.ImplementationType;
+        Type? rightType =
+            right.Registration?.ImplementationType ?? right.Descriptor.ImplementationType;
+        return leftType is not null && leftType == rightType
+            || left.Descriptor.ImplementationFactory is not null
+                && ReferenceEquals(
+                    left.Descriptor.ImplementationFactory,
+                    right.Descriptor.ImplementationFactory
+                )
+            || left.Descriptor.ImplementationInstance is not null
+                && ReferenceEquals(
+                    left.Descriptor.ImplementationInstance,
+                    right.Descriptor.ImplementationInstance
+                );
+    }
 
     private static bool ShouldReplace(
         CompositionRegistration incoming,
