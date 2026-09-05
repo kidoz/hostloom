@@ -12,9 +12,14 @@
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../../src/HostLoom.Composition/HostLoom.Composition.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Composition.Generators/HostLoom.Composition.Generators.csproj" />
     <ProjectReference Include="../../src/HostLoom.Analyzers/HostLoom.Analyzers.csproj" />
     <ProjectReference Include="../../src/HostLoom.Mapping/HostLoom.Mapping.csproj" />
     <ProjectReference Include="../../src/HostLoom.Pipelines/HostLoom.Pipelines.csproj" />
     <ProjectReference Include="../../src/HostLoom/HostLoom.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="Snapshots/Composition/*.verified.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
