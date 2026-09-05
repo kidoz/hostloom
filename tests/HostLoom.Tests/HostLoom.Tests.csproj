@@ -24,6 +24,7 @@
     <ProjectReference Include="../../src/HostLoom.Caching.Pipelines/HostLoom.Caching.Pipelines.csproj" />
     <ProjectReference Include="../../src/HostLoom.Caching.Testing/HostLoom.Caching.Testing.csproj" />
     <ProjectReference Include="../../src/HostLoom.Caching/HostLoom.Caching.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Composition/HostLoom.Composition.csproj" />
     <ProjectReference Include="../../src/HostLoom.Diagnostics/HostLoom.Diagnostics.csproj" />
     <ProjectReference Include="../../src/HostLoom.Locking.DependencyInjection/HostLoom.Locking.DependencyInjection.csproj" />
     <ProjectReference Include="../../src/HostLoom.Locking.Pipelines/HostLoom.Locking.Pipelines.csproj" />

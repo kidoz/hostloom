@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Inspectable dependency-injection composition plans and passive application reports.</Description>
+    <PackageId>HostLoom.Composition</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>hostloom;composition;dependency-injection;aot</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+    <!-- Enable packaging when the bundled generator and packed-consumer gate are complete. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+</Project>
