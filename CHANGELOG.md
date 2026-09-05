@@ -10,6 +10,14 @@ are derived from release tags at publish time.
 
 ### Added
 
+- `HostLoom.Composition.Testing`: container-free registration multiset/sequence, matched-type,
+  service policy and provenance assertions, with explicit semantic identities for opaque activations.
+- Bundled composition generator/analyzer and build-transitive provenance props in the application
+  NuGet. An isolated packed-consumer verifier checks dependency boundaries, diagnostics, helper
+  consumption and optional native execution; the release workflow verifies the packed artifacts.
+- Application-owned composition ledger example aggregating enumerable implementations without
+  false conflicts and retaining skip/replacement/rejection details.
+
 - Composition rule semantics: inherited attribute filters, namespace guards, all-interface and self
   alias projections, implementation counts, explicit strategies and positional open-generic pairs.
   Diagnostics HLM0014–HLM0016 cover counts, generic shape and proven singleton capture. Probes retain
