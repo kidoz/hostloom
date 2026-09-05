@@ -6,8 +6,8 @@ public static partial class @CatalogComposition
     {
         return new global::HostLoom.Composition.CompositionPlan("CompositionFixtures.CatalogComposition.CreatePlan", new global::HostLoom.Composition.CompositionRegistration[]
         {
-            new global::HostLoom.Composition.CompositionRegistration(new global::Microsoft.Extensions.DependencyInjection.ServiceDescriptor(typeof(global::ICatalog), typeof(global::Catalog), global::Microsoft.Extensions.DependencyInjection.ServiceLifetime.Transient), global::HostLoom.Composition.CompositionCardinality.Many, new global::HostLoom.Composition.CompositionOrigin("CatalogComposition.Declare/rule1", null, "Rules.cs", 8)),
-            new global::HostLoom.Composition.CompositionRegistration(new global::Microsoft.Extensions.DependencyInjection.ServiceDescriptor(typeof(global::ICatalog), typeof(global::Inventory), global::Microsoft.Extensions.DependencyInjection.ServiceLifetime.Transient), global::HostLoom.Composition.CompositionCardinality.Many, new global::HostLoom.Composition.CompositionOrigin("CatalogComposition.Declare/rule1", null, "Rules.cs", 8)),
+            new global::HostLoom.Composition.CompositionRegistration(new global::Microsoft.Extensions.DependencyInjection.ServiceDescriptor(typeof(global::ICatalog), typeof(global::Catalog), global::Microsoft.Extensions.DependencyInjection.ServiceLifetime.Transient), global::HostLoom.Composition.CompositionCardinality.Many, new global::HostLoom.Composition.CompositionOrigin("CatalogComposition.Declare/rule1", null, "Rules.cs", 8, "rules.AddClasses().AssignableToAny(typeof(ICatalog), typeof(IInventory))")),
+            new global::HostLoom.Composition.CompositionRegistration(new global::Microsoft.Extensions.DependencyInjection.ServiceDescriptor(typeof(global::ICatalog), typeof(global::Inventory), global::Microsoft.Extensions.DependencyInjection.ServiceLifetime.Transient), global::HostLoom.Composition.CompositionCardinality.Many, new global::HostLoom.Composition.CompositionOrigin("CatalogComposition.Declare/rule1", null, "Rules.cs", 8, "rules.AddClasses().AssignableToAny(typeof(ICatalog), typeof(IInventory))")),
         });
     }
 }

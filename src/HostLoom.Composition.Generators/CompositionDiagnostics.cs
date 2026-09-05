@@ -25,6 +25,19 @@ internal static class CompositionDiagnostics
         "Conflicting composition registrations"
     );
 
+    internal static readonly DiagnosticDescriptor Count = Create(
+        "HLM0014",
+        "Composition candidate count mismatch"
+    );
+    internal static readonly DiagnosticDescriptor Generic = Create(
+        "HLM0015",
+        "Unsupported composition generic shape"
+    );
+    internal static readonly DiagnosticDescriptor Capture = Create(
+        "HLM0016",
+        "Proven singleton capture of scoped service"
+    );
+
     private static DiagnosticDescriptor Create(string id, string title) =>
         new(
             id,

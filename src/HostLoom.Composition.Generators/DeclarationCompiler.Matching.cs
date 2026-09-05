@@ -12,7 +12,19 @@ internal sealed partial class DeclarationCompiler
         var selected = candidates
             .Distinct<INamedTypeSymbol>(SymbolEqualityComparer.Default)
             .Where(type =>
-                rule.Selectors.All(selector => selector.Any(filter => Matches(type, filter)))
+                !rule.Discover
+                || (
+                    type.TypeKind == TypeKind.Class
+                    && (
+                        rule.Selectors.Count != 0
+                            ? rule.Selectors.All(selector =>
+                                selector.Any(filter => Matches(type, filter))
+                            )
+                            : rule
+                                .Attributes.Where(static filter => filter.Required)
+                                .Any(filter => HasAttribute(type, filter.Type))
+                    )
+                )
             )
             .OrderBy(
                 static type => type.ContainingNamespace.ToDisplayString(),
@@ -24,19 +36,48 @@ internal sealed partial class DeclarationCompiler
         foreach (INamedTypeSymbol type in selected)
         {
             _cancellation.ThrowIfCancellationRequested();
+            var reasons = new List<string>();
+            if (!rule.Selectors.All(selector => selector.Any(filter => Matches(type, filter))))
+                reasons.Add("Does not satisfy assignability selectors.");
+            foreach (var filter in rule.Attributes)
+                if (HasAttribute(type, filter.Type) != filter.Required)
+                    reasons.Add(
+                        (filter.Required ? "Missing required attribute: " : "Excluded attribute: ")
+                            + TypeName(filter.Type)
+                    );
+            if (type.TypeKind != TypeKind.Class)
+                reasons.Add("Not a class.");
+            if (type.IsAbstract)
+                reasons.Add("Abstract class.");
+            if (type.IsStatic)
+                reasons.Add("Static class.");
+            if (ContainsParameters(type))
+                reasons.Add("Open generic candidate; use AddOpenGeneric for registration.");
             if (
-                type.TypeKind != TypeKind.Class
-                || type.IsAbstract
-                || type.IsStatic
-                || ContainsParameters(type)
-                || type.GetAttributes()
+                type.GetAttributes()
                     .Any(static attribute =>
                         attribute.AttributeClass?.ToDisplayString()
                         == "System.Runtime.CompilerServices.CompilerGeneratedAttribute"
                     )
             )
+                reasons.Add("Compiler-generated candidate.");
+            if (reasons.Count != 0)
             {
-                if (!rule.Discover)
+                _rejections.Add(new Rejection(type, rule, reasons));
+                if (
+                    !rule.Discover
+                    && (
+                        type.TypeKind != TypeKind.Class
+                        || type.IsAbstract
+                        || type.IsStatic
+                        || ContainsParameters(type)
+                        || type.GetAttributes()
+                            .Any(static attribute =>
+                                attribute.AttributeClass?.ToDisplayString()
+                                == "System.Runtime.CompilerServices.CompilerGeneratedAttribute"
+                            )
+                    )
+                )
                     Error(
                         CompositionDiagnostics.Selection,
                         rule.Syntax,
@@ -44,6 +85,27 @@ internal sealed partial class DeclarationCompiler
                     );
                 continue;
             }
+            foreach (string required in rule.Namespaces)
+            {
+                string actual = type.ContainingNamespace.IsGlobalNamespace
+                    ? ""
+                    : type.ContainingNamespace.ToDisplayString();
+                if (
+                    actual != required
+                    && !actual.StartsWith(required + ".", StringComparison.Ordinal)
+                )
+                {
+                    Error(
+                        CompositionDiagnostics.Selection,
+                        rule.Syntax,
+                        $"Selected type '{type}' is outside required namespace '{required}'.",
+                        type.Locations.FirstOrDefault()
+                    );
+                    reasons.Add("Outside required namespace: " + required);
+                }
+            }
+            if (reasons.Count != 0)
+                continue;
             count++;
             if (
                 type.IsFileLocal
@@ -75,7 +137,7 @@ internal sealed partial class DeclarationCompiler
             var services = new List<INamedTypeSymbol>();
             if (rule.Projection == "AsSelf")
                 services.Add(type);
-            else if (rule.Projection == "AsImplementedInterfaces")
+            else if (rule.Projection is "AsImplementedInterfaces" or "AsSelfWithInterfaces")
             {
                 services.AddRange(
                     type.AllInterfaces.Where(service =>
@@ -87,6 +149,8 @@ internal sealed partial class DeclarationCompiler
                     )
                 );
             }
+            else if (rule.Projection == "AsAllImplementedInterfaces")
+                services.AddRange(type.AllInterfaces);
             else
             {
                 foreach (INamedTypeSymbol service in rule.Services)
@@ -120,6 +184,8 @@ internal sealed partial class DeclarationCompiler
                     rule.Syntax,
                     $"Rule projects no service interfaces for '{type}'; choose an explicit As service or AsSelf."
                 );
+            if (rule.Projection == "AsSelfWithInterfaces")
+                services.Add(type);
             foreach (
                 INamedTypeSymbol service in services
                     .Distinct<INamedTypeSymbol>(SymbolEqualityComparer.Default)
@@ -136,12 +202,51 @@ internal sealed partial class DeclarationCompiler
                     _registrations.Add(new Registration(type, service, rule));
             }
         }
+        ValidateCounts(rule, count);
+    }
+
+    private void ValidateCounts(Rule rule, int count)
+    {
+        foreach (var assertion in rule.Counts)
+            if (assertion.Exact ? count != assertion.Count : count < assertion.Count)
+                Error(
+                    CompositionDiagnostics.Count,
+                    assertion.Syntax,
+                    $"Rule {rule.Number} expected {(assertion.Exact ? "exactly" : "at least")} {assertion.Count} eligible implementations but found {count}."
+                );
         if (count == 0 && !rule.AllowEmpty)
             Error(
                 CompositionDiagnostics.Selection,
                 rule.Syntax,
                 "Rule matched zero eligible types. Use AllowEmpty only when that absence is intentional."
             );
+    }
+
+    private static bool HasAttribute(INamedTypeSymbol type, INamedTypeSymbol required)
+    {
+        for (INamedTypeSymbol? current = type; current is not null; current = current.BaseType)
+            foreach (var attribute in current.GetAttributes())
+                if (
+                    attribute.AttributeClass is { } actual
+                    && Matches(actual, required)
+                    && (
+                        SymbolEqualityComparer.Default.Equals(current, type)
+                        || AttributeIsInherited(actual)
+                    )
+                )
+                    return true;
+        return false;
+    }
+
+    private static bool AttributeIsInherited(INamedTypeSymbol attribute)
+    {
+        for (INamedTypeSymbol? current = attribute; current is not null; current = current.BaseType)
+            foreach (var usage in current.GetAttributes())
+                if (usage.AttributeClass?.ToDisplayString() == "System.AttributeUsageAttribute")
+                    return !usage.NamedArguments.Any(static argument =>
+                        argument.Key == "Inherited" && argument.Value.Value is false
+                    );
+        return true;
     }
 
     private IEnumerable<INamedTypeSymbol> DeclaredTypes(INamespaceOrTypeSymbol container)

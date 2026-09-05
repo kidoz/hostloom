@@ -41,46 +41,63 @@ internal sealed partial class DeclarationCompiler
         foreach (Registration registration in _registrations)
         {
             Rule rule = registration.Rule;
-            FileLinePositionSpan position = rule.Syntax.GetLocation().GetLineSpan();
-            string path = position.Path.Replace('\\', '/');
-            // The development project-reference path supplies no package build props yet.
-            // Preserve relative syntax paths, and strip absolute checkout roots from provenance.
-            if (
-                path.StartsWith("/", StringComparison.Ordinal)
-                || (path.Length > 1 && path[1] == ':')
-            )
-                path = path.Substring(path.LastIndexOf('/') + 1);
             text.Append(
                     "            new global::HostLoom.Composition.CompositionRegistration(new global::Microsoft.Extensions.DependencyInjection.ServiceDescriptor(typeof("
                 )
                 .Append(TypeName(registration.Service))
-                .Append("), typeof(")
-                .Append(TypeName(registration.Implementation))
-                .Append("), global::Microsoft.Extensions.DependencyInjection.ServiceLifetime.")
+                .Append("), ");
+            if (registration.Alias)
+                text.Append(
+                        "static provider => global::Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<"
+                    )
+                    .Append(TypeName(registration.Implementation))
+                    .Append(">(provider)");
+            else
+                text.Append("typeof(").Append(TypeName(registration.Implementation)).Append(')');
+            text.Append(", global::Microsoft.Extensions.DependencyInjection.ServiceLifetime.")
                 .Append(rule.Lifetime)
                 .Append("), global::HostLoom.Composition.CompositionCardinality.")
                 .Append(rule.Cardinality)
-                .Append(", new global::HostLoom.Composition.CompositionOrigin(")
-                .Append(
-                    Literal(
-                        _method.ContainingType.ToDisplayString()
-                            + "."
-                            + _method.Name
-                            + "/rule"
-                            + rule.Number.ToString(CultureInfo.InvariantCulture)
-                    )
-                )
-                .Append(", ")
-                .Append(rule.Group is null ? "null" : Literal(rule.Group))
-                .Append(", ")
-                .Append(Literal(path))
-                .Append(", ")
-                .Append(
-                    (position.StartLinePosition.Line + 1).ToString(CultureInfo.InvariantCulture)
-                )
-                .Append(")),\n");
+                .Append(", ");
+            EmitOrigin(text, rule);
+            if (rule.Strategy is not null)
+            {
+                text.Append(", global::HostLoom.Composition.CompositionRegistrationStrategy.")
+                    .Append(rule.Strategy);
+                if (rule.Replacement is not null)
+                    text.Append(", global::HostLoom.Composition.CompositionReplacementBehavior.")
+                        .Append(rule.Replacement);
+            }
+            if (registration.Alias)
+                text.Append(", aliasTargetType: typeof(")
+                    .Append(TypeName(registration.Implementation))
+                    .Append(')');
+            text.Append("),\n");
         }
-        text.Append("        });\n    }\n");
+        text.Append("        }");
+        if (_rejections.Count != 0)
+        {
+            text.Append(
+                ", new global::HostLoom.Composition.CompositionCandidateRejection[]\n        {\n"
+            );
+            foreach (var rejection in _rejections)
+            {
+                text.Append(
+                    "            new global::HostLoom.Composition.CompositionCandidateRejection("
+                );
+                if (CanEmitType(rejection.Type))
+                    text.Append("typeof(").Append(TypeNameForRejection(rejection.Type)).Append(')');
+                else
+                    text.Append(Literal(TypeName(rejection.Type)));
+                text.Append(", ");
+                EmitOrigin(text, rejection.Rule);
+                text.Append(", new string[] { ")
+                    .Append(string.Join(", ", rejection.Reasons.Select(Literal)))
+                    .Append(" }),\n");
+            }
+            text.Append("        }");
+        }
+        text.Append(");\n    }\n");
         foreach (INamedTypeSymbol _ in containers)
             text.Append("}\n");
         if (!space.IsGlobalNamespace)
@@ -95,6 +112,79 @@ internal sealed partial class DeclarationCompiler
             + ".g.cs";
         return new GeneratedFile(hint, text.ToString());
     }
+
+    private void EmitOrigin(StringBuilder text, Rule rule)
+    {
+        FileLinePositionSpan position = rule.Syntax.GetLocation().GetLineSpan();
+        text.Append("new global::HostLoom.Composition.CompositionOrigin(")
+            .Append(
+                Literal(
+                    _method.ContainingType.ToDisplayString()
+                        + "."
+                        + _method.Name
+                        + "/rule"
+                        + rule.Number.ToString(CultureInfo.InvariantCulture)
+                )
+            )
+            .Append(", ")
+            .Append(rule.Group is null ? "null" : Literal(rule.Group))
+            .Append(", ")
+            .Append(Literal(NormalizeSourcePath(position.Path)))
+            .Append(", ")
+            .Append((position.StartLinePosition.Line + 1).ToString(CultureInfo.InvariantCulture))
+            .Append(", ")
+            .Append(Literal(rule.Selector))
+            .Append(')');
+    }
+
+    private string NormalizeSourcePath(string source)
+    {
+        string path = NormalizeSegments(source.Replace('\\', '/'));
+        string root = NormalizeSegments(_projectDirectory.Replace('\\', '/')).TrimEnd('/');
+        var comparison =
+            root.Length > 1 && root[1] == ':'
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+        if (root.Length != 0 && path.StartsWith(root + "/", comparison))
+            return path.Substring(root.Length + 1);
+        // Linked files outside the project and hosts without build properties use a safe filename.
+        if (
+            path.StartsWith("/", StringComparison.Ordinal)
+            || (path.Length > 1 && path[1] == ':')
+            || path.StartsWith("../", StringComparison.Ordinal)
+        )
+            return path.Substring(path.LastIndexOf('/') + 1);
+        return path;
+    }
+
+    private static string NormalizeSegments(string value)
+    {
+        var segments = new List<string>();
+        foreach (string segment in value.Split('/'))
+        {
+            if (segment == "." || segment.Length == 0)
+                continue;
+            if (
+                segment == ".."
+                && segments.Count > 0
+                && segments[segments.Count - 1] != ".."
+                && !segments[segments.Count - 1].EndsWith(":", StringComparison.Ordinal)
+            )
+                segments.RemoveAt(segments.Count - 1);
+            else
+                segments.Add(segment);
+        }
+        return (value.StartsWith("/", StringComparison.Ordinal) ? "/" : "")
+            + string.Join("/", segments);
+    }
+
+    private bool CanEmitType(INamedTypeSymbol type) =>
+        !type.IsFileLocal
+        && _model.Compilation.IsSymbolAccessibleWithin(type, _method.ContainingType)
+        && (type.ContainingType is null || CanEmitType(type.ContainingType));
+
+    private static string TypeNameForRejection(INamedTypeSymbol type) =>
+        TypeName(ContainsParameters(type) ? type.ConstructUnboundGenericType() : type);
 
     private static string Access(Accessibility accessibility) =>
         accessibility switch
