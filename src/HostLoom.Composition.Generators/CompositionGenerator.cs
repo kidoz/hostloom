@@ -18,11 +18,27 @@ public sealed class CompositionGenerator : IIncrementalGenerator
     /// <inheritdoc />
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-        var results = context.SyntaxProvider.ForAttributeWithMetadataName(
-            AttributeName,
-            static (node, _) => node is MethodDeclarationSyntax,
-            static (syntax, cancellation) => new DeclarationCompiler(syntax, cancellation).Compile()
-        );
+        var results = context
+            .SyntaxProvider.ForAttributeWithMetadataName(
+                AttributeName,
+                static (node, _) => node is MethodDeclarationSyntax,
+                static (syntax, _) => syntax
+            )
+            .Combine(
+                context.AnalyzerConfigOptionsProvider.Select(
+                    static (options, _) =>
+                        options.GlobalOptions.TryGetValue(
+                            "build_property.MSBuildProjectDirectory",
+                            out string? directory
+                        )
+                            ? directory
+                            : ""
+                )
+            )
+            .Select(
+                static (input, cancellation) =>
+                    new DeclarationCompiler(input.Left, input.Right, cancellation).Compile()
+            );
         context.RegisterSourceOutput(
             results,
             static (output, result) =>

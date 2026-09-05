@@ -9,20 +9,24 @@ internal sealed partial class DeclarationCompiler
 {
     private readonly GeneratorAttributeSyntaxContext _context;
     private readonly CancellationToken _cancellation;
+    private readonly string _projectDirectory;
     private readonly SemanticModel _model;
     private readonly IMethodSymbol _method;
     private readonly MethodDeclarationSyntax _syntax;
     private readonly List<Diagnostic> _diagnostics = [];
     private readonly List<Registration> _registrations = [];
     private readonly HashSet<string> _groups = new(StringComparer.Ordinal);
+    private readonly List<Rejection> _rejections = [];
     private int _ruleNumber;
 
     internal DeclarationCompiler(
         GeneratorAttributeSyntaxContext context,
+        string projectDirectory,
         CancellationToken cancellation
     )
     {
         _context = context;
+        _projectDirectory = projectDirectory;
         _cancellation = cancellation;
         _model = context.SemanticModel;
         _method = (IMethodSymbol)context.TargetSymbol;
@@ -37,6 +41,8 @@ internal sealed partial class DeclarationCompiler
         {
             ParseStatements(_syntax.Body!.Statements, _method.Parameters[0], null);
             ValidateConflicts();
+            if (_diagnostics.Count == 0)
+                ValidateCaptures();
         }
         GeneratedFile? output =
             factory is not null && _diagnostics.Count == 0 ? Emit(factory) : null;
@@ -273,21 +279,37 @@ internal sealed partial class DeclarationCompiler
             root is null
             || !IsType(root.ContainingType, CompositionGenerator.BuilderName)
             || !HasReceiver(chain[0], receiver)
-            || (root.Name != "AddTypes" && root.Name != "AddClasses")
+            || (
+                root.Name != "AddTypes"
+                && root.Name != "AddClasses"
+                && root.Name != "AddOpenGeneric"
+            )
         )
         {
             Error(
                 CompositionDiagnostics.Declaration,
                 chain[0],
-                "Start each rule with this declaration's builder.AddTypes or builder.AddClasses."
+                "Start each rule with this declaration's builder.AddTypes, builder.AddClasses or builder.AddOpenGeneric."
             );
             return;
         }
         if (!Positional(chain[0]))
             return;
         rule.Discover = root.Name == "AddClasses";
+        rule.OpenGeneric = root.Name == "AddOpenGeneric";
+        rule.Selector = chain[0].WithoutTrivia().NormalizeWhitespace().ToFullString();
         if (!rule.Discover)
-            rule.Types.AddRange(ReadTypes(chain[0], root, allowEmpty: true));
+        {
+            var types = ReadTypes(chain[0], root, allowEmpty: !rule.OpenGeneric);
+            if (rule.OpenGeneric && types.Count == 2)
+            {
+                rule.Services.Add(types[0]);
+                rule.Types.Add(types[1]);
+                rule.Projection = "OpenGeneric";
+            }
+            else if (!rule.OpenGeneric)
+                rule.Types.AddRange(types);
+        }
         foreach (InvocationExpressionSyntax call in chain.Skip(1))
         {
             _cancellation.ThrowIfCancellationRequested();
@@ -310,8 +332,97 @@ internal sealed partial class DeclarationCompiler
                 case "AssignableTo":
                 case "AssignableToAny":
                     rule.Selectors.Add(ReadTypes(call, method));
+                    AddSelectorText(rule, call);
+                    break;
+                case "WithAttribute":
+                case "WithoutAttribute":
+                    foreach (var attribute in ReadTypes(call, method))
+                        rule.Attributes.Add(
+                            new AttributeFilter(attribute, method.Name == "WithAttribute")
+                        );
+                    AddSelectorText(rule, call);
+                    break;
+                case "RequireNamespace":
+                    if (
+                        _model
+                            .GetConstantValue(
+                                call.ArgumentList.Arguments[0].Expression,
+                                _cancellation
+                            )
+                            .Value
+                            is string name
+                        && !string.IsNullOrWhiteSpace(name)
+                    )
+                        rule.Namespaces.Add(name);
+                    else
+                        Error(
+                            CompositionDiagnostics.Selection,
+                            call,
+                            "RequireNamespace needs a nonempty constant namespace."
+                        );
+                    AddSelectorText(rule, call);
+                    break;
+                case "ExpectExactly":
+                case "ExpectAtLeast":
+                    if (
+                        _model
+                            .GetConstantValue(
+                                call.ArgumentList.Arguments[0].Expression,
+                                _cancellation
+                            )
+                            .Value
+                            is int count
+                        && count >= 0
+                    )
+                        rule.Counts.Add(
+                            new CountAssertion(count, method.Name == "ExpectExactly", call)
+                        );
+                    else
+                        Error(
+                            CompositionDiagnostics.Count,
+                            call,
+                            "Candidate counts must be nonnegative integer constants."
+                        );
+                    break;
+                case "Append":
+                case "Skip":
+                case "Throw":
+                case "Replace":
+                    if (rule.Strategy is not null)
+                        Error(
+                            CompositionDiagnostics.Policy,
+                            call,
+                            "Specify a registration strategy at most once."
+                        );
+                    rule.Strategy = method.Name;
+                    if (method.Name == "Replace")
+                    {
+                        var behavior = _model
+                            .GetConstantValue(
+                                call.ArgumentList.Arguments[0].Expression,
+                                _cancellation
+                            )
+                            .Value;
+                        rule.Replacement = behavior is int flags
+                            ? flags switch
+                            {
+                                1 => "ServiceType",
+                                2 => "ImplementationType",
+                                3 => "All",
+                                _ => null,
+                            }
+                            : null;
+                        if (rule.Replacement is null)
+                            Error(
+                                CompositionDiagnostics.Policy,
+                                call,
+                                "Replace needs a valid constant replacement predicate."
+                            );
+                    }
                     break;
                 case "AsSelf":
+                case "AsSelfWithInterfaces":
+                case "AsAllImplementedInterfaces":
                 case "AsImplementedInterfaces":
                 case "As":
                     if (rule.Projection is not null)
@@ -389,15 +500,43 @@ internal sealed partial class DeclarationCompiler
                 invocation,
                 "Each rule requires AsSelf, AsImplementedInterfaces or an explicit As service projection."
             );
-        if (rule.Discover && rule.Selectors.Count == 0)
+        if (
+            rule.Discover
+            && rule.Selectors.Count == 0
+            && !rule.Attributes.Any(static filter => filter.Required)
+        )
             Error(
                 CompositionDiagnostics.Selection,
                 invocation,
-                "AddClasses requires an assignability selector to bound discovery."
+                "AddClasses requires an assignability selector or positive attribute filter to bound discovery."
+            );
+        if (
+            rule.OpenGeneric
+            && (
+                rule.Selectors.Count != 0
+                || rule.Attributes.Count != 0
+                || rule.Namespaces.Count != 0
+            )
+        )
+            Error(
+                CompositionDiagnostics.Generic,
+                invocation,
+                "AddOpenGeneric declares one pair; candidate selectors and guards are unsupported on it."
             );
         if (_diagnostics.Count == errorsBefore)
-            Select(rule);
+        {
+            if (rule.OpenGeneric)
+                SelectOpenGeneric(rule);
+            else
+                Select(rule);
+        }
     }
+
+    private static void AddSelectorText(Rule rule, InvocationExpressionSyntax call) =>
+        rule.Selector +=
+            "."
+            + ((MemberAccessExpressionSyntax)call.Expression).Name.WithoutTrivia().ToFullString()
+            + call.ArgumentList.WithoutTrivia().NormalizeWhitespace().ToFullString();
 
     private void SetLifetime(Rule rule, string lifetime, SyntaxNode call)
     {
@@ -512,6 +651,13 @@ internal sealed partial class DeclarationCompiler
         internal InvocationExpressionSyntax Syntax { get; } = syntax;
         internal string? Group { get; } = group;
         internal bool Discover { get; set; }
+        internal bool OpenGeneric { get; set; }
+        internal string Selector { get; set; } = "";
+        internal string? Strategy { get; set; }
+        internal string? Replacement { get; set; }
+        internal List<AttributeFilter> Attributes { get; } = [];
+        internal List<string> Namespaces { get; } = [];
+        internal List<CountAssertion> Counts { get; } = [];
         internal bool AllowEmpty { get; set; }
         internal List<INamedTypeSymbol> Types { get; } = [];
         internal List<List<INamedTypeSymbol>> Selectors { get; } = [];
@@ -519,6 +665,26 @@ internal sealed partial class DeclarationCompiler
         internal string? Projection { get; set; }
         internal string? Lifetime { get; set; }
         internal string? Cardinality { get; set; }
+    }
+
+    private sealed class AttributeFilter(INamedTypeSymbol type, bool required)
+    {
+        internal INamedTypeSymbol Type { get; } = type;
+        internal bool Required { get; } = required;
+    }
+
+    private sealed class CountAssertion(int count, bool exact, SyntaxNode syntax)
+    {
+        internal int Count { get; } = count;
+        internal bool Exact { get; } = exact;
+        internal SyntaxNode Syntax { get; } = syntax;
+    }
+
+    private sealed class Rejection(INamedTypeSymbol type, Rule rule, List<string> reasons)
+    {
+        internal INamedTypeSymbol Type { get; } = type;
+        internal Rule Rule { get; } = rule;
+        internal List<string> Reasons { get; } = reasons;
     }
 
     private sealed class Registration(
@@ -530,5 +696,8 @@ internal sealed partial class DeclarationCompiler
         internal INamedTypeSymbol Implementation { get; } = implementation;
         internal INamedTypeSymbol Service { get; } = service;
         internal Rule Rule { get; } = rule;
+        internal bool Alias =>
+            Rule.Projection == "AsSelfWithInterfaces"
+            && !SymbolEqualityComparer.Default.Equals(Implementation, Service);
     }
 }
