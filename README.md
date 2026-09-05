@@ -86,6 +86,7 @@ packages are versioned together:
 | `HostLoom.AspNetCore.WebSockets.Testing` | In-process TestServer client for gateway tests |
 | `HostLoom.Logging` | Allocation-free UTF-8 logging provider |
 | `HostLoom.Composition` | Explicit DI plans and compile-time registration generator |
+| `HostLoom.Composition.Testing` | Container-free composition equivalence, ordering and provenance assertions |
 | `HostLoom.Diagnostics` | Composition ledger and startup report of registration decisions |
 | `HostLoom.Mapping` | Explicit, compile-time-safe, AOT-friendly object mapping |
 | `HostLoom.Mapping.DependencyInjection` | Scoped mapper dispatch and explicit map registration |

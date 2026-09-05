@@ -2,8 +2,10 @@
 
 The incremental generator turns methods marked with `CompositionRules` into explicit
 `CompositionPlan` factories. Its analyzer rejects runtime invocation or delegate capture of rule
-methods. This netstandard2.0 project references Roslyn only. Use development project references;
-NuGet bundling, packed-consumer verification and performance budgets remain release gates.
+methods. This netstandard2.0 project references Roslyn only and is bundled under `analyzers/dotnet/cs`
+in `HostLoom.Composition`; it is not a separately published runtime dependency. The application NuGet
+also supplies the compiler-visible project directory through build-transitive props. Performance
+budgets and complete migration/release evidence remain follow-up work.
 
 See the [runtime README](../HostLoom.Composition/README.md#generated-plans) for the declaration/factory
 example and references. The [AOT example](../../examples/HostLoom.Examples.CompositionAot/Program.cs)
@@ -150,8 +152,8 @@ To supply the project directory during development, add this to the consuming pr
 
 Origins normalize separators and dot segments and remove the project root. Linked files outside
 that root, or absolute paths from hosts without this property, use a filename fallback. Relative
-paths stay relative. No absolute checkout path or timestamp is emitted. Package build props will
-supply the compiler property when NuGet bundling is implemented.
+paths stay relative. No absolute checkout path or timestamp is emitted. The NuGet's build-transitive props supply the compiler property automatically. Normalization is
+lexical; differently spelled symlink roots can use the filename fallback.
 
 ## Incremental and release evidence
 
@@ -162,6 +164,10 @@ roots and Windows/POSIX separators. Seven reviewed snapshots include aliases, ge
 and rejections. Failures write received files to the OS temporary directory and never update
 verified snapshots automatically.
 
-The full solution and native example are development-consumer evidence. Optional testing helpers,
-NuGet bundling/packed consumption and measured build/runtime performance budgets remain outstanding.
+The full solution, seven snapshots and native example cover development consumers. The package
+verifier additionally builds an isolated application with one HostLoom reference and a helper-only
+consumer whose generator arrives transitively. It checks dependency graphs, negative HLM0009/HLM0014
+builds and optional packed-runtime/helper AOT execution. `HostLoom.Composition.Testing` supplies
+separate semantic, ordering and provenance assertions. Measured build/runtime budgets and external
+migration evidence remain outstanding.
 Decoration, keyed declarations, runtime scanning and standalone registration attributes are deferred.

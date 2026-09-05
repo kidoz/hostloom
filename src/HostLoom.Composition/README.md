@@ -3,10 +3,13 @@
 An explicit dependency-injection plan can be inspected before a provider exists, applied to a
 service collection once, and reported without executing factories or constructors.
 
-The development tree includes an compile-time generator for central rule declarations,
-plus the explicit runtime API below. There is no runtime assembly scanning. Use project references
-during development; package packing stays disabled until packaged-consumer verification is ready. The generator's supported syntax and diagnostics are documented in its
-[README](../HostLoom.Composition.Generators/README.md).
+`HostLoom.Composition` bundles its compile-time generator and declaration-use analyzer in the same
+NuGet. Applications need one HostLoom package reference; the sole runtime dependency is
+`Microsoft.Extensions.DependencyInjection.Abstractions`. The compiler assembly is an analyzer asset,
+not a runtime dependency. There is no runtime assembly scanning. Package consumption and Native AOT
+are verified; measured performance budgets and migration/release evidence remain follow-up work.
+The generator's supported syntax and diagnostics are documented in its
+[reference](https://github.com/kidoz/hostloom/tree/main/src/HostLoom.Composition.Generators).
 
 ```csharp
 using HostLoom.Composition;
@@ -79,7 +82,10 @@ a disposable instance through multiple aliases; implementations should dispose i
 
 ## Generated plans
 
-Reference the runtime normally and the generator as an analyzer while developing in this repository:
+For a packaged consumer, reference only `HostLoom.Composition`; the package provides the generator
+and project-directory compiler property automatically. A provider-building application supplies its
+usual DI implementation/host independently. Within this repository, development project references
+still name the generator explicitly:
 
 ```xml
 <ProjectReference Include="../../src/HostLoom.Composition/HostLoom.Composition.csproj" />
@@ -151,12 +157,38 @@ factory forwards to that self type; this metadata is a caller assertion, not run
 
 Origins include normalized selector text. Rejections retain ordered reasons and a stable identity;
 `CandidateType` is null when a rejected source type cannot be referenced by the generated factory.
-Add `<CompilerVisibleProperty Include="MSBuildProjectDirectory" />` in a consuming project's
+The NuGet supplies `MSBuildProjectDirectory` through build-transitive props. When using development
+project references, add `<CompilerVisibleProperty Include="MSBuildProjectDirectory" />` to an
 `ItemGroup` for project-relative paths. Linked files outside the root and hosts without this property
 use a filename fallback for absolute paths. No absolute checkout paths enter generated code.
 
 The AOT sample executes generated aliases, open generics and synchronous/asynchronous disposal.
 Generated source can be inspected with `EmitCompilerGeneratedFiles=true`; direct its output under
-`obj` to avoid compiling persisted output twice. NuGet bundling and packaged-consumer verification
-remain outstanding. See the [generator reference](../HostLoom.Composition.Generators/README.md) for
+`obj` to avoid compiling persisted output twice. The package verifier checks isolated consumers,
+bundled diagnostics, relative origins, dependency boundaries and optional native execution. See the [generator reference](../HostLoom.Composition.Generators/README.md) for
 supported shapes, diagnostics and validation limits.
+
+
+## Testing and optional ledger integration
+
+`HostLoom.Composition.Testing` provides test-framework-independent, container-free assertions for
+registration multisets, sequences, matched types, service/lifetime/cardinality, origins and rejection
+reasons. It normalizes known aliases without comparing delegates; opaque activations need a caller's
+reviewed semantic identity. See the [testing reference](../HostLoom.Composition.Testing/README.md).
+
+An [application-owned ledger example](../../examples/HostLoom.Examples.CompositionDiagnostics/README.md)
+aggregates each service's ordered implementation/lifetime list into one choice, preserving skips,
+replacements and rejected candidates without false enumerable conflicts. Neither composition package
+references diagnostics, and applying a plan never writes a ledger automatically.
+
+Verify local packages without publishing:
+
+```sh
+python3 eng/verify-composition-package.py
+# On a matching local host, also publish and execute runtime and testing AOT consumers:
+python3 eng/verify-composition-package.py --runtime osx-arm64
+```
+
+The verifier retains packages, fresh consumer sources and command logs in an OS temporary directory.
+`--packages <directory> --version <version>` verifies already packed artifacts, as the release
+workflow does. No NuGet publication is performed by this check.
