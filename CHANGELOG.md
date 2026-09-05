@@ -8,6 +8,13 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- `HostLoom.Composition` runtime foundation: immutable explicit DI plans, rejection provenance,
+  passive application reports, explicit cardinality and registration strategies, and validation
+  before collection mutation. The generator remains under development. An executable Native AOT
+  sample exercises explicit plans, scoped aliases and known closed open-generic resolution.
+
 ### Changed
 
 - **Breaking.** `IDistributedCacheStore.SetIfAbsentAsync` takes the tag-index keys `SetAsync`
