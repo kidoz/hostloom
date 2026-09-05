@@ -10,6 +10,13 @@ are derived from release tags at publish time.
 
 ### Added
 
+- Composition performance harness with separate creation/application/probe/ledger phases, handwritten
+  and pinned Scrutor comparisons, 46/160/1,000-candidate incremental measurements and paired clean
+  consumer builds. Published reference-machine distributions and explicit timing/allocation budgets
+  include cold startup overhead; deterministic gate tests reject regressions and invalid evidence.
+- Complete composition reference, migration and explanation guides, plus incremental regression tests
+  for inherited attribute/interface, accessibility and rule changes with output restoration.
+
 - `HostLoom.Composition.Testing`: container-free registration multiset/sequence, matched-type,
   service policy and provenance assertions, with explicit semantic identities for opaque activations.
 - Bundled composition generator/analyzer and build-transitive provenance props in the application
@@ -22,16 +29,16 @@ are derived from release tags at publish time.
   alias projections, implementation counts, explicit strategies and positional open-generic pairs.
   Diagnostics HLM0014–HLM0016 cover counts, generic shape and proven singleton capture. Probes retain
   selectors, rejected candidates and known alias targets. The native sample executes generated
-  aliases, open generics and synchronous/asynchronous disposal; NuGet bundling remains pending.
+  aliases, open generics and synchronous/asynchronous disposal.
 
 - Initial composition source generator and declaration DSL: explicit type sets, compile-time
   class discovery with inherited generic matching, groups, service projection, explicit lifetimes
   and cardinality, diagnostics `HLM0009`–`HLM0013`, and reviewable source snapshots. The AOT sample
-  now resolves generated services. Advanced rules and NuGet bundling remain under development.
+  now resolves generated services.
 
 - `HostLoom.Composition` runtime foundation: immutable explicit DI plans, rejection provenance,
   passive application reports, explicit cardinality and registration strategies, and validation
-  before collection mutation. The generator remains under development. An executable Native AOT
+  before collection mutation. An executable Native AOT
   sample exercises explicit plans, scoped aliases and known closed open-generic resolution.
 
 ### Changed
