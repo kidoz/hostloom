@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Application-owned adapter from composition application reports to an optional ledger.</Description>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/HostLoom.Composition/HostLoom.Composition.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Diagnostics/HostLoom.Diagnostics.csproj" />
+  </ItemGroup>
+</Project>

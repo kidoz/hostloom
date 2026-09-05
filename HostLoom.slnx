@@ -5,6 +5,7 @@
   </Folder>
   <Folder Name="/examples/">
     <Project Path="examples/HostLoom.Examples.CachingAot/HostLoom.Examples.CachingAot.csproj" />
+    <Project Path="examples/HostLoom.Examples.CompositionDiagnostics/HostLoom.Examples.CompositionDiagnostics.csproj" />
     <Project Path="examples/HostLoom.Examples.CompositionAot/HostLoom.Examples.CompositionAot.csproj" />
     <Project Path="examples/HostLoom.Examples.Pipelines/HostLoom.Examples.Pipelines.csproj" />
   </Folder>

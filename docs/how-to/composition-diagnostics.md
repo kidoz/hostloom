@@ -95,3 +95,19 @@ what registration decided instead of parsing log output.
 - When an entry earns its keep, and why the ledger reports at startup:
   [architecture](../explanation/architecture.md#explicit-over-convention).
 - Full API: [composition diagnostics reference](../reference/composition-diagnostics.md).
+
+
+## Record a generated composition plan
+
+An application that also references `HostLoom.Composition` can record its successful application
+report explicitly. Use one ordered implementation/lifetime set per plan/group/service component;
+recording each enumerable implementation as a different choice would create false conflicts.
+
+The [application-owned adapter example](https://github.com/kidoz/hostloom/tree/main/examples/HostLoom.Examples.CompositionDiagnostics)
+records retained additions, preserves skipped/replaced actions and previous origins in reasons,
+and records rejected candidates separately by rule/type identity. Tests compile that exact adapter
+source and require legitimate enumerable registrations to produce no ledger conflicts.
+
+Call it with the same plan instance used for `ApplyTo`. The ledger describes that application report,
+not the final collection after external mutations or all descriptors kept by a skip policy. The
+composition runtime and optional testing helpers do not reference `HostLoom.Diagnostics`.
