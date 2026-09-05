@@ -416,6 +416,13 @@ test("request validates local preconditions without leaking concurrency", async 
         connection.request("inventory.get", "e30=", { timeoutMilliseconds: 0 }),
         HostLoomProtocolError,
     );
+    await assert.rejects(
+        connection.request("inventory.get", "e30=", { timeoutMilliseconds: 2_147_483_648 }),
+        HostLoomProtocolError,
+    );
+    await assert.rejects(connection.request("inventory.get", "not base64"), HostLoomProtocolError);
+    assert.equal(connection.state, "connected");
+    assert.deepEqual(socket.sent, []);
 
     const valid = connection.request("inventory.get", "e30=");
     assert.equal(socket.sent.length, 1);
