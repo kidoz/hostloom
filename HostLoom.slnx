@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/HostLoom.Composition.Benchmarks/HostLoom.Composition.Benchmarks.csproj" />
     <Project Path="benchmarks/HostLoom.Benchmarks/HostLoom.Benchmarks.csproj" />
     <Project Path="benchmarks/HostLoom.Redis.Benchmarks/HostLoom.Redis.Benchmarks.csproj" />
   </Folder>

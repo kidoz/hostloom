@@ -1,0 +1,916 @@
+{
+  "schemaVersion": 1,
+  "environment": {
+    "runtime": ".NET 10.0.11",
+    "architecture": "Arm64",
+    "os": "macOS 26.6.2",
+    "processors": 16,
+    "roslyn": "5.9.0.0",
+    "cpu": "Apple M4 Max",
+    "sdk": "10.0.400",
+    "tieredCompilation": false,
+    "readyToRun": true,
+    "scrutor": "7.0.0"
+  },
+  "method": {
+    "launches": 5,
+    "samplesPerLaunch": 15,
+    "runtimeIterations": 32,
+    "probeIterations": 100000,
+    "warmupCalls": 64,
+    "generatorTargetNanoseconds": 200000000
+  },
+  "sourceSha256": "03202a7eba24f00e1057c7d3c10c3533430202fd1e0d41c09a01582271fdb4e9",
+  "consumerBuilds": {
+    "46": {
+      "pairs": [
+        {
+          "handwritten": 1424918167,
+          "generated": 1501729459,
+          "added": 76811292
+        },
+        {
+          "generated": 1518340875,
+          "handwritten": 1374277250,
+          "added": 144063625
+        },
+        {
+          "handwritten": 1365752292,
+          "generated": 1519880375,
+          "added": 154128083
+        },
+        {
+          "generated": 1656325042,
+          "handwritten": 1360840333,
+          "added": 295484709
+        },
+        {
+          "handwritten": 1387303958,
+          "generated": 1495705500,
+          "added": 108401542
+        }
+      ],
+      "addedNanoseconds": {
+        "median": 144063625,
+        "p95": 295484709,
+        "min": 76811292,
+        "max": 295484709,
+        "samples": 5
+      },
+      "generatedNanoseconds": {
+        "median": 1518340875,
+        "p95": 1656325042,
+        "min": 1495705500,
+        "max": 1656325042,
+        "samples": 5
+      },
+      "handwrittenNanoseconds": {
+        "median": 1374277250,
+        "p95": 1424918167,
+        "min": 1360840333,
+        "max": 1424918167,
+        "samples": 5
+      }
+    },
+    "160": {
+      "pairs": [
+        {
+          "handwritten": 1387076500,
+          "generated": 1505869875,
+          "added": 118793375
+        },
+        {
+          "generated": 1518432417,
+          "handwritten": 1368492459,
+          "added": 149939958
+        },
+        {
+          "handwritten": 1369580417,
+          "generated": 1447735459,
+          "added": 78155042
+        },
+        {
+          "generated": 1465418250,
+          "handwritten": 1359651417,
+          "added": 105766833
+        },
+        {
+          "handwritten": 1348556459,
+          "generated": 1464653583,
+          "added": 116097124
+        }
+      ],
+      "addedNanoseconds": {
+        "median": 116097124,
+        "p95": 149939958,
+        "min": 78155042,
+        "max": 149939958,
+        "samples": 5
+      },
+      "generatedNanoseconds": {
+        "median": 1465418250,
+        "p95": 1518432417,
+        "min": 1447735459,
+        "max": 1518432417,
+        "samples": 5
+      },
+      "handwrittenNanoseconds": {
+        "median": 1368492459,
+        "p95": 1387076500,
+        "min": 1348556459,
+        "max": 1387076500,
+        "samples": 5
+      }
+    },
+    "1000": {
+      "pairs": [
+        {
+          "handwritten": 1593749208,
+          "generated": 1678387000,
+          "added": 84637792
+        },
+        {
+          "generated": 1648723625,
+          "handwritten": 1517196500,
+          "added": 131527125
+        },
+        {
+          "handwritten": 1521639083,
+          "generated": 1636402125,
+          "added": 114763042
+        },
+        {
+          "generated": 1615077583,
+          "handwritten": 1509876708,
+          "added": 105200875
+        },
+        {
+          "handwritten": 1505720334,
+          "generated": 1613204000,
+          "added": 107483666
+        }
+      ],
+      "addedNanoseconds": {
+        "median": 107483666,
+        "p95": 131527125,
+        "min": 84637792,
+        "max": 131527125,
+        "samples": 5
+      },
+      "generatedNanoseconds": {
+        "median": 1636402125,
+        "p95": 1678387000,
+        "min": 1613204000,
+        "max": 1678387000,
+        "samples": 5
+      },
+      "handwrittenNanoseconds": {
+        "median": 1517196500,
+        "p95": 1593749208,
+        "min": 1505720334,
+        "max": 1593749208,
+        "samples": 5
+      }
+    }
+  },
+  "trackedReasons": [
+    "Cached"
+  ],
+  "cases": {
+    "runtime/plan/first-call": {
+      "nanoseconds": {
+        "median": 13892250,
+        "p95": 14185833,
+        "min": 13839500,
+        "max": 14185833,
+        "samples": 5
+      },
+      "allocatedBytes": {
+        "median": 70064,
+        "p95": 70064,
+        "min": 70064,
+        "max": 70064,
+        "samples": 5
+      }
+    },
+    "runtime/plan/steady": {
+      "nanoseconds": {
+        "median": 130233.0625,
+        "p95": 139348.9375,
+        "min": 121804.6875,
+        "max": 143269.53125,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 67568,
+        "p95": 67568,
+        "min": 67568,
+        "max": 67568,
+        "samples": 75
+      }
+    },
+    "runtime/apply/first-call": {
+      "nanoseconds": {
+        "median": 3847875,
+        "p95": 4180625,
+        "min": 3411333,
+        "max": 4180625,
+        "samples": 5
+      },
+      "allocatedBytes": {
+        "median": 113952,
+        "p95": 113952,
+        "min": 113952,
+        "max": 113952,
+        "samples": 5
+      }
+    },
+    "runtime/apply/steady": {
+      "nanoseconds": {
+        "median": 155173.1875,
+        "p95": 163730.46875,
+        "min": 147503.90625,
+        "max": 171790.34375,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 106864,
+        "p95": 106947.25,
+        "min": 106864,
+        "max": 106947.25,
+        "samples": 75
+      }
+    },
+    "runtime/probe/first-call": {
+      "nanoseconds": {
+        "median": 18333,
+        "p95": 18917,
+        "min": 17208,
+        "max": 18917,
+        "samples": 5
+      },
+      "allocatedBytes": {
+        "median": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0,
+        "samples": 5
+      }
+    },
+    "runtime/probe/steady": {
+      "nanoseconds": {
+        "median": 1.77584,
+        "p95": 1.9525,
+        "min": 1.55125,
+        "max": 2.16292,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0,
+        "samples": 75
+      }
+    },
+    "runtime/total/first-call": {
+      "nanoseconds": {
+        "median": 18858917,
+        "p95": 19267458,
+        "min": 18010333,
+        "max": 19267458,
+        "samples": 5
+      },
+      "allocatedBytes": {
+        "median": 184016,
+        "p95": 184016,
+        "min": 184016,
+        "max": 184016,
+        "samples": 5
+      }
+    },
+    "runtime/total/steady": {
+      "nanoseconds": {
+        "median": 292695.3125,
+        "p95": 332630.21875,
+        "min": 278966.15625,
+        "max": 443085.9375,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 174432,
+        "p95": 174475.25,
+        "min": 174432,
+        "max": 174475.25,
+        "samples": 75
+      }
+    },
+    "runtime/handwritten/first-call": {
+      "nanoseconds": {
+        "median": 5959708,
+        "p95": 6307875,
+        "min": 5951834,
+        "max": 6307875,
+        "samples": 5
+      },
+      "allocatedBytes": {
+        "median": 8648,
+        "p95": 8648,
+        "min": 8648,
+        "max": 8648,
+        "samples": 5
+      }
+    },
+    "runtime/handwritten/steady": {
+      "nanoseconds": {
+        "median": 746.09375,
+        "p95": 1020.84375,
+        "min": 678.375,
+        "max": 1139.3125,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 8624,
+        "p95": 8624,
+        "min": 8624,
+        "max": 8624,
+        "samples": 75
+      }
+    },
+    "runtime/scrutor/first-call": {
+      "nanoseconds": {
+        "median": 10489125,
+        "p95": 11144917,
+        "min": 9989167,
+        "max": 11144917,
+        "samples": 5
+      },
+      "allocatedBytes": {
+        "median": 206096,
+        "p95": 206096,
+        "min": 206096,
+        "max": 206096,
+        "samples": 5
+      }
+    },
+    "runtime/scrutor/steady": {
+      "nanoseconds": {
+        "median": 116981.78125,
+        "p95": 125940.09375,
+        "min": 108911.46875,
+        "max": 129075.53125,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 125241,
+        "p95": 125241,
+        "min": 125241,
+        "max": 125241,
+        "samples": 75
+      }
+    },
+    "runtime/ledger-record/first-call": {
+      "nanoseconds": {
+        "median": 6775375,
+        "p95": 6928583,
+        "min": 6383208,
+        "max": 6928583,
+        "samples": 5
+      },
+      "allocatedBytes": {
+        "median": 397008,
+        "p95": 397008,
+        "min": 397008,
+        "max": 397008,
+        "samples": 5
+      }
+    },
+    "runtime/ledger-record/steady": {
+      "nanoseconds": {
+        "median": 141053.375,
+        "p95": 154292.96875,
+        "min": 127045.5625,
+        "max": 161561.1875,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 312191.5,
+        "p95": 312191.5,
+        "min": 312191.5,
+        "max": 312191.5,
+        "samples": 75
+      }
+    },
+    "runtime/ledger-report/first-call": {
+      "nanoseconds": {
+        "median": 6221250,
+        "p95": 6952042,
+        "min": 5809541,
+        "max": 6952042,
+        "samples": 5
+      },
+      "allocatedBytes": {
+        "median": 713840,
+        "p95": 713840,
+        "min": 713840,
+        "max": 713840,
+        "samples": 5
+      }
+    },
+    "runtime/ledger-report/steady": {
+      "nanoseconds": {
+        "median": 101989.59375,
+        "p95": 108239.5625,
+        "min": 95378.90625,
+        "max": 112011.71875,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 449392,
+        "p95": 449392,
+        "min": 449392,
+        "max": 449392,
+        "samples": 75
+      }
+    },
+    "runtime/total-ledger/first-call": {
+      "nanoseconds": {
+        "median": 29939666,
+        "p95": 41303791,
+        "min": 29254125,
+        "max": 41303791,
+        "samples": 5
+      },
+      "allocatedBytes": {
+        "median": 1294864,
+        "p95": 1294864,
+        "min": 1294864,
+        "max": 1294864,
+        "samples": 5
+      }
+    },
+    "runtime/total-ledger/steady": {
+      "nanoseconds": {
+        "median": 562813.8125,
+        "p95": 593852.84375,
+        "min": 537562.5,
+        "max": 939440.09375,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 941305.75,
+        "p95": 941305.75,
+        "min": 941305.75,
+        "max": 941305.75,
+        "samples": 75
+      }
+    },
+    "generator/46/process-first": {
+      "nanoseconds": {
+        "median": 924055167,
+        "p95": 935607125,
+        "min": 889459333,
+        "max": 935607125,
+        "samples": 5
+      },
+      "allocatedBytes": {
+        "median": 7508952,
+        "p95": 7509768,
+        "min": 7508312,
+        "max": 7509768,
+        "samples": 5
+      }
+    },
+    "generator/46/fresh-driver": {
+      "nanoseconds": {
+        "median": 952083,
+        "p95": 2713750,
+        "min": 788209,
+        "max": 4094291,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 595600,
+        "p95": 603896,
+        "min": 595544,
+        "max": 604312,
+        "samples": 75
+      }
+    },
+    "generator/46/unchanged": {
+      "nanoseconds": {
+        "median": 42250,
+        "p95": 21098166,
+        "min": 28875,
+        "max": 21964291,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 24008,
+        "p95": 26760,
+        "min": 24008,
+        "max": 26760,
+        "samples": 75
+      }
+    },
+    "generator/46/unrelated-edit": {
+      "nanoseconds": {
+        "median": 664625,
+        "p95": 9336042,
+        "min": 588334,
+        "max": 12676708,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 431072,
+        "p95": 437024,
+        "min": 431016,
+        "max": 437440,
+        "samples": 75
+      }
+    },
+    "generator/46/rule-edit": {
+      "nanoseconds": {
+        "median": 676250,
+        "p95": 6182125,
+        "min": 600750,
+        "max": 7295125,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 433464,
+        "p95": 445360,
+        "min": 433408,
+        "max": 445776,
+        "samples": 75
+      }
+    },
+    "generator/160/process-first": {
+      "nanoseconds": {
+        "median": 889065250,
+        "p95": 902564042,
+        "min": 870571042,
+        "max": 902564042,
+        "samples": 5
+      },
+      "allocatedBytes": {
+        "median": 8472560,
+        "p95": 8482624,
+        "min": 8471080,
+        "max": 8482624,
+        "samples": 5
+      }
+    },
+    "generator/160/fresh-driver": {
+      "nanoseconds": {
+        "median": 1914458,
+        "p95": 3837459,
+        "min": 1653500,
+        "max": 4143042,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 1453744,
+        "p95": 1461568,
+        "min": 1453216,
+        "max": 1462040,
+        "samples": 75
+      }
+    },
+    "generator/160/unchanged": {
+      "nanoseconds": {
+        "median": 49709,
+        "p95": 20191709,
+        "min": 29833,
+        "max": 21821542,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 24008,
+        "p95": 26760,
+        "min": 24008,
+        "max": 26760,
+        "samples": 75
+      }
+    },
+    "generator/160/unrelated-edit": {
+      "nanoseconds": {
+        "median": 1552584,
+        "p95": 10304166,
+        "min": 1414375,
+        "max": 11843125,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 1268536,
+        "p95": 1274040,
+        "min": 1268032,
+        "max": 1274512,
+        "samples": 75
+      }
+    },
+    "generator/160/rule-edit": {
+      "nanoseconds": {
+        "median": 1612167,
+        "p95": 11616375,
+        "min": 1426250,
+        "max": 12245500,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 1270264,
+        "p95": 1281984,
+        "min": 1269736,
+        "max": 1282456,
+        "samples": 75
+      }
+    },
+    "generator/1000/process-first": {
+      "nanoseconds": {
+        "median": 917732917,
+        "p95": 1095923166,
+        "min": 881891416,
+        "max": 1095923166,
+        "samples": 5
+      },
+      "allocatedBytes": {
+        "median": 15639864,
+        "p95": 15640680,
+        "min": 15625992,
+        "max": 15640680,
+        "samples": 5
+      }
+    },
+    "generator/1000/fresh-driver": {
+      "nanoseconds": {
+        "median": 15353458,
+        "p95": 25948375,
+        "min": 12740042,
+        "max": 27314917,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 7708312,
+        "p95": 7716176,
+        "min": 7707616,
+        "max": 7716536,
+        "samples": 75
+      }
+    },
+    "generator/1000/unchanged": {
+      "nanoseconds": {
+        "median": 93167,
+        "p95": 22050709,
+        "min": 64291,
+        "max": 32143959,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 25088,
+        "p95": 30240,
+        "min": 25088,
+        "max": 31160,
+        "samples": 75
+      }
+    },
+    "generator/1000/unrelated-edit": {
+      "nanoseconds": {
+        "median": 14645250,
+        "p95": 26991167,
+        "min": 12220958,
+        "max": 28731542,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 7390056,
+        "p95": 7396720,
+        "min": 7389264,
+        "max": 7397080,
+        "samples": 75
+      }
+    },
+    "generator/1000/rule-edit": {
+      "nanoseconds": {
+        "median": 14139208,
+        "p95": 25546708,
+        "min": 11904458,
+        "max": 40332208,
+        "samples": 75
+      },
+      "allocatedBytes": {
+        "median": 7387120,
+        "p95": 7400024,
+        "min": 7386288,
+        "max": 7400384,
+        "samples": 75
+      }
+    }
+  },
+  "recordedAt": "2026-09-05",
+  "budgetPolicy": "Reference environment only. Median time +50%, p95 time +50%, managed allocation median/p95 +10%; zero allocation stays zero. Margins cover launch/JIT and short-operation variability seen in the pilot and baseline, not statistical confidence intervals. Paired build median <=200 ms at every size and paired 1000-candidate p95 <=200 ms; fresh-driver 1000-candidate p95 <=200 ms. Baseline changes require explicit review.",
+  "budgets": {
+    "runtime/plan/first-call": {
+      "nanoseconds/median": 20838375,
+      "nanoseconds/p95": 21278750,
+      "allocatedBytes/median": 77071,
+      "allocatedBytes/p95": 77071
+    },
+    "runtime/plan/steady": {
+      "nanoseconds/median": 195350,
+      "nanoseconds/p95": 209024,
+      "allocatedBytes/median": 74325,
+      "allocatedBytes/p95": 74325
+    },
+    "runtime/apply/first-call": {
+      "nanoseconds/median": 5771813,
+      "nanoseconds/p95": 6270938,
+      "allocatedBytes/median": 125348,
+      "allocatedBytes/p95": 125348
+    },
+    "runtime/apply/steady": {
+      "nanoseconds/median": 232760,
+      "nanoseconds/p95": 245596,
+      "allocatedBytes/median": 117551,
+      "allocatedBytes/p95": 117642
+    },
+    "runtime/probe/first-call": {
+      "nanoseconds/median": 27500,
+      "nanoseconds/p95": 28376,
+      "allocatedBytes/median": 0,
+      "allocatedBytes/p95": 0
+    },
+    "runtime/probe/steady": {
+      "nanoseconds/median": 3,
+      "nanoseconds/p95": 3,
+      "allocatedBytes/median": 0,
+      "allocatedBytes/p95": 0
+    },
+    "runtime/total/first-call": {
+      "nanoseconds/median": 28288376,
+      "nanoseconds/p95": 28901187,
+      "allocatedBytes/median": 202418,
+      "allocatedBytes/p95": 202418
+    },
+    "runtime/total/steady": {
+      "nanoseconds/median": 439043,
+      "nanoseconds/p95": 498946,
+      "allocatedBytes/median": 191876,
+      "allocatedBytes/p95": 191923
+    },
+    "runtime/handwritten/first-call": {
+      "nanoseconds/median": 8939562,
+      "nanoseconds/p95": 9461813,
+      "allocatedBytes/median": 9513,
+      "allocatedBytes/p95": 9513
+    },
+    "runtime/handwritten/steady": {
+      "nanoseconds/median": 1120,
+      "nanoseconds/p95": 1532,
+      "allocatedBytes/median": 9487,
+      "allocatedBytes/p95": 9487
+    },
+    "runtime/scrutor/first-call": {
+      "nanoseconds/median": 15733688,
+      "nanoseconds/p95": 16717376,
+      "allocatedBytes/median": 226706,
+      "allocatedBytes/p95": 226706
+    },
+    "runtime/scrutor/steady": {
+      "nanoseconds/median": 175473,
+      "nanoseconds/p95": 188911,
+      "allocatedBytes/median": 137766,
+      "allocatedBytes/p95": 137766
+    },
+    "runtime/ledger-record/first-call": {
+      "nanoseconds/median": 10163063,
+      "nanoseconds/p95": 10392875,
+      "allocatedBytes/median": 436709,
+      "allocatedBytes/p95": 436709
+    },
+    "runtime/ledger-record/steady": {
+      "nanoseconds/median": 211581,
+      "nanoseconds/p95": 231440,
+      "allocatedBytes/median": 343411,
+      "allocatedBytes/p95": 343411
+    },
+    "runtime/ledger-report/first-call": {
+      "nanoseconds/median": 9331875,
+      "nanoseconds/p95": 10428063,
+      "allocatedBytes/median": 785225,
+      "allocatedBytes/p95": 785225
+    },
+    "runtime/ledger-report/steady": {
+      "nanoseconds/median": 152985,
+      "nanoseconds/p95": 162360,
+      "allocatedBytes/median": 494332,
+      "allocatedBytes/p95": 494332
+    },
+    "runtime/total-ledger/first-call": {
+      "nanoseconds/median": 44909499,
+      "nanoseconds/p95": 61955687,
+      "allocatedBytes/median": 1424351,
+      "allocatedBytes/p95": 1424351
+    },
+    "runtime/total-ledger/steady": {
+      "nanoseconds/median": 844221,
+      "nanoseconds/p95": 890780,
+      "allocatedBytes/median": 1035437,
+      "allocatedBytes/p95": 1035437
+    },
+    "generator/46/process-first": {
+      "nanoseconds/median": 1386082751,
+      "nanoseconds/p95": 1403410688,
+      "allocatedBytes/median": 8259848,
+      "allocatedBytes/p95": 8260745
+    },
+    "generator/46/fresh-driver": {
+      "nanoseconds/median": 1428125,
+      "nanoseconds/p95": 4070625,
+      "allocatedBytes/median": 655160,
+      "allocatedBytes/p95": 664286
+    },
+    "generator/46/unchanged": {
+      "nanoseconds/median": 63375,
+      "nanoseconds/p95": 31647249,
+      "allocatedBytes/median": 26409,
+      "allocatedBytes/p95": 29437
+    },
+    "generator/46/unrelated-edit": {
+      "nanoseconds/median": 996938,
+      "nanoseconds/p95": 14004063,
+      "allocatedBytes/median": 474180,
+      "allocatedBytes/p95": 480727
+    },
+    "generator/46/rule-edit": {
+      "nanoseconds/median": 1014375,
+      "nanoseconds/p95": 9273188,
+      "allocatedBytes/median": 476811,
+      "allocatedBytes/p95": 489897
+    },
+    "generator/160/process-first": {
+      "nanoseconds/median": 1333597875,
+      "nanoseconds/p95": 1353846063,
+      "allocatedBytes/median": 9319816,
+      "allocatedBytes/p95": 9330887
+    },
+    "generator/160/fresh-driver": {
+      "nanoseconds/median": 2871687,
+      "nanoseconds/p95": 5756189,
+      "allocatedBytes/median": 1599119,
+      "allocatedBytes/p95": 1607725
+    },
+    "generator/160/unchanged": {
+      "nanoseconds/median": 74564,
+      "nanoseconds/p95": 30287564,
+      "allocatedBytes/median": 26409,
+      "allocatedBytes/p95": 29437
+    },
+    "generator/160/unrelated-edit": {
+      "nanoseconds/median": 2328876,
+      "nanoseconds/p95": 15456249,
+      "allocatedBytes/median": 1395390,
+      "allocatedBytes/p95": 1401444
+    },
+    "generator/160/rule-edit": {
+      "nanoseconds/median": 2418251,
+      "nanoseconds/p95": 17424563,
+      "allocatedBytes/median": 1397291,
+      "allocatedBytes/p95": 1410183
+    },
+    "generator/1000/process-first": {
+      "nanoseconds/median": 1376599376,
+      "nanoseconds/p95": 1643884749,
+      "allocatedBytes/median": 17203851,
+      "allocatedBytes/p95": 17204748
+    },
+    "generator/1000/fresh-driver": {
+      "nanoseconds/median": 23030187,
+      "nanoseconds/p95": 38922563,
+      "allocatedBytes/median": 8479144,
+      "allocatedBytes/p95": 8487794
+    },
+    "generator/1000/unchanged": {
+      "nanoseconds/median": 139751,
+      "nanoseconds/p95": 33076064,
+      "allocatedBytes/median": 27597,
+      "allocatedBytes/p95": 33264
+    },
+    "generator/1000/unrelated-edit": {
+      "nanoseconds/median": 21967875,
+      "nanoseconds/p95": 40486751,
+      "allocatedBytes/median": 8129062,
+      "allocatedBytes/p95": 8136393
+    },
+    "generator/1000/rule-edit": {
+      "nanoseconds/median": 21208812,
+      "nanoseconds/p95": 38320062,
+      "allocatedBytes/median": 8125833,
+      "allocatedBytes/p95": 8140027
+    }
+  },
+  "consumerBuildBudgets": {
+    "46": 200000000,
+    "160": 200000000,
+    "1000": 200000000
+  }
+}

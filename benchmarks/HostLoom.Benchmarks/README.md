@@ -215,3 +215,9 @@ not comparable. The allocation columns are still meaningful.
 Do not treat a dry run, virtualized CI result, or one developer machine as a capacity claim. Run the
 full job on deployment-like hardware and benchmark complete sessions separately before choosing
 production connection and queue limits.
+
+## Composition startup and compiler measurements
+
+The separate [composition executable](../HostLoom.Composition.Benchmarks/README.md) measures first
+calls, isolated runtime phases, optional ledger work and incremental/clean compiler costs. Its
+reviewed baseline and gate are independent of these BenchmarkDotNet suites.
