@@ -9,9 +9,9 @@ From the repository root:
 ```sh
 dotnet restore HostLoom.slnx
 dotnet build benchmarks/HostLoom.Composition.Benchmarks -c Release --no-restore
-python3 eng/measure-composition.py --output /tmp/hostloom-composition-measurements
-python3 eng/check-composition-baseline.py --results /tmp/hostloom-composition-measurements/summary.json
-PYTHONDONTWRITEBYTECODE=1 python3 eng/test-composition-baseline.py
+python3 scripts/measure-composition.py --output /tmp/hostloom-composition-measurements
+python3 scripts/check-composition-baseline.py --results /tmp/hostloom-composition-measurements/summary.json
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-composition-baseline.py
 ```
 
 Run on an idle machine and use a fresh output directory. The runner retains raw samples and
