@@ -7,7 +7,8 @@ service collection once, and reported without executing factories or constructor
 NuGet. Applications need one HostLoom package reference; the sole runtime dependency is
 `Microsoft.Extensions.DependencyInjection.Abstractions`. The compiler assembly is an analyzer asset,
 not a runtime dependency. There is no runtime assembly scanning. Package consumption and Native AOT
-are verified; measured performance budgets and migration/release evidence remain follow-up work.
+are verified. The [performance reference](../../docs/reference/composition-performance.md) publishes
+phased measurements and numeric budgets; external consumer migration evidence remains separate.
 The generator's supported syntax and diagnostics are documented in its
 [reference](https://github.com/kidoz/hostloom/tree/main/src/HostLoom.Composition.Generators).
 
