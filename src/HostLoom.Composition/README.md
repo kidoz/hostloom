@@ -3,10 +3,11 @@
 An explicit dependency-injection plan can be inspected before a provider exists, applied to a
 service collection once, and reported without executing factories or constructors.
 
-This is the runtime foundation of the composition feature. Compile-time rule declarations and
-the bundled source generator are not implemented yet. There is no assembly discovery API.
-Use a project reference during development; package packing is disabled until the generator and
-packed-consumer verification are complete.
+The development tree includes an initial compile-time generator for central rule declarations,
+plus the explicit runtime API below. There is no runtime assembly scanning. Use project references
+during development; package packing stays disabled until the complete rule set and packaged-consumer
+verification are ready. The generator's supported syntax and diagnostics are documented in its
+[README](../HostLoom.Composition.Generators/README.md).
 
 ```csharp
 using HostLoom.Composition;
@@ -76,3 +77,55 @@ explicit plans, scoped factory aliases, known closed open-generic resolution and
 Factories forwarding to a scoped self-registration preserve scope identity; forwarding to a
 transient registration creates a fresh instance on each resolution. Container disposal can capture
 a disposable instance through multiple aliases; implementations should dispose idempotently.
+
+## Generated plans
+
+Reference the runtime normally and the generator as an analyzer while developing in this repository:
+
+```xml
+<ProjectReference Include="../../src/HostLoom.Composition/HostLoom.Composition.csproj" />
+<ProjectReference Include="../../src/HostLoom.Composition.Generators/HostLoom.Composition.Generators.csproj"
+                  OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+```
+
+Declare a factory and its rules together in a non-generic partial class:
+
+```csharp
+internal static partial class CatalogComposition
+{
+    [CompositionRules(nameof(CreatePlan))]
+    private static void Declare(CompositionRuleBuilder rules)
+    {
+        rules.Group("catalog", group =>
+        {
+            group.AddClasses()
+                .AssignableTo(typeof(ICatalogConverter<>))
+                .AsImplementedInterfaces()
+                .WithScopedLifetime()
+                .ExpectOne();
+        });
+    }
+
+    public static partial CompositionPlan CreatePlan();
+}
+```
+
+`ICatalogConverter<>` and its implementations belong to the application. The generator traverses
+inherited interfaces, projects the matching closed interfaces, and emits explicit DI descriptors.
+Abstract/open classes remain valid inheritance intermediates but are not registered. Public and
+internal implementations accessible from the factory are supported and require public constructors.
+Call `CatalogComposition.CreatePlan().ApplyTo(services)` from the composition root. The `Declare`
+method is declaration-only: executing it or capturing it as a delegate is a compile error when the
+analyzer is present; DSL members also throw if executed without the generator/analyzer.
+
+The current generator supports groups, explicit types, assignability selectors, self/matched/explicit
+service projections, lifetimes, cardinality, and intentional empty rules. Attribute/namespace filters,
+self aliases, explicit open-generic implementation registration, count assertions, configurable
+strategies and capture analysis are follow-up work. The explicit plan runtime still supports its
+existing strategies and manually specified descriptors. Rejected-candidate generation and full
+project-relative path normalization are also pending; current origins use a relative syntax path
+when supplied, otherwise the source filename, and never an absolute checkout path.
+
+The AOT sample now executes both manually authored and generated plans. Generated source can be
+inspected with `EmitCompilerGeneratedFiles=true`; direct its output under `obj` to avoid compiling
+persisted output a second time.

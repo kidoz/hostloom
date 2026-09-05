@@ -38,3 +38,21 @@ repository.
 - **`HLM0008`** — a get-or-create factory receives the caller's token so its
   work stops with the request; declaring the token and ignoring it keeps the
   work, and the per-key guard, alive after the caller has gone.
+
+## Composition generator diagnostics (in development)
+
+These diagnostics come from the `HostLoom.Composition.Generators` analyzer project, separately from
+`HostLoom.Analyzers`. The generator is currently consumed by project reference and is not packaged
+for release yet. All five diagnostics have error severity and point to authored declarations or
+usage; conflicts also carry the other rule location.
+
+| Rule | Reports |
+| --- | --- |
+| `HLM0009` | Unsupported declaration syntax, invalid factory pairing, or invocation/delegate capture of a declaration method |
+| `HLM0010` | Unbounded, empty, invalid or inaccessible selection |
+| `HLM0011` | Missing, repeated or invalid lifetime/cardinality |
+| `HLM0012` | Missing/incompatible service projection or unavailable public constructor |
+| `HLM0013` | Duplicate, cardinality or lifetime conflict within a generated plan |
+
+See the [generator reference](../../src/HostLoom.Composition.Generators/README.md) for supported
+syntax and validation limits. Constructor dependency resolution remains a final-provider check.
