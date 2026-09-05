@@ -12,13 +12,25 @@ internal static partial class GeneratedCatalogComposition
                 group
                     .AddClasses()
                     .AssignableTo(typeof(ICatalogConverter<>))
-                    .AsImplementedInterfaces()
+                    .WithAttribute<CatalogRegistrationAttribute>()
+                    .AsSelfWithInterfaces()
                     .WithScopedLifetime()
-                    .ExpectOne();
+                    .ExpectOne()
+                    .ExpectExactly(2);
                 group
                     .AddTypes(typeof(GeneratedCatalogProbe))
                     .AsSelf()
                     .WithSingletonLifetime()
+                    .ExpectOne();
+                group
+                    .AddOpenGeneric(typeof(IGeneratedRepository<>), typeof(GeneratedRepository<>))
+                    .WithScopedLifetime()
+                    .ExpectOne();
+                group
+                    .AddTypes(typeof(GeneratedAsyncProbe))
+                    .AssignableTo<IAsyncCatalogProbe>()
+                    .AsSelfWithInterfaces()
+                    .WithScopedLifetime()
                     .ExpectOne();
             }
         );
@@ -32,9 +44,15 @@ internal interface ICatalogConverter<T>
     ICatalogSession Session { get; }
 }
 
-internal abstract class CatalogConverterBase<T>(ICatalogSession session) : ICatalogConverter<T>
+[CatalogRegistration]
+internal abstract class CatalogConverterBase<T>(ICatalogSession session)
+    : ICatalogConverter<T>,
+        IDisposable
 {
     public ICatalogSession Session { get; } = session;
+    public int Disposals { get; private set; }
+
+    public void Dispose() => Disposals++;
 }
 
 internal sealed class CatalogConverter(ICatalogSession session)
@@ -48,4 +66,34 @@ internal sealed class InventoryItem;
 internal sealed class GeneratedCatalogProbe
 {
     public GeneratedCatalogProbe() { }
+}
+
+[AttributeUsage(AttributeTargets.Class, Inherited = true)]
+internal sealed class CatalogRegistrationAttribute : Attribute;
+
+internal interface IGeneratedRepository<T>
+    where T : class
+{
+    ICatalogSession Session { get; }
+}
+
+internal sealed class GeneratedRepository<T>(ICatalogSession session) : IGeneratedRepository<T>
+    where T : class
+{
+    public ICatalogSession Session { get; } = session;
+}
+
+internal interface IAsyncCatalogProbe;
+
+internal sealed class GeneratedAsyncProbe : IAsyncCatalogProbe, IAsyncDisposable
+{
+    public GeneratedAsyncProbe() { }
+
+    public int Disposals { get; private set; }
+
+    public ValueTask DisposeAsync()
+    {
+        Disposals++;
+        return ValueTask.CompletedTask;
+    }
 }
