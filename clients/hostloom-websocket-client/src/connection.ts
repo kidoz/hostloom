@@ -588,12 +588,15 @@ export class HostLoomConnection {
             );
             const resolve = this.#resolveConnect;
             this.#clearConnectPromise();
-            this.#transition("connected");
             this.#closeDisposition = undefined;
             this.#resetReconnectDelay();
-            this.#resubscribeAll(frame, subscriptionsToRestart);
             resolve?.(frame);
             this.#resolveReconnectPromise(frame);
+            const socket = this.#socket;
+            this.#transition("connected");
+            if (this.state === "connected" && this.#socket === socket) {
+                this.#resubscribeAll(frame, subscriptionsToRestart);
+            }
             return;
         }
 
@@ -834,10 +837,15 @@ export class HostLoomConnection {
             return;
         }
 
+        const reconnectPromise = this.#reconnectPromise;
         if (close.code === 1008) {
             try {
                 await this.#reconnect.refreshCredentials?.(close);
             } catch (error) {
+                if (this.#state !== "reconnecting" || this.#reconnectPromise !== reconnectPromise) {
+                    return;
+                }
+
                 const refreshError = new HostLoomConnectionError(
                     "Credentials could not be refreshed after the session expired.",
                     { cause: error },
@@ -848,7 +856,7 @@ export class HostLoomConnection {
                 return;
             }
 
-            if (this.#state !== "reconnecting") {
+            if (this.#state !== "reconnecting" || this.#reconnectPromise !== reconnectPromise) {
                 return;
             }
         }
@@ -858,6 +866,7 @@ export class HostLoomConnection {
         } catch {
             if (
                 this.#state === "reconnecting" &&
+                this.#reconnectPromise === reconnectPromise &&
                 this.#socket === undefined &&
                 this.#reconnectTimer === undefined
             ) {
