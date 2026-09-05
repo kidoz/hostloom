@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../../src/HostLoom.Composition.Testing/HostLoom.Composition.Testing.csproj" />
     <ProjectReference Include="../../src/HostLoom.Composition/HostLoom.Composition.csproj" />
     <ProjectReference Include="../../src/HostLoom.Composition.Generators/HostLoom.Composition.Generators.csproj" />
     <ProjectReference Include="../../src/HostLoom.Analyzers/HostLoom.Analyzers.csproj" />
