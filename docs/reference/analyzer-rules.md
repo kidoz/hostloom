@@ -43,16 +43,23 @@ repository.
 
 These diagnostics come from the `HostLoom.Composition.Generators` analyzer project, separately from
 `HostLoom.Analyzers`. The generator is currently consumed by project reference and is not packaged
-for release yet. All five diagnostics have error severity and point to authored declarations or
+for release yet. All eight diagnostics have error severity and point to authored declarations or
 usage; conflicts also carry the other rule location.
 
 | Rule | Reports |
 | --- | --- |
 | `HLM0009` | Unsupported declaration syntax, invalid factory pairing, or invocation/delegate capture of a declaration method |
-| `HLM0010` | Unbounded, empty, invalid or inaccessible selection |
-| `HLM0011` | Missing, repeated or invalid lifetime/cardinality |
+| `HLM0010` | Unbounded, empty, invalid or inaccessible selection, or namespace guard violation |
+| `HLM0011` | Missing, repeated or invalid lifetime/cardinality, or repeated/invalid strategy |
 | `HLM0012` | Missing/incompatible service projection or unavailable public constructor |
 | `HLM0013` | Duplicate, cardinality or lifetime conflict within a generated plan |
+| `HLM0014` | Invalid or unsatisfied implementation count |
+| `HLM0015` | Unsupported open-generic mapping, constraints or trimming requirements |
+| `HLM0016` | Proven singleton capture through known plan constructor paths |
 
 See the [generator reference](../../src/HostLoom.Composition.Generators/README.md) for supported
 syntax and validation limits. Constructor dependency resolution remains a final-provider check.
+
+The existing HLM0003 does not inspect generated code. Capture diagnostics examine known plan
+edges only; unknown dependencies and uncertain constructor choices still require provider/scope
+validation and known closed-service resolution tests.

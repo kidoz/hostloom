@@ -37,7 +37,8 @@ implements:
 - a structured logging provider with a bounded queue, a background writer,
   destructuring, and fail-closed masking of protected members;
 - immutable explicit DI composition plans with passive probes, cardinality checks and application
-  reports, plus an initial source generator for explicit and discovered registrations;
+  reports, plus a source generator for explicit/discovered registrations, guarded filters,
+  lifetime-aware aliases and positional open generics;
 - a composition ledger that reports registration decisions, including the
   components deliberately left out, once at host startup;
 - compile-time analyzers `HLM0001`–`HLM0008` for asynchronous, dependency-injection,
@@ -84,7 +85,7 @@ packages are versioned together:
 | `HostLoom.AspNetCore.WebSockets` | Authenticated WebSocket RPC and subscriptions |
 | `HostLoom.AspNetCore.WebSockets.Testing` | In-process TestServer client for gateway tests |
 | `HostLoom.Logging` | Allocation-free UTF-8 logging provider |
-| `HostLoom.Composition` | Explicit DI plans and initial compile-time registration generator |
+| `HostLoom.Composition` | Explicit DI plans and compile-time registration generator |
 | `HostLoom.Diagnostics` | Composition ledger and startup report of registration decisions |
 | `HostLoom.Mapping` | Explicit, compile-time-safe, AOT-friendly object mapping |
 | `HostLoom.Mapping.DependencyInjection` | Scoped mapper dispatch and explicit map registration |
