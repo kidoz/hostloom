@@ -5,7 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace HostLoom.Benchmarks;
+namespace HostLoom.Mapping.Benchmarks;
 
 // ---- Flat shape -----------------------------------------------------------------------------
 //

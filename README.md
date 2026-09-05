@@ -881,7 +881,8 @@ src/HostLoom.AspNetCore.WebSockets/ raw Kestrel WebSocket RPC and subscriptions
 src/HostLoom.AspNetCore.WebSockets.Testing/ TestServer gateway integration client
 clients/hostloom-websocket-client/ dependency-free browser client for the JSON-v1 protocol
 docs/                            tutorials, how-to guides, reference, and explanations
-benchmarks/HostLoom.Benchmarks/    cache, lock, codec, logging, and mapping benchmarks
+benchmarks/HostLoom.Benchmarks/    cache, lock, codec, and logging benchmarks
+benchmarks/HostLoom.Mapping.Benchmarks/ object mapping comparisons and strategy measurements
 benchmarks/HostLoom.Composition.Benchmarks/ phased runtime and incremental build measurements
 benchmarks/HostLoom.Redis.Benchmarks/ real-Redis cache and lock comparisons
 examples/HostLoom.Examples.Pipelines/ runnable pipeline tour: DI stages, manual and standalone composition

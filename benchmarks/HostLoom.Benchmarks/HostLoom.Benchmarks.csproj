@@ -5,7 +5,6 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="AutoMapper" />
     <PackageReference Include="BenchmarkDotNet" />
     <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" />
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" />
@@ -18,6 +17,5 @@
     <ProjectReference Include="../../src/HostLoom.Caching/HostLoom.Caching.csproj" />
     <ProjectReference Include="../../src/HostLoom.Locking/HostLoom.Locking.csproj" />
     <ProjectReference Include="../../src/HostLoom.Logging/HostLoom.Logging.csproj" />
-    <ProjectReference Include="../../src/HostLoom.Mapping.DependencyInjection/HostLoom.Mapping.DependencyInjection.csproj" />
   </ItemGroup>
 </Project>

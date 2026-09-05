@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Object mapping performance and strategy benchmarks for HostLoom.</Description>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="AutoMapper" />
+    <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <ProjectReference Include="../../src/HostLoom.Mapping.DependencyInjection/HostLoom.Mapping.DependencyInjection.csproj" />
+  </ItemGroup>
+</Project>

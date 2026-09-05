@@ -9,7 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 // CA1822: BenchmarkDotNet discovers instance methods, so a stateless benchmark cannot be static.
 #pragma warning disable CA1707, CA2000, CA1822
 
-namespace HostLoom.Benchmarks;
+namespace HostLoom.Mapping.Benchmarks;
 
 /// <summary>
 /// Candidate element-access strategies for <c>MapMany</c>, measured rather than argued. The

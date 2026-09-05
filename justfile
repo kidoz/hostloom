@@ -54,6 +54,14 @@ brokers-down:
 test-integration:
     dotnet test tests/HostLoom.IntegrationTests/HostLoom.IntegrationTests.csproj -c Release
 
+# Run all object mapping comparisons and strategy measurements.
+benchmark-mapping:
+    dotnet run --project benchmarks/HostLoom.Mapping.Benchmarks -c Release -- --filter "*"
+
+# Execute each mapping benchmark once to check setup, execution, and cleanup.
+benchmark-mapping-smoke:
+    dotnet run --project benchmarks/HostLoom.Mapping.Benchmarks -c Release -- --job Dry --filter "*"
+
 # Compare HostLoom, HybridCache, and FusionCache on process-local cache paths.
 benchmark-cache-libraries:
     dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --filter "*CacheLibrary*"
