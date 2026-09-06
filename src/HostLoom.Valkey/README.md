@@ -123,5 +123,30 @@ Validation on 2026-09-06: 44 shared conformance cases and eight adapter cases pa
 RESP2 and RESP3; shared conformance and invalidation use RESP3. Twelve deterministic adapter tests
 cover configuration, DI, error mapping, invalidation encoding, lifecycle, startup policy and
 non-replay after ambiguous lock writes. Source and package-only Native AOT consumers passed on
-macOS arm64. Live servers were disposable Linux arm64 containers without TLS or persistence;
-these runs do not certify live TLS, ACL, primary failover, or cluster behavior.
+macOS arm64. Those initial live runs used disposable Linux arm64 containers without TLS or
+persistence. TLS/ACL and restart coverage is provided separately below.
+
+
+### TLS/ACL and restart checks
+
+`just test-valkey-deployment` builds Release and runs seven opt-in deployment cases against its own
+TLS-only container. Docker and OpenSSL are required on Linux or macOS; first cache the image with
+`docker pull valkey/valkey:9.1`. Use `uv run --locked python scripts/test-valkey-deployment.py
+--no-build --image valkey/valkey:8.1` to test another cached image (`7.2` is also accepted).
+
+The temporary certificate authority is trusted only by the test clients. Certificate name and
+chain validation remain enabled. A restricted ACL user exercises cache and lease scripts,
+expiry, bulk reads and Pub/Sub; invalid trust, hostnames, credentials, keys, commands and channels
+are rejected. Restart cases reuse the same connection and subscriber, verify TLS/ACL/database
+settings on recovery, reload scripts, observe L1 expiry and lost leases, and preserve a replacement
+owner's lock. The runner removes only its owned container and temporary credentials/certificates.
+
+The normal suite skips these cases without a fixture. The release workflow runs them separately
+as a required step. This covers server-authenticated TLS with ACL passwords and stop/start of one
+nonpersistent primary; mutual TLS, replica failover and cluster semantics remain unverified.
+
+
+Deployment validation on 2026-09-06 passed all seven cases on each of `valkey/valkey:9.1`,
+`valkey/valkey:8.1`, and `valkey/valkey:7.2` (21 executions, no failures or skips), using .NET 10
+on macOS arm64 and Linux arm64 server containers. The complete solution gate passed 890 cases;
+the seven opt-in deployment cases were skipped there and verified by the separate runner above.
