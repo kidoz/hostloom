@@ -260,10 +260,18 @@ public sealed class RedisBackendTests
             );
             var multiplexer = await admin.GetMultiplexerAsync(Token);
             var server = multiplexer.GetServer(multiplexer.GetEndPoints()[0]);
-            var killed = await server.ClientKillAsync(
-                new ClientKillFilter().WithClientType(ClientType.PubSub)
-            );
-            Assert.True(killed >= 1);
+            var clients = await server.ClientListAsync();
+            var victims = clients
+                .Where(client =>
+                    string.Equals(client.Name, subscriber.ClientName, StringComparison.Ordinal)
+                    && client.ClientType == ClientType.PubSub
+                )
+                .ToArray();
+            Assert.NotEmpty(victims);
+            foreach (var victim in victims)
+            {
+                await server.ClientKillAsync(new ClientKillFilter().WithId(victim.Id));
+            }
 
             await CacheConformance.WaitUntilAsync(
                 () => Task.FromResult(subscriber.Reconnects >= 1),
