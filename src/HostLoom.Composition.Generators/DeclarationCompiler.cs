@@ -17,6 +17,26 @@ internal sealed partial class DeclarationCompiler
     private readonly List<Registration> _registrations = [];
     private readonly HashSet<string> _groups = new(StringComparer.Ordinal);
     private readonly List<Rejection> _rejections = [];
+
+    // These caches belong to one declaration compilation, never to an incremental pipeline value.
+    private INamedTypeSymbol[]? _declaredTypes;
+    private readonly Dictionary<INamedTypeSymbol, Dictionary<INamedTypeSymbol, bool>> _matches =
+        new(SymbolEqualityComparer.Default);
+    private readonly Dictionary<INamedTypeSymbol, Dictionary<INamedTypeSymbol, bool>> _attributes =
+        new(SymbolEqualityComparer.Default);
+    private readonly Dictionary<INamedTypeSymbol, bool> _attributeInheritance = new(
+        SymbolEqualityComparer.Default
+    );
+    private readonly Dictionary<INamedTypeSymbol, string> _typeNames = new(
+        TypeIdentityComparer.Instance
+    );
+    private readonly Dictionary<INamedTypeSymbol, IMethodSymbol[]> _constructors = new(
+        TypeIdentityComparer.Instance
+    );
+    private readonly Dictionary<INamedTypeSymbol, RegistrationGroup> _services = new(
+        SymbolEqualityComparer.Default
+    );
+    private readonly Dictionary<Rule, string> _originText = [];
     private int _ruleNumber;
 
     internal DeclarationCompiler(
@@ -687,12 +707,35 @@ internal sealed partial class DeclarationCompiler
         internal List<string> Reasons { get; } = reasons;
     }
 
+    // Symbol equality can ignore display details such as tuple element names. These caches
+    // preserve the exact symbol instance's spelling and substituted constructor parameters.
+    private sealed class TypeIdentityComparer : IEqualityComparer<INamedTypeSymbol>
+    {
+        internal static readonly TypeIdentityComparer Instance = new();
+
+        public bool Equals(INamedTypeSymbol? x, INamedTypeSymbol? y) => ReferenceEquals(x, y);
+
+        public int GetHashCode(INamedTypeSymbol obj) =>
+            System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+    }
+
+    private sealed class RegistrationGroup(string? lifetime)
+    {
+        internal List<Registration> Registrations { get; } = [];
+        internal HashSet<INamedTypeSymbol> Implementations { get; } =
+            new(SymbolEqualityComparer.Default);
+        internal string? Lifetime { get; } = lifetime;
+        internal bool HasMixedLifetimes { get; set; }
+        internal bool HasOne { get; set; }
+    }
+
     private sealed class Registration(
         INamedTypeSymbol implementation,
         INamedTypeSymbol service,
         Rule rule
     )
     {
+        internal int Index { get; set; }
         internal INamedTypeSymbol Implementation { get; } = implementation;
         internal INamedTypeSymbol Service { get; } = service;
         internal Rule Rule { get; } = rule;

@@ -8,11 +8,23 @@ namespace HostLoom.Composition.Benchmarks;
 
 internal static class GeneratorMeasurements
 {
-    internal static void Run(int count, string? exportDirectory = null)
+    private static readonly string[] DiscoveryServices =
+    [
+        "ICatalog",
+        "IInventory",
+        "IShipment",
+        "IInvoice",
+    ];
+
+    internal static void Run(int count, string? exportDirectory = null, string workload = "many")
     {
+        if (workload is not ("many" or "repeated-rules" or "captures"))
+            throw new ArgumentException("Unknown generator workload.", nameof(workload));
         var parse = new CSharpParseOptions(LanguageVersion.CSharp14);
         var types = new StringBuilder(
-            "public interface ICatalog {} public abstract class CatalogBase : ICatalog {}\n"
+            workload == "repeated-rules"
+                ? "public interface ICatalog {} public interface IInventory {} public interface IShipment {} public interface IInvoice {} public abstract class CatalogBase : ICatalog, IInventory, IShipment, IInvoice {}\n"
+                : "public interface ICatalog {} public abstract class CatalogBase : ICatalog {}\n"
         );
         for (var i = 0; i < count; i++)
             types
@@ -20,15 +32,43 @@ internal static class GeneratorMeasurements
                 .Append(i)
                 .Append(" : CatalogBase { public Catalog")
                 .Append(i)
-                .Append("() {} }\n");
-        const string rules = """
+                .Append(workload == "captures" ? "(Session session) {} }\n" : "() {} }\n");
+        string declaration = workload switch
+        {
+            "repeated-rules" => string.Join(
+                "\n",
+                DiscoveryServices.Select(service =>
+                    $"rules.AddClasses().AssignableTo<ICatalog>().As<{service}>().WithTransientLifetime().ExpectMany();"
+                )
+            ),
+            "captures" => """
+                rules.AddClasses().AssignableTo<ICatalog>().AsImplementedInterfaces().WithSingletonLifetime().ExpectMany();
+                rules.AddTypes(typeof(Session)).AsSelf().WithTransientLifetime().ExpectOne();
+                rules.AddTypes(typeof(Inventory)).As<IInventory>().WithSingletonLifetime().ExpectOne();
+                rules.AddOpenGeneric(typeof(IRepository<>), typeof(Repository<>)).WithTransientLifetime().ExpectOne();
+                """,
+            _ =>
+                "rules.AddClasses().AssignableTo<ICatalog>().AsImplementedInterfaces().WithTransientLifetime().ExpectMany();",
+        };
+        if (workload == "captures")
+            types.Append(
+                """
+                public class CatalogItem {}
+                public interface IInventory {}
+                public class Inventory : IInventory { public Inventory() {} }
+                public class Session { public Session(IInventory inventory, IRepository<CatalogItem> repository) {} }
+                public interface IRepository<T> {}
+                public class Repository<T> : IRepository<T> { public Repository(IInventory inventory) {} }
+                """
+            );
+        string rules = $$"""
             using HostLoom.Composition;
             public static partial class CatalogComposition
             {
                 [CompositionRules(nameof(CreatePlan))]
                 private static void Declare(CompositionRuleBuilder rules)
                 {
-                    rules.AddClasses().AssignableTo<ICatalog>().AsImplementedInterfaces().WithTransientLifetime().ExpectMany();
+                    {{declaration}}
                 }
                 public static partial CompositionPlan CreatePlan();
             }
@@ -46,7 +86,17 @@ internal static class GeneratorMeasurements
             "Unrelated.cs"
         );
         var ruleEdit = CSharpSyntaxTree.ParseText(
-            rules.Replace("WithTransientLifetime", "WithScopedLifetime", StringComparison.Ordinal),
+            workload == "captures"
+                ? rules.Replace(
+                    "WithSingletonLifetime",
+                    "WithTransientLifetime",
+                    StringComparison.Ordinal
+                )
+                : rules.Replace(
+                    "WithTransientLifetime",
+                    "WithScopedLifetime",
+                    StringComparison.Ordinal
+                ),
             parse,
             "Rules.cs"
         );
@@ -177,6 +227,10 @@ internal static class GeneratorMeasurements
             new
             {
                 count,
+                workload,
+                sourceSha256 = Convert.ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(baseline))
+                ),
                 environment = Program.EnvironmentData(),
                 first,
                 cases,

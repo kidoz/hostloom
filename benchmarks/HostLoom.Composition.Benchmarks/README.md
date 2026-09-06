@@ -46,3 +46,28 @@ Each command emits one first-call measurement and 15 warm batch averages after 6
 the raw JSON from five launches per version, and alternate which version runs first. Compare
 `apply` as an unchanged One/Throw control. These additional phases are not included in the default
 measurement script or reviewed budget checker; they have no reviewed regression thresholds yet.
+
+## Generator workload profiles
+
+The generator command accepts an optional workload after the candidate count:
+
+```sh
+DOTNET_TieredCompilation=0 DOTNET_ReadyToRun=1 dotnet benchmarks/HostLoom.Composition.Benchmarks/bin/Release/net10.0/HostLoom.Composition.Benchmarks.dll generator 1000 many
+DOTNET_TieredCompilation=0 DOTNET_ReadyToRun=1 dotnet benchmarks/HostLoom.Composition.Benchmarks/bin/Release/net10.0/HostLoom.Composition.Benchmarks.dll generator 1000 repeated-rules
+DOTNET_TieredCompilation=0 DOTNET_ReadyToRun=1 dotnet benchmarks/HostLoom.Composition.Benchmarks/bin/Release/net10.0/HostLoom.Composition.Benchmarks.dll generator 1000 captures
+```
+
+`many` is the original default: one discovery rule projects all candidates to a single transient
+Many service. `repeated-rules` discovers the same candidates four times, projecting a different
+interface per rule, for 4,000 registrations at count 1,000. `captures` registers 1,000 singleton
+candidates plus a shared transient session, singleton inventory and transient open-generic
+repository. Its constructor graph exercises exact and open-generic lookups without a scoped
+capture. These are generator measurements; no generated plan or service factory is executed.
+
+Each profile records first-run cost and 15 sequences of fresh-driver, unchanged, unrelated-edit
+and rule-edit runs. The capture profile edits Singleton to Transient so the changed declaration
+stays valid; the other profiles edit Transient to Scoped. Every profile checks output reuse for
+unrelated edits, requires rule edits to invalidate output, and emits a SHA-256 of the original
+generated source for before/after comparisons. Run five fresh processes per version in alternating
+order and preserve raw JSON. The additional profiles are outside the reviewed budget checker;
+the default measurement script still uses `many` at 46, 160 and 1,000 candidates.

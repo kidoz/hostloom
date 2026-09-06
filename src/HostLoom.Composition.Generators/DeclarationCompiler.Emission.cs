@@ -115,8 +115,15 @@ internal sealed partial class DeclarationCompiler
 
     private void EmitOrigin(StringBuilder text, Rule rule)
     {
+        if (_originText.TryGetValue(rule, out string? origin))
+        {
+            text.Append(origin);
+            return;
+        }
+        var value = new StringBuilder();
         FileLinePositionSpan position = rule.Syntax.GetLocation().GetLineSpan();
-        text.Append("new global::HostLoom.Composition.CompositionOrigin(")
+        value
+            .Append("new global::HostLoom.Composition.CompositionOrigin(")
             .Append(
                 Literal(
                     _method.ContainingType.ToDisplayString()
@@ -135,6 +142,9 @@ internal sealed partial class DeclarationCompiler
             .Append(", ")
             .Append(Literal(rule.Selector))
             .Append(')');
+        origin = value.ToString();
+        _originText.Add(rule, origin);
+        text.Append(origin);
     }
 
     private string NormalizeSourcePath(string source)
@@ -183,7 +193,7 @@ internal sealed partial class DeclarationCompiler
         && _model.Compilation.IsSymbolAccessibleWithin(type, _method.ContainingType)
         && (type.ContainingType is null || CanEmitType(type.ContainingType));
 
-    private static string TypeNameForRejection(INamedTypeSymbol type) =>
+    private string TypeNameForRejection(INamedTypeSymbol type) =>
         TypeName(ContainsParameters(type) ? type.ConstructUnboundGenericType() : type);
 
     private static string Access(Accessibility accessibility) =>
@@ -200,8 +210,15 @@ internal sealed partial class DeclarationCompiler
     private static string Literal(string value) =>
         Microsoft.CodeAnalysis.CSharp.SymbolDisplay.FormatLiteral(value, quote: true);
 
-    private static string TypeName(INamedTypeSymbol type) =>
-        type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+    private string TypeName(INamedTypeSymbol type)
+    {
+        if (!_typeNames.TryGetValue(type, out string? name))
+            _typeNames.Add(
+                type,
+                name = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
+            );
+        return name;
+    }
 
     private static string MetadataName(INamedTypeSymbol type) =>
         type.ContainingType is null

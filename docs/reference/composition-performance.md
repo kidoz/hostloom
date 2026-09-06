@@ -75,6 +75,51 @@ observations per variant do not establish an application-startup speedup. Warm p
 batch-average percentiles. The new phases have no reviewed regression budgets, and the existing
 budgets were not changed. Results do not cover every replacement predicate or collection size.
 
+## Generator analysis update
+
+On **2026-09-06**, declaration compilation began reusing its discovered type inventory,
+assignability/attribute results, formatted type names and rule-origin text. Conflict validation
+indexes registrations by service and bypasses pairwise checks for valid Many groups; conflicting
+groups still emit every original diagnostic pair in order. Dependency validation reuses that
+service index, indexes open generics, caches constructor inspection and merges exact/open groups
+in declaration order while retaining last-registration and exact-over-open precedence.
+
+All caches live inside one declaration compilation. Formatting and constructor caches use symbol
+instance identity to preserve details such as tuple element names. No symbols or match results are
+cached across edits. The incremental pipeline still reanalyzes an unrelated edit before comparing
+emitted text; this update reduces that work rather than claiming it is skipped. Generated source
+hashes match the previous generator at `394b8b9` in every measured workload. Regression tests also
+cover diagnostic order/locations and inherited attributes/interfaces, attribute usage, constructors
+and generic constraints changing and reverting with a retained driver.
+
+The comparison used the reference environment above and the same expanded benchmark harness for
+both generator versions. Five fresh process pairs alternated execution order for each workload.
+Each process recorded 15 driver sequences, giving 75 observations per phase and version. The
+[workload profiles](../../benchmarks/HostLoom.Composition.Benchmarks/README.md#generator-workload-profiles)
+use 1,000 candidates: one Many service, four repeated discovery rules producing 4,000 registrations,
+or singleton candidates sharing transient dependencies and an open-generic repository.
+
+| Unrelated-edit workload | Before median / p95 ms | After median / p95 ms | Before managed B | After managed B |
+| --- | ---: | ---: | ---: | ---: |
+| One Many service | 13.62 / 25.67 | 7.47 / 18.63 | 7,390,208 | 6,866,272 |
+| Four discovery rules | 81.17 / 93.12 | 12.05 / 20.23 | 21,199,888 | 17,719,032 |
+| Singleton dependency graph | 67.25 / 74.14 | 16.69 / 24.75 | 12,340,056 | 10,219,160 |
+
+These correspond to **45.2% / 85.1% / 75.2%** lower median time and **7.1% / 16.4% / 17.2%** lower
+allocation. Fresh-driver medians were **14.50 → 7.70 ms**, **80.96 → 24.86 ms** and
+**69.35 → 12.64 ms**, respectively. Smaller Many workloads also decreased: unrelated-edit medians
+were **0.579 → 0.518 ms** at 46 candidates and **1.481 → 1.125 ms** at 160 candidates. No-op runs
+still reuse output. First-process timing did not consistently improve: the default 1,000-candidate
+median was **821.03 → 840.78 ms**. Warm driver improvements do not establish faster process startup,
+request execution or lower retained memory; no confidence intervals were calculated.
+
+A separate complete measurement run passed the existing performance budget checker without
+changing any thresholds. At 1,000 candidates, five paired clean consumer builds added
+**106.01 ms median / 128.88 ms p95**, within the **200 ms** target. This is added build time against
+the handwritten consumer, not an equivalent percentage improvement over the previous generator.
+The earlier timing-budget failures remain historical observations; a passing repeat does not
+identify their cause. The additional generator profiles have no reviewed budget thresholds yet.
+
 ## Reproduce
 
 From the repository root, build once, then run on an otherwise idle reference machine:

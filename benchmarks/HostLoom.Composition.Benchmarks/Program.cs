@@ -23,7 +23,10 @@ internal static class Program
         }
         if (args[0] == "generator")
         {
-            GeneratorMeasurements.Run(int.Parse(args[1], CultureInfo.InvariantCulture));
+            GeneratorMeasurements.Run(
+                int.Parse(args[1], CultureInfo.InvariantCulture),
+                workload: args.Length > 2 ? args[2] : "many"
+            );
             return;
         }
         if (args[0] == "verify")

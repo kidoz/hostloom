@@ -7,7 +7,8 @@ internal sealed partial class DeclarationCompiler
     private void Select(Rule rule)
     {
         IEnumerable<INamedTypeSymbol> candidates = rule.Discover
-            ? DeclaredTypes(_model.Compilation.Assembly.GlobalNamespace)
+            ? _declaredTypes ??= DeclaredTypes(_model.Compilation.Assembly.GlobalNamespace)
+                .ToArray()
             : rule.Types;
         var selected = candidates
             .Distinct<INamedTypeSymbol>(SymbolEqualityComparer.Default)
@@ -222,7 +223,16 @@ internal sealed partial class DeclarationCompiler
             );
     }
 
-    private static bool HasAttribute(INamedTypeSymbol type, INamedTypeSymbol required)
+    private bool HasAttribute(INamedTypeSymbol type, INamedTypeSymbol required)
+    {
+        if (!_attributes.TryGetValue(required, out var results))
+            _attributes.Add(required, results = new(SymbolEqualityComparer.Default));
+        if (!results.TryGetValue(type, out bool result))
+            results.Add(type, result = ComputeHasAttribute(type, required));
+        return result;
+    }
+
+    private bool ComputeHasAttribute(INamedTypeSymbol type, INamedTypeSymbol required)
     {
         for (INamedTypeSymbol? current = type; current is not null; current = current.BaseType)
             foreach (var attribute in current.GetAttributes())
@@ -238,15 +248,18 @@ internal sealed partial class DeclarationCompiler
         return false;
     }
 
-    private static bool AttributeIsInherited(INamedTypeSymbol attribute)
+    private bool AttributeIsInherited(INamedTypeSymbol attribute)
     {
+        if (_attributeInheritance.TryGetValue(attribute, out bool inherited))
+            return inherited;
         for (INamedTypeSymbol? current = attribute; current is not null; current = current.BaseType)
             foreach (var usage in current.GetAttributes())
                 if (usage.AttributeClass?.ToDisplayString() == "System.AttributeUsageAttribute")
-                    return !usage.NamedArguments.Any(static argument =>
-                        argument.Key == "Inherited" && argument.Value.Value is false
+                    return _attributeInheritance[attribute] = !usage.NamedArguments.Any(
+                        static argument =>
+                            argument.Key == "Inherited" && argument.Value.Value is false
                     );
-        return true;
+        return _attributeInheritance[attribute] = true;
     }
 
     private IEnumerable<INamedTypeSymbol> DeclaredTypes(INamespaceOrTypeSymbol container)
@@ -269,15 +282,29 @@ internal sealed partial class DeclarationCompiler
 
     private void ValidateConflicts()
     {
-        for (var i = 0; i < _registrations.Count; i++)
+        for (var index = 0; index < _registrations.Count; index++)
         {
-            Registration current = _registrations[i];
-            for (var j = 0; j < i; j++)
+            _cancellation.ThrowIfCancellationRequested();
+            Registration current = _registrations[index];
+            current.Index = index;
+            if (!_services.TryGetValue(current.Service, out RegistrationGroup? group))
+                _services.Add(
+                    current.Service,
+                    group = new RegistrationGroup(current.Rule.Lifetime)
+                );
+            // Valid Many groups avoid pairwise comparisons. On conflict, retain every diagnostic
+            // in the original registration-pair order, including both rule locations.
+            if (
+                current.Rule.Cardinality == "One"
+                || group.HasOne
+                || group.HasMixedLifetimes
+                || current.Rule.Lifetime != group.Lifetime
+                || group.Implementations.Contains(current.Implementation)
+            )
             {
-                Registration previous = _registrations[j];
-                if (
-                    SymbolEqualityComparer.Default.Equals(current.Service, previous.Service)
-                    && (
+                foreach (Registration previous in group.Registrations)
+                {
+                    if (
                         current.Rule.Cardinality == "One"
                         || previous.Rule.Cardinality == "One"
                         || current.Rule.Lifetime != previous.Rule.Lifetime
@@ -286,14 +313,18 @@ internal sealed partial class DeclarationCompiler
                             previous.Implementation
                         )
                     )
-                )
-                    Error(
-                        CompositionDiagnostics.Conflict,
-                        current.Rule.Syntax,
-                        $"Service '{current.Service}' conflicts between '{previous.Implementation}' (rule {previous.Rule.Number}) and '{current.Implementation}' (rule {current.Rule.Number}): duplicate, cardinality or lifetime mismatch.",
-                        previous.Rule.Syntax.GetLocation()
-                    );
+                        Error(
+                            CompositionDiagnostics.Conflict,
+                            current.Rule.Syntax,
+                            $"Service '{current.Service}' conflicts between '{previous.Implementation}' (rule {previous.Rule.Number}) and '{current.Implementation}' (rule {current.Rule.Number}): duplicate, cardinality or lifetime mismatch.",
+                            previous.Rule.Syntax.GetLocation()
+                        );
+                }
             }
+            group.Registrations.Add(current);
+            group.Implementations.Add(current.Implementation);
+            group.HasOne |= current.Rule.Cardinality == "One";
+            group.HasMixedLifetimes |= current.Rule.Lifetime != group.Lifetime;
         }
     }
 
@@ -305,7 +336,16 @@ internal sealed partial class DeclarationCompiler
                 filter.OriginalDefinition
             );
 
-    private static bool Matches(INamedTypeSymbol type, INamedTypeSymbol filter)
+    private bool Matches(INamedTypeSymbol type, INamedTypeSymbol filter)
+    {
+        if (!_matches.TryGetValue(filter, out var results))
+            _matches.Add(filter, results = new(SymbolEqualityComparer.Default));
+        if (!results.TryGetValue(type, out bool result))
+            results.Add(type, result = ComputeMatches(type, filter));
+        return result;
+    }
+
+    private static bool ComputeMatches(INamedTypeSymbol type, INamedTypeSymbol filter)
     {
         for (INamedTypeSymbol? current = type; current is not null; current = current.BaseType)
             if (TypeMatches(current, filter))

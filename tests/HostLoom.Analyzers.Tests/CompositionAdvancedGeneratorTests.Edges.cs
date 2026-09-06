@@ -308,6 +308,168 @@ public sealed partial class CompositionAdvancedGeneratorTests
     }
 
     [Fact]
+    public void Equivalent_service_symbols_preserve_their_tuple_element_names_in_emitted_source()
+    {
+        var compilation = CompositionGeneratorHarness.Compilation(
+            Fixture(
+                "rules.AddClasses().AssignableTo(typeof(ICatalog<>)).AsImplementedInterfaces().WithTransientLifetime().ExpectMany();",
+                """
+                public interface ICatalog<T> {}
+                public class Catalog : ICatalog<(int Item, int Count)> { public Catalog() {} }
+                public class Inventory : ICatalog<(int Product, int Quantity)> { public Inventory() {} }
+                """
+            )
+        );
+        var (driver, output) = CompositionGeneratorHarness.Run(compilation);
+        CompositionGeneratorHarness.AssertSuccess(driver, output);
+        string source = CompositionGeneratorHarness.Source(driver);
+        foreach (string name in new[] { "Catalog", "Inventory" })
+        {
+            var service = Assert.Single(compilation.GetTypeByMetadataName(name)!.AllInterfaces);
+            Assert.Contains(
+                "typeof("
+                    + service.ToDisplayString(
+                        Microsoft.CodeAnalysis.SymbolDisplayFormat.FullyQualifiedFormat
+                    )
+                    + ")",
+                source,
+                StringComparison.Ordinal
+            );
+        }
+    }
+
+    [Fact]
+    public void Interleaved_conflicts_preserve_every_pair_and_both_rule_locations()
+    {
+        var (driver, _) = CompositionGeneratorHarness.Run(
+            CompositionGeneratorHarness.Compilation(
+                Fixture(
+                    """
+                    rules.AddTypes(typeof(Catalog)).As<ICatalog>().WithTransientLifetime().ExpectMany();
+                    rules.AddTypes(typeof(Stock)).As<IInventory>().WithTransientLifetime().ExpectMany();
+                    rules.AddTypes(typeof(Inventory)).As<ICatalog>().WithScopedLifetime().ExpectMany();
+                    rules.AddTypes(typeof(Order)).As<IInventory>().WithTransientLifetime().ExpectOne();
+                    rules.AddTypes(typeof(Shipment)).As<ICatalog>().WithTransientLifetime().ExpectMany();
+                    rules.AddTypes(typeof(Catalog)).As<ICatalog>().WithTransientLifetime().ExpectMany();
+                    """,
+                    """
+                    public interface ICatalog {} public interface IInventory {}
+                    public class Catalog : ICatalog { public Catalog() {} }
+                    public class Inventory : ICatalog { public Inventory() {} }
+                    public class Shipment : ICatalog { public Shipment() {} }
+                    public class Stock : IInventory { public Stock() {} }
+                    public class Order : IInventory { public Order() {} }
+                    """
+                )
+            )
+        );
+        var diagnostics = driver
+            .GetRunResult()
+            .Diagnostics.Where(item => item.Id == "HLM0013")
+            .ToArray();
+        (
+            string Service,
+            string Previous,
+            int PreviousRule,
+            string Current,
+            int CurrentRule
+        )[] pairs =
+        [
+            ("ICatalog", "Catalog", 1, "Inventory", 3),
+            ("IInventory", "Stock", 2, "Order", 4),
+            ("ICatalog", "Inventory", 3, "Shipment", 5),
+            ("ICatalog", "Catalog", 1, "Catalog", 6),
+            ("ICatalog", "Inventory", 3, "Catalog", 6),
+        ];
+        Assert.Equal(pairs.Length, diagnostics.Length);
+        for (var index = 0; index < pairs.Length; index++)
+        {
+            var pair = pairs[index];
+            var diagnostic = diagnostics[index];
+            Assert.Equal(
+                $"Rule declaration 'Declare': Service '{pair.Service}' conflicts between '{pair.Previous}' (rule {pair.PreviousRule}) and '{pair.Current}' (rule {pair.CurrentRule}): duplicate, cardinality or lifetime mismatch.",
+                diagnostic.GetMessage(System.Globalization.CultureInfo.InvariantCulture)
+            );
+            var previous = Assert.Single(diagnostic.AdditionalLocations);
+            Assert.Equal(
+                pair.CurrentRule - pair.PreviousRule,
+                diagnostic.Location.GetLineSpan().StartLinePosition.Line
+                    - previous.GetLineSpan().StartLinePosition.Line
+            );
+        }
+    }
+
+    [Fact]
+    public void Enumerable_capture_diagnostics_merge_closed_and_open_services_in_declaration_order()
+    {
+        var (driver, _) = CompositionGeneratorHarness.Run(
+            CompositionGeneratorHarness.Compilation(
+                Fixture(
+                    """
+                    rules.AddTypes(typeof(Catalog)).AsSelf().WithSingletonLifetime().ExpectOne();
+                    rules.AddTypes(typeof(ClosedSession)).As<ISession<string>>().WithScopedLifetime().ExpectMany();
+                    rules.AddOpenGeneric(typeof(ISession<>), typeof(Session<>)).WithScopedLifetime().ExpectMany();
+                    rules.AddTypes(typeof(AlternateSession)).As<ISession<string>>().WithScopedLifetime().ExpectMany();
+                    """,
+                    """
+                    public class Catalog(System.Collections.Generic.IEnumerable<ISession<string>> sessions) { public object Sessions { get; } = sessions; }
+                    public interface ISession<T> {}
+                    public class ClosedSession : ISession<string> { public ClosedSession() {} }
+                    public class Session<T> : ISession<T> { public Session() {} }
+                    public class AlternateSession : ISession<string> { public AlternateSession() {} }
+                    """
+                )
+            )
+        );
+        var diagnostics = driver
+            .GetRunResult()
+            .Diagnostics.Where(item => item.Id == "HLM0016")
+            .ToArray();
+        Assert.Equal(3, diagnostics.Length);
+        for (var index = 0; index < diagnostics.Length; index++)
+        {
+            var diagnostic = diagnostics[index];
+            var target = Assert.Single(diagnostic.AdditionalLocations);
+            Assert.Equal(
+                index + 1,
+                target.GetLineSpan().StartLinePosition.Line
+                    - diagnostic.Location.GetLineSpan().StartLinePosition.Line
+            );
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Capture_validation_uses_only_the_last_exact_registration(bool capturingLast)
+    {
+        const string safe =
+            "rules.AddTypes(typeof(SafeSession)).As<ISession>().WithTransientLifetime().ExpectMany();";
+        const string capturing =
+            "rules.AddTypes(typeof(CapturingSession)).As<ISession>().WithTransientLifetime().ExpectMany();";
+        var (driver, output) = CompositionGeneratorHarness.Run(
+            CompositionGeneratorHarness.Compilation(
+                Fixture(
+                    "rules.AddTypes(typeof(Catalog)).AsSelf().WithSingletonLifetime().ExpectOne();\n"
+                        + (capturingLast ? safe + capturing : capturing + safe)
+                        + "rules.AddTypes(typeof(Scope)).AsSelf().WithScopedLifetime().ExpectOne();",
+                    """
+                    public class Catalog(ISession session) { public object Session { get; } = session; }
+                    public interface ISession {}
+                    public class SafeSession : ISession { public SafeSession() {} }
+                    public class CapturingSession(Scope scope) : ISession { public object Scope { get; } = scope; }
+                    public class Scope { public Scope() {} }
+                    """
+                )
+            )
+        );
+        if (capturingLast)
+            Assert.Single(driver.GetRunResult().Diagnostics, item => item.Id == "HLM0016");
+        else
+            CompositionGeneratorHarness.AssertSuccess(driver, output);
+    }
+
+    [Fact]
     public void Advanced_output_has_reviewable_snapshot()
     {
         var (driver, output) = CompositionGeneratorHarness.Run(
