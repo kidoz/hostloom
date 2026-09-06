@@ -46,6 +46,35 @@ does not revalidate generator budgets: a separate pre-change repeat observed fir
 of **39.75 µs** against a **28.376 µs** ceiling and 1,000-candidate added-build p95 of **259.55 ms**
 against the **200 ms** target. These timing observations remain unresolved; no budgets were relaxed.
 
+## Registration strategy update
+
+A second runtime update on **2026-09-06** limits first-collision searches to Skip and Throw.
+Replace now reports removals and compacts retained descriptors in one ordered pass, then appends
+the incoming descriptor. Validation and target-collection mutation boundaries remain unchanged.
+
+The [strategy workloads](../../benchmarks/HostLoom.Composition.Benchmarks/README.md#append-and-replace-workloads)
+prepare 100 registrations and 100 existing scoped factory descriptors outside timing. Each call
+creates and seeds a collection and applies the plan. Append leaves 200 descriptors and reports 100
+additions; ServiceType replacement leaves 100 descriptors and reports 100 removals plus 100 additions.
+Neither path invokes factories or builds a provider.
+
+Against the service-grouped implementation at `035f16b`, five alternating process pairs per phase
+used the same reference environment, 64 warmups, and 15 batches of 32 calls described above.
+Both variants verified descriptor order and report contents before measurement.
+
+| Phase | Before median / p95 µs | After median / p95 µs | Before managed B/op | After managed B/op |
+| --- | ---: | ---: | ---: | ---: |
+| apply-append | 43.06 / 45.68 | 25.06 / 27.46 | 116,520 | 109,320 |
+| apply-replace | 160.08 / 170.12 | 65.61 / 69.07 | 143,264 | 116,064 |
+| apply (One/Throw control, empty collection) | 34.51 / 39.51 | 34.21 / 37.78 | 91,592 | 90,792 |
+
+Append warm time decreased by **41.8%** and allocation by **6.2%**; Replace warm time decreased by
+**59.0%** and allocation by **19.0%**. The control's timing difference is small and inconclusive.
+First-call medians were **3.98 → 3.71 ms** for Append and **3.76 → 3.66 ms** for Replace; these five
+observations per variant do not establish an application-startup speedup. Warm percentiles remain
+batch-average percentiles. The new phases have no reviewed regression budgets, and the existing
+budgets were not changed. Results do not cover every replacement predicate or collection size.
+
 ## Reproduce
 
 From the repository root, build once, then run on an otherwise idle reference machine:

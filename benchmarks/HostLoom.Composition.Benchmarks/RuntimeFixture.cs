@@ -18,6 +18,84 @@ internal static partial class RuntimeFixture
 
     public static partial CompositionPlan CreatePlan();
 
+    internal static CompositionPlan CreateStrategyPlan(CompositionRegistrationStrategy strategy) =>
+        new(
+            "CatalogStrategy",
+            CreatePlan()
+                .Probe()
+                .Registrations.Select(entry => new CompositionRegistration(
+                    entry.Descriptor,
+                    strategy == CompositionRegistrationStrategy.Replace
+                        ? CompositionCardinality.One
+                        : CompositionCardinality.Many,
+                    entry.Origin,
+                    strategy
+                ))
+        );
+
+    internal static ServiceDescriptor[] ExistingFactories(CompositionPlan plan) =>
+        plan.Probe()
+            .Registrations.Select(entry =>
+                ServiceDescriptor.Describe(
+                    entry.Descriptor.ServiceType,
+                    static _ =>
+                        throw new InvalidOperationException(
+                            "Composition must not execute factories."
+                        ),
+                    entry.Descriptor.Lifetime
+                )
+            )
+            .ToArray();
+
+    internal static IServiceCollection CreateCollection(ServiceDescriptor[] existing)
+    {
+        IServiceCollection services = new ServiceCollection();
+        foreach (ServiceDescriptor descriptor in existing)
+            services.Add(descriptor);
+        return services;
+    }
+
+    internal static void VerifyStrategy(CompositionRegistrationStrategy strategy)
+    {
+        CompositionPlan plan = CreateStrategyPlan(strategy);
+        ServiceDescriptor[] existing = ExistingFactories(plan);
+        IServiceCollection services = CreateCollection(existing);
+        IReadOnlyList<CompositionApplicationDecision> decisions = plan.ApplyTo(services).Probe();
+        ServiceDescriptor[] incoming = plan.Probe()
+            .Registrations.Select(entry => entry.Descriptor)
+            .ToArray();
+        bool replace = strategy == CompositionRegistrationStrategy.Replace;
+        ServiceDescriptor[] expected = replace ? incoming : [.. existing, .. incoming];
+        if (!services.SequenceEqual(expected) || decisions.Count != (replace ? 200 : 100))
+            throw new InvalidOperationException(
+                "Strategy changed descriptor order or report size."
+            );
+        for (var index = 0; index < incoming.Length; index++)
+        {
+            int addedIndex = replace ? index * 2 + 1 : index;
+            CompositionApplicationDecision added = decisions[addedIndex];
+            if (
+                !ReferenceEquals(added.Descriptor, incoming[index])
+                || added.Outcome != CompositionApplicationOutcome.Added
+                || added.Origin != plan.Probe().Registrations[index].Origin
+            )
+                throw new InvalidOperationException(
+                    "Strategy changed the added descriptor report."
+                );
+            if (replace)
+            {
+                CompositionApplicationDecision removed = decisions[addedIndex - 1];
+                if (
+                    !ReferenceEquals(removed.Descriptor, existing[index])
+                    || removed.Outcome != CompositionApplicationOutcome.Replaced
+                    || removed.Origin != added.Origin
+                    || removed.PreviousOrigin is not null
+                )
+                    throw new InvalidOperationException("Strategy changed the replacement report.");
+            }
+        }
+    }
+
     internal static IServiceCollection Handwritten()
     {
         var services = new ServiceCollection();

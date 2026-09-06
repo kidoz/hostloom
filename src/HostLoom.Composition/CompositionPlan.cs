@@ -154,7 +154,11 @@ public sealed class CompositionPlan
                     ? CompositionRegistrationStrategy.Throw
                     : CompositionRegistrationStrategy.Append
                 : entry.Strategy;
-        int collision = staged.FindIndex(item => SameService(item.Descriptor, entry.Descriptor));
+        int collision = strategy
+            is CompositionRegistrationStrategy.Skip
+                or CompositionRegistrationStrategy.Throw
+            ? staged.FindIndex(item => SameService(item.Descriptor, entry.Descriptor))
+            : -1;
         if (strategy == CompositionRegistrationStrategy.Skip && collision >= 0)
         {
             decisions.Add(
@@ -179,12 +183,18 @@ public sealed class CompositionPlan
         }
         if (strategy == CompositionRegistrationStrategy.Replace)
         {
-            foreach (
-                TrackedDescriptor item in staged.Where(item =>
-                    ShouldReplace(entry, item.Descriptor)
-                )
-            )
+            // Report removals and compact retained descriptors in their original order.
+            var retainedCount = 0;
+            for (var index = 0; index < staged.Count; index++)
             {
+                TrackedDescriptor item = staged[index];
+                if (!ShouldReplace(entry, item.Descriptor))
+                {
+                    if (retainedCount != index)
+                        staged[retainedCount] = item;
+                    retainedCount++;
+                    continue;
+                }
                 decisions.Add(
                     new CompositionApplicationDecision(
                         item.Descriptor,
@@ -195,7 +205,7 @@ public sealed class CompositionPlan
                     )
                 );
             }
-            staged.RemoveAll(item => ShouldReplace(entry, item.Descriptor));
+            staged.RemoveRange(retainedCount, staged.Count - retainedCount);
         }
         staged.Add(new TrackedDescriptor(entry.Descriptor, entry));
         decisions.Add(

@@ -47,15 +47,24 @@ internal static class Program
             CompositionAssert.RegistrationSequence(expected, handwritten);
             if (expected.Count != 100)
                 throw new InvalidOperationException("Fixture must contain 100 registrations.");
+            RuntimeFixture.VerifyStrategy(CompositionRegistrationStrategy.Append);
+            RuntimeFixture.VerifyStrategy(CompositionRegistrationStrategy.Replace);
             Write(new { verified = true, count = expected.Count });
             return;
         }
-        CompositionPlan? planForPhase = args[0]
-            is "apply"
-                or "probe"
-                or "ledger-record"
-                or "ledger-report"
-            ? RuntimeFixture.CreatePlan()
+        CompositionPlan? planForPhase = args[0] switch
+        {
+            "apply-append" => RuntimeFixture.CreateStrategyPlan(
+                CompositionRegistrationStrategy.Append
+            ),
+            "apply-replace" => RuntimeFixture.CreateStrategyPlan(
+                CompositionRegistrationStrategy.Replace
+            ),
+            "apply" or "probe" or "ledger-record" or "ledger-report" => RuntimeFixture.CreatePlan(),
+            _ => null,
+        };
+        ServiceDescriptor[]? existingForPhase = args[0] is "apply-append" or "apply-replace"
+            ? RuntimeFixture.ExistingFactories(planForPhase!)
             : null;
         CompositionApplicationReport? report = args[0] is "ledger-record" or "ledger-report"
             ? planForPhase!.ApplyTo(new ServiceCollection())
@@ -71,6 +80,8 @@ internal static class Program
         {
             "plan" => RuntimeFixture.CreatePlan,
             "apply" => () => planForPhase!.ApplyTo(new ServiceCollection()),
+            "apply-append" or "apply-replace" => () =>
+                planForPhase!.ApplyTo(RuntimeFixture.CreateCollection(existingForPhase!)),
             "probe" => () => planForPhase!.Probe(),
             "total" => () => RuntimeFixture.CreatePlan().ApplyTo(new ServiceCollection()),
             "handwritten" => RuntimeFixture.Handwritten,

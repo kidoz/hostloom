@@ -285,18 +285,15 @@ public sealed class CompositionPlanTests
         var opaque = ServiceDescriptor.Transient<IInventory>(_ =>
             throw new InvalidOperationException("Executed")
         );
-        var services = new ServiceCollection
-        {
-            ServiceDescriptor.Transient<ICatalog, Catalog>(),
-            ServiceDescriptor.Transient<IInventory, Inventory>(),
-            keyed,
-            opaque,
-        };
+        var catalog = ServiceDescriptor.Transient<ICatalog, Catalog>();
+        var inventory = ServiceDescriptor.Transient<IInventory, Inventory>();
+        var incoming = ServiceDescriptor.Transient<ICatalog, Inventory>();
+        var services = new ServiceCollection { catalog, inventory, keyed, opaque };
         var plan = new CompositionPlan(
             "catalog",
             [
                 Entry(
-                    ServiceDescriptor.Transient<ICatalog, Inventory>(),
+                    incoming,
                     CompositionCardinality.Many,
                     CompositionRegistrationStrategy.Replace,
                     behavior
@@ -315,6 +312,121 @@ public sealed class CompositionPlanTests
         Assert.Contains(keyed, services);
         Assert.Contains(opaque, services);
         Assert.Equal(typeof(Inventory), services.Last().ImplementationType);
+        ServiceDescriptor[] retained = behavior switch
+        {
+            CompositionReplacementBehavior.ServiceType => [inventory, keyed, opaque, incoming],
+            CompositionReplacementBehavior.ImplementationType => [catalog, keyed, opaque, incoming],
+            _ => [keyed, opaque, incoming],
+        };
+        ServiceDescriptor[] removed = behavior switch
+        {
+            CompositionReplacementBehavior.ServiceType => [catalog],
+            CompositionReplacementBehavior.ImplementationType => [inventory],
+            _ => [catalog, inventory],
+        };
+        Assert.Equal(retained, services.ToArray());
+        Assert.Equal(
+            [.. removed, incoming],
+            report.Probe().Select(item => item.Descriptor).ToArray()
+        );
+        Assert.All(
+            report.Probe().Take(replaced),
+            decision =>
+            {
+                Assert.Equal(CompositionApplicationOutcome.Replaced, decision.Outcome);
+                Assert.Equal(Origin, decision.Origin);
+                Assert.Null(decision.PreviousOrigin);
+            }
+        );
+        Assert.Equal(CompositionApplicationOutcome.Added, report.Probe()[^1].Outcome);
+    }
+
+    [Fact]
+    public void Replacement_preserves_origins_and_later_skip_uses_the_compacted_index()
+    {
+        var label = ServiceDescriptor.Singleton("catalog");
+        var keyed = ServiceDescriptor.KeyedTransient<ICatalog, Catalog>("local");
+        var catalog = ServiceDescriptor.Transient<ICatalog, Catalog>();
+        var inventory = ServiceDescriptor.Transient<IInventory, Inventory>();
+        var inventoryOrigin = new CompositionOrigin("DeclareInventory", "inventory");
+        var services = new ServiceCollection { label, keyed };
+        new CompositionPlan(
+            "original",
+            [
+                Entry(catalog),
+                new CompositionRegistration(inventory, CompositionCardinality.One, inventoryOrigin),
+            ]
+        ).ApplyTo(services);
+        var incoming = ServiceDescriptor.Transient<ICatalog, Inventory>();
+        var skipped = ServiceDescriptor.Transient<IInventory, Catalog>();
+        var incomingOrigin = new CompositionOrigin("ReplaceCatalog", "replacement");
+        var plan = new CompositionPlan(
+            "replacement",
+            [
+                new CompositionRegistration(
+                    incoming,
+                    CompositionCardinality.One,
+                    incomingOrigin,
+                    CompositionRegistrationStrategy.Replace
+                ),
+                new CompositionRegistration(
+                    skipped,
+                    CompositionCardinality.One,
+                    incomingOrigin,
+                    CompositionRegistrationStrategy.Skip
+                ),
+            ]
+        );
+
+        CompositionApplicationReport report = plan.ApplyTo(services);
+
+        Assert.Equal([label, keyed, inventory, incoming], services.ToArray());
+        Assert.Equal(
+            new CompositionApplicationDecision[]
+            {
+                new(
+                    catalog,
+                    incomingOrigin,
+                    CompositionApplicationOutcome.Replaced,
+                    "Replaced by rule 'ReplaceCatalog'.",
+                    Origin
+                ),
+                new(
+                    incoming,
+                    incomingOrigin,
+                    CompositionApplicationOutcome.Added,
+                    "Added by rule 'ReplaceCatalog'."
+                ),
+                new(
+                    skipped,
+                    incomingOrigin,
+                    CompositionApplicationOutcome.Skipped,
+                    "Kept existing service at collection index 2.",
+                    inventoryOrigin
+                ),
+            },
+            report.Probe().ToArray()
+        );
+    }
+
+    [Fact]
+    public void Replacement_without_a_match_keeps_all_existing_descriptors_in_order()
+    {
+        var keyed = ServiceDescriptor.KeyedTransient<ICatalog, Catalog>("local");
+        var inventory = ServiceDescriptor.Transient<IInventory, Catalog>();
+        var services = new ServiceCollection { keyed, inventory };
+        var incoming = ServiceDescriptor.Transient<ICatalog, Catalog>();
+        var plan = new CompositionPlan(
+            "catalog",
+            [Entry(incoming, strategy: CompositionRegistrationStrategy.Replace)]
+        );
+
+        CompositionApplicationReport report = plan.ApplyTo(services);
+
+        Assert.Equal([keyed, inventory, incoming], services.ToArray());
+        var decision = Assert.Single(report.Probe());
+        Assert.Equal(CompositionApplicationOutcome.Added, decision.Outcome);
+        Assert.Same(incoming, decision.Descriptor);
     }
 
     [Fact]
