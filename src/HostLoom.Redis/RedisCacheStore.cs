@@ -5,8 +5,8 @@ using StackExchange.Redis;
 namespace HostLoom.Redis;
 
 /// <summary>
-/// The distributed tier on Redis strings: <c>SET … PX</c>, <c>GET</c> with <c>PTTL</c>
-/// pipelined, <c>MGET</c>, <c>UNLINK</c>, and <c>SET … NX PX</c> for set-if-absent. Tags are sets
+/// The distributed tier on Redis strings: <c>SET … PX</c>, atomic scripted value/TTL reads,
+/// bulk reads, deletion, and <c>SET … NX PX</c> for set-if-absent. Tags are sets
 /// under the tag-index keys the cache hands in, expiring no sooner than their longest member.
 /// Every failure surfaces as <see cref="CacheStoreException"/> with a backend-neutral kind.
 /// </summary>
@@ -21,6 +21,11 @@ public sealed class RedisCacheStore
         IAsyncDisposable
 {
     private const int RemoveBatchSize = 500;
+    private const string ReadScript = """
+        local value = redis.call('GET', KEYS[1])
+        if not value then return false end
+        return {value, redis.call('PTTL', KEYS[1])}
+        """;
     private readonly RedisConnection _connection;
     private readonly bool _hashTags;
     private readonly bool _ownsConnection;
@@ -60,15 +65,10 @@ public sealed class RedisCacheStore
         try
         {
             var db = await _connection.GetDatabaseAsync(cancellationToken).ConfigureAwait(false);
-            var result = await db.StringGetWithExpiryAsync(Key(key))
+            var result = await db.ScriptEvaluateAsync(ReadScript, [Key(key)])
                 .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
-            if (result.Value.IsNull)
-            {
-                return null;
-            }
-
-            return new CacheStoreEntry((byte[])result.Value!, result.Expiry);
+            return Decode(result);
         }
         catch (Exception exception)
             when (!RedisFailures.IsCallerCancellation(exception, cancellationToken))
@@ -202,28 +202,24 @@ public sealed class RedisCacheStore
         {
             var db = await _connection.GetDatabaseAsync(cancellationToken).ConfigureAwait(false);
             var ordered = keys.ToArray();
-            var values = await db.StringGetAsync(Keys(ordered))
-                .WaitAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            // Second round trip: the remaining time to live of every key that was found.
+            // Each script sees the value and its TTL atomically. Separate MGET/PTTL commands
+            // could pair an old value with a replacement's TTL, or turn expiry into unknown TTL.
             var batch = db.CreateBatch();
-            var ttls = new Task<TimeSpan?>?[ordered.Length];
+            var pending = new Task<RedisResult>[ordered.Length];
             for (var i = 0; i < ordered.Length; i++)
             {
-                if (!values[i].IsNull)
-                {
-                    ttls[i] = batch.KeyTimeToLiveAsync(Key(ordered[i]));
-                }
+                pending[i] = batch.ScriptEvaluateAsync(ReadScript, [Key(ordered[i])]);
             }
 
             batch.Execute();
+            var results = await Task.WhenAll(pending)
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
             for (var i = 0; i < ordered.Length; i++)
             {
-                if (ttls[i] is { } ttl)
+                if (Decode(results[i]) is { } entry)
                 {
-                    var remaining = await ttl.WaitAsync(cancellationToken).ConfigureAwait(false);
-                    found[ordered[i]] = new CacheStoreEntry((byte[])values[i]!, remaining);
+                    found[ordered[i]] = entry;
                 }
             }
 
@@ -345,6 +341,26 @@ public sealed class RedisCacheStore
     }
 
     private RedisKey Key(string key) => RedisKeys.ToRedisKey(key, _hashTags);
+
+    private static CacheStoreEntry? Decode(RedisResult result)
+    {
+        if (result.IsNull)
+        {
+            return null;
+        }
+
+        var parts = (RedisResult[])result!;
+        var milliseconds = (long)parts[1];
+        if (milliseconds == -2 || milliseconds == 0)
+        {
+            return null;
+        }
+
+        return new CacheStoreEntry(
+            (byte[])parts[0]!,
+            milliseconds < 0 ? null : TimeSpan.FromMilliseconds(milliseconds)
+        );
+    }
 
     private RedisKey[] Keys(IReadOnlyCollection<string> keys)
     {
