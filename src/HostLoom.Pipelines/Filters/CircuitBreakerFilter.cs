@@ -9,7 +9,11 @@ internal sealed class CircuitBreakerFilter<TContext> : IFilter<TContext>
     private readonly Lock _gate = new();
     private CircuitState _state = CircuitState.Closed;
     private int _consecutiveFailures;
-    private DateTimeOffset _openedAt;
+    private long _openedAt;
+
+    // Opening the circuit invalidates calls admitted while closed. Only the current
+    // generation's single half-open trial may decide whether recovery has succeeded.
+    private long _generation;
 
     public CircuitBreakerFilter(
         int failureThreshold,
@@ -27,7 +31,7 @@ internal sealed class CircuitBreakerFilter<TContext> : IFilter<TContext>
 
     public async ValueTask SendAsync(TContext context, IPipe<TContext> next)
     {
-        if (!TryEnter())
+        if (!TryEnter(out var generation))
         {
             throw new CircuitBreakerOpenException(_resetInterval);
         }
@@ -38,16 +42,16 @@ internal sealed class CircuitBreakerFilter<TContext> : IFilter<TContext>
         }
         catch (OperationCanceledException)
         {
-            OnCancelled();
+            OnCancelled(generation);
             throw;
         }
         catch (Exception)
         {
-            OnFailure();
+            OnFailure(generation);
             throw;
         }
 
-        OnSuccess();
+        OnSuccess(generation);
     }
 
     public void Probe(IProbeContext context)
@@ -61,10 +65,11 @@ internal sealed class CircuitBreakerFilter<TContext> : IFilter<TContext>
         }
     }
 
-    private bool TryEnter()
+    private bool TryEnter(out long generation)
     {
         lock (_gate)
         {
+            generation = _generation;
             switch (_state)
             {
                 case CircuitState.Closed:
@@ -73,7 +78,7 @@ internal sealed class CircuitBreakerFilter<TContext> : IFilter<TContext>
                     // One trial at a time; concurrent callers keep being rejected until it resolves.
                     return false;
                 default:
-                    if (_timeProvider.GetUtcNow() - _openedAt < _resetInterval)
+                    if (_timeProvider.GetElapsedTime(_openedAt) < _resetInterval)
                     {
                         return false;
                     }
@@ -84,39 +89,60 @@ internal sealed class CircuitBreakerFilter<TContext> : IFilter<TContext>
         }
     }
 
-    private void OnSuccess()
+    private void OnSuccess(long generation)
     {
         lock (_gate)
         {
+            if (generation != _generation)
+            {
+                return;
+            }
+
+            if (_state == CircuitState.HalfOpen)
+            {
+                _generation++;
+            }
+
             _state = CircuitState.Closed;
             _consecutiveFailures = 0;
         }
     }
 
-    private void OnFailure()
+    private void OnFailure(long generation)
     {
         lock (_gate)
         {
+            if (generation != _generation)
+            {
+                return;
+            }
+
             if (_state == CircuitState.HalfOpen || ++_consecutiveFailures >= _failureThreshold)
             {
-                _state = CircuitState.Open;
-                _openedAt = _timeProvider.GetUtcNow();
-                _consecutiveFailures = 0;
+                Open();
             }
         }
     }
 
-    private void OnCancelled()
+    private void OnCancelled(long generation)
     {
         lock (_gate)
         {
             // A cancelled trial proves nothing about the downstream. Reopen so the next caller gets
             // a fresh trial after the reset interval, rather than leaving the circuit stuck half-open.
-            if (_state == CircuitState.HalfOpen)
+            if (generation == _generation && _state == CircuitState.HalfOpen)
             {
-                _state = CircuitState.Open;
-                _openedAt = _timeProvider.GetUtcNow();
+                Open();
             }
         }
+    }
+
+    // Called only while holding _gate.
+    private void Open()
+    {
+        _state = CircuitState.Open;
+        _openedAt = _timeProvider.GetTimestamp();
+        _consecutiveFailures = 0;
+        _generation++;
     }
 }

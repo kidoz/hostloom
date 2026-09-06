@@ -33,7 +33,9 @@ their scope — is visible in the composition. Their contracts:
   `Immediate`, `Interval`, `Exponential`, each optionally `WithJitter`.
 - **Circuit breaker** throws `CircuitBreakerOpenException` once the
   downstream has failed `failureThreshold` times in a row, then admits one
-  trial call per `resetInterval`.
+  trial call per `resetInterval`. Calls admitted before the circuit opened
+  cannot close it, extend its reset interval, or change the current trial's
+  verdict when they finish later.
 - **Rate limit** shapes throughput by *waiting*, not throwing.
 - **Timeout** bounds the remainder of the pipeline by swapping a linked
   token into the context for the duration of the downstream call — which
@@ -43,7 +45,10 @@ their scope — is visible in the composition. Their contracts:
   rethrown as cancellation, never misreported as a timeout.
 
 All timing filters accept a `TimeProvider`, so tests advance time
-explicitly instead of sleeping.
+explicitly instead of sleeping. Circuit resets and rate-limit windows use
+monotonic timestamps, so system-clock corrections do not change their
+intervals. A fake provider must advance timestamps and timers when elapsed
+time advances; changing only `GetUtcNow` does not advance an interval.
 
 ## Composed once, shared state on purpose
 

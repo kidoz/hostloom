@@ -397,6 +397,10 @@ public sealed class ResilienceTests
     {
         private DateTimeOffset _now = DateTimeOffset.UnixEpoch;
 
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp() => (_now - DateTimeOffset.UnixEpoch).Ticks;
+
         public override DateTimeOffset GetUtcNow() => _now;
 
         public void Advance(TimeSpan delta) => _now += delta;

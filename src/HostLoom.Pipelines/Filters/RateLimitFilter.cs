@@ -7,7 +7,7 @@ internal sealed class RateLimitFilter<TContext> : IFilter<TContext>
     private readonly TimeSpan _interval;
     private readonly TimeProvider _timeProvider;
     private readonly Lock _gate = new();
-    private DateTimeOffset _windowStart;
+    private long _windowStart;
     private int _used;
 
     public RateLimitFilter(int limit, TimeSpan interval, TimeProvider timeProvider)
@@ -18,7 +18,7 @@ internal sealed class RateLimitFilter<TContext> : IFilter<TContext>
         _limit = limit;
         _interval = interval;
         _timeProvider = timeProvider;
-        _windowStart = timeProvider.GetUtcNow();
+        _windowStart = timeProvider.GetTimestamp();
     }
 
     public async ValueTask SendAsync(TContext context, IPipe<TContext> next)
@@ -44,8 +44,9 @@ internal sealed class RateLimitFilter<TContext> : IFilter<TContext>
     {
         lock (_gate)
         {
-            var now = _timeProvider.GetUtcNow();
-            if (now - _windowStart >= _interval)
+            var now = _timeProvider.GetTimestamp();
+            var elapsed = _timeProvider.GetElapsedTime(_windowStart, now);
+            if (elapsed >= _interval)
             {
                 _windowStart = now;
                 _used = 0;
@@ -58,7 +59,7 @@ internal sealed class RateLimitFilter<TContext> : IFilter<TContext>
                 return true;
             }
 
-            wait = _interval - (now - _windowStart);
+            wait = _interval - elapsed;
             if (wait <= TimeSpan.Zero)
             {
                 wait = TimeSpan.FromMilliseconds(1);
