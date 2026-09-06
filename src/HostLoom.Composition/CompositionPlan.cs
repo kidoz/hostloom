@@ -237,16 +237,30 @@ public sealed class CompositionPlan
         CompositionValidationPhase phase
     )
     {
+        // Group once, retaining collection indexes and order for conflict diagnostics.
+        var byService = new Dictionary<Type, List<(TrackedDescriptor Item, int Index)>>(
+            contracts.Count
+        );
+        for (var index = 0; index < descriptors.Count; index++)
+        {
+            TrackedDescriptor item = descriptors[index];
+            if (
+                item.Descriptor.IsKeyedService
+                || !contracts.ContainsKey(item.Descriptor.ServiceType)
+            )
+                continue;
+            if (!byService.TryGetValue(item.Descriptor.ServiceType, out var group))
+            {
+                group = [];
+                byService.Add(item.Descriptor.ServiceType, group);
+            }
+            group.Add((item, index));
+        }
         foreach ((Type service, CompositionRegistration contract) in contracts)
         {
-            var matching = descriptors
-                .Select(static (item, index) => (Item: item, Index: index))
-                .Where(pair =>
-                    !pair.Item.Descriptor.IsKeyedService
-                    && pair.Item.Descriptor.ServiceType == service
-                )
-                .ToArray();
-            if (contract.Cardinality == CompositionCardinality.One && matching.Length != 1)
+            if (!byService.TryGetValue(service, out var matching))
+                matching = [];
+            if (contract.Cardinality == CompositionCardinality.One && matching.Count != 1)
             {
                 CompositionOrigin? other = matching
                     .Select(static pair => pair.Item.Registration?.Origin)
@@ -258,12 +272,12 @@ public sealed class CompositionPlan
                 throw Error(
                     phase,
                     $"Service '{service}' declared One by '{contract.Origin}' "
-                        + $"would have {matching.Length} registrations. {locations}",
+                        + $"would have {matching.Count} registrations. {locations}",
                     contract.Origin,
                     other
                 );
             }
-            for (var i = 0; i < matching.Length; i++)
+            for (var i = 0; i < matching.Count; i++)
             {
                 for (var j = 0; j < i; j++)
                 {

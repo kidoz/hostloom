@@ -6,15 +6,45 @@ at 7.0.0 and appears only in the benchmark project. Measurements use
 `DOTNET_TieredCompilation=0` and `DOTNET_ReadyToRun=1`; defaults or another machine are not directly
 comparable. These results describe the measured implementation, not a guarantee for all hosts.
 
-Creating and applying 100 generated registrations takes a warm median **292.70 µs / 174,432 managed
+In the initial measurement, creating and applying 100 generated registrations took a warm median **292.70 µs / 174,432 managed
 bytes**, versus **0.75 µs / 8,624 bytes** for handwritten registration and **116.98 µs / 125,241
 bytes** for Scrutor. Provenance and validation have a measurable startup cost. The generated plan
-is not faster in this comparison. A passive probe alone cannot stand in for total startup cost.
+was not faster in this comparison. A passive probe alone cannot stand in for total startup cost.
 
-For 1,000 generator candidates, paired clean consumer builds add **107.48 ms median / 131.53 ms
+In that initial measurement, for 1,000 generator candidates, paired clean consumer builds added **107.48 ms median / 131.53 ms
 p95**, within the **200 ms added-build target** on this machine. The standalone driver's first
 process run costs **917.73 ms median**, including cold Roslyn/JIT work, and does **not** meet a
 200 ms first-process latency bound. These are separate measurements.
+
+## Service-grouped validation update
+
+On **2026-09-06**, runtime validation changed from scanning every descriptor for each service
+contract to grouping descriptors once. Groups preserve descriptor order and collection indexes;
+validation still checks contracts in their original order, including contracts whose last
+registration was removed. Keyed descriptors remain excluded. Pairwise duplicate and lifetime
+checks within each service group are unchanged, so a large Many group still has quadratic work.
+
+A comparison against the implementation at `dba28a31a574c4a62f4d275e602306be84520753` used the same
+reference environment and 100-registration runtime workload described below. Five process pairs
+per phase alternated which implementation ran first, with 64 warmups and 15 batches of 32 calls
+per process. Both variants passed the registration equivalence check before measurement.
+
+| Phase | Before median / p95 µs | After median / p95 µs | Before managed B/op | After managed B/op |
+| --- | ---: | ---: | ---: | ---: |
+| plan | 124.25 / 132.28 | 12.21 / 14.46 | 67,568 | 52,296 |
+| apply | 147.08 / 158.28 | 32.69 / 34.60 | 106,864 | 91,592 |
+| total | 277.24 / 294.15 | 50.29 / 54.65 | 174,432 | 143,888 |
+
+Warm create-and-apply time decreased by **81.9%** and allocation by **17.5%** in this comparison.
+First-call total medians decreased from **15.86 ms to 14.36 ms** across five observations per
+variant; process launch remains excluded. The warm result does not establish application startup
+or request-throughput gains. Percentiles describe batch averages, and allocations do not measure
+retained memory. Other collection sizes and large Many groups require separate measurements.
+
+The remaining tables and reviewed budgets retain the initial baseline. This runtime comparison
+does not revalidate generator budgets: a separate pre-change repeat observed first-call probe p95
+of **39.75 µs** against a **28.376 µs** ceiling and 1,000-candidate added-build p95 of **259.55 ms**
+against the **200 ms** target. These timing observations remain unresolved; no budgets were relaxed.
 
 ## Reproduce
 

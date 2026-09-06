@@ -106,6 +106,76 @@ public sealed class CompositionPlanTests
     }
 
     [Fact]
+    public void Validation_preserves_contract_order_and_indexes_in_interleaved_collections()
+    {
+        var existingInventory = ServiceDescriptor.Scoped<IInventory, Inventory>();
+        var existingCatalog = ServiceDescriptor.Transient<ICatalog, Catalog>();
+        var services = new ServiceCollection
+        {
+            existingInventory,
+            existingCatalog,
+            ServiceDescriptor.KeyedSingleton<ICatalog, Catalog>("local"),
+            ServiceDescriptor.Singleton("catalog"),
+        };
+        ServiceDescriptor[] before = services.ToArray();
+        var inventoryOrigin = new CompositionOrigin("DeclareInventory", "inventory");
+        var plan = new CompositionPlan(
+            "catalog",
+            [
+                Entry(ServiceDescriptor.Scoped<ICatalog, Inventory>(), CompositionCardinality.Many),
+                new CompositionRegistration(
+                    ServiceDescriptor.Transient<IInventory, Catalog>(),
+                    CompositionCardinality.Many,
+                    inventoryOrigin
+                ),
+            ]
+        );
+
+        CompositionValidationException error = Assert.Throws<CompositionValidationException>(() =>
+            plan.ApplyTo(services)
+        );
+
+        Assert.Equal(CompositionValidationPhase.Application, error.Phase);
+        Assert.Equal(Origin, error.Origin);
+        Assert.Null(error.ExistingOrigin);
+        Assert.Contains($"Service '{typeof(ICatalog)}'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("collection index 1:", error.Message, StringComparison.Ordinal);
+        Assert.Contains("collection index 4:", error.Message, StringComparison.Ordinal);
+        Assert.Equal(before, services.ToArray());
+
+        services.Remove(existingCatalog);
+        services.Remove(existingInventory);
+        Assert.Equal(2, plan.ApplyTo(services).Probe().Count);
+        Assert.Same(before[2], services[0]);
+        Assert.Same(before[3], services[1]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Validation_ignores_services_without_a_plan_contract(bool includeRegistration)
+    {
+        var services = new ServiceCollection
+        {
+            ServiceDescriptor.Transient<ICatalog, Catalog>(),
+            ServiceDescriptor.Scoped<ICatalog, Catalog>(),
+            ServiceDescriptor.KeyedSingleton<ICatalog, Inventory>("local"),
+        };
+        ServiceDescriptor[] before = services.ToArray();
+        var plan = new CompositionPlan(
+            "inventory",
+            includeRegistration ? [Entry(ServiceDescriptor.Transient<IInventory, Inventory>())] : []
+        );
+
+        CompositionApplicationReport report = plan.ApplyTo(services);
+
+        Assert.Equal(includeRegistration ? 1 : 0, report.Probe().Count);
+        Assert.Equal(before.Length + report.Probe().Count, services.Count);
+        for (var index = 0; index < before.Length; index++)
+            Assert.Same(before[index], services[index]);
+    }
+
+    [Fact]
     public void Same_identity_is_rejected_even_for_fresh_plan_instances_but_other_collections_work()
     {
         var services = new ServiceCollection();
@@ -307,9 +377,10 @@ public sealed class CompositionPlanTests
     [Fact]
     public void Implementation_replacement_cannot_remove_a_previous_plans_only_service()
     {
-        var services = new ServiceCollection();
+        var keyed = ServiceDescriptor.KeyedTransient<ICatalog, Catalog>("local");
+        var services = new ServiceCollection { keyed };
         CreatePlan().ApplyTo(services);
-        ServiceDescriptor original = services[0];
+        ServiceDescriptor[] before = services.ToArray();
         var plan = new CompositionPlan(
             "inventory",
             [
@@ -320,8 +391,13 @@ public sealed class CompositionPlanTests
                 ),
             ]
         );
-        Assert.Throws<CompositionValidationException>(() => plan.ApplyTo(services));
-        Assert.Same(original, Assert.Single(services));
+        CompositionValidationException error = Assert.Throws<CompositionValidationException>(() =>
+            plan.ApplyTo(services)
+        );
+        Assert.Equal(CompositionValidationPhase.Application, error.Phase);
+        Assert.Equal(Origin, error.Origin);
+        Assert.Contains("would have 0 registrations", error.Message, StringComparison.Ordinal);
+        Assert.Equal(before, services.ToArray());
     }
 
     [Fact]
@@ -391,6 +467,44 @@ public sealed class CompositionPlanTests
         Assert.Equal(CompositionValidationPhase.PlanConstruction, error.Phase);
         Assert.Contains(nameof(Catalog), error.Message, StringComparison.Ordinal);
         Assert.Contains(nameof(Inventory), error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Interleaved_plan_duplicates_report_the_first_matching_activation_and_its_origin()
+    {
+        var middleOrigin = new CompositionOrigin("DeclareInventory", "inventory");
+        var duplicateOrigin = new CompositionOrigin("DeclareCatalog", "duplicate");
+
+        CompositionValidationException error = Assert.Throws<CompositionValidationException>(() =>
+            new CompositionPlan(
+                "catalog",
+                [
+                    Entry(
+                        ServiceDescriptor.Transient<ICatalog, Catalog>(),
+                        CompositionCardinality.Many
+                    ),
+                    Entry(ServiceDescriptor.Transient<IInventory, Inventory>()),
+                    new CompositionRegistration(
+                        ServiceDescriptor.Transient<ICatalog, Inventory>(),
+                        CompositionCardinality.Many,
+                        middleOrigin
+                    ),
+                    Entry(ServiceDescriptor.Singleton("catalog")),
+                    new CompositionRegistration(
+                        ServiceDescriptor.Transient<ICatalog, Catalog>(),
+                        CompositionCardinality.Many,
+                        duplicateOrigin
+                    ),
+                ]
+            )
+        );
+
+        Assert.Equal(CompositionValidationPhase.PlanConstruction, error.Phase);
+        Assert.Equal(duplicateOrigin, error.Origin);
+        Assert.Equal(Origin, error.ExistingOrigin);
+        Assert.Contains("collection index 0:", error.Message, StringComparison.Ordinal);
+        Assert.Contains("collection index 4:", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("collection index 2:", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
