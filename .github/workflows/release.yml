@@ -116,6 +116,9 @@ jobs:
           HOSTLOOM_REQUIRE_BROKERS: "1"
         run: dotnet test HostLoom.slnx --configuration Release --no-build --no-restore
 
+      - name: Verify Valkey TLS, ACL and restart recovery
+        run: python3 scripts/test-valkey-deployment.py --no-build
+
       - name: Verify Valkey Native AOT
         run: |
           dotnet publish examples/HostLoom.Examples.ValkeyAot -c Release -r linux-x64 -o artifacts/valkey-aot -p:Version=${{ steps.version.outputs.version }}
