@@ -6,7 +6,7 @@ using Xunit;
 
 namespace HostLoom.Analyzers.Tests;
 
-public sealed class MappingCompletenessAnalyzerTests
+public sealed partial class MappingCompletenessAnalyzerTests
 {
     private const string Contracts = """
         using System;

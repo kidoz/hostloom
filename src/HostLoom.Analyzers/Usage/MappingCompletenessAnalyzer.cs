@@ -74,7 +74,7 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
             return;
         }
 
-        MapBody classified = Classify(body, destination);
+        MapBody classified = Classify(body, required);
         if (classified.Reason is not null)
         {
             context.ReportDiagnostic(
@@ -112,9 +112,10 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
     }
 
     /// <summary>Classifies a body into the assigned member set, or a reason it cannot be read.</summary>
-    private static MapBody Classify(IOperation body, INamedTypeSymbol destination)
+    private static MapBody Classify(IOperation body, ImmutableHashSet<ISymbol> required)
     {
-        IReturnOperation[] returns = body.Descendants()
+        IOperation[] operations = OperationsInCurrentFunction(body).ToArray();
+        IReturnOperation[] returns = operations
             .OfType<IReturnOperation>()
             .Where(candidate => candidate.ReturnedValue is not null)
             .ToArray();
@@ -135,46 +136,61 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
             );
             foreach (IObjectCreationOperation creation in created.Cast<IObjectCreationOperation>())
             {
-                CollectFromCreation(creation, destination, assigned);
+                CollectFromCreation(creation, required, assigned);
             }
 
             return MapBody.Verified(assigned.ToImmutable());
         }
 
         // Shape B: one local is constructed, assigned into, and returned.
-        return ClassifyStatementForm(body, destination, returns);
+        return ClassifyStatementForm(operations, required, returns);
     }
 
     private static MapBody ClassifyStatementForm(
-        IOperation body,
-        INamedTypeSymbol destination,
+        IOperation[] operations,
+        ImmutableHashSet<ISymbol> required,
         IReturnOperation[] returns
     )
     {
-        IVariableDeclaratorOperation[] declarations = body.Descendants()
-            .OfType<IVariableDeclaratorOperation>()
-            .Where(declarator =>
-                SymbolEqualityComparer.Default.Equals(declarator.Symbol.Type, destination)
-            )
-            .ToArray();
-
-        if (declarations.Length != 1)
+        if (Unwrap(returns[0].ReturnedValue!) is not ILocalReferenceOperation firstReturn)
         {
             return MapBody.NotVerifiable(
-                declarations.Length == 0
-                    ? "it neither returns a constructed destination nor builds one in a local"
-                    : $"it builds the destination across {declarations.Length} locals rather than one"
+                "it neither returns a constructed destination nor returns one local on every path"
             );
         }
 
-        ILocalSymbol local = declarations[0].Symbol;
+        // Follow the returned symbol: its declared type may be the concrete implementation of
+        // an interface destination, or a derived class returned through its base contract.
+        ILocalSymbol local = firstReturn.Local;
+        IVariableDeclaratorOperation? declaration = operations
+            .OfType<IVariableDeclaratorOperation>()
+            .FirstOrDefault(candidate =>
+                SymbolEqualityComparer.Default.Equals(candidate.Symbol, local)
+            );
         if (
-            Unwrap(declarations[0].Initializer?.Value ?? declarations[0])
-            is not IObjectCreationOperation creation
+            declaration?.Initializer is null
+            || Unwrap(declaration.Initializer.Value) is not IObjectCreationOperation creation
         )
         {
             return MapBody.NotVerifiable(
                 $"the local '{local.Name}' is not initialised with a new destination"
+            );
+        }
+
+        // A closure can fill or replace the local when invoked. Do not count its assignments
+        // as writes by this method, or claim completeness without following its execution.
+        if (
+            operations
+                .Where(operation =>
+                    operation is IAnonymousFunctionOperation or ILocalFunctionOperation
+                )
+                .SelectMany(function => function.Descendants())
+                .OfType<ILocalReferenceOperation>()
+                .Any(reference => SymbolEqualityComparer.Default.Equals(reference.Local, local))
+        )
+        {
+            return MapBody.NotVerifiable(
+                $"the local '{local.Name}' is captured by a nested function"
             );
         }
 
@@ -194,10 +210,10 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
         ImmutableHashSet<ISymbol>.Builder assigned = ImmutableHashSet.CreateBuilder<ISymbol>(
             SymbolEqualityComparer.Default
         );
-        CollectFromCreation(creation, destination, assigned);
+        CollectFromCreation(creation, required, assigned);
 
         foreach (
-            ILocalReferenceOperation reference in body.Descendants()
+            ILocalReferenceOperation reference in operations
                 .OfType<ILocalReferenceOperation>()
                 .Where(reference => SymbolEqualityComparer.Default.Equals(reference.Local, local))
         )
@@ -213,11 +229,33 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
 
             if (member is not null)
             {
-                assigned.Add(member);
+                RecordAssignment(member, creation.Type as INamedTypeSymbol, required, assigned);
             }
         }
 
         return MapBody.Verified(assigned.ToImmutable());
+    }
+
+    /// <summary>Enumerates this function's operations without entering another execution body.</summary>
+    private static IEnumerable<IOperation> OperationsInCurrentFunction(IOperation body)
+    {
+        var pending = new Stack<IOperation>();
+        pending.Push(body);
+        while (pending.Count > 0)
+        {
+            IOperation operation = pending.Pop();
+            yield return operation;
+
+            if (operation is IAnonymousFunctionOperation or ILocalFunctionOperation)
+            {
+                continue;
+            }
+
+            foreach (IOperation child in operation.ChildOperations)
+            {
+                pending.Push(child);
+            }
+        }
     }
 
     /// <summary>
@@ -229,6 +267,10 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
     {
         assignedMember = null;
         IOperation? parent = reference.Parent;
+        while (parent is IConversionOperation { OperatorMethod: null })
+        {
+            parent = parent.Parent;
+        }
 
         if (parent is IReturnOperation)
         {
@@ -261,7 +303,7 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
 
     private static void CollectFromCreation(
         IObjectCreationOperation creation,
-        INamedTypeSymbol destination,
+        ImmutableHashSet<ISymbol> required,
         ImmutableHashSet<ISymbol>.Builder assigned
     )
     {
@@ -271,7 +313,7 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
         {
             foreach (IParameterSymbol parameter in creation.Constructor.Parameters)
             {
-                foreach (ISymbol member in destination.GetMembers())
+                foreach (ISymbol member in required)
                 {
                     if (
                         string.Equals(
@@ -302,15 +344,62 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
             switch (assignment.Target)
             {
                 case IPropertyReferenceOperation property:
-                    assigned.Add(property.Property);
+                    RecordAssignment(
+                        property.Property,
+                        creation.Type as INamedTypeSymbol,
+                        required,
+                        assigned
+                    );
                     break;
                 case IFieldReferenceOperation field:
-                    assigned.Add(field.Field);
+                    RecordAssignment(
+                        field.Field,
+                        creation.Type as INamedTypeSymbol,
+                        required,
+                        assigned
+                    );
                     break;
                 default:
                     break;
             }
         }
+    }
+
+    private static void RecordAssignment(
+        ISymbol member,
+        INamedTypeSymbol? implementation,
+        ImmutableHashSet<ISymbol> required,
+        ImmutableHashSet<ISymbol>.Builder assigned
+    )
+    {
+        ISymbol canonical = CanonicalMember(member);
+        assigned.Add(canonical);
+
+        // Initializers and concrete locals name implementation properties, whereas an interface
+        // destination requires interface symbols. Name equality would also excuse unrelated
+        // properties beside explicit implementations, so use the compiler's implementation map.
+        foreach (ISymbol contract in required)
+        {
+            if (
+                contract.ContainingType.TypeKind == TypeKind.Interface
+                && implementation?.FindImplementationForInterfaceMember(contract)
+                    is ISymbol implemented
+                && SymbolEqualityComparer.Default.Equals(CanonicalMember(implemented), canonical)
+            )
+            {
+                assigned.Add(contract);
+            }
+        }
+    }
+
+    private static ISymbol CanonicalMember(ISymbol member)
+    {
+        while (member is IPropertySymbol { OverriddenProperty: { } overridden })
+        {
+            member = overridden;
+        }
+
+        return member;
     }
 
     /// <summary>
@@ -328,11 +417,7 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
             SymbolEqualityComparer.Default
         );
 
-        for (
-            INamedTypeSymbol? type = destination;
-            type is not null && type.SpecialType != SpecialType.System_Object;
-            type = type.BaseType
-        )
+        foreach (INamedTypeSymbol type in DestinationTypes(destination))
         {
             foreach (ISymbol member in type.GetMembers())
             {
@@ -348,7 +433,7 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
                         IsIndexer: false,
                         SetMethod: { DeclaredAccessibility: Accessibility.Public },
                     }:
-                        builder.Add(member);
+                        builder.Add(CanonicalMember(member));
                         break;
                     case IFieldSymbol
                     {
@@ -365,6 +450,26 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
         }
 
         return builder.ToImmutable();
+    }
+
+    private static IEnumerable<INamedTypeSymbol> DestinationTypes(INamedTypeSymbol destination)
+    {
+        for (
+            INamedTypeSymbol? type = destination;
+            type is not null && type.SpecialType != SpecialType.System_Object;
+            type = type.BaseType
+        )
+        {
+            yield return type;
+        }
+
+        if (destination.TypeKind == TypeKind.Interface)
+        {
+            foreach (INamedTypeSymbol inherited in destination.AllInterfaces)
+            {
+                yield return inherited;
+            }
+        }
     }
 
     private static bool IsSequence(INamedTypeSymbol destination) =>
