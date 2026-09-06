@@ -8,6 +8,22 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-06
+
+Upgrading changes no public contract. Four changes can surface on upgrade: a repeated
+`AddHostLoomMapping` call validates maps against the dispatcher lifetime it actually retained, so a
+lifetime check a second call previously bypassed can now fail; the mapping completeness analysis
+inspects inherited members and nested functions, so `HLM0005` can report a map it accepted before;
+the circuit-breaker and rate-limit filters read monotonic `TimeProvider` timestamps, so a fake
+provider must advance its timestamp as well as its timers; and an `AddOrUpdatePayload` factory that
+returns a replacement or null for a payload the context itself implements throws
+`InvalidOperationException`. Each is stated under **Fixed** below.
+
+One package is published for the first time: `HostLoom.Valkey`, a standalone Valkey backend for
+`HostLoom.Caching` and `HostLoom.Locking` over ValkeyDotNet 1.1.0. It depends on both
+`DependencyInjection` packages and on `ValkeyDotNet`, keeps every SDK type inside the adapter, and
+leaves `HostLoom.Redis` unchanged.
+
 ### Added
 
 - `HostLoom.Valkey`: standalone ValkeyDotNet 1.1.0 cache store, tag indexes, atomic
@@ -762,7 +778,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/kidoz/hostloom/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/kidoz/hostloom/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/kidoz/hostloom/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kidoz/hostloom/compare/v0.2.0...v0.3.0
