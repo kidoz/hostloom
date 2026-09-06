@@ -27,9 +27,9 @@ password is never logged; probe output and the startup line redact it.
 
 | Purpose | Commands |
 |---|---|
-| cache entry | `SET … PX`, `GET` with `PTTL` pipelined, `MGET` with `PTTL`, `UNLINK` |
+| cache entry | `SET … PX`, a Lua `GET`/`PTTL` snapshot per key (pipelined for bulk reads), deletion |
 | set-if-absent and stampede lease | `SET … NX PX` |
-| tag index | `SADD`, `EXPIRE NX` then `EXPIRE GT`, `SMEMBERS`, `UNLINK` in batches; a tagged set-if-absent indexes only after the write is known to have happened |
+| tag index | `SADD`, `EXPIRE NX` then `EXPIRE GT`, `SMEMBERS`, atomic Lua `UNLINK`/`SREM` batches; a tagged set-if-absent indexes only after the write is known to have happened |
 | invalidation | `PUBLISH` and `SUBSCRIBE` on `{namespace}:cache:invalidate`; `CLIENT LIST` and `CLIENT TRACKING` in tracking mode; `PSUBSCRIBE __keyspace@{db}__:…` in broadcast mode |
 | lock | `SET {namespace}:lock:{key} owner NX PX lease`; release and extend are Lua compare-and-set, sent as `EVALSHA` with `EVAL` fallback |
 | readiness | `PING` bounded by `Redis:HealthTimeout` |
@@ -43,6 +43,19 @@ A tag set gains members and loses them only when the whole index is removed, so 
 under different tags stays in its earlier sets and `RemoveByTagAsync` on one of those tags removes
 it too. Reading an entry's current tags before every write would cost a round trip on the hot path
 to save a refill on the cold one, which is the wrong trade for a cache.
+
+Tag removal consumes only memberships from its snapshot. Each batch removes values and their
+memberships atomically; an empty set disappears automatically. Concurrent additions remain indexed,
+and a failed batch leaves its memberships available for a later retry. Cache reads also need Lua
+permission: reading each value with its remaining TTL atomically prevents an expired or replaced
+value from borrowing a different lifetime in L1.
+
+Write payloads are copied before dispatch because cancellation stops the caller's wait while a
+queued Redis command can still execute. The SDK owns the copied bytes until it finishes. Cancelling
+connection initialization likewise stops only that caller's wait: other callers share the attempt,
+and disposal waits for its result, releasing an owned multiplexer even if it arrives during shutdown.
+An external `ConnectionFactory` receives the connection's shutdown token and retains ownership of
+the multiplexer it returns.
 
 ## Fail-open
 
@@ -65,11 +78,14 @@ expires, leaves every in-process tier without anyone publishing:
 
 | Mode | What the package does | Needs |
 |---|---|---|
-| `Tracking` | `CLIENT TRACKING ON REDIRECT <subscriber> NOLOOP`: the server reports every key this connection has read when any other client modifies, deletes, expires, or evicts it | Redis 6.0 or later |
+| `Tracking` | `CLIENT TRACKING ON REDIRECT <subscriber> BCAST PREFIX <data-prefix> NOLOOP`: the server reports changes to every cache-data key in the namespace, including entries populated locally by writes or warmup | Redis 6.0 or later |
 | `Broadcast` | pattern subscriptions to `__keyspace@{db}__:{prefix}*` for `Caching:Invalidation:KeyPrefixFilters`, or the namespace's entries when the list is empty | `notify-keyspace-events Kxe` on the server |
 | `Auto` (default) | `Tracking` on Redis 6.0 or later, read from the server version at connect, otherwise `Broadcast` | |
 
 `NOLOOP` keeps a connection's own writes from evicting the in-process entry it has just written.
+Prefix-based tracking remains active after those writes, without requiring a Redis read to register
+the key again. It sends more invalidations than read-based tracking, bounded to the namespace's data
+prefix. `Broadcast` in the options table remains the separate keyspace-notification transport.
 StackExchange.Redis re-establishes every subscription on its own after a reconnect; tracking is
 per connection, so the package registers it again on `ConnectionRestored` and counts both on
 `hostloom.cache.invalidation.resubscribed`. An instance that starts while Redis is down keeps

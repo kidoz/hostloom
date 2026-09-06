@@ -103,8 +103,10 @@ entries another instance simply overwrites, or the server expires, set
 
 - `Auto`, the default, uses client tracking on Redis 6.0 or later and
   keyspace notifications below that.
-- `Tracking` asks the server to report every key this instance has read when
-  any other client changes it. Nothing to configure on the server.
+- `Tracking` uses `CLIENT TRACKING BCAST PREFIX` to report changes to the
+  namespace's cache-data keys, covering entries populated by writes and warmup
+  as well as reads. Own writes are suppressed with `NOLOOP`. Nothing to configure
+  on the server.
 - `Broadcast` subscribes to keyspace notifications for the namespace's
   entries, or for `Caching:Invalidation:KeyPrefixFilters` when set, and needs
   `notify-keyspace-events Kxe` on the server.
