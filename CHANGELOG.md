@@ -15,6 +15,9 @@ are derived from release tags at publish time.
   connection recovery, DI integration and readiness. Ambiguous writes are never replayed.
   Invalidation gaps rely on L1 expiry; tracking, keyspace notifications and cluster
   routing are outside this first adapter. Includes conformance tests and a Native AOT sample.
+- Live Valkey TLS/ACL and server-restart tests, with an isolated Docker runner and a required
+  release-workflow step. Covers certificate and permission rejection, client/subscriber recovery,
+  script reload, database selection, bounded L1 staleness and lost-lease ownership checks.
 
 ## [0.5.0] - 2026-09-05
 
