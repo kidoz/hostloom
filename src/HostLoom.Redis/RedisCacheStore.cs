@@ -90,9 +90,12 @@ public sealed class RedisCacheStore
         {
             var db = await _connection.GetDatabaseAsync(cancellationToken).ConfigureAwait(false);
             var redisKey = Key(key);
+            // WaitAsync cancels only our wait. The SDK may still have this command queued,
+            // so its payload must survive the caller returning a borrowed buffer to its pool.
+            var ownedPayload = payload.ToArray();
             if (tagKeys is not { Count: > 0 })
             {
-                await db.StringSetAsync(redisKey, payload, timeToLive)
+                await db.StringSetAsync(redisKey, ownedPayload, timeToLive)
                     .WaitAsync(cancellationToken)
                     .ConfigureAwait(false);
                 return;
@@ -103,7 +106,7 @@ public sealed class RedisCacheStore
             var batch = db.CreateBatch();
             var pending = new List<Task>(1 + (tagKeys.Count * 3))
             {
-                batch.StringSetAsync(redisKey, payload, timeToLive),
+                batch.StringSetAsync(redisKey, ownedPayload, timeToLive),
             };
             AppendTagIndexes(batch, pending, redisKey, tagKeys, timeToLive);
             batch.Execute();
@@ -129,7 +132,12 @@ public sealed class RedisCacheStore
         {
             var db = await _connection.GetDatabaseAsync(cancellationToken).ConfigureAwait(false);
             var redisKey = Key(key);
-            var written = await db.StringSetAsync(redisKey, payload, timeToLive, When.NotExists)
+            var written = await db.StringSetAsync(
+                    redisKey,
+                    payload.ToArray(),
+                    timeToLive,
+                    When.NotExists
+                )
                 .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
             if (!written || tagKeys is not { Count: > 0 })
@@ -248,7 +256,7 @@ public sealed class RedisCacheStore
             var pending = new List<Task>(entries.Count);
             foreach (var (key, payload) in entries)
             {
-                pending.Add(batch.StringSetAsync(Key(key), payload, timeToLive));
+                pending.Add(batch.StringSetAsync(Key(key), payload.ToArray(), timeToLive));
             }
 
             batch.Execute();
