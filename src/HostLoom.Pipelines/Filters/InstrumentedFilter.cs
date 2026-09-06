@@ -5,7 +5,8 @@ namespace HostLoom.Pipelines;
 /// <summary>
 /// Wraps a filter with a duration histogram, a failure counter, and a tracing span. The recorded
 /// duration is the filter's own work: time spent inside the downstream pipe is measured separately
-/// and subtracted, so a slow filter is visible even at the head of a slow pipeline. When no meter
+/// and subtracted, counting overlapping downstream calls once, so a slow filter is visible even
+/// at the head of a slow pipeline. When no meter
 /// or trace listener is enabled the wrapper delegates directly and measures nothing.
 /// </summary>
 public sealed class InstrumentedFilter<TContext> : IFilter<TContext>
@@ -112,18 +113,50 @@ public sealed class InstrumentedFilter<TContext> : IFilter<TContext>
     private sealed class DownstreamTimer(IPipe<TContext> next, TimeProvider timeProvider)
         : IPipe<TContext>
     {
-        public TimeSpan Elapsed { get; private set; }
+        private readonly Lock _gate = new();
+        private TimeSpan _elapsed;
+        private long _activeStarted;
+        private int _activeCalls;
+
+        public TimeSpan Elapsed
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _elapsed
+                        + (
+                            _activeCalls == 0
+                                ? TimeSpan.Zero
+                                : timeProvider.GetElapsedTime(_activeStarted)
+                        );
+                }
+            }
+        }
 
         public async ValueTask SendAsync(TContext context)
         {
-            var start = timeProvider.GetTimestamp();
+            lock (_gate)
+            {
+                if (_activeCalls++ == 0)
+                {
+                    _activeStarted = timeProvider.GetTimestamp();
+                }
+            }
+
             try
             {
                 await next.SendAsync(context).ConfigureAwait(false);
             }
             finally
             {
-                Elapsed += timeProvider.GetElapsedTime(start);
+                lock (_gate)
+                {
+                    if (--_activeCalls == 0)
+                    {
+                        _elapsed += timeProvider.GetElapsedTime(_activeStarted);
+                    }
+                }
             }
         }
 

@@ -55,6 +55,11 @@ monotonic timestamps, so system-clock corrections do not change their
 intervals. A fake provider must advance timestamps and timers when elapsed
 time advances; changing only `GetUtcNow` does not advance an interval.
 
+`InstrumentedFilter` subtracts the time during which any downstream call is
+active from the filter's total duration. Overlapping downstream calls on
+separate contexts count once; sequential downstream calls each contribute
+their own interval.
+
 ## Composed once, shared state on purpose
 
 A pipeline is composed once and reused. That is what gives a circuit

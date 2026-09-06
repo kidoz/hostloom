@@ -4,7 +4,7 @@ using Xunit;
 
 namespace HostLoom.Tests;
 
-public sealed class InstrumentedFilterTests
+public sealed partial class InstrumentedFilterTests
 {
     [Fact]
     public async Task Recorded_duration_is_the_filters_own_time_excluding_downstream()
