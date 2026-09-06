@@ -36,7 +36,6 @@ internal sealed partial class DeclarationCompiler
     private readonly Dictionary<INamedTypeSymbol, RegistrationGroup> _services = new(
         SymbolEqualityComparer.Default
     );
-    private readonly Dictionary<Rule, string> _originText = [];
     private int _ruleNumber;
 
     internal DeclarationCompiler(

@@ -120,6 +120,41 @@ the handwritten consumer, not an equivalent percentage improvement over the prev
 The earlier timing-budget failures remain historical observations; a passing repeat does not
 identify their cause. The additional generator profiles have no reviewed budget thresholds yet.
 
+## Shared generated origins update
+
+Generated factories now create one immutable `CompositionOrigin` per used rule and reuse it across
+that rule's registrations, aliases and rejected candidates. Origins belong to each factory call;
+different rules and calls retain separate objects. Rules producing only rejections are included,
+and rules producing no output allocate no origin. Source snapshots now contain origin locals,
+with the same provenance values, descriptor order and rejection reasons.
+
+On **2026-09-06**, five alternating process pairs compared this change against `ff9ceba` using
+the reference environment and existing 100-registration workload. Each process used 64 warmups
+and 15 batches of 32 calls. The fixture has 100 registrations and one rejection from one rule,
+so origin construction falls from 101 objects to one per plan.
+
+| Phase | Before median / p95 µs | After median / p95 µs | Before managed B/op | After managed B/op |
+| --- | ---: | ---: | ---: | ---: |
+| plan | 13.65 / 15.71 | 12.98 / 14.77 | 52,296 | 46,696 |
+| apply | 36.91 / 40.16 | 37.85 / 42.89 | 90,792 | 90,792 |
+| total | 48.26 / 52.60 | 49.13 / 59.15 | 143,088 | 137,488 |
+
+Plan creation allocates **5,600 fewer bytes (10.7%)**; create-and-apply allocates **3.9% less**.
+Timing did not improve consistently. First-call total medians were **13.91 → 12.65 ms**, with only
+five observations per version and process launch excluded. This does not establish a startup-time
+or retained-memory improvement. Applying an already-created plan has unchanged allocation.
+
+The complete performance run passed runtime budgets and the 1,000-candidate added-build target
+(**114.00 ms median / 140.80 ms p95**), but failed fresh-driver p95 budgets at 46 candidates
+(**5.875 ms > 4.071 ms**) and 160 candidates (**6.602 ms > 5.756 ms**). A separate five-pair check
+reproduced the misses, with nearly unchanged medians. Temporary instrumentation outside the
+repository recorded GC collection counts around each measurement: at 46 candidates a Gen1
+collection moved from rule-edit sample 4 to fresh-driver sample 5; at 160 candidates a Gen2
+collection moved from rule-edit sample 0 to fresh-driver sample 1. The timing spikes coincided
+with those collections, consistent with reduced allocation shifting GC between measured phases.
+The diagnostic runs are separate from the timing comparison. The two budget misses remain
+reported; no thresholds or benchmark methodology were changed to make the gate pass.
+
 ## Reproduce
 
 From the repository root, build once, then run on an otherwise idle reference machine:

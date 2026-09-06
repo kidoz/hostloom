@@ -35,7 +35,20 @@ internal sealed partial class DeclarationCompiler
             .Append(Access(factory.DeclaredAccessibility))
             .Append(" static partial global::HostLoom.Composition.CompositionPlan @")
             .Append(factory.Name)
-            .Append("()\n    {\n        return new global::HostLoom.Composition.CompositionPlan(")
+            .Append("()\n    {\n");
+        foreach (
+            Rule rule in _registrations
+                .Select(static registration => registration.Rule)
+                .Concat(_rejections.Select(static rejection => rejection.Rule))
+                .Distinct()
+                .OrderBy(static rule => rule.Number)
+        )
+        {
+            text.Append("        var ").Append(OriginName(rule)).Append(" = ");
+            EmitOrigin(text, rule);
+            text.Append(";\n");
+        }
+        text.Append("        return new global::HostLoom.Composition.CompositionPlan(")
             .Append(Literal(identity))
             .Append(", new global::HostLoom.Composition.CompositionRegistration[]\n        {\n");
         foreach (Registration registration in _registrations)
@@ -59,7 +72,7 @@ internal sealed partial class DeclarationCompiler
                 .Append("), global::HostLoom.Composition.CompositionCardinality.")
                 .Append(rule.Cardinality)
                 .Append(", ");
-            EmitOrigin(text, rule);
+            text.Append(OriginName(rule));
             if (rule.Strategy is not null)
             {
                 text.Append(", global::HostLoom.Composition.CompositionRegistrationStrategy.")
@@ -90,7 +103,7 @@ internal sealed partial class DeclarationCompiler
                 else
                     text.Append(Literal(TypeName(rejection.Type)));
                 text.Append(", ");
-                EmitOrigin(text, rejection.Rule);
+                text.Append(OriginName(rejection.Rule));
                 text.Append(", new string[] { ")
                     .Append(string.Join(", ", rejection.Reasons.Select(Literal)))
                     .Append(" }),\n");
@@ -113,17 +126,13 @@ internal sealed partial class DeclarationCompiler
         return new GeneratedFile(hint, text.ToString());
     }
 
+    private static string OriginName(Rule rule) =>
+        "__hostLoomOrigin" + rule.Number.ToString(CultureInfo.InvariantCulture);
+
     private void EmitOrigin(StringBuilder text, Rule rule)
     {
-        if (_originText.TryGetValue(rule, out string? origin))
-        {
-            text.Append(origin);
-            return;
-        }
-        var value = new StringBuilder();
         FileLinePositionSpan position = rule.Syntax.GetLocation().GetLineSpan();
-        value
-            .Append("new global::HostLoom.Composition.CompositionOrigin(")
+        text.Append("new global::HostLoom.Composition.CompositionOrigin(")
             .Append(
                 Literal(
                     _method.ContainingType.ToDisplayString()
@@ -142,9 +151,6 @@ internal sealed partial class DeclarationCompiler
             .Append(", ")
             .Append(Literal(rule.Selector))
             .Append(')');
-        origin = value.ToString();
-        _originText.Add(rule, origin);
-        text.Append(origin);
     }
 
     private string NormalizeSourcePath(string source)

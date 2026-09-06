@@ -470,6 +470,104 @@ public sealed partial class CompositionAdvancedGeneratorTests
     }
 
     [Fact]
+    public void Generated_origins_are_shared_per_rule_within_each_factory_call()
+    {
+        var (driver, output) = CompositionGeneratorHarness.Run(
+            CompositionGeneratorHarness.Compilation(
+                Fixture(
+                    """
+                    rules.Group("catalog", group => group.AddClasses().AssignableTo<ICatalog>().AsSelfWithInterfaces().WithScopedLifetime().ExpectMany());
+                    rules.AddTypes(typeof(Inventory)).AsSelf().WithTransientLifetime().ExpectOne();
+                    """,
+                    """
+                    public interface ICatalog {}
+                    public abstract class CatalogBase : ICatalog {}
+                    public class Catalog : CatalogBase { public Catalog() { throw new System.InvalidOperationException("Executed"); } }
+                    public class Vendor : CatalogBase { public Vendor() { throw new System.InvalidOperationException("Executed"); } }
+                    public class Inventory { public Inventory() { throw new System.InvalidOperationException("Executed"); } }
+                    """
+                )
+            )
+        );
+        CompositionGeneratorHarness.AssertSuccess(driver, output);
+        using var stream = new MemoryStream();
+        var emitted = output.Emit(stream, cancellationToken: TestContext.Current.CancellationToken);
+        Assert.True(emitted.Success, string.Join(Environment.NewLine, emitted.Diagnostics));
+        var assembly = System.Reflection.Assembly.Load(stream.ToArray());
+        var create = assembly
+            .GetType("CatalogComposition", throwOnError: true)!
+            .GetMethod("CreatePlan")!
+            .CreateDelegate<Func<CompositionPlan>>();
+        CompositionPlan first = create();
+        CompositionPlan second = create();
+        var probe = first.Probe();
+        Assert.Equal(
+            ["Catalog", "Catalog", "Vendor", "Vendor", "Inventory"],
+            probe.Registrations.Select(entry => entry.ImplementationType!.Name).ToArray()
+        );
+        CompositionOrigin shared = probe.Registrations[0].Origin;
+        Assert.Equal(
+            new CompositionOrigin(
+                "CatalogComposition.Declare/rule1",
+                "catalog",
+                "Rules.cs",
+                8,
+                "group.AddClasses().AssignableTo<ICatalog>()"
+            ),
+            shared
+        );
+        Assert.All(probe.Registrations.Take(4), entry => Assert.Same(shared, entry.Origin));
+        Assert.Equal(2, probe.Registrations.Count(entry => entry.AliasTargetType is not null));
+        var rejection = Assert.Single(probe.RejectedCandidates);
+        Assert.Same(shared, rejection.Origin);
+        Assert.Equal("CatalogBase", rejection.CandidateType!.Name);
+        Assert.Equal(["Abstract class."], rejection.Reasons);
+        Assert.NotSame(shared, probe.Registrations[4].Origin);
+        Assert.Equal("CatalogComposition.Declare/rule2", probe.Registrations[4].Origin.Rule);
+        Assert.Equal(shared, second.Probe().Registrations[0].Origin);
+        Assert.NotSame(shared, second.Probe().Registrations[0].Origin);
+        Assert.NotSame(probe.Registrations[4].Origin, second.Probe().Registrations[4].Origin);
+        var report = first.ApplyTo(new ServiceCollection()).Probe();
+        Assert.Equal(probe.Registrations.Count, report.Count);
+        for (var index = 0; index < report.Count; index++)
+        {
+            Assert.Same(probe.Registrations[index].Origin, report[index].Origin);
+            Assert.Same(probe.Registrations[index].Descriptor, report[index].Descriptor);
+        }
+    }
+
+    [Fact]
+    public void Rejection_only_rules_share_origin_without_emitting_registrations()
+    {
+        var plan = Plan(
+            "rules.AddClasses().AssignableTo<ICatalog>().AsSelf().WithTransientLifetime().ExpectOne().AllowEmpty();",
+            """
+            public interface ICatalog {}
+            public class Container
+            {
+                private abstract class Catalog : ICatalog {}
+                private abstract class Inventory : ICatalog {}
+            }
+            """
+        );
+        Assert.Empty(plan.Probe().Registrations);
+        var rejected = plan.Probe().RejectedCandidates;
+        Assert.Equal(
+            ["global::Container.Catalog", "global::Container.Inventory"],
+            rejected.Select(entry => entry.CandidateIdentity).ToArray()
+        );
+        Assert.All(
+            rejected,
+            entry =>
+            {
+                Assert.Null(entry.CandidateType);
+                Assert.Equal(["Abstract class."], entry.Reasons);
+                Assert.Same(rejected[0].Origin, entry.Origin);
+            }
+        );
+    }
+
+    [Fact]
     public void Advanced_output_has_reviewable_snapshot()
     {
         var (driver, output) = CompositionGeneratorHarness.Run(
