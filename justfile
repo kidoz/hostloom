@@ -54,6 +54,10 @@ brokers-down:
 test-integration:
     dotnet test tests/HostLoom.IntegrationTests/HostLoom.IntegrationTests.csproj -c Release
 
+# Run TLS/ACL and restart tests against an owned disposable Valkey server (Docker and OpenSSL required).
+test-valkey-deployment:
+    uv run --locked python scripts/test-valkey-deployment.py
+
 # Run all object mapping comparisons and strategy measurements.
 benchmark-mapping:
     dotnet run --project benchmarks/HostLoom.Mapping.Benchmarks -c Release -- --filter "*"
