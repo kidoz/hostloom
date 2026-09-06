@@ -22,6 +22,10 @@ indent_size = 2
 
 [*.cs]
 
+# Report unnecessary using directives in Roslyn-based editors and Rider/ReSharper.
+dotnet_diagnostic.IDE0005.severity = warning
+resharper_redundant_using_directive_highlighting = warning
+
 # CA1062: parameters are already contract-checked by nullable reference types, which are
 # enabled repo-wide. Public entry points that dereference an argument still guard with
 # ArgumentNullException.ThrowIfNull; this rule would demand a guard on every parameter.
