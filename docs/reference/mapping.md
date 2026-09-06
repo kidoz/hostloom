@@ -46,6 +46,13 @@ MappedPairRegistry GetMappedPairs(this IServiceCollection services);
 The `IMapper` dispatcher defaults to **scoped** (capturing it in a
 singleton is the `HLM0006` [analyzer rule](analyzer-rules.md)).
 
+Repeated `AddHostLoomMapping` calls retain the existing unkeyed dispatcher. A later
+`dispatcherLifetime` argument does not replace it: new maps are checked against the lifetime of
+the last registered unkeyed dispatcher. For example, after registering a singleton dispatcher,
+a subsequent call with default arguments still rejects a transient map. If the retained dispatcher
+is scoped, a later request for singleton does not make it singleton. A singleton dispatcher
+requires singleton maps whose dependency graphs are safe to resolve from the root provider.
+
 `MappingBuilder.Add` overloads:
 
 | Overload | Lifetime |
@@ -84,6 +91,20 @@ var mapper = new TestMapperBuilder()
 `Add` accepts an `IMapper<TSource, TDestination>` instance or a plain
 `Func<TSource, TDestination>`; duplicate pairs throw, and the built
 dispatcher throws `MappingNotFoundException` for unknown pairs.
+
+## Benchmarks
+
+Mapping comparisons and implementation strategy measurements live in the separate, non-packable
+`benchmarks/HostLoom.Mapping.Benchmarks` project. From the repository root:
+
+```sh
+dotnet run --project benchmarks/HostLoom.Mapping.Benchmarks -c Release -- --filter "*"
+dotnet run --project benchmarks/HostLoom.Mapping.Benchmarks -c Release -- --job Dry --filter "*"
+```
+
+The first command measures steady-state mapping, collections, resolution, registration and startup,
+plus strategy cases. The dry run checks setup and execution only; its timings are not a baseline.
+AutoMapper is a comparison dependency of this benchmark project and does not enter runtime packages.
 
 ## Limitations
 

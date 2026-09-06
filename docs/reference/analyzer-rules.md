@@ -39,6 +39,21 @@ repository.
   work stops with the request; declaring the token and ignoring it keeps the
   work, and the per-key guard, alive after the caller has gone.
 
+## Mapping completeness boundaries
+
+`HLM0004` and `HLM0005` inspect implementations of `IMapper<TSource, TDestination>.Map`,
+including explicit interface implementations. Unrelated methods named `Map` are excluded.
+Inherited destination members participate in completeness checks, overridden properties count
+once, and assignments to a concrete implementation can satisfy a base-class or interface
+destination contract. Constructor assignments to inherited members also count.
+
+Lambda and local-function bodies do not supply returns or assignments to the enclosing map.
+Computing a member value with a lambda can still be supported, but a nested function that captures
+the destination local produces `HLM0005` because its effects cannot be established from the outer
+body. Conditional assignment counts as assignment; these rules do not prove every execution path.
+Destinations that are type parameters cannot have their members enumerated and are not checked.
+Test those maps independently even when neither diagnostic appears.
+
 ## Composition generator diagnostics
 
 These diagnostics come from the `HostLoom.Composition.Generators` analyzer project, separately from
