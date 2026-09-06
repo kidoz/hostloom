@@ -29,6 +29,7 @@ public sealed class AnalyzerPackageTests
                 {
                     "HostLoom.Pipelines/HostLoom.Pipelines.csproj",
                     "HostLoom/HostLoom.csproj",
+                    "HostLoom.Mapping/HostLoom.Mapping.csproj",
                     "HostLoom.Analyzers/HostLoom.Analyzers.csproj",
                 }
             )
@@ -66,6 +67,10 @@ public sealed class AnalyzerPackageTests
                         projectPath,
                         "--configfile",
                         Path.Combine(consumerDirectory, "NuGet.config"),
+                        // Every run packs the same test version. An isolated cache makes the
+                        // consumer load this run's package instead of a previously cached one.
+                        "--packages",
+                        Path.Combine(consumerDirectory, "packages"),
                     ]
                 )
                 .ConfigureAwait(true);
@@ -78,6 +83,12 @@ public sealed class AnalyzerPackageTests
                 .ConfigureAwait(true);
             AssertCommandSucceeded(build);
             Assert.Contains("warning HLM0001", build.Output, StringComparison.Ordinal);
+            Assert.Contains("warning HLM0004", build.Output, StringComparison.Ordinal);
+            Assert.Contains("never assigns ImageUrl;", build.Output, StringComparison.Ordinal);
+            Assert.DoesNotContain("never assigns Name;", build.Output, StringComparison.Ordinal);
+            Assert.DoesNotContain("Map to 'IProductModel'", build.Output, StringComparison.Ordinal);
+            Assert.DoesNotContain("warning HLM0005", build.Output, StringComparison.Ordinal);
+            Assert.DoesNotContain("warning AD0001", build.Output, StringComparison.Ordinal);
         }
         finally
         {
@@ -148,6 +159,11 @@ public sealed class AnalyzerPackageTests
                     new XElement(
                         "PackageReference",
                         new XAttribute("Include", "HostLoom"),
+                        new XAttribute("Version", "0.0.0-test")
+                    ),
+                    new XElement(
+                        "PackageReference",
+                        new XAttribute("Include", "HostLoom.Mapping"),
                         new XAttribute("Version", "0.0.0-test")
                     ),
                     new XElement(
@@ -253,9 +269,35 @@ public sealed class AnalyzerPackageTests
         using System.Threading;
         using System.Threading.Tasks;
         using HostLoom;
+        using HostLoom.Mapping;
 
         internal sealed record Response(string Text);
         internal sealed record Request : IRequest<Response>;
+
+        internal sealed record ProductEntity(string Name, string ImageUrl);
+        internal record NamedModel(string Name);
+        internal interface IProductModel
+        {
+            string Name { get; init; }
+            string ImageUrl { get; init; }
+        }
+        internal sealed record ProductModel(string Name) : NamedModel(Name), IProductModel
+        {
+            public string ImageUrl { get; init; } = "";
+        }
+
+        internal sealed class CompleteMapper : IMapper<ProductEntity, IProductModel>
+        {
+            public IProductModel Map(ProductEntity source) => new ProductModel(source.Name)
+            {
+                ImageUrl = string.Concat(source.ImageUrl.Select(character => character.ToString()))
+            };
+        }
+
+        internal sealed class IncompleteMapper : IMapper<ProductEntity, ProductModel>
+        {
+            public ProductModel Map(ProductEntity source) => new ProductModel(source.Name);
+        }
 
         internal static class Consumer
         {
