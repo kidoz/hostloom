@@ -24,9 +24,10 @@ public sealed class CatalogService(ICache cache)
 ```
 
 `GetOrCreateAsync` looks in the in-process tier, then the distributed tier, then takes the
-per-key guard and runs the factory once per key per process. A distributed hit repopulates the
-in-process tier with the remaining time to live. The state-carrying overload shown above captures
-nothing, so an in-process hit allocates nothing on the caller's side; the simpler
+per-key guard and rechecks both tiers before running the factory. The recheck also covers a delayed
+distributed miss arriving after another caller has already filled the cache and released the guard.
+A distributed hit repopulates the in-process tier with the remaining time to live. The state-carrying
+overload shown above captures nothing, so an in-process hit allocates nothing on the caller's side; the simpler
 `Func<CancellationToken, ValueTask<T>>` overload exists for ergonomics.
 
 `TryGetAsync<T>` returns a `CacheLookup<T>` with `Found`, `Value`, `Tier`, and `Degraded`, and is

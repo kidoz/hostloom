@@ -7,6 +7,7 @@ using HostLoom.Caching;
 using HostLoom.Caching.Internal;
 using HostLoom.Caching.Testing;
 using Microsoft.Extensions.Logging;
+using NSubstitute;
 using Xunit;
 
 namespace HostLoom.Tests;
@@ -399,6 +400,101 @@ public sealed class TieredCacheTests
         SystemTextJsonCacheValueSerializer.CreateReflectionBased();
 
     private static CachingOptions Options(string ns = "svc") => new() { Namespace = ns };
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task GetOrCreate_DelayedMissAfterAnotherCallerFinishes_ReusesCachedValue(
+        bool enableL1
+    )
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken
+        );
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        var token = timeout.Token;
+        var missObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var releaseMiss = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var inner = new InMemoryDistributedCacheStore(_clock);
+        var store = Substitute.For<IDistributedCacheStore>();
+        var reads = 0;
+        store
+            .GetAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var read = inner.GetAsync(call.Arg<string>(), call.Arg<CancellationToken>());
+                return Interlocked.Increment(ref reads) == 1
+                    ? new ValueTask<CacheStoreEntry?>(DelayMissAsync(read))
+                    : read;
+            });
+        store
+            .SetAsync(
+                Arg.Any<string>(),
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<TimeSpan>(),
+                Arg.Any<IReadOnlyCollection<string>?>(),
+                Arg.Any<CancellationToken>()
+            )
+            .Returns(call =>
+                inner.SetAsync(
+                    call.Arg<string>(),
+                    call.Arg<ReadOnlyMemory<byte>>(),
+                    call.Arg<TimeSpan>(),
+                    call.Arg<IReadOnlyCollection<string>?>(),
+                    call.Arg<CancellationToken>()
+                )
+            );
+        store
+            .SetIfAbsentAsync(
+                Arg.Any<string>(),
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<TimeSpan>(),
+                Arg.Any<IReadOnlyCollection<string>?>(),
+                Arg.Any<CancellationToken>()
+            )
+            .Returns(ValueTask.FromResult(true));
+        var options = Options();
+        options.L1.Enabled = enableL1;
+        await using var cache = new TieredCache(options, store, _serializer, timeProvider: _clock);
+        var runs = 0;
+        ValueTask<int> Factory(CancellationToken _) =>
+            ValueTask.FromResult(Interlocked.Increment(ref runs));
+
+        var delayed = cache
+            .GetOrCreateAsync("catalog:eu", Factory, TimeSpan.FromMinutes(5), token)
+            .AsTask();
+        try
+        {
+            await missObserved.Task.WaitAsync(token);
+            var winner = await cache.GetOrCreateAsync(
+                "catalog:eu",
+                Factory,
+                TimeSpan.FromMinutes(5),
+                token
+            );
+            Assert.Equal(1, winner);
+        }
+        finally
+        {
+            releaseMiss.TrySetResult();
+        }
+
+        Assert.Equal(1, await delayed.WaitAsync(token));
+        Assert.Equal(1, runs);
+
+        async Task<CacheStoreEntry?> DelayMissAsync(ValueTask<CacheStoreEntry?> read)
+        {
+            var miss = await read;
+            Assert.Null(miss);
+            missObserved.TrySetResult();
+            await releaseMiss.Task.WaitAsync(token);
+            return miss;
+        }
+    }
 
     [Fact]
     public void Constructor_StoreWithoutSerializer_Throws()
@@ -875,9 +971,16 @@ public sealed class TieredCacheTests
         );
 
         Assert.Equal("fresh", value!.Text);
-        var entry = Assert.Single(logger.Entries);
-        Assert.Equal(1002, entry.Event.Id);
-        Assert.Equal(LogLevel.Error, entry.Level);
+        // Both the initial lookup and the guarded recheck can encounter the corrupt payload.
+        Assert.NotEmpty(logger.Entries);
+        Assert.All(
+            logger.Entries,
+            entry =>
+            {
+                Assert.Equal(1002, entry.Event.Id);
+                Assert.Equal(LogLevel.Error, entry.Level);
+            }
+        );
         await using var other = new TieredCache(
             Options(),
             store,

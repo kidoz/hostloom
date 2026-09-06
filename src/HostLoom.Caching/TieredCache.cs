@@ -652,29 +652,23 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         }
 
         using var guard = await _guard.AcquireAsync(key, cancellationToken).ConfigureAwait(false);
-        if (guard.Waited)
+        // A caller can receive an earlier store miss after another caller has already filled the
+        // cache and released the guard. Re-check even when acquisition did not have to wait.
+        if (_local is not null && _local.TryGet<T>(key, out var filled))
         {
-            // Another caller ran the factory while this one waited; its result is in a tier.
-            if (_local is not null && _local.TryGet<T>(key, out var filled))
-            {
-                Finish(activity, "get_or_create", "hit_l1", start, degraded, CacheTier.L1);
-                return filled;
-            }
+            Finish(activity, "get_or_create", "hit_l1", start, degraded, CacheTier.L1);
+            return filled;
+        }
 
-            if (_store is not null)
+        if (_store is not null)
+        {
+            var again = await ReadFromStoreAsync<T>(key, options.LocalExpiration, cancellationToken)
+                .ConfigureAwait(false);
+            degraded |= again.Degraded;
+            if (again.Found)
             {
-                var again = await ReadFromStoreAsync<T>(
-                        key,
-                        options.LocalExpiration,
-                        cancellationToken
-                    )
-                    .ConfigureAwait(false);
-                degraded |= again.Degraded;
-                if (again.Found)
-                {
-                    Finish(activity, "get_or_create", "hit_l2", start, degraded, CacheTier.L2);
-                    return again.Value;
-                }
+                Finish(activity, "get_or_create", "hit_l2", start, degraded, CacheTier.L2);
+                return again.Value;
             }
         }
 
