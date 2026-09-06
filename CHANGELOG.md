@@ -31,6 +31,44 @@ are derived from release tags at publish time.
   while preserving diagnostic order and semantic invalidation after edits.
 - Generated composition factories share one immutable origin per rule across registrations,
   aliases and rejected candidates within each factory call, reducing plan-creation allocations.
+- Mapping and AutoMapper comparison benchmarks now live in `HostLoom.Mapping.Benchmarks`, with
+  dedicated `benchmark-mapping` and `benchmark-mapping-smoke` recipes.
+- Redundant C# using directives are reported as warnings in Roslyn-based editors and
+  Rider/ReSharper; existing unused directives have been removed.
+
+### Fixed
+
+- `AddHostLoomMapping` validates map lifetimes against the actual registered unkeyed dispatcher
+  on repeated calls, preventing singleton lifetime checks from being bypassed or applied to a
+  dispatcher whose retained lifetime is scoped.
+- Mapping completeness analysis recognizes explicit `IMapper<TSource, TDestination>.Map`
+  implementations and ignores unrelated methods. Inherited class and interface members are
+  checked, overridden properties count once, and concrete implementations satisfy destination
+  contracts returned through a base class or interface.
+- Mapping completeness analysis excludes lambda and local-function bodies from the enclosing
+  map's returns and assignments. Nested functions that capture the destination local report
+  `HLM0005`; constructor assignments to inherited members are recognized. Packed-analyzer tests
+  cover the completeness diagnostics with an isolated package cache.
+- `TieredCache.GetOrCreateAsync` rechecks both cache tiers after acquiring the per-key guard,
+  even when acquisition did not wait. A delayed store miss can no longer trigger a redundant
+  factory call after another caller has already filled the cache.
+- Circuit-breaker calls admitted before the circuit opened can no longer close it, extend its
+  reset interval, or change the current half-open trial's verdict when they finish later.
+- Circuit resets and rate-limit windows use monotonic `TimeProvider` timestamps, so system-clock
+  corrections do not change their intervals. Custom test providers must advance timestamps as
+  well as timers when simulating elapsed time.
+- `TimeoutFilter` preserves caller cancellation even when a terminal filter ignores cancellation
+  and returns normally, including when the timeout has also expired.
+- `PipeContext.AddOrUpdatePayload` invokes the update factory for payload types implemented by
+  the context itself. The factory may update that instance in place; returning a replacement or
+  null throws `InvalidOperationException` instead of storing an unreachable payload.
+- `InstrumentedFilter` counts overlapping downstream intervals once and synchronizes their
+  accumulation, preserving the filter's own duration when downstream calls run concurrently.
+- The WebSocket client ignores credential-refresh results from an ended reconnect cycle and
+  preserves manual closes made by connected-state observers without resubscribing on a closing
+  socket. JSON-v1 integer bounds and Base64 payload syntax are validated for outgoing and incoming
+  frames; payload bytes remain opaque. The client is independently versioned; see its
+  [changelog](clients/hostloom-websocket-client/CHANGELOG.md).
 
 ## [0.5.0] - 2026-09-05
 
@@ -724,7 +762,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/kidoz/hostloom/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/kidoz/hostloom/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kidoz/hostloom/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kidoz/hostloom/compare/v0.1.0...v0.2.0
