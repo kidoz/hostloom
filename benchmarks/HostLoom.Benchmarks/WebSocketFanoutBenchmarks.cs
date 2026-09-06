@@ -1,4 +1,3 @@
-using System.Net.WebSockets;
 using BenchmarkDotNet.Attributes;
 using HostLoom.AspNetCore.WebSockets;
 

@@ -1,6 +1,5 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
-using HostLoom.Mapping;
 using Microsoft.Extensions.DependencyInjection;
 
 // CA1707: underscored benchmark names are how the results table stays readable.

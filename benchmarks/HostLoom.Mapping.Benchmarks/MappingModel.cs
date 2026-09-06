@@ -1,5 +1,4 @@
 using AutoMapper;
-using HostLoom.Mapping;
 using HostLoom.Mapping.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;

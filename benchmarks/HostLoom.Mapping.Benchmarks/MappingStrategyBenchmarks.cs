@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using BenchmarkDotNet.Attributes;
-using HostLoom.Mapping;
 using HostLoom.Mapping.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection;
 

@@ -1,6 +1,5 @@
 using System.Net.WebSockets;
 using MessagePack;
-using MessagePack.Formatters;
 using MessagePack.Resolvers;
 
 namespace HostLoom.AspNetCore.WebSockets;

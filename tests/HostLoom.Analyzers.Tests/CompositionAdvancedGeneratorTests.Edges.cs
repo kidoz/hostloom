@@ -1,5 +1,4 @@
 using HostLoom.Composition;
-using Microsoft.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 

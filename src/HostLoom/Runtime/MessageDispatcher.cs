@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using HostLoom.Pipelines;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace HostLoom;
 

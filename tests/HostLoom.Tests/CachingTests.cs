@@ -6,7 +6,6 @@ using System.Text.Json.Serialization;
 using HostLoom.Caching;
 using HostLoom.Caching.Internal;
 using HostLoom.Caching.Testing;
-using HostLoom.Conformance;
 using Microsoft.Extensions.Logging;
 using Xunit;
 

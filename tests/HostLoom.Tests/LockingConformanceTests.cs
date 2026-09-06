@@ -1,7 +1,6 @@
 using HostLoom.Conformance;
 using HostLoom.Locking;
 using HostLoom.Locking.DependencyInjection;
-using HostLoom.Locking.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 

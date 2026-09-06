@@ -1,4 +1,3 @@
-using HostLoom.Composition;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace HostLoom.Composition.Benchmarks;

@@ -1,6 +1,5 @@
 using BenchmarkDotNet.Attributes;
 using HostLoom.Locking;
-using HostLoom.Redis;
 using Medallion.Threading.Redis;
 using StackExchange.Redis;
 
