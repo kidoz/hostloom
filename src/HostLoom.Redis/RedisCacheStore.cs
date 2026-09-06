@@ -26,6 +26,14 @@ public sealed class RedisCacheStore
         if not value then return false end
         return {value, redis.call('PTTL', KEYS[1])}
         """;
+
+    private const string RemoveTagMembersScript = """
+        for i = 2, #KEYS do
+            redis.call('UNLINK', KEYS[i])
+            redis.call('SREM', KEYS[1], KEYS[i])
+        end
+        return #KEYS - 1
+        """;
     private readonly RedisConnection _connection;
     private readonly bool _hashTags;
     private readonly bool _ownsConnection;
@@ -282,16 +290,19 @@ public sealed class RedisCacheStore
             for (var offset = 0; offset < members.Length; offset += RemoveBatchSize)
             {
                 var count = Math.Min(RemoveBatchSize, members.Length - offset);
-                var chunk = new RedisKey[count];
+                var chunk = new RedisKey[count + 1];
+                chunk[0] = tag;
                 for (var i = 0; i < count; i++)
                 {
-                    chunk[i] = (byte[])members[offset + i]!;
+                    chunk[i + 1] = (byte[])members[offset + i]!;
                 }
 
-                await db.KeyDeleteAsync(chunk).WaitAsync(cancellationToken).ConfigureAwait(false);
+                // Remove only the memberships in this snapshot, atomically with their values.
+                // SREM removes an empty index; a concurrent writer's new members survive.
+                await db.ScriptEvaluateAsync(RemoveTagMembersScript, chunk)
+                    .WaitAsync(cancellationToken)
+                    .ConfigureAwait(false);
             }
-
-            await db.KeyDeleteAsync(tag).WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception)
             when (!RedisFailures.IsCallerCancellation(exception, cancellationToken))
