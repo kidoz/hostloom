@@ -51,13 +51,16 @@ silent data loss rather than a compile error — nothing requires the member to 
 the one axis on which explicit mapping is less safe than the convention mapping it replaces. A
 member supplied through the destination's constructor counts as assigned, so positional records and
 contracts with real constructors need nothing extra.
+Inherited members are included, and an overridden property is counted once. Interface destinations
+include members inherited from other interfaces; assignments to concrete implementation properties
+satisfy the corresponding interface members.
 
 Omitting a member is often correct. Name each one, so that a member added to the contract later is
 still reported rather than excused by a blanket marker:
 
 ```csharp
-[UnmappedMembers(nameof(PaymentTransfer.CardMask), nameof(PaymentTransfer.ProviderId))]
-public sealed class TransferModelToPaymentTransferMapper : IMapper<TransferModel, PaymentTransfer>
+[UnmappedMembers(nameof(ProductModel.ImageUrl), nameof(ProductModel.VendorId))]
+public sealed class ProductMapper : IMapper<ProductEntity, ProductModel>
 ```
 
 ### HLM0005
@@ -67,10 +70,17 @@ Keep a `Map` body in a shape completeness can be verified in. Two are recognised
 - the destination constructed and returned directly, with an object initializer;
 - one local constructed, assigned into across any number of statements and branches, and returned.
 
-A body outside both — the local passed to a method, built across two locals, or returned from
-somewhere else — is reported rather than skipped, so that "not checked" is never mistaken for
-"checked and complete". Conditional assignment counts as assigned: the rule targets forgotten
-members, and evidence that the author considered one is the whole signal.
+A body outside both — the local passed to a method, different locals returned on different paths,
+or a destination returned from somewhere else — is reported rather than skipped, so that
+"not checked" is never mistaken for "checked and complete". Conditional assignment counts as
+assigned: the rule targets forgotten members, and evidence that the author considered one is the
+whole signal.
+
+Lambda and local-function bodies do not contribute returns or assignments to the enclosing map.
+A lambda used to compute a member value does not change the recognized map shape. A nested function that
+captures the destination local produces HLM0005: its effects cannot be verified without following
+when and how the function executes. A concrete local may be returned through a base-class or
+interface destination contract.
 
 **Known blind spot.** A map whose destination is a type parameter — a generic map class closed
 through `MappingBuilder.Add<TSource, TDestination>(factory)` — cannot have its members enumerated,
