@@ -65,6 +65,14 @@ it cannot represent total startup cost. Optional ledger formatting adds a separa
 The [performance reference](../reference/composition-performance.md) publishes every phase,
 including first calls, warm runs and added compiler cost.
 
+Subsequent optimizations group runtime validation by service, avoid unused collision searches and
+reuse compiler analysis within each declaration. Generated factories also share immutable origin
+metadata per rule within a call. These changes preserve ordering, provenance and validation before
+collection mutation. They reduce measured work and allocations without removing those checks.
+The latest origin-sharing comparison reduced plan allocations by 10.7% for the 100-registration
+fixture, but timing did not improve consistently. Two generator p95 budgets remain exceeded; the
+performance reference records the measurements and the associated GC diagnostics.
+
 AOT evidence covers executed, known closed paths. Conservative open-generic checks and capture
 diagnostics cannot prove arbitrary dependencies, future closed constructions or opaque factories.
 The [migration guide](../how-to/migrate-composition.md) keeps those acceptance checks in the consumer.

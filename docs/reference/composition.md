@@ -216,6 +216,11 @@ roots and Windows/POSIX separators. Seven reviewed snapshots include aliases, ge
 and rejections. Failures write received files to the OS temporary directory and never update
 verified snapshots automatically.
 
+Within one declaration compilation, discovery, matching, type formatting and constructor inspection
+reuse results. Service indexes narrow conflict and dependency checks while preserving diagnostic
+order. These caches do not retain symbols or matching results across edits; unchanged generated
+text does not imply that semantic analysis was skipped.
+
 The full solution, seven snapshots and native example cover development consumers. The package
 verifier additionally builds an isolated application with one HostLoom reference and a helper-only
 consumer whose generator arrives transitively. It checks dependency graphs, negative HLM0009/HLM0014
@@ -261,6 +266,12 @@ A `CompositionPlanProbe` contains ordered registrations and rejected candidates.
 It is an application history, not a live provider inventory. Origins carry declaration/group,
 normalized selector and authored source location; inaccessible rejected types have a stable
 candidate identity with a null `CandidateType`. Rejection reasons retain their order.
+
+Generated factories create one immutable `CompositionOrigin` per rule that produces registrations
+or rejections. That rule's registrations, aliases and rejected candidates share the origin within
+one factory call. Different rules and factory calls create separate origin objects; empty rules
+allocate none. Compare provenance by its values, using `CompositionAssert.Origins` when appropriate,
+rather than using reference identity as a rule identifier. Explicit plans supply their own origins.
 
 The optional testing package exposes `CompositionRegistrationShape.Project(probe)` and
 `FromDescriptor(descriptor, aliasTargetType, opaqueIdentity)`. Shapes compare service,

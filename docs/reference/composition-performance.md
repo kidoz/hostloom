@@ -6,6 +6,11 @@ at 7.0.0 and appears only in the benchmark project. Measurements use
 `DOTNET_TieredCompilation=0` and `DOTNET_ReadyToRun=1`; defaults or another machine are not directly
 comparable. These results describe the measured implementation, not a guarantee for all hosts.
 
+For the latest results, see the [shared generated origins update](#shared-generated-origins-update):
+the 100-registration fixture allocates 46,696 managed bytes to create a plan and 137,488 bytes to
+create and apply it. Runtime budgets and the added-build target passed that run; two fresh-driver
+generator p95 budgets failed. Earlier sections retain their original comparisons and budget status.
+
 In the initial measurement, creating and applying 100 generated registrations took a warm median **292.70 µs / 174,432 managed
 bytes**, versus **0.75 µs / 8,624 bytes** for handwritten registration and **116.98 µs / 125,241
 bytes** for Scrutor. Provenance and validation have a measurable startup cost. The generated plan
@@ -52,7 +57,7 @@ A second runtime update on **2026-09-06** limits first-collision searches to Ski
 Replace now reports removals and compacts retained descriptors in one ordered pass, then appends
 the incoming descriptor. Validation and target-collection mutation boundaries remain unchanged.
 
-The [strategy workloads](../../benchmarks/HostLoom.Composition.Benchmarks/README.md#append-and-replace-workloads)
+The [strategy workloads](https://github.com/kidoz/hostloom/blob/main/benchmarks/HostLoom.Composition.Benchmarks/README.md#append-and-replace-workloads)
 prepare 100 registrations and 100 existing scoped factory descriptors outside timing. Each call
 creates and seeds a collection and applies the plan. Append leaves 200 descriptors and reports 100
 additions; ServiceType replacement leaves 100 descriptors and reports 100 removals plus 100 additions.
@@ -95,7 +100,7 @@ and generic constraints changing and reverting with a retained driver.
 The comparison used the reference environment above and the same expanded benchmark harness for
 both generator versions. Five fresh process pairs alternated execution order for each workload.
 Each process recorded 15 driver sequences, giving 75 observations per phase and version. The
-[workload profiles](../../benchmarks/HostLoom.Composition.Benchmarks/README.md#generator-workload-profiles)
+[workload profiles](https://github.com/kidoz/hostloom/blob/main/benchmarks/HostLoom.Composition.Benchmarks/README.md#generator-workload-profiles)
 use 1,000 candidates: one Many service, four repeated discovery rules producing 4,000 registrations,
 or singleton candidates sharing transient dependencies and an open-generic repository.
 
