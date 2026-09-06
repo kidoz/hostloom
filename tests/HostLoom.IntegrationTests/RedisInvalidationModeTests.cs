@@ -69,9 +69,9 @@ public sealed class RedisInvalidationModeTests
             Task.FromResult(channel.Transport == RedisInvalidationTransport.Tracking)
         );
         var dataKey = $"{ns}:cache:data:k";
-        await writerStore.SetAsync(dataKey, new byte[] { 1 }, TimeSpan.FromMinutes(1), null, Token);
+        await readerStore.SetAsync(dataKey, new byte[] { 1 }, TimeSpan.FromMinutes(1), null, Token);
 
-        // The reader's own read registers the key; its own write must not report back (NOLOOP).
+        // Its own write must not report back (NOLOOP), or drop coverage of later changes.
         Assert.NotNull(await readerStore.GetAsync(dataKey, Token));
         await readerStore.SetAsync(dataKey, new byte[] { 2 }, TimeSpan.FromMinutes(1), null, Token);
         await Task.Delay(500, Token);
@@ -81,7 +81,6 @@ public sealed class RedisInvalidationModeTests
             afterOwnWrite = received.Count;
         }
 
-        Assert.NotNull(await readerStore.GetAsync(dataKey, Token));
         await writerStore.SetAsync(dataKey, new byte[] { 3 }, TimeSpan.FromMinutes(1), null, Token);
         await CacheConformance.WaitUntilAsync(() =>
         {

@@ -12,8 +12,8 @@ namespace HostLoom.Redis;
 /// <c>{namespace}:cache:invalidate</c> is always subscribed and carries what
 /// <c>RemoveAsync</c> and <c>RemoveByTagAsync</c> publish. On top of it,
 /// <see cref="CacheInvalidationOptions.Mode"/> adds one server-side transport: client tracking
-/// (<c>CLIENT TRACKING ON REDIRECT</c> to this process's subscriber connection, so the server
-/// reports every tracked entry another client modifies or expires) or keyspace notifications for
+/// (<c>CLIENT TRACKING ON REDIRECT … BCAST PREFIX</c> to this process's subscriber connection,
+/// covering namespace entries populated by reads or writes) or keyspace notifications for
 /// the filtered prefixes (which need <c>notify-keyspace-events Kxe</c> on the server).
 /// <c>Auto</c> picks tracking on Redis 6.0 or later and broadcast below that.
 /// </summary>
@@ -378,14 +378,18 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
                     );
                 }
 
-                // NOLOOP: this connection's own writes must not evict the in-process entry it
-                // has just written; other clients' writes and server-side expiry still do.
+                // BCAST covers entries populated by writes and warmup as well as reads.
+                // Read-based tracking forgets a key on an own write even with NOLOOP.
+                // Scope it to cache data; leases, tags and locks need no L1 invalidations.
                 await db.ExecuteAsync(
                         "CLIENT",
                         "TRACKING",
                         "ON",
                         "REDIRECT",
                         subscriberId.Value,
+                        "BCAST",
+                        "PREFIX",
+                        _layout.DataPrefix,
                         "NOLOOP"
                     )
                     .WaitAsync(cancellationToken)
