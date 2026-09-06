@@ -18,6 +18,7 @@ public sealed class RedisOptions
     /// <summary>
     /// Supplies an externally owned multiplexer instead of one created from the options. The
     /// package then never disposes it. Takes precedence over both configuration properties.
+    /// The token represents connection shutdown; individual callers cancel only their own wait.
     /// </summary>
     public Func<CancellationToken, Task<IConnectionMultiplexer>>? ConnectionFactory { get; set; }
 

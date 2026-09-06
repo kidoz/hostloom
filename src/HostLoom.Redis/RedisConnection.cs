@@ -14,9 +14,15 @@ public sealed class RedisConnection : IAsyncDisposable
 {
     private static int _sequence;
     private readonly ILogger _logger;
-    private readonly SemaphoreSlim _connecting = new(1, 1);
+    private readonly Lock _gate = new();
+    private readonly CancellationTokenSource _shutdown = new();
+    private readonly Func<ConfigurationOptions, Task<IConnectionMultiplexer>> _connect =
+        static async configuration =>
+            await ConnectionMultiplexer.ConnectAsync(configuration).ConfigureAwait(false);
     private readonly bool _owned;
     private IConnectionMultiplexer? _multiplexer;
+    private Task<IConnectionMultiplexer>? _connecting;
+    private Task? _disposing;
     private long _reconnects;
     private int _disposed;
 
@@ -31,6 +37,12 @@ public sealed class RedisConnection : IAsyncDisposable
         _owned = options.ConnectionFactory is null;
         RedisDiagnostics.Register(this);
     }
+
+    internal RedisConnection(
+        RedisOptions options,
+        Func<ConfigurationOptions, Task<IConnectionMultiplexer>> connect
+    )
+        : this(options) => _connect = connect;
 
     /// <summary>Wraps an externally owned multiplexer; it is never disposed by this class.</summary>
     public RedisConnection(
@@ -58,7 +70,7 @@ public sealed class RedisConnection : IAsyncDisposable
     public string ClientName { get; }
 
     /// <summary>Whether the multiplexer exists and reports itself connected.</summary>
-    public bool IsConnected => _multiplexer?.IsConnected ?? false;
+    public bool IsConnected => Volatile.Read(ref _multiplexer)?.IsConnected ?? false;
 
     /// <summary>Times the connection was restored after a failure.</summary>
     public long Reconnects => Interlocked.Read(ref _reconnects);
@@ -68,42 +80,59 @@ public sealed class RedisConnection : IAsyncDisposable
         CancellationToken cancellationToken = default
     )
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-        if (_multiplexer is { } existing)
+        cancellationToken.ThrowIfCancellationRequested();
+        Task<IConnectionMultiplexer> connecting;
+        lock (_gate)
         {
-            return existing;
-        }
-
-        await _connecting.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (_multiplexer is { } raced)
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if (_multiplexer is { } existing)
             {
-                return raced;
+                return existing;
             }
 
-            IConnectionMultiplexer created;
-            if (Options.ConnectionFactory is { } factory)
+            if (_connecting is null || _connecting.IsFaulted || _connecting.IsCanceled)
             {
-                created = await factory(cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                var configuration = Options.BuildConfiguration();
-                configuration.ClientName = ClientName;
-                created = await ConnectionMultiplexer
-                    .ConnectAsync(configuration)
-                    .WaitAsync(cancellationToken)
-                    .ConfigureAwait(false);
+                _connecting = ConnectAsync();
             }
 
-            Attach(created);
-            return created;
+            connecting = _connecting;
         }
-        finally
+
+        // Callers cancel their own wait, not the shared connection attempt. Its eventual
+        // result remains owned here, including when every caller has already cancelled.
+        var multiplexer = await connecting.WaitAsync(cancellationToken).ConfigureAwait(false);
+        lock (_gate)
         {
-            _connecting.Release();
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            return multiplexer;
         }
+    }
+
+    private async Task<IConnectionMultiplexer> ConnectAsync()
+    {
+        IConnectionMultiplexer created;
+        if (Options.ConnectionFactory is { } factory)
+        {
+            created = await factory(_shutdown.Token).ConfigureAwait(false);
+        }
+        else
+        {
+            var configuration = Options.BuildConfiguration();
+            configuration.ClientName = ClientName;
+            created = await _connect(configuration).ConfigureAwait(false);
+        }
+
+        lock (_gate)
+        {
+            if (_disposed == 0)
+            {
+                Attach(created);
+            }
+        }
+
+        // Disposal awaits this task and releases an owned result even if it arrived too
+        // late to attach. Externally supplied multiplexers always remain externally owned.
+        return created;
     }
 
     /// <summary>The database selected by <see cref="RedisOptions.DatabaseIndex"/>.</summary>
@@ -148,15 +177,42 @@ public sealed class RedisConnection : IAsyncDisposable
     public event EventHandler? Restored;
 
     /// <inheritdoc />
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        lock (_gate)
         {
-            return;
+            if (_disposing is null)
+            {
+                _disposed = 1;
+                RedisDiagnostics.Unregister(this);
+                _disposing = DisposeCoreAsync();
+            }
+
+            return new ValueTask(_disposing);
+        }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        await _shutdown.CancelAsync().ConfigureAwait(false);
+        var multiplexer = _multiplexer;
+        if (_connecting is { } connecting)
+        {
+            try
+            {
+                multiplexer = await connecting.ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // A failed connection attempt owns no multiplexer to release.
+            }
         }
 
-        RedisDiagnostics.Unregister(this);
-        var multiplexer = _multiplexer;
+        lock (_gate)
+        {
+            _multiplexer = null;
+        }
+
         if (multiplexer is not null)
         {
             multiplexer.ConnectionFailed -= OnConnectionFailed;
@@ -167,7 +223,7 @@ public sealed class RedisConnection : IAsyncDisposable
             }
         }
 
-        _connecting.Dispose();
+        _shutdown.Dispose();
     }
 
     private void Attach(IConnectionMultiplexer multiplexer)
