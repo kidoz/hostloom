@@ -23,6 +23,14 @@ dotnet add package HostLoom.Pipelines.Testing               # harnesses, test do
 `Pipe.Empty<TContext>()` is a no-op pipe. All context type parameters are
 constrained `class, IPipeContext` unless noted.
 
+Payload lookup includes implemented interfaces and the context itself. When the context implements
+the requested payload type, `GetOrAddPayload` returns it without invoking the factory.
+`AddOrUpdatePayload` invokes the update factory under the payload lock; that factory must return
+the same context instance after any in-place changes. Returning a replacement or null throws
+`InvalidOperationException`. Separately stored payloads may be replaced. Use a separate context
+for each concurrent send; thread-safe payload access does not make cancellation-token swaps safe
+on a shared context.
+
 ## PipeBuilder&lt;TContext&gt;
 
 | Method | Notes |
@@ -41,6 +49,16 @@ constrained `class, IPipeContext` unless noted.
 `UseTimeout(TimeSpan, TimeProvider? = null)` is an extension method
 constrained to `TContext : PipeContext` — stricter than the builder,
 because it swaps a linked token into the context for the downstream call.
+
+Timeout is cooperative: downstream code must observe `context.CancellationToken` to stop promptly.
+If downstream ignores cancellation and returns normally, the wrapper checks caller cancellation
+before checking its timeout. Caller cancellation therefore wins even if the timer also expired.
+The original context token is restored when the wrapper exits.
+
+Circuit resets and rate-limit windows use monotonic `TimeProvider` timestamps. A clock correction
+does not shorten or extend their intervals. Calls admitted before a circuit opened cannot later
+close it, extend its reset interval or change the current half-open trial's result. Only one trial
+is admitted at a time; cancellation of that trial reopens the circuit for another reset interval.
 
 ## RetryPolicy
 

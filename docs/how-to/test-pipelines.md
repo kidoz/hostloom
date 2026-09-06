@@ -72,6 +72,18 @@ Every built-in timing filter — retry backoff, circuit breaker reset,
 rate limit interval, timeout — accepts a `TimeProvider`. Pass a fake one
 and advance it explicitly; a retry test that sleeps is a flaky test.
 
+Advance monotonic timestamps and scheduled timers together. Circuit breakers and rate limiters
+use `GetTimestamp`/`GetElapsedTime`; a fake that changes only `GetUtcNow` cannot advance their
+windows. Wait for a signal that the operation has reached its timer or blocked downstream call
+before advancing time.
+
+For concurrent sends, create one context per send and coordinate with explicit signals such as
+`TaskCompletionSource` with `RunContinuationsAsynchronously`. Useful regression scenarios include
+an older in-flight call finishing after the circuit opens, a second call attempting to enter during
+the half-open trial, and caller cancellation racing a timeout. For the last case, also let a
+terminal filter return normally after cancellation and assert that the harness records an
+`OperationCanceledException`, including when the timeout has expired too.
+
 ## Troubleshoot
 
 - **`result.Completed` is false and you don't know why** — read
@@ -83,6 +95,8 @@ and advance it explicitly; a retry test that sleeps is a flaky test.
 - **A test passes alone and flakes in a suite** — look for a real
   `TimeProvider` or a shared stateful filter instance leaking between
   tests; compose a fresh pipeline per test.
+- **Advancing fake time does not reset the circuit or release a rate-limit wait** — verify that
+  the provider advances timestamps and timers, and that the operation reached the wait first.
 
 ## Related
 

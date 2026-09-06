@@ -56,6 +56,12 @@ filter is visible wherever it sits in the chain, instead of every upstream
 filter inheriting its latency. `WithoutInstrumentation()` opts a registered
 pipeline out.
 
+Downstream time is the elapsed time during which at least one downstream call is active.
+Concurrent, overlapping calls on separate contexts count once; sequential calls each contribute
+their own interval. The resulting duration measures elapsed work outside downstream execution,
+not CPU consumption. Await every downstream call before the filter returns so its lifetime falls
+within the measurement.
+
 ## Logging instruments (`HostLoom.Logging`)
 
 Health of the logging provider itself — the bounded queue and its
