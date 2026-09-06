@@ -37,7 +37,8 @@ internal sealed class TimeoutFilter<TContext> : IFilter<TContext>
         // Downstream returning normally does not mean it finished in time. Filters between stages
         // are checked by the pipe itself, but a terminal filter has nothing after it to observe the
         // token, so without this check an over-budget run reports success.
-        if (timeoutSource.IsCancellationRequested && !callerToken.IsCancellationRequested)
+        callerToken.ThrowIfCancellationRequested();
+        if (timeoutSource.IsCancellationRequested)
         {
             throw new PipelineTimeoutException(_timeout, null);
         }

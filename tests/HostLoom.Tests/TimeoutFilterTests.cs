@@ -5,6 +5,40 @@ namespace HostLoom.Tests;
 
 public sealed class TimeoutFilterTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task A_terminal_return_cannot_hide_caller_cancellation(
+        bool expire,
+        bool cancelFirst
+    )
+    {
+        var clock = new TestClock();
+        using var caller = new CancellationTokenSource();
+        var context = new TimedContext(caller.Token);
+        var pipe = Pipe.Create<TimedContext>(builder =>
+        {
+            builder.UseTimeout(TimeSpan.FromSeconds(5), clock);
+            builder.UseTerminal(async _ =>
+            {
+                if (cancelFirst)
+                    await caller.CancelAsync();
+                if (expire)
+                    clock.Advance(TimeSpan.FromSeconds(6));
+                if (!cancelFirst)
+                    await caller.CancelAsync();
+            });
+        });
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await pipe.SendAsync(context)
+        );
+
+        Assert.Equal(caller.Token, exception.CancellationToken);
+        Assert.Equal(caller.Token, context.CancellationToken);
+    }
+
     [Fact]
     public async Task A_run_over_budget_fails_with_a_pipeline_timeout()
     {
