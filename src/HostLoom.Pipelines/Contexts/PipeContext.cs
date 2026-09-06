@@ -70,6 +70,12 @@ public class PipeContext(CancellationToken cancellationToken = default) : IPipeC
         }
     }
 
+    /// <summary>Adds or updates a payload under the payload lock.</summary>
+    /// <remarks>
+    /// When this context implements the requested payload type, the update factory receives the
+    /// context and must return that same instance. It may update it in place; replacing it would
+    /// hide the replacement behind the context's identity in subsequent payload lookups.
+    /// </remarks>
     public TPayload AddOrUpdatePayload<TPayload>(
         Func<TPayload> addFactory,
         Func<TPayload, TPayload> updateFactory
@@ -81,6 +87,19 @@ public class PipeContext(CancellationToken cancellationToken = default) : IPipeC
 
         lock (_payloadLock)
         {
+            if (this is TPayload contextPayload)
+            {
+                var updated = updateFactory(contextPayload);
+                if (!ReferenceEquals(updated, contextPayload))
+                {
+                    throw new InvalidOperationException(
+                        "A payload provided by the context itself must be updated in place and cannot be replaced."
+                    );
+                }
+
+                return contextPayload;
+            }
+
             var payload = FindPayload(typeof(TPayload)) is TPayload existing
                 ? updateFactory(existing)
                 : addFactory();

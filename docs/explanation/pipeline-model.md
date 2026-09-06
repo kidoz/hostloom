@@ -12,6 +12,11 @@ the guarantees the built-in filters make.
   filters attach state — a stopwatch, a retry attempt — without the
   context type knowing about them in advance. Payloads can be retrieved
   through an implemented interface.
+  The context itself can implement a payload type. In that case,
+  `AddOrUpdatePayload` calls the update factory with the context; the factory
+  must return that same instance after any in-place changes. A replacement
+  or null result throws `InvalidOperationException`. Stored payloads can
+  still be replaced normally.
 - A **filter** (`IFilter<TContext>`) receives the context and the rest of
   the pipeline as `next`, and decides whether to invoke it. Wrapping,
   short-circuiting, branching, and observing are all this one shape.
