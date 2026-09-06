@@ -18,6 +18,19 @@ are derived from release tags at publish time.
 - Live Valkey TLS/ACL and server-restart tests, with an isolated Docker runner and a required
   release-workflow step. Covers certificate and permission rejection, client/subscriber recovery,
   script reload, database selection, bounded L1 staleness and lost-lease ownership checks.
+- Composition benchmark workloads for Append/Replace over populated collections, repeated
+  discovery rules and singleton dependency graphs, with reference-machine performance evidence.
+
+### Changed
+
+- Composition runtime validation groups descriptors once per service, and Append/Replace avoid
+  unused collision searches. Replacement reports removals and retains descriptor order in one
+  pass, preserving validation before collection mutation and diagnostic provenance.
+- The composition generator reuses discovery and matching results within each declaration
+  compilation and indexes conflict/dependency lookups, reducing compiler time and allocation
+  while preserving diagnostic order and semantic invalidation after edits.
+- Generated composition factories share one immutable origin per rule across registrations,
+  aliases and rejected candidates within each factory call, reducing plan-creation allocations.
 
 ## [0.5.0] - 2026-09-05
 
