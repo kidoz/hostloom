@@ -1,0 +1,213 @@
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
+using HostLoom.Caching;
+using HostLoom.Conformance;
+using HostLoom.IntegrationTests.Infrastructure;
+using HostLoom.Locking;
+using HostLoom.Redis;
+using Xunit;
+
+namespace HostLoom.IntegrationTests;
+
+/// <summary>
+/// Opt-in local network experiments: HOSTLOOM_REDIS_CHAOS=1, a real loopback Redis, and
+/// a private proxy per test. A 60-second deadline aborts the experiment and disposes the proxy.
+/// </summary>
+[Collection(nameof(RedisOutageTests))]
+[CollectionDefinition(nameof(RedisOutageTests), DisableParallelization = true)]
+public sealed class RedisOutageTests
+{
+    private const string Skip =
+        "Set HOSTLOOM_REDIS_CHAOS=1 and start the local Redis fixture to run isolated network faults.";
+    public static bool Enabled =>
+        Environment.GetEnvironmentVariable("HOSTLOOM_REDIS_CHAOS") == "1"
+        && RedisAvailability.Redis;
+
+    [Fact(Timeout = 60_000, Skip = Skip, SkipUnless = nameof(Enabled))]
+    public async Task DisconnectedCache_FailsOpenAndRecoversOnTheSameConnection()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var ns = "outage-" + Guid.NewGuid().ToString("N");
+        await using var proxy = new RedisFaultProxy();
+        await using var connection = Connection(proxy);
+        await using var store = new RedisCacheStore(connection);
+        await using var cache = new TieredCache(
+            new CachingOptions { Namespace = ns },
+            store,
+            Serializer()
+        );
+        var entry = new CacheEntryOptions(TimeSpan.FromSeconds(30));
+        await cache.SetAsync("catalog", 7, entry, token);
+        Assert.True((await store.CheckHealthAsync(token)).IsHealthy);
+        Assert.NotNull(await store.GetAsync(ns + ":cache:data:catalog", token));
+
+        proxy.SetEnabled(false);
+        try
+        {
+            Assert.False((await store.CheckHealthAsync(token)).IsHealthy);
+            var failure = await Assert.ThrowsAsync<CacheStoreException>(() =>
+                store.GetAsync(ns + ":cache:data:catalog", token).AsTask()
+            );
+            Assert.Contains(
+                failure.Kind,
+                new[] { CacheFailureKind.Unavailable, CacheFailureKind.Timeout }
+            );
+            var local = await cache.TryGetAsync<int>("catalog", token);
+            Assert.Equal(CacheTier.L1, local.Tier);
+            Assert.Equal(7, local.Value);
+            Assert.Equal(
+                9,
+                await cache.GetOrCreateAsync(
+                    "inventory",
+                    _ => ValueTask.FromResult(9),
+                    entry.Expiration,
+                    token
+                )
+            );
+            Assert.Equal(CacheTier.L1, (await cache.TryGetAsync<int>("inventory", token)).Tier);
+            Assert.False(await cache.SetIfAbsentAsync("deny", 1, entry, token));
+            await Assert.ThrowsAsync<CacheUnavailableException>(() =>
+                cache
+                    .SetIfAbsentAsync(
+                        "throw",
+                        1,
+                        new CacheEntryOptions(entry.Expiration)
+                        {
+                            OnUnavailable = UnavailableBehavior.Throw,
+                        },
+                        token
+                    )
+                    .AsTask()
+            );
+        }
+        finally
+        {
+            proxy.SetEnabled(true);
+        }
+
+        await CacheConformance.WaitUntilAsync(
+            async () => (await store.CheckHealthAsync(token)).IsHealthy,
+            20
+        );
+        await cache.SetAsync("recovered", 11, entry, token);
+        await using var direct = new RedisConnection(
+            new RedisOptions { Configuration = RedisAvailability.Configuration }
+        );
+        await using var readerStore = new RedisCacheStore(direct);
+        await using var reader = new TieredCache(
+            new CachingOptions { Namespace = ns },
+            readerStore,
+            Serializer()
+        );
+        var recovered = await reader.TryGetAsync<int>("recovered", token);
+        Assert.Equal(CacheTier.L2, recovered.Tier);
+        Assert.Equal(11, recovered.Value);
+        await cache.RemoveAsync(["catalog", "inventory", "deny", "throw", "recovered"], token);
+    }
+
+    [Fact(Timeout = 60_000, Skip = Skip, SkipUnless = nameof(Enabled))]
+    public async Task DisconnectedLock_ReportsUnavailableLosesLeaseAndRecoversSafely()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var ns = "outage-" + Guid.NewGuid().ToString("N");
+        await using var proxy = new RedisFaultProxy();
+        await using var connection = Connection(proxy);
+        await using var provider = new RedisLockProvider(connection);
+        await using var mutex = new DistributedLock(
+            new LockingOptions { Namespace = ns },
+            provider
+        );
+        await using var held = await mutex.TryAcquireAsync(
+            "inventory",
+            new LockOptions { Lease = TimeSpan.FromSeconds(15) },
+            token
+        );
+        Assert.NotNull(held);
+        var leaseEnd = held.LeaseEnd;
+        Assert.True((await provider.CheckHealthAsync(token)).IsHealthy);
+        var actions = 0;
+
+        proxy.SetEnabled(false);
+        try
+        {
+            Assert.False((await provider.CheckHealthAsync(token)).IsHealthy);
+            var failure = await Assert.ThrowsAsync<LockProviderUnavailableException>(() =>
+                mutex
+                    .ExecuteWithLockAsync(
+                        "catalog",
+                        _ => ValueTask.FromResult(Interlocked.Increment(ref actions)),
+                        cancellationToken: token
+                    )
+                    .AsTask()
+            );
+            Assert.Contains(
+                failure.Kind,
+                new[] { LockFailureKind.Unavailable, LockFailureKind.Timeout }
+            );
+            Assert.Equal(0, actions);
+            Assert.True(held.IsHeld);
+            Assert.False(await held.ExtendAsync(TimeSpan.FromSeconds(15), token));
+            // A transport failure preserves the previous lease deadline. Only expiry or
+            // a confirmed owner mismatch proves it lost; a failed renewal never moves it.
+            Assert.Equal(leaseEnd, held.LeaseEnd);
+            await CacheConformance.WaitUntilAsync(
+                () => Task.FromResult(held.LostToken.IsCancellationRequested),
+                20
+            );
+            Assert.False(held.IsHeld);
+            Assert.True(held.LostToken.IsCancellationRequested);
+        }
+        finally
+        {
+            proxy.SetEnabled(true);
+        }
+
+        await CacheConformance.WaitUntilAsync(
+            async () => (await provider.CheckHealthAsync(token)).IsHealthy,
+            20
+        );
+        await using var direct = new RedisConnection(
+            new RedisOptions { Configuration = RedisAvailability.Configuration }
+        );
+        await using var successorProvider = new RedisLockProvider(direct);
+        await using var successorLock = new DistributedLock(
+            new LockingOptions { Namespace = ns },
+            successorProvider
+        );
+        await using var successor = await successorLock.TryAcquireAsync(
+            "inventory",
+            new LockOptions
+            {
+                MaxWait = TimeSpan.FromSeconds(20),
+                Retry = LockRetryPolicy.Linear(100, TimeSpan.FromMilliseconds(10)),
+            },
+            token
+        );
+        Assert.NotNull(successor);
+        await held.DisposeAsync();
+        Assert.Null(await mutex.TryAcquireAsync("inventory", cancellationToken: token));
+        await successor.DisposeAsync();
+        Assert.Equal(
+            1,
+            await mutex.ExecuteWithLockAsync(
+                "inventory",
+                _ => ValueTask.FromResult(1),
+                cancellationToken: token
+            )
+        );
+    }
+
+    private static RedisConnection Connection(RedisFaultProxy proxy) =>
+        new(
+            new RedisOptions
+            {
+                Configuration = proxy.Configuration,
+                ConnectTimeout = TimeSpan.FromSeconds(1),
+                CommandTimeout = TimeSpan.FromSeconds(1),
+                HealthTimeout = TimeSpan.FromMilliseconds(300),
+            }
+        );
+
+    private static SystemTextJsonCacheValueSerializer Serializer() =>
+        new(new JsonSerializerOptions { TypeInfoResolver = new DefaultJsonTypeInfoResolver() });
+}
