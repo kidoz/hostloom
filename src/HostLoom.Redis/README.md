@@ -30,7 +30,7 @@ password is never logged; probe output and the startup line redact it.
 | cache entry | `SET … PX`, a Lua `GET`/`PTTL` snapshot per key (pipelined for bulk reads), deletion |
 | set-if-absent and stampede lease | `SET … NX PX` |
 | tag index | `SADD`, `EXPIRE NX` then `EXPIRE GT`, `SMEMBERS`, atomic Lua `UNLINK`/`SREM` batches; a tagged set-if-absent indexes only after the write is known to have happened |
-| invalidation | `PUBLISH` and `SUBSCRIBE` on `{namespace}:cache:invalidate`; `CLIENT LIST` and `CLIENT TRACKING` in tracking mode; `PSUBSCRIBE __keyspace@{db}__:…` in broadcast mode |
+| invalidation | `PUBLISH` and `SUBSCRIBE` on `{namespace}:cache:invalidate`; `CLIENT LIST`, `CLIENT TRACKINGINFO`, and `CLIENT TRACKING` in tracking mode; `PSUBSCRIBE __keyspace@{db}__:…` in broadcast mode |
 | lock | `SET {namespace}:lock:{key} owner NX PX lease`; release and extend are Lua compare-and-set, sent as `EVALSHA` with `EVAL` fallback |
 | readiness | `PING` bounded by `Redis:HealthTimeout` |
 
@@ -87,17 +87,43 @@ Prefix-based tracking remains active after those writes, without requiring a Red
 the key again. It sends more invalidations than read-based tracking, bounded to the namespace's data
 prefix. `Broadcast` in the options table remains the separate keyspace-notification transport.
 StackExchange.Redis re-establishes every subscription on its own after a reconnect; tracking is
-per connection, so the package registers it again on `ConnectionRestored` and counts both on
+per server connection. The package registers every connected primary and replica using that
+node's subscriber client ID, and refreshes registration after reconnects and topology changes.
+Subscription recovery is counted on
 `hostloom.cache.invalidation.resubscribed`. An instance that starts while Redis is down keeps
 trying to subscribe with exponential backoff; a mode that cannot be enabled after
 `Redis:MaxClientCommandRetries` attempts leaves the explicit channel as the only fan-out, logged
-once, and `CachingProbe.Describe` reports the transport in effect.
+and retried on the next reconnect or topology refresh. `CachingProbe.Describe` reports the
+transport in effect. Registration runs serially across channels sharing a connection and checks
+existing prefixes before updating tracking. Replacing a subscriber preserves those prefixes.
+Disposing a channel removes only its own
+subscription handlers.
 
 Two connection settings follow from this and are applied by the package: the client-side
 `allowAdmin` flag, because StackExchange.Redis gates every `CLIENT` command behind it (this
 grants nothing on the server; ACLs still apply), and RESP2, so subscriptions run on a dedicated
 connection that tracking can redirect to. An externally supplied multiplexer needs both for
 tracking to work; without them the package falls back to the explicit channel.
+
+## Redis Cluster
+
+Use `UseHashTags = true` and `DatabaseIndex = 0` for cluster deployments so Lua and tag operations
+stay within one slot. Every advertised node address must be reachable from the application.
+Connections created by HostLoom check topology at most five seconds apart, preserving a supplied
+faster `configCheckSeconds` setting. This discovers replica promotions even when an existing
+socket stays connected. For an externally owned multiplexer, configure `configCheckSeconds=5`
+(or faster) yourself, alongside the tracking settings above. Recovery also depends on server
+election time and network availability; five seconds is a refresh interval, not an outage limit.
+
+Tracking covers replicas before promotion and is re-established when a failed node reconnects.
+Invalidation is not durable: changes missed during an outage can remain in L1 until its expiry.
+Redis replication is asynchronous, so a primary failure can lose an unreplicated cache write or
+lock acquisition. Owner-checked release and extension protect a replicated lease against a stale
+owner; they do not make Redis locks a consensus-backed mutual-exclusion guarantee across failover.
+
+The repository's `just test-redis-cluster` command creates an isolated local six-node Docker
+fixture and tests cache operations, tracking, explicit invalidation, and replicated lock ownership
+while crashing each primary. It restores the failed processes and removes its container afterward.
 
 ## Compatibility
 
