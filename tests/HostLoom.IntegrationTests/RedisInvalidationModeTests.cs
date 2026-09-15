@@ -267,6 +267,81 @@ public sealed class RedisInvalidationModeTests
         });
     }
 
+    [Theory(Timeout = 40_000, Skip = RedisAvailability.Skip, SkipUnless = nameof(Available))]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SharedTrackingChannels_SurviveSubscriberReplacementAndDisposal(
+        bool sameNamespace
+    )
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var connection = Connection();
+        await using var writerConnection = Connection();
+        await using var store = new RedisCacheStore(connection);
+        await using var writerStore = new RedisCacheStore(writerConnection);
+        var options = new CachingOptions { Namespace = Namespace() }.WithMode(
+            CacheInvalidationMode.Tracking
+        );
+        var firstOptions = sameNamespace
+            ? options
+            : new CachingOptions { Namespace = Namespace() }.WithMode(
+                CacheInvalidationMode.Tracking
+            );
+        await using var first = new RedisCacheInvalidationChannel(connection, firstOptions);
+        await using var second = new RedisCacheInvalidationChannel(connection, options);
+        var firstInvalidation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        using var firstSubscription = first.Subscribe(invalidation =>
+        {
+            if (invalidation.Keys.Contains("inventory"))
+                firstInvalidation.TrySetResult();
+        });
+        await using var reader = new TieredCache(options, store, Serializer(), second);
+        await using var writer = new TieredCache(options, writerStore, Serializer());
+        await CacheConformance.WaitUntilAsync(() =>
+            Task.FromResult(
+                first.Transport == RedisInvalidationTransport.Tracking
+                    && second.Transport == RedisInvalidationTransport.Tracking
+            )
+        );
+        // Replace only the subscriber: interactive tracking state and all prefixes survive.
+        var admin = await writerConnection.GetMultiplexerAsync(token);
+        var server = admin.GetServer(admin.GetEndPoints()[0]);
+        var clients = await server
+            .ExecuteAsync("CLIENT", "LIST", "TYPE", "pubsub")
+            .WaitAsync(token);
+        var subscriberId = RedisInvalidationDecoder.FindSubscriberClientId(
+            (string?)clients,
+            connection.ClientName
+        );
+        Assert.NotNull(subscriberId);
+        var beforeReplacement = second.TrackingInitialisations;
+        await server
+            .ClientKillAsync(new ClientKillFilter().WithId(subscriberId.Value))
+            .WaitAsync(token);
+        await CacheConformance.WaitUntilAsync(
+            () => Task.FromResult(second.TrackingInitialisations > beforeReplacement),
+            20
+        );
+        Assert.Equal(RedisInvalidationTransport.Tracking, second.Transport);
+        await writerStore.SetAsync(
+            firstOptions.Namespace + ":cache:data:inventory",
+            new byte[] { 1 },
+            TimeSpan.FromMinutes(1),
+            cancellationToken: token
+        );
+        await firstInvalidation.Task.WaitAsync(TimeSpan.FromSeconds(5), token);
+        var entry = new CacheEntryOptions(TimeSpan.FromMinutes(1));
+        await reader.SetAsync("catalog", new Payload("v1"), entry, token);
+        Assert.Equal(CacheTier.L1, (await reader.TryGetAsync<Payload>("catalog", token)).Tier);
+        await first.DisposeAsync();
+        await writer.SetAsync("catalog", new Payload("v2"), entry, token);
+        await CacheConformance.WaitUntilAsync(async () =>
+            (await reader.TryGetAsync<Payload>("catalog", token)).Value?.Text == "v2"
+        );
+    }
+
     private static RedisConnection Connection(Action<RedisOptions>? configure = null)
     {
         var options = new RedisOptions

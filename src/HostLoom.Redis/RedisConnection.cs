@@ -176,6 +176,12 @@ public sealed class RedisConnection : IAsyncDisposable
     /// <summary>Raised after the multiplexer reports a restored connection.</summary>
     public event EventHandler? Restored;
 
+    internal event EventHandler? TopologyChanged;
+
+    // Shared by all invalidation channels: CLIENT TRACKING state belongs to this
+    // multiplexer, so channels must not race while inspecting and updating it.
+    internal SemaphoreSlim TrackingRegistrationGate { get; } = new(1, 1);
+
     /// <inheritdoc />
     public ValueTask DisposeAsync()
     {
@@ -217,6 +223,7 @@ public sealed class RedisConnection : IAsyncDisposable
         {
             multiplexer.ConnectionFailed -= OnConnectionFailed;
             multiplexer.ConnectionRestored -= OnConnectionRestored;
+            multiplexer.ConfigurationChanged -= OnConfigurationChanged;
             if (_owned)
             {
                 await multiplexer.DisposeAsync().ConfigureAwait(false);
@@ -230,6 +237,7 @@ public sealed class RedisConnection : IAsyncDisposable
     {
         multiplexer.ConnectionFailed += OnConnectionFailed;
         multiplexer.ConnectionRestored += OnConnectionRestored;
+        multiplexer.ConfigurationChanged += OnConfigurationChanged;
         _multiplexer = multiplexer;
     }
 
@@ -240,6 +248,9 @@ public sealed class RedisConnection : IAsyncDisposable
             args.EndPoint,
             args.FailureType
         );
+
+    private void OnConfigurationChanged(object? sender, EndPointEventArgs args) =>
+        TopologyChanged?.Invoke(this, EventArgs.Empty);
 
     private void OnConnectionRestored(object? sender, ConnectionFailedEventArgs args)
     {

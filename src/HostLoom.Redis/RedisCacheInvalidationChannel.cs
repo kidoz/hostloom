@@ -19,11 +19,12 @@ namespace HostLoom.Redis;
 /// </summary>
 /// <remarks>
 /// StackExchange.Redis re-establishes pub/sub subscriptions on its own after a reconnect; the
-/// tracking registration is per connection and is re-issued here on <c>ConnectionRestored</c>.
-/// Both are counted on <c>hostloom.cache.invalidation.resubscribed</c>. The subscription is
+/// tracking registration is local to each server connection and is re-issued on reconnects and
+/// topology changes, including on replicas before promotion.
+/// Reconnects are counted on <c>hostloom.cache.invalidation.resubscribed</c>. The subscription is
 /// retried with exponential backoff while Redis is unreachable, and a mode that cannot be enabled
 /// after <see cref="RedisOptions.MaxClientCommandRetries"/> attempts leaves the explicit channel
-/// as the only fan-out, logged once.
+/// as the only fan-out until a later reconnect or topology refresh retries registration.
 /// </remarks>
 public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, IAsyncDisposable
 {
@@ -39,7 +40,9 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     private readonly List<Action<CacheInvalidation>> _handlers = [];
     private readonly CancellationTokenSource _disposal = new();
     private Task? _subscribing;
-    private Task? _reinitialising;
+    private readonly SemaphoreSlim _trackingRefresh = new(0, 1);
+    private readonly List<ChannelMessageQueue> _queues = [];
+    private ChannelMessageQueue? _trackingQueue;
     private long _trackingInitialisations;
     private int _disposed;
 
@@ -63,6 +66,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         _channel = RedisChannel.Literal(options.Namespace + ":cache:invalidate");
         _logger = logger ?? NullLogger<RedisCacheInvalidationChannel>.Instance;
         _connection.Restored += OnRestored;
+        _connection.TopologyChanged += OnTopologyChanged;
     }
 
     /// <summary>The explicit channel name every instance of the namespace subscribes to.</summary>
@@ -75,7 +79,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     public RedisInvalidationTransport Transport { get; private set; } =
         RedisInvalidationTransport.Pending;
 
-    /// <summary>Times tracking was enabled, including re-initialisations after a reconnect.</summary>
+    /// <summary>Successful tracking registration passes, including reconnects and topology refreshes.</summary>
     public long TrackingInitialisations => Interlocked.Read(ref _trackingInitialisations);
 
     /// <inheritdoc />
@@ -102,6 +106,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
             _handlers.Add(handler);
             _subscribing ??= Task.Run(
                 () => SubscribeWithRetryAsync(_disposal.Token),
@@ -125,20 +130,20 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        lock (_gate)
         {
-            return;
+            if (_disposed != 0)
+            {
+                return;
+            }
+            _disposed = 1;
         }
 
         _connection.Restored -= OnRestored;
+        _connection.TopologyChanged -= OnTopologyChanged;
         await _disposal.CancelAsync().ConfigureAwait(false);
-        foreach (var pending in new[] { _subscribing, _reinitialising })
+        if (_subscribing is { } pending)
         {
-            if (pending is null)
-            {
-                continue;
-            }
-
             try
             {
                 await pending.ConfigureAwait(false);
@@ -153,27 +158,9 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         {
             try
             {
-                var multiplexer = await _connection
-                    .GetMultiplexerAsync(CancellationToken.None)
-                    .ConfigureAwait(false);
-                var subscriber = multiplexer.GetSubscriber();
-                await subscriber.UnsubscribeAsync(_channel).ConfigureAwait(false);
-                if (Transport == RedisInvalidationTransport.Tracking)
+                foreach (var queue in _queues)
                 {
-                    await subscriber
-                        .UnsubscribeAsync(
-                            RedisChannel.Literal(RedisInvalidationDecoder.TrackingChannel)
-                        )
-                        .ConfigureAwait(false);
-                }
-                else if (Transport == RedisInvalidationTransport.Broadcast)
-                {
-                    foreach (var pattern in KeyspacePatterns())
-                    {
-                        await subscriber
-                            .UnsubscribeAsync(RedisChannel.Pattern(pattern))
-                            .ConfigureAwait(false);
-                    }
+                    await queue.UnsubscribeAsync().ConfigureAwait(false);
                 }
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -190,6 +177,10 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             }
         }
 
+        lock (_gate)
+        {
+            _trackingRefresh.Dispose();
+        }
         _disposal.Dispose();
     }
 
@@ -263,6 +254,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
                     .SubscribeAsync(_channel)
                     .WaitAsync(cancellationToken)
                     .ConfigureAwait(false);
+                _queues.Add(queue);
                 queue.OnMessage(OnExplicitMessage);
                 IsSubscribed = true;
                 if (_logger.IsEnabled(LogLevel.Information))
@@ -276,7 +268,14 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
 
                 await InitialiseTransportAsync(multiplexer, cancellationToken)
                     .ConfigureAwait(false);
-                return;
+                // One worker owns registration and every retry. Coalesce simultaneous
+                // socket and topology events, including events during initialisation.
+                while (true)
+                {
+                    await _trackingRefresh.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    await InitialiseTransportAsync(multiplexer, cancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -324,6 +323,8 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
                     cancellationToken
                 )
                 .ConfigureAwait(false),
+            RedisInvalidationTransport.Broadcast
+                when Transport == RedisInvalidationTransport.Broadcast => true,
             RedisInvalidationTransport.Broadcast => await EnableBroadcastAsync(
                     multiplexer,
                     cancellationToken
@@ -356,44 +357,68 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         {
             try
             {
-                var subscriber = multiplexer.GetSubscriber();
-                var queue = await subscriber
-                    .SubscribeAsync(RedisChannel.Literal(RedisInvalidationDecoder.TrackingChannel))
-                    .WaitAsync(cancellationToken)
-                    .ConfigureAwait(false);
-                queue.OnMessage(OnTrackingMessage);
-
-                var db = multiplexer.GetDatabase(_connection.Options.DatabaseIndex);
-                var list = await db.ExecuteAsync("CLIENT", "LIST", "TYPE", "pubsub")
-                    .WaitAsync(cancellationToken)
-                    .ConfigureAwait(false);
-                var subscriberId = RedisInvalidationDecoder.FindSubscriberClientId(
-                    (string?)list,
-                    _connection.ClientName
-                );
-                if (subscriberId is null)
+                if (_trackingQueue is null)
                 {
-                    throw new InvalidOperationException(
-                        $"No pub/sub client named '{_connection.ClientName}' in CLIENT LIST yet."
-                    );
+                    _trackingQueue = await multiplexer
+                        .GetSubscriber()
+                        .SubscribeAsync(
+                            RedisChannel.Literal(RedisInvalidationDecoder.TrackingChannel)
+                        )
+                        .WaitAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                    _queues.Add(_trackingQueue);
+                    _trackingQueue.OnMessage(OnTrackingMessage);
                 }
 
-                // BCAST covers entries populated by writes and warmup as well as reads.
-                // Read-based tracking forgets a key on an own write even with NOLOOP.
-                // Scope it to cache data; leases, tags and locks need no L1 invalidations.
-                await db.ExecuteAsync(
-                        "CLIENT",
-                        "TRACKING",
-                        "ON",
-                        "REDIRECT",
-                        subscriberId.Value,
-                        "BCAST",
-                        "PREFIX",
-                        _layout.DataPrefix,
-                        "NOLOOP"
-                    )
-                    .WaitAsync(cancellationToken)
+                var servers = multiplexer
+                    .GetEndPoints()
+                    .Select(endpoint => multiplexer.GetServer(endpoint))
+                    .Where(server => server.IsConnected && server.ServerType != ServerType.Sentinel)
+                    .ToArray();
+                if (servers.Length == 0)
+                {
+                    throw new InvalidOperationException("No connected Redis servers for tracking.");
+                }
+
+                await _connection
+                    .TrackingRegistrationGate.WaitAsync(cancellationToken)
                     .ConfigureAwait(false);
+                try
+                {
+                    await Task.WhenAll(
+                            servers.Select(async server =>
+                            {
+                                // Client IDs and tracking state are local to a server. Register replicas
+                                // too: promotion can happen without either of our sockets reconnecting.
+                                var list = await server
+                                    .ExecuteAsync("CLIENT", "LIST", "TYPE", "pubsub")
+                                    .WaitAsync(cancellationToken)
+                                    .ConfigureAwait(false);
+                                var subscriberId = RedisInvalidationDecoder.FindSubscriberClientId(
+                                    (string?)list,
+                                    _connection.ClientName
+                                );
+                                if (subscriberId is null)
+                                {
+                                    throw new InvalidOperationException(
+                                        $"No pub/sub client named '{_connection.ClientName}' on {server.EndPoint} yet."
+                                    );
+                                }
+
+                                await RegisterTrackingAsync(
+                                        server,
+                                        subscriberId.Value,
+                                        cancellationToken
+                                    )
+                                    .ConfigureAwait(false);
+                            })
+                        )
+                        .ConfigureAwait(false);
+                }
+                finally
+                {
+                    _connection.TrackingRegistrationGate.Release();
+                }
                 Interlocked.Increment(ref _trackingInitialisations);
                 return true;
             }
@@ -423,6 +448,87 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         return false;
     }
 
+    private async Task RegisterTrackingAsync(
+        IServer server,
+        long subscriberId,
+        CancellationToken token
+    )
+    {
+        var info = (RedisResult[])
+            (
+                await server
+                    .ExecuteAsync("CLIENT", "TRACKINGINFO")
+                    .WaitAsync(token)
+                    .ConfigureAwait(false)
+            )!;
+        string[] flags = [];
+        string[] prefixes = [];
+        long redirect = -1;
+        for (var i = 0; i + 1 < info.Length; i += 2)
+        {
+            switch ((string?)info[i])
+            {
+                case "flags":
+                    flags = (string[])info[i + 1]!;
+                    break;
+                case "prefixes":
+                    prefixes = (string[])info[i + 1]!;
+                    break;
+                case "redirect":
+                    redirect = (long)info[i + 1];
+                    break;
+            }
+        }
+        var configured =
+            flags.Contains("on")
+            && flags.Contains("bcast")
+            && flags.Contains("noloop")
+            && !flags.Contains("broken_redirect")
+            && redirect == subscriberId;
+        var covered = prefixes.Any(prefix =>
+            _layout.DataPrefix.StartsWith(prefix, StringComparison.Ordinal)
+        );
+        if (configured && covered)
+        {
+            return;
+        }
+
+        // Redis rejects duplicate PREFIX arguments. Add only a missing prefix when
+        // the redirect is healthy. A replaced subscriber requires resetting tracking;
+        // preserve every prefix owned by other channels on the same connection.
+        var wanted =
+            configured ? new[] { _layout.DataPrefix }
+            : covered ? prefixes
+            : prefixes.Append(_layout.DataPrefix).Distinct().ToArray();
+        if (!configured && flags.Contains("on"))
+        {
+            await server
+                .ExecuteAsync("CLIENT", "TRACKING", "OFF")
+                .WaitAsync(token)
+                .ConfigureAwait(false);
+        }
+        var arguments = new List<object>
+        {
+            "TRACKING",
+            "ON",
+            "REDIRECT",
+            subscriberId,
+            "BCAST",
+            "NOLOOP",
+        };
+        foreach (var prefix in wanted)
+        {
+            arguments.Add("PREFIX");
+            arguments.Add(prefix);
+        }
+        // RESP2 redirects invalidations directly to this node's pub/sub socket;
+        // no per-node SUBSCRIBE is needed. BCAST covers local write populations.
+        await server
+            .ExecuteAsync(_connection.Options.DatabaseIndex, "CLIENT", arguments)
+            .WaitAsync(token)
+            .ConfigureAwait(false);
+    }
+
     private async Task<bool> EnableBroadcastAsync(
         IConnectionMultiplexer multiplexer,
         CancellationToken cancellationToken
@@ -437,6 +543,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
                     .SubscribeAsync(RedisChannel.Pattern(pattern))
                     .WaitAsync(cancellationToken)
                     .ConfigureAwait(false);
+                _queues.Add(queue);
                 queue.OnMessage(OnKeyspaceMessage);
             }
 
@@ -529,26 +636,18 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             );
         }
 
-        if (Transport == RedisInvalidationTransport.Tracking)
+        RequestTrackingRefresh();
+    }
+
+    private void OnTopologyChanged(object? sender, EventArgs args) => RequestTrackingRefresh();
+
+    private void RequestTrackingRefresh()
+    {
+        lock (_gate)
         {
-            lock (_gate)
+            if (_disposed == 0 && _trackingRefresh.CurrentCount == 0)
             {
-                _reinitialising = Task.Run(
-                    async () =>
-                    {
-                        var multiplexer = await _connection
-                            .GetMultiplexerAsync(_disposal.Token)
-                            .ConfigureAwait(false);
-                        if (
-                            !await EnableTrackingAsync(multiplexer, _disposal.Token)
-                                .ConfigureAwait(false)
-                        )
-                        {
-                            Transport = RedisInvalidationTransport.ExplicitOnly;
-                        }
-                    },
-                    CancellationToken.None
-                );
+                _trackingRefresh.Release();
             }
         }
     }
