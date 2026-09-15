@@ -86,7 +86,22 @@ public sealed class RedisRegistrationTests
         Assert.True(failFast.AbortOnConnectFail);
         Assert.True(built.AllowAdmin);
         Assert.Equal(RedisProtocol.Resp2, built.Protocol);
+        Assert.Equal(5, built.ConfigCheckSeconds);
+        Assert.Equal(60, supplied.ConfigCheckSeconds);
         Assert.Null(supplied.ClientName);
+    }
+
+    [Theory]
+    [InlineData(0, 5)]
+    [InlineData(1, 1)]
+    [InlineData(60, 5)]
+    public void BuildConfiguration_BoundsTopologyChecks(int configured, int expected)
+    {
+        var options = new RedisOptions
+        {
+            Configuration = $"localhost:6379,configCheckSeconds={configured}",
+        };
+        Assert.Equal(expected, options.BuildConfiguration().ConfigCheckSeconds);
     }
 
     [Fact]

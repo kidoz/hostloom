@@ -130,6 +130,7 @@ public sealed class RedisOptions
     /// <summary>
     /// The configuration handed to StackExchange.Redis: a clone, so the caller's instance is not
     /// mutated, with the client name, timeouts, and fail-open connect behaviour applied.
+    /// Topology checks run at least every five seconds to discover cluster promotions.
     /// </summary>
     internal ConfigurationOptions BuildConfiguration()
     {
@@ -149,6 +150,11 @@ public sealed class RedisOptions
         // RESP2 keeps pub/sub on a dedicated connection, which is the connection client tracking
         // redirects invalidations to; under RESP3 the library multiplexes both over one socket.
         configuration.Protocol = RedisProtocol.Resp2;
+        // Cluster role changes can occur on existing sockets. Refresh within five seconds
+        // instead of the SDK's one-minute default; retain a caller's faster cadence.
+        configuration.ConfigCheckSeconds = configuration.ConfigCheckSeconds is > 0 and < 5
+            ? configuration.ConfigCheckSeconds
+            : 5;
         return configuration;
     }
 }
