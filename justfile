@@ -58,6 +58,10 @@ test-integration:
 test-valkey-deployment:
     uv run --locked python scripts/test-valkey-deployment.py
 
+# Crash primaries in an owned three-primary, three-replica Redis Cluster.
+test-redis-cluster:
+    uv run --locked python scripts/test-redis-cluster.py
+
 # Run all object mapping comparisons and strategy measurements.
 benchmark-mapping:
     dotnet run --project benchmarks/HostLoom.Mapping.Benchmarks -c Release -- --filter "*"
