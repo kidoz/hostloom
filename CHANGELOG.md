@@ -8,10 +8,16 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-17
+
 Upgrading changes no public contract. Two behaviours change by default: a backend invalidation
 channel now clears the in-process cache tier after a reconnect, and a configured
 `Caching:L1:ExpirationJitter` larger than an entry's time to live no longer reduces that entry to a
-single tick. Both are stated under **Changed** and **Fixed** below.
+single tick. Both are stated under **Changed** and **Fixed** below. One payload change needs a
+complete rolling deploy before a call site adopts it: an instance on 0.6.0 reads a cached null
+written with `CacheEntryOptions.NullExpiration` as an unreadable payload and logs it as a miss.
+
+No package is published for the first time; the set is the same as 0.6.0.
 
 ### Added
 
@@ -821,7 +827,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/kidoz/hostloom/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/kidoz/hostloom/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/kidoz/hostloom/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/kidoz/hostloom/compare/v0.3.0...v0.4.0
