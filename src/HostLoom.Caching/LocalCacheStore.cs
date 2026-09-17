@@ -227,14 +227,19 @@ public sealed class LocalCacheStore : IDisposable
             return timeToLive;
         }
 
+        // The jitter only decorrelates expiry between instances; it must never turn a short
+        // time to live into no caching at all, so it takes at most half of the entry's life.
+        var bound = Math.Min(_options.ExpirationJitter.Ticks, timeToLive.Ticks / 2);
+        if (bound <= 0)
+        {
+            return timeToLive;
+        }
+
         // CA5394: jitter decorrelates expiry between instances; it is not a security boundary.
 #pragma warning disable CA5394
-        var jitter = TimeSpan.FromTicks(
-            (long)(Random.Shared.NextDouble() * _options.ExpirationJitter.Ticks)
-        );
+        var jitter = (long)(Random.Shared.NextDouble() * bound);
 #pragma warning restore CA5394
-        var jittered = timeToLive - jitter;
-        return jittered > TimeSpan.Zero ? jittered : TimeSpan.FromTicks(1);
+        return TimeSpan.FromTicks(timeToLive.Ticks - jitter);
     }
 
     private void Evict(string key, Entry expected)

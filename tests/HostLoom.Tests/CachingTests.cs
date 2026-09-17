@@ -195,6 +195,18 @@ public sealed class LocalCacheStoreTests
 
         Assert.True(store.ApproximateBytes <= 100);
     }
+
+    [Fact]
+    public void ExpirationJitter_NeverTakesMoreThanHalfOfTheTimeToLive()
+    {
+        var options = new CacheL1Options { ExpirationJitter = TimeSpan.FromMinutes(5) };
+        using var store = new LocalCacheStore(options, _clock);
+        store.Set("k", 1, TimeSpan.FromSeconds(2));
+
+        _clock.Advance(TimeSpan.FromMilliseconds(999));
+
+        Assert.True(store.TryGet<int>("k", out _));
+    }
 }
 
 public sealed class CachePayloadCodecTests
