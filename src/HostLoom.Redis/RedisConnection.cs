@@ -75,8 +75,6 @@ public sealed class RedisConnection : IAsyncDisposable
     /// <summary>Times the connection was restored after a failure.</summary>
     public long Reconnects => Interlocked.Read(ref _reconnects);
 
-    private int _subscriptionFailed;
-
     /// <summary>Returns the multiplexer, establishing it on first call.</summary>
     public async ValueTask<IConnectionMultiplexer> GetMultiplexerAsync(
         CancellationToken cancellationToken = default
@@ -179,10 +177,11 @@ public sealed class RedisConnection : IAsyncDisposable
     public event EventHandler? Restored;
 
     /// <summary>
-    /// Raised when a subscription connection is re-established after it had failed. The
-    /// multiplexer reports every physical connection it establishes, including the first one, so
-    /// this event is the narrower signal: pub/sub messages, tracking pushes, and keyspace
-    /// notifications were being lost until it fired.
+    /// Raised when the multiplexer reports a restored subscription connection. Pub/sub messages,
+    /// tracking pushes, and keyspace notifications travel on that connection, so they were being
+    /// lost until it fired; an interactive connection restored on its own loses none. The
+    /// multiplexer raises its connection events asynchronously, so this deliberately does not
+    /// depend on a failure having been observed first.
     /// </summary>
     internal event EventHandler? SubscriptionRestored;
 
@@ -251,20 +250,13 @@ public sealed class RedisConnection : IAsyncDisposable
         _multiplexer = multiplexer;
     }
 
-    private void OnConnectionFailed(object? sender, ConnectionFailedEventArgs args)
-    {
-        if (args.ConnectionType == ConnectionType.Subscription)
-        {
-            Volatile.Write(ref _subscriptionFailed, 1);
-        }
-
+    private void OnConnectionFailed(object? sender, ConnectionFailedEventArgs args) =>
         _logger.LogWarning(
             new EventId(1301, "RedisConnectionFailed"),
             "Redis connection to {EndPoint} failed ({FailureType}); commands fail open until it is restored.",
             args.EndPoint,
             args.FailureType
         );
-    }
 
     private void OnConfigurationChanged(object? sender, EndPointEventArgs args) =>
         TopologyChanged?.Invoke(this, EventArgs.Empty);
@@ -286,10 +278,7 @@ public sealed class RedisConnection : IAsyncDisposable
         }
 
         Restored?.Invoke(this, EventArgs.Empty);
-        if (
-            args.ConnectionType == ConnectionType.Subscription
-            && Interlocked.Exchange(ref _subscriptionFailed, 0) == 1
-        )
+        if (args.ConnectionType == ConnectionType.Subscription)
         {
             SubscriptionRestored?.Invoke(this, EventArgs.Empty);
         }

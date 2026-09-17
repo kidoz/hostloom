@@ -35,8 +35,8 @@ No package is published for the first time; the set is the same as 0.6.0.
   fourth array element; earlier versions ignore or count it as malformed.
 - `Caching:Invalidation:FlushLocalOnReconnect` (default `true`): the Redis and Valkey channels
   raise the flush to their own subscribers after a reconnect. On Redis the trigger is a
-  subscription connection re-established after a failure; an interactive-connection blip loses
-  no invalidation and does not flush.
+  re-established subscription connection; an interactive-connection blip loses no invalidation
+  and does not flush.
 - `LocalCacheStore.SetNull` and `TryGetWithinGrace`, and a `staleGrace` argument on `Set`.
 - A reference section on what belongs in the in-process tier.
 

@@ -237,9 +237,9 @@ public sealed class CacheInvalidationOptions
 
     /// <summary>
     /// Whether a backend channel clears the in-process tier after its subscription connection
-    /// is re-established following a failure. Invalidations published while it was down were
-    /// never delivered, so without the flush an entry changed during the outage stays in the
-    /// in-process tier until it expires. The cost is one cold in-process tier per reconnect.
+    /// is re-established. Invalidations published while it was down were never delivered, so
+    /// without the flush an entry changed during the outage stays in the in-process tier until
+    /// it expires. The cost is one cold in-process tier per reconnect.
     /// </summary>
     public bool FlushLocalOnReconnect { get; set; } = true;
 

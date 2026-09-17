@@ -90,8 +90,8 @@ StackExchange.Redis re-establishes every subscription on its own after a reconne
 per server connection. The package registers every connected primary and replica using that
 node's subscriber client ID, and refreshes registration after reconnects and topology changes.
 Subscription recovery is counted on
-`hostloom.cache.invalidation.resubscribed`. A subscription connection re-established after a
-failure also hands `CacheInvalidation.Flush` to this process's subscribers when
+`hostloom.cache.invalidation.resubscribed`. A re-established subscription connection also hands
+`CacheInvalidation.Flush` to this process's subscribers when
 `Caching:Invalidation:FlushLocalOnReconnect` is set (the default), because nothing published,
 tracked, or broadcast during the outage was received; the cache clears its in-process tier and
 counts it as `flushed`. An interactive-connection blip loses no invalidation and does not flush.
