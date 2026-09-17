@@ -61,8 +61,14 @@ public sealed class RedisCacheStore
         _ownsConnection ? _connection.DisposeAsync() : ValueTask.CompletedTask;
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Server-assisted tracking names what the backend can do; whether the channel enabled it on
+    /// this server is reported by <see cref="RedisCacheInvalidationChannel.Transport"/>.
+    /// </remarks>
     public CacheStoreCapabilities Capabilities =>
-        CacheStoreCapabilities.Tags | CacheStoreCapabilities.InvalidationChannel;
+        CacheStoreCapabilities.Tags
+        | CacheStoreCapabilities.InvalidationChannel
+        | CacheStoreCapabilities.ServerAssistedTracking;
 
     /// <inheritdoc />
     public async ValueTask<CacheStoreEntry?> GetAsync(
