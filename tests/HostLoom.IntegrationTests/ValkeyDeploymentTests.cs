@@ -191,8 +191,11 @@ public sealed class ValkeyDeploymentTests
         writerOptions.L1.Enabled = false;
         await using var writer = new TieredCache(writerOptions, store, serializer, channel, clock);
         var resumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var flushed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var subscription = channel.Subscribe(message =>
         {
+            if (message.FlushAll)
+                flushed.TrySetResult();
             if (message.Keys.Contains("resumed"))
                 resumed.TrySetResult();
         });
@@ -278,8 +281,10 @@ public sealed class ValkeyDeploymentTests
                     ).IsNull
                 );
             }
-            Assert.Equal("before", (await reader.TryGetAsync<string>("catalog", token)).Value);
-            clock.Advance(TimeSpan.FromSeconds(3));
+            // The re-established subscription flushes the reader's in-process tier, because
+            // invalidations published during the outage were never delivered; the copy of
+            // "before" does not outlive the restart, and the reader refills from the store.
+            await WaitUntilAsync(() => Task.FromResult(flushed.Task.IsCompleted), token);
             var refreshed = await reader.TryGetAsync<string>("catalog", token);
             Assert.Equal("after", refreshed.Value);
             Assert.Equal(CacheTier.L2, refreshed.Tier);
