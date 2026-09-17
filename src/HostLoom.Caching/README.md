@@ -47,6 +47,15 @@ deliberate: `SetIfAbsentAsync` throws `CacheUnavailableException` when the calle
 `UnavailableBehavior.Throw`, so a rate limiter can choose between allow and deny, and cancellation
 always propagates. A factory exception propagates unchanged and nothing is stored.
 
+Two per-call options shape what a miss costs. `CacheEntryOptions.NullExpiration` remembers a null
+factory result in both tiers for its own time to live, so a lookup for something that does not
+exist stops reaching the source; `TryGetAsync` reports it as found with a null value. Without it a
+null result is returned and not stored. `CacheEntryOptions.StaleGrace` keeps an expired in-process
+copy for an outage: while the distributed store is unavailable, one caller refreshes through the
+factory and every other caller receives the copy at once, as the `hit_stale` outcome. After a
+reconnect, a backend channel clears the in-process tier (`Caching:Invalidation:FlushLocalOnReconnect`),
+because invalidations published during the outage were never delivered.
+
 ## Keys
 
 `CachingOptions.Namespace` is required and prefixes every key. Each kind of key has its own domain,

@@ -90,7 +90,12 @@ StackExchange.Redis re-establishes every subscription on its own after a reconne
 per server connection. The package registers every connected primary and replica using that
 node's subscriber client ID, and refreshes registration after reconnects and topology changes.
 Subscription recovery is counted on
-`hostloom.cache.invalidation.resubscribed`. An instance that starts while Redis is down keeps
+`hostloom.cache.invalidation.resubscribed`. A subscription connection re-established after a
+failure also hands `CacheInvalidation.Flush` to this process's subscribers when
+`Caching:Invalidation:FlushLocalOnReconnect` is set (the default), because nothing published,
+tracked, or broadcast during the outage was received; the cache clears its in-process tier and
+counts it as `flushed`. An interactive-connection blip loses no invalidation and does not flush.
+An instance that starts while Redis is down keeps
 trying to subscribe with exponential backoff; a mode that cannot be enabled after
 `Redis:MaxClientCommandRetries` attempts leaves the explicit channel as the only fan-out, logged
 and retried on the next reconnect or topology refresh. `CachingProbe.Describe` reports the
@@ -116,7 +121,8 @@ socket stays connected. For an externally owned multiplexer, configure `configCh
 election time and network availability; five seconds is a refresh interval, not an outage limit.
 
 Tracking covers replicas before promotion and is re-established when a failed node reconnects.
-Invalidation is not durable: changes missed during an outage can remain in L1 until its expiry.
+Invalidation is not durable: a message dropped by a full queue leaves its entry in L1 until
+expiry, and changes missed during an outage remain there when the reconnect flush is disabled.
 Redis replication is asynchronous, so a primary failure can lose an unreplicated cache write or
 lock acquisition. Owner-checked release and extension protect a replicated lease against a stale
 owner; they do not make Redis locks a consensus-backed mutual-exclusion guarantee across failover.

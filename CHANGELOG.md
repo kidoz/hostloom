@@ -8,6 +8,49 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+Upgrading changes no public contract. Two behaviours change by default: a backend invalidation
+channel now clears the in-process cache tier after a reconnect, and a configured
+`Caching:L1:ExpirationJitter` larger than an entry's time to live no longer reduces that entry to a
+single tick. Both are stated under **Changed** and **Fixed** below.
+
+### Added
+
+- `CacheEntryOptions.NullExpiration`: negative caching. A null factory result is remembered in
+  both tiers for its own time to live as a payload with the `null` flag and no body;
+  `TryGetAsync` reports it as found with a null value, and a non-nullable value type reads it as
+  a miss. An instance on an earlier version reads such a payload as unreadable and logs it.
+- `CacheEntryOptions.StaleGrace`: stale-while-revalidate for an outage. An expired in-process
+  entry inside the grace is served while the distributed store is unavailable; one caller
+  refreshes through the factory and the others receive the copy at once, as the new `hit_stale`
+  outcome on `hostloom.cache.operation.duration`.
+- `CacheInvalidation.Flush` and `FlushAll`: an invalidation that clears the whole in-process
+  tier, counted as the new `flushed` direction on `hostloom.cache.invalidations` and logged at
+  information level. The Redis channel carries it as a `*` line and the Valkey channel as a
+  fourth array element; earlier versions ignore or count it as malformed.
+- `Caching:Invalidation:FlushLocalOnReconnect` (default `true`): the Redis and Valkey channels
+  raise the flush to their own subscribers after a reconnect. On Redis the trigger is a
+  subscription connection re-established after a failure; an interactive-connection blip loses
+  no invalidation and does not flush.
+- `LocalCacheStore.SetNull` and `TryGetWithinGrace`, and a `staleGrace` argument on `Set`.
+- A reference section on what belongs in the in-process tier.
+
+### Changed
+
+- After a reconnect, the Redis and Valkey invalidation channels clear the in-process tier of
+  every cache subscribed to them, because invalidations published during the outage were never
+  delivered. Set `Caching:Invalidation:FlushLocalOnReconnect = false` to keep the previous
+  behaviour, where such entries stayed until expiry.
+- `RedisCacheStore.Capabilities` includes `ServerAssistedTracking`, which was declared but never
+  reported.
+- `LocalCacheStore.TryGet<T>` declares its value as `T?`, and `CacheLookup.Hit<T>` accepts a
+  null value, for remembered absences.
+
+### Fixed
+
+- `Caching:L1:ExpirationJitter` subtracts at most half of an entry's time to live. A jitter
+  larger than a short expiration previously left the entry alive for one tick, which disabled
+  the in-process tier for that entry.
+
 ## [0.6.0] - 2026-09-06
 
 Upgrading changes no public contract. Four changes can surface on upgrade: a repeated

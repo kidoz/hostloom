@@ -67,9 +67,13 @@ selection. Messages use a bounded versioned JSON format, separate from the Redis
 format; mixed Redis/Valkey adapters do not share invalidation messages.
 
 Recovery uses exponential backoff from 100 ms to 30 seconds. Pub/Sub cannot replay messages lost
-during a disconnection. Queue overflow drops incoming messages. In either case **L1 expiry bounds
-staleness**; choose a suitable `CacheEntryOptions.LocalExpiration`. No stronger consistency is
-promised. Handler exceptions do not stop other handlers. Handlers must not block.
+during a disconnection, so a re-established subscription hands `CacheInvalidation.Flush` to its
+subscribers when `Caching:Invalidation:FlushLocalOnReconnect` is set (the default) and the cache
+clears its in-process tier. Queue overflow drops incoming messages, and with the flush disabled a
+disconnection loses them too; in either case **L1 expiry bounds staleness**; choose a suitable
+`CacheEntryOptions.LocalExpiration`. No stronger consistency is promised. A published flush is a
+fourth array element on the wire; an instance on an earlier package version counts it as
+malformed. Handler exceptions do not stop other handlers. Handlers must not block.
 
 The `HostLoom.Valkey` meter records invalidation failures, queue drops, malformed messages, and
 handler failures; recovery also records the kernel's resubscription counter. Warnings are limited

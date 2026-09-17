@@ -35,7 +35,9 @@ Every member returns `ValueTask`, takes a trailing optional
 | `WarmupAsync<T>(entries, expiration, progress, ct)` | Writes in batches of `Caching:Warmup:BatchSize`, fills both tiers, reports `CacheWarmupProgress`, fail-open. |
 
 A factory exception propagates unchanged and nothing is stored. A null
-factory result, or a non-positive expiration, is returned and not stored.
+factory result, or a non-positive expiration, is returned and not stored,
+unless the call sets `NullExpiration` (below), which remembers the null for
+its own time to live.
 
 ## Per-call options (`CacheEntryOptions`)
 
@@ -46,6 +48,8 @@ factory result, or a non-positive expiration, is returned and not stored.
 | `Tags` | Tag names for `RemoveByTagAsync`; carried in the distributed payload so another instance indexes them too. A distributed tag index only gains members, so an entry rewritten under different tags stays in its earlier indexes and `RemoveByTagAsync` may evict more than currently carries the tag — a refill, never a wrong value. |
 | `Size` | Approximate bytes for the in-process byte bound when the value did not arrive serialized. |
 | `OnUnavailable` | `ReturnFalse` (default) or `Throw` for set-if-absent under a store failure. |
+| `NullExpiration` | Negative caching. A null factory result is remembered in both tiers for this long, so a lookup for something that does not exist stops reaching the source on every call. A remembered null is a hit: `TryGetAsync` reports `Found` with a null `Value`, get-or-create returns null without running the factory, and `GetManyAsync` includes the key with a null value. For a non-nullable value type the entry is a miss. `SetAsync` still rejects null. Unset means a null result is not stored. |
+| `StaleGrace` | Stale-while-revalidate for an outage. The in-process copy is kept for this long past its expiry; while the distributed store is unavailable and a get-or-create finds such a copy, one caller refreshes through the factory and every other caller receives the copy at once, with the `hit_stale` outcome. While the store answers, an expired entry is an ordinary miss. Has no effect without a distributed store. |
 
 `CacheKey.FromSensitive(value)` hashes a credential (SHA-256, 32 hex
 characters) so it never reaches a store, a log, or a span.
@@ -67,7 +71,7 @@ option key, and the `DependencyInjection` package runs it at startup.
 | `Caching:L1:MaxEntryAge` | 30 min | time to live when none is given |
 | `Caching:L1:CleanupInterval` | 1 min | expired-entry and idle-guard reclaim |
 | `Caching:L1:GuardIdleTime` | 10 min | idle single-flight guard lifetime |
-| `Caching:L1:ExpirationJitter` | 0 | subtracted from each in-process expiry so instances do not miss together |
+| `Caching:L1:ExpirationJitter` | 0 | a random amount up to this, never more than half of the entry's time to live, is subtracted from each in-process expiry so instances do not miss together; set it to a fraction of the shortest expiration in use |
 | `Caching:Stampede:LeaseDuration` | 30 s | cluster-wide single-flight lease |
 | `Caching:Stampede:Attempts` | 2 | re-checks of the distributed tier after a missed lease |
 | `Caching:Stampede:WaitBeforeFallback` | 50 ms | pause between those re-checks |
@@ -75,6 +79,7 @@ option key, and the `DependencyInjection` package runs it at startup.
 | `Caching:Invalidation:KeyPrefixFilters` | empty | prefixes for broadcast mode |
 | `Caching:Invalidation:Timeout` | 5 s | bound on one publish |
 | `Caching:Invalidation:MaxPending` | 1 000 | bound of the queue applying received invalidations |
+| `Caching:Invalidation:FlushLocalOnReconnect` | `true` | a backend channel clears the in-process tier after its connection is restored, because invalidations published during the outage were never delivered; the cost is one cold in-process tier per reconnect |
 | `Caching:Compression:ThresholdBytes` | 1 024 | Brotli above this size |
 | `Caching:Warmup:BatchSize` | 100 | entries per distributed write during warmup |
 | `Caching:Warmup:BlocksReadiness` | `false` | readiness waits for registered warmups |
@@ -112,7 +117,11 @@ propagates as `OperationCanceledException`. Memory passed to a write member
 is borrowed until the returned task completes.
 
 `ICacheInvalidationChannel` fans invalidations out between instances that
-share a store; `ICacheStoreHealthProbe` is the optional readiness capability.
+share a store. A `CacheInvalidation` carries keys and tags, or, as
+`CacheInvalidation.Flush`, clears every in-process entry; the Redis and Valkey
+channels raise the flush to their own subscribers after a reconnect and carry
+a published one on the wire. `ICacheStoreHealthProbe` is the optional
+readiness capability.
 `InMemoryDistributedCacheStore` implements both the store and the channel in
 process memory, which is what the conformance suite and the Native AOT
 sample use.
@@ -172,11 +181,55 @@ decorates a store to inject failures (`FaultingCacheStore`) or record calls
 (`RecordingCacheStore`). The in-process store implements the whole contract,
 so a consumer's tests need no backend.
 
+## What to keep in the in-process tier
+
+The in-process tier answers in microseconds and the distributed tier in a
+network round trip, but only the distributed tier is shared, so every
+instance holds its own copy and learns about a change through an
+invalidation or its expiry. That decides what belongs where:
+
+- **Read often, changed rarely.** Reference data, configuration, feature
+  flags, and lookups that are expensive to fetch are the entries that pay
+  for an in-process copy. Give them the longest `Expiration` the source
+  allows and let invalidation, not expiry, be what usually removes them.
+- **Changed often, or read on many instances without affinity.** Keep the
+  in-process life short with `LocalExpiration`, so a copy is never far
+  behind the distributed tier, or leave the entry to the distributed tier
+  alone with `Caching:L1:Enabled = false` on a cache of its own. Every
+  instance must fill its own copy, so a value read once per instance gains
+  nothing from the in-process tier.
+- **Must never be stale.** A two-tier cache is eventually consistent:
+  between a change and the arrival of its invalidation, an instance can
+  serve the old value, and a lost message costs one in-process expiry.
+  Read such data through the distributed tier only, or from the source.
+- **Absent as often as present.** A lookup that usually finds nothing
+  should set `NullExpiration`, otherwise every call reaches the source.
+- **Must keep answering through an outage.** Set `StaleGrace` so an expired
+  copy is served while the distributed store is down and one caller
+  refreshes, and bound the in-process tier with `Caching:L1:MaxEntries`,
+  `Caching:L1:MaxBytes`, and `Caching:L1:MaxEntryAge` so the process cannot
+  grow without limit while it does.
+- **Expires together.** Entries written in one warmup or at one moment
+  expire at the same instant on every instance and refill together.
+  `Caching:L1:ExpirationJitter` staggers the in-process expiries.
+
+Watch the `hit_l1`, `hit_l2`, and `miss` outcomes on
+`hostloom.cache.operation.duration` per namespace and `hostloom.cache.entries`
+against the bound: a low in-process hit rate with a full tier means the
+working set does not fit and entries are evicted before they are read
+again; a low rate with a sparse tier means the data is not read often
+enough to cache in process.
+
 ## Limitations
 
-- Sliding expiration, negative caching, and stale-while-revalidate are not
-  implemented.
+- Sliding expiration is not implemented.
+- Stale-while-revalidate is limited to an outage of the distributed store:
+  while the store answers, an expired entry is a miss and no stale value is
+  served. There is no background refresh ahead of expiry.
 - The in-process tier is per process; without a distributed tier, staleness
   across instances is bounded by expiry only.
+- Invalidation is not durable. A message dropped by a full queue costs one
+  in-process expiry; a reconnect clears the in-process tier when
+  `Caching:Invalidation:FlushLocalOnReconnect` is set, which is the default.
 - The `IDistributedCache` adapter has no touch operation, so `RefreshAsync`
   is a no-op and sliding windows become absolute.

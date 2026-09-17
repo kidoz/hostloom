@@ -84,12 +84,12 @@ instrument name, so one dashboard serves every cache.
 
 | Instrument | Type | Meaning |
 | --- | --- | --- |
-| `hostloom.cache.operation.duration` | histogram (s) | One cache operation, tagged `hostloom.cache.operation` and `hostloom.cache.outcome` (`hit_l1`, `hit_l2`, `miss`, `degraded`, `error`) |
+| `hostloom.cache.operation.duration` | histogram (s) | One cache operation, tagged `hostloom.cache.operation` and `hostloom.cache.outcome` (`hit_l1`, `hit_l2`, `hit_stale`, `miss`, `degraded`, `error`); `hit_stale` is an expired in-process entry served inside `CacheEntryOptions.StaleGrace` while the distributed store was unavailable and another caller refreshed |
 | `hostloom.cache.factory.duration` | histogram (s) | A get-or-create factory |
 | `hostloom.cache.entries` | observable gauge | Entries in the in-process tier |
 | `hostloom.cache.guards.active` | observable gauge | Single-flight guards held or awaited |
 | `hostloom.cache.stampede.lease_missed` | counter | Factories run without the cluster-wide lease |
-| `hostloom.cache.invalidations` | counter | Invalidation messages, tagged `hostloom.cache.direction` (`sent`, `received`, `dropped`); `dropped` means the queue was at `Caching:Invalidation:MaxPending` and the in-process tier falls back to expiry for that message |
+| `hostloom.cache.invalidations` | counter | Invalidation messages, tagged `hostloom.cache.direction` (`sent`, `received`, `flushed`, `dropped`); `flushed` means the whole in-process tier was cleared, which a backend channel requests after a reconnect; `dropped` means the queue was at `Caching:Invalidation:MaxPending` and the in-process tier falls back to expiry for that message |
 | `hostloom.cache.invalidation.resubscribed` | counter | Subscription re-established after a reconnect |
 | `hostloom.cache.errors` | counter | Store and serialization failures, from the tiered cache and from the `IDistributedCache` adapter, tagged `hostloom.cache.kind` (`unavailable`, `timeout`, `serialization`, `other`) |
 | `hostloom.cache.compressions` | counter | Payloads compressed before the distributed write |

@@ -46,6 +46,22 @@ services.AddHostLoomCaching(caching =>
 Per call, `CacheEntryOptions.LocalExpiration` shortens the in-process life
 of one entry below its distributed expiration.
 
+Where an old answer is better than a slow one, `CacheEntryOptions.StaleGrace`
+keeps an expired in-process copy available for the outage: when the
+distributed read fails, one caller refreshes through the factory and every
+other caller receives the copy at once, recorded as the `hit_stale` outcome.
+While the store answers, the copy is an ordinary miss.
+
+```csharp
+new CacheEntryOptions(TimeSpan.FromMinutes(5)) { StaleGrace = TimeSpan.FromMinutes(30) }
+```
+
+When the connection returns, invalidations published during the outage are
+gone. `Caching:Invalidation:FlushLocalOnReconnect` (the default) clears the
+in-process tier at that moment so no entry changed during the outage
+outlives it; the cost is one cold in-process tier per reconnect, and
+`hostloom.cache.invalidations` counts it as `flushed`.
+
 ## 3. Decide what the lock's absence means
 
 Where work must not run twice, let `LockProviderUnavailableException`
