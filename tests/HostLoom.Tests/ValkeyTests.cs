@@ -101,6 +101,13 @@ public sealed class ValkeyTests
         Assert.NotNull(decoded);
         Assert.Equal(input.Keys, decoded.Keys);
         Assert.Equal(input.Tags, decoded.Tags);
+        Assert.False(decoded.FlushAll);
+        var flush = ValkeyInvalidationCodec.Decode(
+            ValkeyInvalidationCodec.Encode(CacheInvalidation.Flush)
+        );
+        Assert.NotNull(flush);
+        Assert.True(flush.FlushAll);
+        Assert.Null(ValkeyInvalidationCodec.Decode(Encoding.UTF8.GetBytes("[1,[],[],false]")));
         foreach (
             var malformed in new[]
             {

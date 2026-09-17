@@ -20,7 +20,10 @@ namespace HostLoom.Redis;
 /// <remarks>
 /// StackExchange.Redis re-establishes pub/sub subscriptions on its own after a reconnect; the
 /// tracking registration is local to each server connection and is re-issued on reconnects and
-/// topology changes, including on replicas before promotion.
+/// topology changes, including on replicas before promotion. A reconnect also delivers
+/// <see cref="CacheInvalidation.Flush"/> to this process's subscribers when
+/// <see cref="CacheInvalidationOptions.FlushLocalOnReconnect"/> is set, because nothing published
+/// during the outage was received.
 /// Reconnects are counted on <c>hostloom.cache.invalidation.resubscribed</c>. The subscription is
 /// retried with exponential backoff while Redis is unreachable, and a mode that cannot be enabled
 /// after <see cref="RedisOptions.MaxClientCommandRetries"/> attempts leaves the explicit channel
@@ -29,6 +32,7 @@ namespace HostLoom.Redis;
 public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, IAsyncDisposable
 {
     private const string FormatMarker = "v1";
+    private const char FlushLine = '*';
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(30);
 
     private readonly RedisConnection _connection;
@@ -66,6 +70,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         _channel = RedisChannel.Literal(options.Namespace + ":cache:invalidate");
         _logger = logger ?? NullLogger<RedisCacheInvalidationChannel>.Instance;
         _connection.Restored += OnRestored;
+        _connection.SubscriptionRestored += OnSubscriptionRestored;
         _connection.TopologyChanged += OnTopologyChanged;
     }
 
@@ -140,6 +145,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         }
 
         _connection.Restored -= OnRestored;
+        _connection.SubscriptionRestored -= OnSubscriptionRestored;
         _connection.TopologyChanged -= OnTopologyChanged;
         await _disposal.CancelAsync().ConfigureAwait(false);
         if (_subscribing is { } pending)
@@ -187,6 +193,13 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     internal static string Encode(CacheInvalidation invalidation)
     {
         var builder = new StringBuilder(FormatMarker);
+        if (invalidation.FlushAll)
+        {
+            // A one-character line: earlier decoders skip lines shorter than two characters,
+            // so an instance that predates the flush ignores it rather than misreading it.
+            builder.Append('\n').Append(FlushLine);
+        }
+
         foreach (var key in invalidation.Keys)
         {
             builder.Append('\n').Append('k').Append(key);
@@ -215,9 +228,16 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
 
         var keys = new List<string>();
         var tags = new List<string>();
+        var flush = false;
         for (var i = 1; i < lines.Length; i++)
         {
             var line = lines[i];
+            if (line.Length == 1 && line[0] == FlushLine)
+            {
+                flush = true;
+                continue;
+            }
+
             if (line.Length < 2)
             {
                 continue;
@@ -236,7 +256,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             }
         }
 
-        return new CacheInvalidation(keys, tags);
+        return new CacheInvalidation(keys, tags) { FlushAll = flush };
     }
 
     private async Task SubscribeWithRetryAsync(CancellationToken cancellationToken)
@@ -637,6 +657,17 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         }
 
         RequestTrackingRefresh();
+    }
+
+    private void OnSubscriptionRestored(object? sender, EventArgs args)
+    {
+        // Whatever was published, tracked, or broadcast while the subscription connection was
+        // down never arrived. Every in-process entry could be stale, so the subscribers drop
+        // them all. Interactive-connection blips lose no invalidation and do not flush.
+        if (IsSubscribed && _options.Invalidation.FlushLocalOnReconnect)
+        {
+            Dispatch(CacheInvalidation.Flush);
+        }
     }
 
     private void OnTopologyChanged(object? sender, EventArgs args) => RequestTrackingRefresh();

@@ -1391,6 +1391,32 @@ public sealed class TieredCacheTests
         );
     }
 
+    [Fact]
+    public async Task FlushInvalidation_ClearsTheInProcessTierAndIsCounted()
+    {
+        using var metrics = new CacheMetricRecorder("flush");
+        var logger = new RecordingLogger<TieredCache>();
+        var store = new InMemoryDistributedCacheStore(_clock);
+        await using var cache = new TieredCache(
+            Options("flush"),
+            store,
+            _serializer,
+            timeProvider: _clock,
+            logger: logger
+        );
+        var token = TestContext.Current.CancellationToken;
+        await cache.SetAsync("a", 1, new CacheEntryOptions(TimeSpan.FromMinutes(5)), token);
+        await cache.SetAsync("b", 2, new CacheEntryOptions(TimeSpan.FromMinutes(5)), token);
+        Assert.Equal(CacheTier.L1, (await cache.TryGetAsync<int>("a", token)).Tier);
+
+        await store.PublishAsync(CacheInvalidation.Flush, token);
+        await CacheConformance.WaitUntilAsync(() => Task.FromResult(cache.LocalEntryCount == 0));
+
+        Assert.Equal(CacheTier.L2, (await cache.TryGetAsync<int>("a", token)).Tier);
+        Assert.Contains(("hostloom.cache.invalidations", "flushed"), metrics.Directions);
+        Assert.Contains(logger.Entries, entry => entry.Event.Id == 1007);
+    }
+
     private sealed class BlockingKeys(TaskCompletionSource entered, TaskCompletionSource release)
         : IReadOnlyCollection<string>
     {

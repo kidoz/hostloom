@@ -18,6 +18,13 @@ internal static class ValkeyInvalidationCodec
         writer.WriteNumberValue(1);
         WriteItems(writer, invalidation.Keys);
         WriteItems(writer, invalidation.Tags);
+        if (invalidation.FlushAll)
+        {
+            // A fourth element. An instance on an earlier package version reads the longer array
+            // as malformed and counts it, which is the documented behaviour for a flush it cannot apply.
+            writer.WriteBooleanValue(true);
+        }
+
         writer.WriteEndArray();
         writer.Flush();
         if (buffer.WrittenCount > MaxPayloadBytes)
@@ -38,15 +45,24 @@ internal static class ValkeyInvalidationCodec
             var root = document.RootElement;
             if (
                 root.ValueKind != JsonValueKind.Array
-                || root.GetArrayLength() != 3
+                || root.GetArrayLength() is not (3 or 4)
                 || root[0].ValueKind != JsonValueKind.Number
                 || !root[0].TryGetInt32(out var version)
                 || version != 1
             )
                 return null;
+            var flush = false;
+            if (root.GetArrayLength() == 4)
+            {
+                if (root[3].ValueKind != JsonValueKind.True)
+                    return null;
+                flush = true;
+            }
             var keys = ReadItems(root[1]);
             var tags = ReadItems(root[2]);
-            return keys is null || tags is null ? null : new CacheInvalidation(keys, tags);
+            return keys is null || tags is null
+                ? null
+                : new CacheInvalidation(keys, tags) { FlushAll = flush };
         }
         catch (JsonException)
         {

@@ -9,13 +9,17 @@ namespace HostLoom.Valkey;
 
 /// <summary>
 /// Explicit cache invalidation over a dedicated standalone Pub/Sub connection. Subscription failure
-/// restarts with bounded backoff; missing or dropped messages leave staleness bounded by L1 expiry.
-/// Tracking and keyspace-notification modes are not supported by this adapter.
+/// restarts with bounded backoff; a re-established subscription delivers
+/// <see cref="CacheInvalidation.Flush"/> to its subscribers when
+/// <see cref="CacheInvalidationOptions.FlushLocalOnReconnect"/> is set, and otherwise missing or
+/// dropped messages leave staleness bounded by L1 expiry. Tracking and keyspace-notification
+/// modes are not supported by this adapter.
 /// </summary>
 public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, IAsyncDisposable
 {
     private readonly ValkeyConnection _connection;
     private readonly string _namespace;
+    private readonly bool _flushOnReconnect;
     private readonly ILogger _logger;
     private readonly Lock _gate = new();
     private readonly List<Action<CacheInvalidation>> _handlers = [];
@@ -46,6 +50,7 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
             );
         _connection = connection;
         _namespace = options.Namespace;
+        _flushOnReconnect = options.Invalidation.FlushLocalOnReconnect;
         // Pub/Sub ignores SELECT; isolate namespaces that happen to use different logical databases.
         ChannelName =
             options.Namespace
@@ -145,7 +150,13 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
                 await using var subscriptionLifetime = subscription.ConfigureAwait(false);
                 Volatile.Write(ref _subscribed, 1);
                 if (established)
+                {
                     CachingDiagnostics.InvalidationResubscribed(_namespace);
+                    // Messages published while the subscriber was down were never queued for
+                    // it; every in-process entry could be stale, so the subscribers drop them all.
+                    if (_flushOnReconnect)
+                        Dispatch(CacheInvalidation.Flush);
+                }
                 established = true;
                 _ready.TrySetResult();
                 delay = TimeSpan.FromMilliseconds(100);

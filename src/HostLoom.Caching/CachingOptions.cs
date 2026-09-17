@@ -235,6 +235,14 @@ public sealed class CacheInvalidationOptions
     /// <summary>Bound of the queue that applies received invalidations to the in-process tier.</summary>
     public int MaxPending { get; set; } = 1_000;
 
+    /// <summary>
+    /// Whether a backend channel clears the in-process tier after its subscription connection
+    /// is re-established following a failure. Invalidations published while it was down were
+    /// never delivered, so without the flush an entry changed during the outage stays in the
+    /// in-process tier until it expires. The cost is one cold in-process tier per reconnect.
+    /// </summary>
+    public bool FlushLocalOnReconnect { get; set; } = true;
+
     internal void Validate(List<string> problems)
     {
         CachingOptions.RequirePositive(problems, "Caching:Invalidation:Timeout", Timeout);

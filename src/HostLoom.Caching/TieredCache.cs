@@ -604,7 +604,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 ? "Serializer = (none: no distributed tier)"
                 : $"Serializer = {_serializer.GetType().Name} (UseSystemTextJson / UseSerializer)",
             _channel is not null
-                ? $"Invalidation = {invalidation} (Caching:Invalidation:Mode = {_options.Invalidation.Mode}, MaxPending = {_options.Invalidation.MaxPending})"
+                ? $"Invalidation = {invalidation} (Caching:Invalidation:Mode = {_options.Invalidation.Mode}, MaxPending = {_options.Invalidation.MaxPending}, FlushLocalOnReconnect = {_options.Invalidation.FlushLocalOnReconnect})"
             : _store is not null
                 ? "Invalidation = TTL-only (the store offers no invalidation channel)"
             : "Invalidation = none (single process; staleness bounded by Caching:L1:MaxEntryAge)",
@@ -1230,6 +1230,26 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 .ConfigureAwait(false)
         )
         {
+            if (invalidation.FlushAll)
+            {
+                _local!.Clear();
+                CachingDiagnostics.Invalidations.Add(
+                    1,
+                    _namespaceTag,
+                    new KeyValuePair<string, object?>(CachingDiagnostics.DirectionTag, "flushed")
+                );
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        new EventId(1007, "CacheL1Flushed"),
+                        "In-process tier of namespace '{Namespace}' was cleared by an invalidation flush; entries refill from the distributed tier and factories.",
+                        _options.Namespace
+                    );
+                }
+
+                continue;
+            }
+
             _local!.Remove(invalidation.Keys);
             foreach (var tag in invalidation.Tags)
             {

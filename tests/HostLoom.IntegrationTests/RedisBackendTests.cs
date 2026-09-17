@@ -240,9 +240,18 @@ public sealed class RedisBackendTests
         await using (subscriberChannel)
         {
             var received = 0;
-            using var subscription = subscriberChannel.Subscribe(_ =>
-                Interlocked.Increment(ref received)
-            );
+            var flushes = 0;
+            using var subscription = subscriberChannel.Subscribe(invalidation =>
+            {
+                if (invalidation.FlushAll)
+                {
+                    Interlocked.Increment(ref flushes);
+                }
+                else
+                {
+                    Interlocked.Increment(ref received);
+                }
+            });
             await CacheConformance.WaitUntilAsync(() =>
                 Task.FromResult(subscriberChannel.IsSubscribed)
             );
@@ -276,6 +285,10 @@ public sealed class RedisBackendTests
             await CacheConformance.WaitUntilAsync(
                 () => Task.FromResult(subscriber.Reconnects >= 1),
                 30
+            );
+            // The restored connection tells its subscribers to drop every in-process entry.
+            await CacheConformance.WaitUntilAsync(() =>
+                Task.FromResult(Volatile.Read(ref flushes) >= 1)
             );
             await CacheConformance.WaitUntilAsync(
                 async () =>

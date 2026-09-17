@@ -281,6 +281,12 @@ public sealed class RedisRegistrationTests
         Assert.NotNull(decoded);
         Assert.Equal(["a", "b:c"], decoded.Keys);
         Assert.Equal(["catalog"], decoded.Tags);
+        Assert.False(decoded.FlushAll);
+        Assert.Equal("v1\n*", RedisCacheInvalidationChannel.Encode(CacheInvalidation.Flush));
+        var flush = RedisCacheInvalidationChannel.Decode("v1\n*\nka");
+        Assert.NotNull(flush);
+        Assert.True(flush.FlushAll);
+        Assert.Equal(["a"], flush.Keys);
         Assert.Null(RedisCacheInvalidationChannel.Decode("v9\nkx"));
         Assert.Null(RedisCacheInvalidationChannel.Decode(null));
     }
