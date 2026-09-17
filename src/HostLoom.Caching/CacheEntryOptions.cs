@@ -43,6 +43,32 @@ public sealed class CacheEntryOptions
     /// <summary>Behaviour of set-if-absent when the distributed store is unavailable.</summary>
     public UnavailableBehavior OnUnavailable { get; init; } = UnavailableBehavior.ReturnFalse;
 
+    /// <summary>
+    /// Negative caching: how long a null factory result is remembered in both tiers, so a lookup
+    /// for something that does not exist stops reaching the source on every call. Unset or
+    /// non-positive means a null result is returned and not stored. A remembered null is a hit:
+    /// <see cref="ICache.TryGetAsync{T}"/> reports <c>Found</c> with a null <c>Value</c>, and
+    /// get-or-create returns null without running the factory. <see cref="LocalExpiration"/>
+    /// bounds the in-process copy as it does for a value. <see cref="ICache.SetAsync{T}"/> still
+    /// rejects null; only a factory result is remembered.
+    /// </summary>
+    public TimeSpan? NullExpiration { get; init; }
+
+    /// <summary>
+    /// Stale-while-revalidate for an outage: how long past its in-process expiry an entry stays
+    /// available to serve while the distributed store is unavailable. When a get-or-create
+    /// misses the in-process tier, the distributed read fails, and a stale copy is inside the
+    /// grace window, one caller refreshes through the factory and every other caller receives the
+    /// stale copy at once. While the distributed store answers, an expired entry is an ordinary
+    /// miss. Unset or non-positive disables it. Has no effect without a distributed store.
+    /// </summary>
+    public TimeSpan? StaleGrace { get; init; }
+
+    internal TimeSpan? EffectiveStaleGrace =>
+        StaleGrace is { } grace && grace > TimeSpan.Zero ? grace : null;
+
+    internal bool CachesNull => NullExpiration is { } ttl && ttl > TimeSpan.Zero;
+
     internal void Validate(string parameterName)
     {
         if (LocalExpiration is { } local && local > Expiration)

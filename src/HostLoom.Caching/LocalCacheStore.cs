@@ -6,16 +6,21 @@ namespace HostLoom.Caching;
 
 /// <summary>
 /// The in-process tier: a bounded, lock-free-on-read dictionary of typed values with absolute
-/// expiry. It has no <c>IMemoryCache</c> dependency and never stores null.
+/// expiry. It has no <c>IMemoryCache</c> dependency. A null value is stored only through
+/// <see cref="SetNull"/>, as a remembered absence.
 /// </summary>
 /// <remarks>
 /// Above <see cref="CacheL1Options.MaxEntries"/> a sampled least-recently-accessed
 /// <see cref="CacheL1Options.EvictionFraction"/> is evicted; at 150 % of capacity everything is
 /// cleared and a warning logged. A cleanup timer on the <see cref="TimeProvider"/> removes
-/// expired entries every <see cref="CacheL1Options.CleanupInterval"/> and stops on dispose.
+/// expired entries every <see cref="CacheL1Options.CleanupInterval"/> and stops on dispose. An
+/// entry written with a stale grace is kept, but not returned by <see cref="TryGet{T}"/>, for
+/// that long after it expires; <see cref="TryGetWithinGrace{T}"/> is the read that accepts it.
 /// </remarks>
 public sealed class LocalCacheStore : IDisposable
 {
+    private static readonly object NullSentinel = new();
+
     private readonly ConcurrentDictionary<string, Entry> _entries = new(StringComparer.Ordinal);
     private readonly CacheL1Options _options;
     private readonly TimeProvider _time;
@@ -58,9 +63,12 @@ public sealed class LocalCacheStore : IDisposable
 
     /// <summary>
     /// Reads <paramref name="key"/>. An expired entry, or one holding a value of another type,
-    /// is a miss and is evicted.
+    /// is a miss and is evicted, except that an expired entry still inside its stale grace is
+    /// kept for <see cref="TryGetWithinGrace{T}"/>. A remembered null is found with a null
+    /// <paramref name="value"/> when <typeparamref name="T"/> can hold null, and is otherwise a
+    /// miss that evicts.
     /// </summary>
-    public bool TryGet<T>(string key, out T value)
+    public bool TryGet<T>(string key, out T? value)
     {
         ArgumentNullException.ThrowIfNull(key);
         if (_entries.TryGetValue(key, out var entry))
@@ -68,18 +76,45 @@ public sealed class LocalCacheStore : IDisposable
             var now = _time.GetUtcNow().UtcTicks;
             if (entry.ExpiresAt > now)
             {
-                if (entry.Value is T typed)
+                if (TryUnwrap(entry, now, out value))
                 {
-                    Volatile.Write(ref entry.LastAccess, now);
-                    value = typed;
                     return true;
                 }
+            }
+            else if (entry.StaleUntil > now)
+            {
+                value = default;
+                return false;
             }
 
             Evict(key, entry);
         }
 
-        value = default!;
+        value = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Reads <paramref name="key"/> accepting an expired entry inside its stale grace as well as
+    /// a fresh one. <paramref name="stale"/> reports which it was.
+    /// </summary>
+    public bool TryGetWithinGrace<T>(string key, out T? value, out bool stale)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        stale = false;
+        if (_entries.TryGetValue(key, out var entry))
+        {
+            var now = _time.GetUtcNow().UtcTicks;
+            if (entry.StaleUntil > now && TryUnwrap(entry, now, out value))
+            {
+                stale = entry.ExpiresAt <= now;
+                return true;
+            }
+
+            Evict(key, entry);
+        }
+
+        value = default;
         return false;
     }
 
@@ -87,33 +122,37 @@ public sealed class LocalCacheStore : IDisposable
     /// Writes <paramref name="value"/> with an absolute <paramref name="timeToLive"/>. A
     /// non-positive time to live writes nothing.
     /// </summary>
+    /// <param name="staleGrace">
+    /// How long past expiry the entry stays readable through <see cref="TryGetWithinGrace{T}"/>.
+    /// </param>
     /// <exception cref="ArgumentNullException"><paramref name="value"/> is null.</exception>
     public void Set<T>(
         string key,
         T value,
         TimeSpan timeToLive,
         IReadOnlyCollection<string>? tags = null,
-        long? size = null
+        long? size = null,
+        TimeSpan? staleGrace = null
     )
     {
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(value);
-        timeToLive = ApplyJitter(timeToLive);
-        if (timeToLive <= TimeSpan.Zero)
-        {
-            return;
-        }
+        Write(key, value, timeToLive, tags, size, staleGrace);
+    }
 
-        var now = _time.GetUtcNow().UtcTicks;
-        var entry = new Entry(value, now + timeToLive.Ticks, now, size ?? 0, tags);
-        if (_entries.TryGetValue(key, out var previous))
-        {
-            Interlocked.Add(ref _approximateBytes, -previous.Size);
-        }
-
-        _entries[key] = entry;
-        Interlocked.Add(ref _approximateBytes, entry.Size);
-        EnforceBounds();
+    /// <summary>
+    /// Remembers that <paramref name="key"/> has no value, for <paramref name="timeToLive"/>, so a
+    /// lookup finds a null instead of missing. A non-positive time to live writes nothing.
+    /// </summary>
+    public void SetNull(
+        string key,
+        TimeSpan timeToLive,
+        IReadOnlyCollection<string>? tags = null,
+        TimeSpan? staleGrace = null
+    )
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        Write(key, NullSentinel, timeToLive, tags, size: 0, staleGrace);
     }
 
     /// <summary>Writes <paramref name="value"/> only when <paramref name="key"/> is absent or expired.</summary>
@@ -134,7 +173,8 @@ public sealed class LocalCacheStore : IDisposable
         }
 
         var now = _time.GetUtcNow().UtcTicks;
-        var entry = new Entry(value, now + timeToLive.Ticks, now, size ?? 0, tags);
+        var expiresAt = now + timeToLive.Ticks;
+        var entry = new Entry(value, expiresAt, expiresAt, now, size ?? 0, tags);
         while (true)
         {
             if (_entries.TryAdd(key, entry))
@@ -204,13 +244,16 @@ public sealed class LocalCacheStore : IDisposable
         Interlocked.Exchange(ref _approximateBytes, 0);
     }
 
-    /// <summary>Removes expired entries now, as the cleanup timer would.</summary>
+    /// <summary>
+    /// Removes expired entries now, as the cleanup timer would. An entry inside its stale grace
+    /// is kept until the grace ends.
+    /// </summary>
     public void RemoveExpired()
     {
         var now = _time.GetUtcNow().UtcTicks;
         foreach (var (key, entry) in _entries)
         {
-            if (entry.ExpiresAt <= now)
+            if (entry.StaleUntil <= now)
             {
                 Evict(key, entry);
             }
@@ -219,6 +262,60 @@ public sealed class LocalCacheStore : IDisposable
 
     /// <inheritdoc />
     public void Dispose() => _cleanup?.Dispose();
+
+    private void Write(
+        string key,
+        object value,
+        TimeSpan timeToLive,
+        IReadOnlyCollection<string>? tags,
+        long? size,
+        TimeSpan? staleGrace
+    )
+    {
+        timeToLive = ApplyJitter(timeToLive);
+        if (timeToLive <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        var now = _time.GetUtcNow().UtcTicks;
+        var expiresAt = now + timeToLive.Ticks;
+        var staleUntil =
+            staleGrace is { } grace && grace > TimeSpan.Zero ? expiresAt + grace.Ticks : expiresAt;
+        var entry = new Entry(value, expiresAt, staleUntil, now, size ?? 0, tags);
+        if (_entries.TryGetValue(key, out var previous))
+        {
+            Interlocked.Add(ref _approximateBytes, -previous.Size);
+        }
+
+        _entries[key] = entry;
+        Interlocked.Add(ref _approximateBytes, entry.Size);
+        EnforceBounds();
+    }
+
+    private static bool TryUnwrap<T>(Entry entry, long now, out T? value)
+    {
+        if (ReferenceEquals(entry.Value, NullSentinel))
+        {
+            // A remembered absence can only be handed back as null; a non-nullable value type
+            // has no null, so for it the entry is a value of another type.
+            if (default(T) is null)
+            {
+                Volatile.Write(ref entry.LastAccess, now);
+                value = default;
+                return true;
+            }
+        }
+        else if (entry.Value is T typed)
+        {
+            Volatile.Write(ref entry.LastAccess, now);
+            value = typed;
+            return true;
+        }
+
+        value = default;
+        return false;
+    }
 
     private TimeSpan ApplyJitter(TimeSpan timeToLive)
     {
@@ -330,6 +427,7 @@ public sealed class LocalCacheStore : IDisposable
     private sealed class Entry(
         object value,
         long expiresAt,
+        long staleUntil,
         long lastAccess,
         long size,
         IReadOnlyCollection<string>? tags
@@ -337,6 +435,7 @@ public sealed class LocalCacheStore : IDisposable
     {
         public readonly object Value = value;
         public readonly long ExpiresAt = expiresAt;
+        public readonly long StaleUntil = staleUntil;
         public readonly long Size = size;
         public long LastAccess = lastAccess;
         private readonly string[]? _tags = tags is { Count: > 0 } ? [.. tags] : null;

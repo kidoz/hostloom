@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using HostLoom.Caching;
 using HostLoom.Caching.Internal;
 using HostLoom.Caching.Testing;
+using HostLoom.Conformance;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Xunit;
@@ -207,6 +208,43 @@ public sealed class LocalCacheStoreTests
 
         Assert.True(store.TryGet<int>("k", out _));
     }
+
+    [Fact]
+    public void SetNull_IsFoundAsNullOnlyWhereNullFits()
+    {
+        using var store = new LocalCacheStore(new CacheL1Options(), _clock);
+        store.SetNull("k", TimeSpan.FromMinutes(1), ["t"]);
+
+        Assert.True(store.TryGet<string>("k", out var text));
+        Assert.Null(text);
+        Assert.True(store.TryGet<int?>("k", out var maybe));
+        Assert.Null(maybe);
+        Assert.False(store.TryGet<int>("k", out _));
+        Assert.Equal(0, store.Count);
+
+        store.SetNull("k", TimeSpan.FromMinutes(1), ["t"]);
+        store.RemoveByTag("t");
+        Assert.False(store.TryGet<string>("k", out _));
+    }
+
+    [Fact]
+    public void StaleGrace_KeepsAnExpiredEntryForTheGraceReadOnly()
+    {
+        using var store = new LocalCacheStore(new CacheL1Options(), _clock);
+        store.Set("k", 5, TimeSpan.FromSeconds(10), staleGrace: TimeSpan.FromSeconds(30));
+        _clock.Advance(TimeSpan.FromSeconds(11));
+
+        Assert.False(store.TryGet<int>("k", out _));
+        store.RemoveExpired();
+        Assert.Equal(1, store.Count);
+        Assert.True(store.TryGetWithinGrace<int>("k", out var value, out var stale));
+        Assert.Equal(5, value);
+        Assert.True(stale);
+
+        _clock.Advance(TimeSpan.FromSeconds(30));
+        Assert.False(store.TryGetWithinGrace<int>("k", out _, out _));
+        Assert.Equal(0, store.Count);
+    }
 }
 
 public sealed class CachePayloadCodecTests
@@ -238,6 +276,7 @@ public sealed class CachePayloadCodecTests
             Limit,
             out var value,
             out var tags,
+            out _,
             out _
         );
         Assert.Equal(PayloadDecodeStatus.Ok, status);
@@ -269,6 +308,7 @@ public sealed class CachePayloadCodecTests
             Limit,
             out var value,
             out var tags,
+            out _,
             out _
         );
         Assert.Equal(PayloadDecodeStatus.Ok, status);
@@ -284,6 +324,7 @@ public sealed class CachePayloadCodecTests
             Serializer,
             payload,
             Limit,
+            out _,
             out _,
             out _,
             out var failure
@@ -305,6 +346,7 @@ public sealed class CachePayloadCodecTests
             Limit,
             out _,
             out _,
+            out _,
             out var failure
         );
 
@@ -324,6 +366,7 @@ public sealed class CachePayloadCodecTests
             payload,
             1_024,
             out var value,
+            out _,
             out _,
             out var failure
         );
@@ -347,6 +390,7 @@ public sealed class CachePayloadCodecTests
             bodyLength,
             out var value,
             out _,
+            out _,
             out _
         );
 
@@ -355,6 +399,47 @@ public sealed class CachePayloadCodecTests
     }
 
     private sealed record Sample(string Text);
+
+    [Fact]
+    public void EncodeNull_RoundTripsARememberedAbsenceWithItsTags()
+    {
+        using var writer = new PooledBufferWriter();
+        CachePayloadCodec.EncodeNull(["a"], writer);
+
+        Assert.Equal(0x16, writer.WrittenSpan[0]);
+        var status = CachePayloadCodec.TryDecode<Sample>(
+            Serializer,
+            writer.WrittenSpan,
+            Limit,
+            out var value,
+            out var tags,
+            out var isNull,
+            out _
+        );
+        Assert.Equal(PayloadDecodeStatus.Ok, status);
+        Assert.True(isNull);
+        Assert.Null(value);
+        Assert.Equal(["a"], tags!);
+    }
+
+    [Fact]
+    public void TryDecode_NullFlagWithABody_IsCorrupt()
+    {
+        byte[] payload = [0x14, (byte)'{', (byte)'}'];
+
+        Assert.Equal(
+            PayloadDecodeStatus.Corrupt,
+            CachePayloadCodec.TryDecode<Sample>(
+                Serializer,
+                payload,
+                Limit,
+                out _,
+                out _,
+                out _,
+                out _
+            )
+        );
+    }
 }
 
 public sealed class SystemTextJsonCacheValueSerializerTests
@@ -1168,6 +1253,144 @@ public sealed class TieredCacheTests
     /// Keys whose enumeration stops the applying loop, so a test can fill the queue behind it
     /// instead of racing it.
     /// </summary>
+    [Fact]
+    public async Task NullExpiration_RemembersANullFactoryResultInBothTiers()
+    {
+        var store = new InMemoryDistributedCacheStore(_clock);
+        await using var cache = new TieredCache(
+            Options(),
+            store,
+            _serializer,
+            timeProvider: _clock
+        );
+        var options = new CacheEntryOptions(TimeSpan.FromMinutes(10))
+        {
+            NullExpiration = TimeSpan.FromSeconds(30),
+            Tags = ["catalog"],
+        };
+        var token = TestContext.Current.CancellationToken;
+        var runs = 0;
+
+        var first = await cache.GetOrCreateAsync<CachingTestPayload?>(
+            "missing",
+            _ =>
+            {
+                runs++;
+                return ValueTask.FromResult<CachingTestPayload?>(null);
+            },
+            options,
+            token
+        );
+        var second = await cache.GetOrCreateAsync<CachingTestPayload?>(
+            "missing",
+            _ =>
+            {
+                runs++;
+                return ValueTask.FromResult<CachingTestPayload?>(null);
+            },
+            options,
+            token
+        );
+        var local = await cache.TryGetAsync<CachingTestPayload?>("missing", token);
+
+        Assert.Null(first);
+        Assert.Null(second);
+        Assert.Equal(1, runs);
+        Assert.True(local.Found);
+        Assert.Null(local.Value);
+        Assert.Equal(CacheTier.L1, local.Tier);
+
+        // Another instance sharing the store reads the remembered absence from the distributed
+        // tier; a value type has no null to hand back, so for it the same entry is a miss.
+        await using var other = new TieredCache(
+            Options(),
+            store,
+            _serializer,
+            timeProvider: _clock
+        );
+        var remote = await other.TryGetAsync<CachingTestPayload?>("missing", token);
+        Assert.True(remote.Found);
+        Assert.Null(remote.Value);
+        Assert.Equal(CacheTier.L2, remote.Tier);
+        Assert.False((await other.TryGetAsync<int>("missing", token)).Found);
+
+        _clock.Advance(TimeSpan.FromSeconds(31));
+        Assert.False((await cache.TryGetAsync<CachingTestPayload?>("missing", token)).Found);
+    }
+
+    [Fact]
+    public async Task StaleGrace_ServesTheExpiredEntryWhileTheStoreIsDownAndOneCallerRefreshes()
+    {
+        using var metrics = new CacheMetricRecorder("stale");
+        var faulting = new FaultingCacheStore(new InMemoryDistributedCacheStore(_clock));
+        await using var cache = new TieredCache(
+            Options("stale"),
+            faulting,
+            _serializer,
+            timeProvider: _clock
+        );
+        var options = new CacheEntryOptions(TimeSpan.FromSeconds(10))
+        {
+            StaleGrace = TimeSpan.FromMinutes(1),
+        };
+        var token = TestContext.Current.CancellationToken;
+
+        Assert.Equal(
+            "v1",
+            await cache.GetOrCreateAsync("k", _ => ValueTask.FromResult("v1"), options, token)
+        );
+        _clock.Advance(TimeSpan.FromSeconds(11));
+
+        // While the store answers, an expired entry is an ordinary miss and the factory runs.
+        Assert.Equal(
+            "v2",
+            await cache.GetOrCreateAsync("k", _ => ValueTask.FromResult("v2"), options, token)
+        );
+        _clock.Advance(TimeSpan.FromSeconds(11));
+        faulting.FailAll(CacheFailureKind.Unavailable);
+
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var refresher = cache
+            .GetOrCreateAsync(
+                "k",
+                async _ =>
+                {
+                    entered.SetResult();
+                    await release.Task;
+                    return "v3";
+                },
+                options,
+                token
+            )
+            .AsTask();
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10), token);
+
+        // The refresher holds the guard, so a second caller takes the stale copy at once.
+        var waiter = await cache.GetOrCreateAsync(
+            "k",
+            _ => ValueTask.FromResult("never"),
+            options,
+            token
+        );
+        Assert.Equal("v2", waiter);
+        Assert.Contains(("hostloom.cache.operation.duration", "hit_stale"), metrics.Outcomes);
+
+        release.SetResult();
+        Assert.Equal("v3", await refresher);
+        Assert.Equal(
+            "v3",
+            await cache.GetOrCreateAsync("k", _ => ValueTask.FromResult("never"), options, token)
+        );
+
+        // Past the grace the copy is gone and the factory runs even though the store is down.
+        _clock.Advance(TimeSpan.FromSeconds(11) + TimeSpan.FromMinutes(1));
+        Assert.Equal(
+            "v4",
+            await cache.GetOrCreateAsync("k", _ => ValueTask.FromResult("v4"), options, token)
+        );
+    }
+
     private sealed class BlockingKeys(TaskCompletionSource entered, TaskCompletionSource release)
         : IReadOnlyCollection<string>
     {

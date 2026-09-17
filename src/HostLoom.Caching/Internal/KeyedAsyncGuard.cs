@@ -66,6 +66,35 @@ internal sealed class KeyedAsyncGuard : IDisposable
         return new Releaser(this, entry, waited);
     }
 
+    /// <summary>
+    /// Acquires the guard for <paramref name="key"/> only when nobody holds it, without waiting.
+    /// Lets a caller decide whether to become the one refresher or to take a stale value instead.
+    /// </summary>
+    public bool TryAcquire(string key, out Releaser releaser)
+    {
+        Entry entry;
+        lock (_gate)
+        {
+            if (!_entries.TryGetValue(key, out entry!))
+            {
+                entry = new Entry();
+                _entries[key] = entry;
+            }
+
+            entry.References++;
+        }
+
+        if (entry.Semaphore.Wait(0, CancellationToken.None))
+        {
+            releaser = new Releaser(this, entry, waited: false);
+            return true;
+        }
+
+        Release(entry, held: false);
+        releaser = default;
+        return false;
+    }
+
     /// <summary>Disposes guards that have been idle for at least <paramref name="idle"/>.</summary>
     public void Reclaim(TimeSpan idle)
     {

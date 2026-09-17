@@ -22,13 +22,15 @@ internal enum PayloadDecodeStatus
 /// the lower), then, when the <c>tagged</c> flag is set, the tag names (a 16-bit count and
 /// length-prefixed UTF-8 strings) so another instance can index the entry in its in-process tier,
 /// then, when the <c>compressed</c> flag is set, the uncompressed body length as four
-/// little-endian bytes, then the body.
+/// little-endian bytes, then the body. A payload with the <c>null</c> flag has no body: it is a
+/// remembered absence written by negative caching.
 /// </summary>
 internal static class CachePayloadCodec
 {
     public const byte FormatVersion = 1;
     private const byte CompressedFlag = 0x1;
     private const byte TaggedFlag = 0x2;
+    private const byte NullFlag = 0x4;
     private const int HeaderLength = 1;
     private const int LengthPrefix = sizeof(uint);
     private const int MaxTags = ushort.MaxValue;
@@ -99,11 +101,28 @@ internal static class CachePayloadCodec
         return false;
     }
 
+    /// <summary>Wraps a remembered absence: the header, the tag names, and no body.</summary>
+    public static void EncodeNull(IReadOnlyCollection<string>? tags, PooledBufferWriter destination)
+    {
+        var tagged = tags is { Count: > 0 };
+        var header = destination.GetSpan(HeaderLength);
+        header[0] = (byte)((FormatVersion << 4) | NullFlag | (tagged ? TaggedFlag : 0));
+        destination.Advance(HeaderLength);
+        if (tagged)
+        {
+            WriteTags(tags!, destination);
+        }
+    }
+
     /// <summary>Unwraps and deserializes <paramref name="payload"/>.</summary>
     /// <param name="maxBodyBytes">
     /// Largest uncompressed body accepted. The length prefix comes from the store and a poisoned or
     /// truncated value can declare any size, so it buys a buffer only up to the bound the writer
     /// enforces.
+    /// </param>
+    /// <param name="isNull">
+    /// Whether the payload is a remembered absence, in which case <paramref name="value"/> is
+    /// default and the serializer was not consulted.
     /// </param>
     public static PayloadDecodeStatus TryDecode<T>(
         ICacheValueSerializer serializer,
@@ -111,11 +130,13 @@ internal static class CachePayloadCodec
         long maxBodyBytes,
         out T? value,
         out string[]? tags,
+        out bool isNull,
         out Exception? failure
     )
     {
         value = default;
         tags = null;
+        isNull = false;
         failure = null;
         if (payload.Length < HeaderLength)
         {
@@ -135,6 +156,17 @@ internal static class CachePayloadCodec
             if ((header & TaggedFlag) != 0 && !TryReadTags(ref body, out tags))
             {
                 return PayloadDecodeStatus.Corrupt;
+            }
+
+            if ((header & NullFlag) != 0)
+            {
+                if (body.Length != 0)
+                {
+                    return PayloadDecodeStatus.Corrupt;
+                }
+
+                isNull = true;
+                return PayloadDecodeStatus.Ok;
             }
 
             if ((header & CompressedFlag) != 0)

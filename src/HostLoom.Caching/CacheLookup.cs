@@ -30,7 +30,7 @@ public static class CacheLookup
     public static CacheLookup<T> Miss<T>(bool degraded = false) =>
         new(false, default, CacheTier.None, degraded);
 
-    /// <summary>A hit from <paramref name="tier"/>.</summary>
-    public static CacheLookup<T> Hit<T>(T value, CacheTier tier, bool degraded = false) =>
+    /// <summary>A hit from <paramref name="tier"/>; a null <paramref name="value"/> is a remembered absence.</summary>
+    public static CacheLookup<T> Hit<T>(T? value, CacheTier tier, bool degraded = false) =>
         new(true, value, tier, degraded);
 }

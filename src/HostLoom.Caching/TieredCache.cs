@@ -320,7 +320,8 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 value,
                 options.LocalExpiration ?? options.Expiration,
                 options.Tags,
-                payload.WrittenCount
+                payload.WrittenCount,
+                options.EffectiveStaleGrace
             );
             if (compressed)
             {
@@ -449,7 +450,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             ValidateKey(key);
             if (_local is not null && _local.TryGet<T>(key, out var hit))
             {
-                found[key] = hit;
+                found[key] = hit!;
             }
             else
             {
@@ -635,13 +636,12 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     {
         using var activity = StartActivity("cache.get_or_create", key);
         var degraded = false;
+        var haveStale = false;
+        T? stale = default;
+        KeyedAsyncGuard.Releaser tryGuard = default;
         if (_store is not null)
         {
-            var lookup = await ReadFromStoreAsync<T>(
-                    key,
-                    options.LocalExpiration,
-                    cancellationToken
-                )
+            var lookup = await ReadFromStoreAsync<T>(key, options, cancellationToken)
                 .ConfigureAwait(false);
             degraded |= lookup.Degraded;
             if (lookup.Found)
@@ -649,9 +649,26 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 Finish(activity, "get_or_create", "hit_l2", start, degraded, CacheTier.L2);
                 return lookup.Value;
             }
+
+            // The store cannot answer and an expired copy is still inside its grace window: one
+            // caller refreshes through the factory and the rest take the copy at once, instead
+            // of queueing behind the factory for a value the outage already made late.
+            haveStale =
+                lookup.Degraded
+                && options.EffectiveStaleGrace is not null
+                && _local is not null
+                && _local.TryGetWithinGrace(key, out stale, out _);
         }
 
-        using var guard = await _guard.AcquireAsync(key, cancellationToken).ConfigureAwait(false);
+        if (haveStale && !_guard.TryAcquire(key, out tryGuard))
+        {
+            Finish(activity, "get_or_create", "hit_stale", start, degraded, CacheTier.L1);
+            return stale;
+        }
+
+        using var guard = haveStale
+            ? tryGuard
+            : await _guard.AcquireAsync(key, cancellationToken).ConfigureAwait(false);
         // A caller can receive an earlier store miss after another caller has already filled the
         // cache and released the guard. Re-check even when acquisition did not have to wait.
         if (_local is not null && _local.TryGet<T>(key, out var filled))
@@ -662,7 +679,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
         if (_store is not null)
         {
-            var again = await ReadFromStoreAsync<T>(key, options.LocalExpiration, cancellationToken)
+            var again = await ReadFromStoreAsync<T>(key, options, cancellationToken)
                 .ConfigureAwait(false);
             degraded |= again.Degraded;
             if (again.Found)
@@ -713,11 +730,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                             .ConfigureAwait(false);
                     }
 
-                    var again = await ReadFromStoreAsync<T>(
-                            key,
-                            options.LocalExpiration,
-                            cancellationToken
-                        )
+                    var again = await ReadFromStoreAsync<T>(key, options, cancellationToken)
                         .ConfigureAwait(false);
                     degraded |= again.Degraded;
                     if (again.Found)
@@ -753,7 +766,15 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 );
             }
 
-            if (value is not null && options.Expiration > TimeSpan.Zero)
+            if (value is null)
+            {
+                if (options.CachesNull)
+                {
+                    degraded |= await WriteNullAsync(key, options, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+            else if (options.Expiration > TimeSpan.Zero)
             {
                 degraded |= await WriteAsync(key, value, options, cancellationToken)
                     .ConfigureAwait(false);
@@ -809,7 +830,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
     private async ValueTask<CacheLookup<T>> ReadFromStoreAsync<T>(
         string key,
-        TimeSpan? localExpiration,
+        CacheEntryOptions? options,
         CancellationToken cancellationToken
     )
     {
@@ -824,10 +845,10 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             return CacheLookup.Miss<T>(degraded: true);
         }
 
-        return entry is { } found ? Decode<T>(key, found, localExpiration) : CacheLookup.Miss<T>();
+        return entry is { } found ? Decode<T>(key, found, options) : CacheLookup.Miss<T>();
     }
 
-    private CacheLookup<T> Decode<T>(string key, CacheStoreEntry entry, TimeSpan? localExpiration)
+    private CacheLookup<T> Decode<T>(string key, CacheStoreEntry entry, CacheEntryOptions? options)
     {
         var status = CachePayloadCodec.TryDecode<T>(
             _serializer!,
@@ -835,21 +856,35 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             _options.MaxPayloadBytes,
             out var value,
             out var tags,
+            out var isNull,
             out var failure
         );
         switch (status)
         {
-            case PayloadDecodeStatus.Ok when value is not null:
-                if (_local is not null)
+            case PayloadDecodeStatus.Ok when isNull:
+                // A remembered absence. A non-nullable value type has no null to hand back, so
+                // for it the entry is a miss and the next factory result replaces it.
+                if (default(T) is not null)
                 {
-                    var remaining = entry.RemainingTimeToLive ?? _options.L1.MaxEntryAge;
-                    var local =
-                        localExpiration is { } explicitLocal && explicitLocal < remaining
-                            ? explicitLocal
-                            : remaining;
-                    _local.Set(key, value, local, tags, entry.Payload.Length);
+                    return CacheLookup.Miss<T>();
                 }
 
+                _local?.SetNull(
+                    key,
+                    LocalTimeToLive(entry, options),
+                    tags,
+                    options?.EffectiveStaleGrace
+                );
+                return CacheLookup.Hit<T>(default, CacheTier.L2);
+            case PayloadDecodeStatus.Ok when value is not null:
+                _local?.Set(
+                    key,
+                    value,
+                    LocalTimeToLive(entry, options),
+                    tags,
+                    entry.Payload.Length,
+                    options?.EffectiveStaleGrace
+                );
                 return CacheLookup.Hit(value, CacheTier.L2);
             case PayloadDecodeStatus.VersionMismatch:
                 // Written by a newer or older deploy: a miss, and deliberately not an error.
@@ -870,6 +905,58 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 );
                 return CacheLookup.Miss<T>();
         }
+    }
+
+    /// <summary>The in-process life of a distributed hit: its remaining time, bounded by the call's local expiration.</summary>
+    private TimeSpan LocalTimeToLive(CacheStoreEntry entry, CacheEntryOptions? options)
+    {
+        var remaining = entry.RemainingTimeToLive ?? _options.L1.MaxEntryAge;
+        return options?.LocalExpiration is { } explicitLocal && explicitLocal < remaining
+            ? explicitLocal
+            : remaining;
+    }
+
+    /// <summary>
+    /// Remembers a null factory result in the distributed tier, then the in-process tier, for
+    /// <see cref="CacheEntryOptions.NullExpiration"/>. Returns whether it degraded.
+    /// </summary>
+    private async ValueTask<bool> WriteNullAsync(
+        string key,
+        CacheEntryOptions options,
+        CancellationToken cancellationToken
+    )
+    {
+        var degraded = false;
+        var expiration = options.NullExpiration!.Value;
+        if (_store is not null)
+        {
+            using var payload = new PooledBufferWriter();
+            CachePayloadCodec.EncodeNull(options.Tags, payload);
+            try
+            {
+                await _store
+                    .SetAsync(
+                        DataKey(key),
+                        payload.WrittenMemory,
+                        expiration,
+                        TagKeys(options.Tags),
+                        cancellationToken
+                    )
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception) when (!IsCallerCancellation(exception, cancellationToken))
+            {
+                NoteStoreFailure(exception, "set", key);
+                degraded = true;
+            }
+        }
+
+        var local =
+            options.LocalExpiration is { } explicitLocal && explicitLocal < expiration
+                ? explicitLocal
+                : expiration;
+        _local?.SetNull(key, local, options.Tags, options.EffectiveStaleGrace);
+        return degraded;
     }
 
     /// <summary>Writes to the distributed tier, then the in-process tier. Returns whether it degraded.</summary>
@@ -913,7 +1000,14 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             }
         }
 
-        _local?.Set(key, value, options.LocalExpiration ?? options.Expiration, options.Tags, size);
+        _local?.Set(
+            key,
+            value,
+            options.LocalExpiration ?? options.Expiration,
+            options.Tags,
+            size,
+            options.EffectiveStaleGrace
+        );
         return degraded;
     }
 

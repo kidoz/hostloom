@@ -23,8 +23,11 @@ public interface ICache
     /// Lookup order is the in-process tier, then the distributed tier, then the single-flight
     /// guard, then the factory. A distributed hit repopulates the in-process tier with the
     /// remaining distributed time to live. A null factory result, or a non-positive
-    /// <see cref="CacheEntryOptions.Expiration"/>, is returned without being stored. A factory
-    /// exception propagates unchanged and nothing is stored.
+    /// <see cref="CacheEntryOptions.Expiration"/>, is returned without being stored, unless
+    /// <see cref="CacheEntryOptions.NullExpiration"/> remembers the null for its own time to
+    /// live. A factory exception propagates unchanged and nothing is stored. While the
+    /// distributed store is unavailable, an expired in-process entry inside
+    /// <see cref="CacheEntryOptions.StaleGrace"/> is served to every caller but the one refreshing.
     /// </remarks>
     ValueTask<T?> GetOrCreateAsync<T>(
         string key,
