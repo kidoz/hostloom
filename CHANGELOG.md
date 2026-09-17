@@ -48,6 +48,9 @@ No package is published for the first time; the set is the same as 0.6.0.
   behaviour, where such entries stayed until expiry.
 - `RedisCacheStore.Capabilities` includes `ServerAssistedTracking`, which was declared but never
   reported.
+- Dependencies: `StackExchange.Redis` 3.2.15, `Microsoft.Extensions.*` 10.0.12,
+  `Microsoft.Extensions.Caching.Hybrid` 10.10.0, `Confluent.Kafka` 2.15.1, `MessagePack` 3.1.9,
+  `protobuf-net` 3.4.30, `xunit.v3` 4.0.1, and the FusionCache benchmark comparison 2.8.0.
 - `LocalCacheStore.TryGet<T>` declares its value as `T?`, and `CacheLookup.Hit<T>` accepts a
   null value, for remembered absences.
 
