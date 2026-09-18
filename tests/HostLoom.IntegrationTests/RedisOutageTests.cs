@@ -40,10 +40,47 @@ public sealed class RedisOutageTests
         await cache.SetAsync("catalog", 7, entry, token);
         Assert.True((await store.CheckHealthAsync(token)).IsHealthy);
         Assert.NotNull(await store.GetAsync(ns + ":cache:data:catalog", token));
+        // Written just before the outage with a short life and a long grace: its in-process copy
+        // expires during the outage, where the grace is meant to serve it.
+        var graced = new CacheEntryOptions(TimeSpan.FromSeconds(1))
+        {
+            StaleGrace = TimeSpan.FromMinutes(1),
+        };
+        await cache.SetAsync("rates", 3, graced, token);
 
         proxy.SetEnabled(false);
         try
         {
+            await Task.Delay(TimeSpan.FromMilliseconds(1300), token);
+            var entered = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously
+            );
+            var release = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously
+            );
+            var refresher = cache
+                .GetOrCreateAsync(
+                    "rates",
+                    async _ =>
+                    {
+                        entered.SetResult();
+                        await release.Task;
+                        return 4;
+                    },
+                    graced,
+                    token
+                )
+                .AsTask();
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(30), token);
+            // The refresher holds the guard; with Redis unreachable the expired copy inside its
+            // grace is what a second caller receives, at once.
+            var stale = await cache
+                .GetOrCreateAsync("rates", _ => ValueTask.FromResult(99), graced, token)
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(30), token);
+            Assert.Equal(3, stale);
+            release.SetResult();
+            Assert.Equal(4, await refresher);
             Assert.False((await store.CheckHealthAsync(token)).IsHealthy);
             var failure = await Assert.ThrowsAsync<CacheStoreException>(() =>
                 store.GetAsync(ns + ":cache:data:catalog", token).AsTask()
@@ -102,7 +139,10 @@ public sealed class RedisOutageTests
         var recovered = await reader.TryGetAsync<int>("recovered", token);
         Assert.Equal(CacheTier.L2, recovered.Tier);
         Assert.Equal(11, recovered.Value);
-        await cache.RemoveAsync(["catalog", "inventory", "deny", "throw", "recovered"], token);
+        await cache.RemoveAsync(
+            ["catalog", "inventory", "deny", "throw", "recovered", "rates"],
+            token
+        );
     }
 
     [Fact(Timeout = 60_000, Skip = Skip, SkipUnless = nameof(Enabled))]
