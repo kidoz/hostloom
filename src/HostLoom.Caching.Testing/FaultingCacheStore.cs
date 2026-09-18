@@ -132,19 +132,39 @@ public sealed class FaultingCacheStore(
         return Inner.RemoveByTagAsync(tagKey, cancellationToken);
     }
 
+    /// <summary>
+    /// The channel messages travel on: the one given to the constructor, else the inner store's
+    /// own, else none. Without one this store fans out nothing, like a backend store without a
+    /// channel, and <see cref="ToString"/> says so for the cache probe.
+    /// </summary>
+    public ICacheInvalidationChannel? Channel { get; } =
+        channel ?? inner as ICacheInvalidationChannel;
+
     /// <inheritdoc />
     public ValueTask PublishAsync(
         CacheInvalidation invalidation,
         CancellationToken cancellationToken = default
-    ) => Channel.PublishAsync(invalidation, cancellationToken);
+    ) => Channel?.PublishAsync(invalidation, cancellationToken) ?? ValueTask.CompletedTask;
 
     /// <inheritdoc />
-    public IDisposable Subscribe(Action<CacheInvalidation> handler) => Channel.Subscribe(handler);
+    public IDisposable Subscribe(Action<CacheInvalidation> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return Channel?.Subscribe(handler) ?? NoSubscription.Instance;
+    }
 
-    private ICacheInvalidationChannel Channel =>
-        channel
-        ?? Inner as ICacheInvalidationChannel
-        ?? throw new InvalidOperationException("The inner store offers no invalidation channel.");
+    /// <summary>The wrapped store and whether invalidations have somewhere to travel.</summary>
+    public override string ToString() =>
+        Channel is null
+            ? $"{nameof(FaultingCacheStore)} over {Inner} (no channel: TTL-only)"
+            : $"{nameof(FaultingCacheStore)} over {Channel}";
+
+    private sealed class NoSubscription : IDisposable
+    {
+        public static readonly NoSubscription Instance = new();
+
+        public void Dispose() { }
+    }
 
     private void Gate(string operation)
     {

@@ -1392,6 +1392,44 @@ public sealed class TieredCacheTests
     }
 
     [Fact]
+    public async Task FaultingStore_OverAStoreWithoutAChannel_ComposesAsTtlOnly()
+    {
+        // RedisCacheStore's channel is a separate class, so wrapping it used to make the cache
+        // constructor throw from the wrapper's channel lookup; a simulated outage needs no channel.
+        var inner = Substitute.For<IDistributedCacheStore>();
+        inner.Capabilities.Returns(CacheStoreCapabilities.None);
+        var faulting = new FaultingCacheStore(inner);
+        // The substitute never grants the stampede lease, and a retry would wait on the fake
+        // clock; the lease is not what this test is about.
+        var options = Options("no-channel");
+        options.Stampede.Attempts = 0;
+        await using var cache = new TieredCache(
+            options,
+            faulting,
+            _serializer,
+            timeProvider: _clock
+        );
+        var token = TestContext.Current.CancellationToken;
+
+        Assert.Null(faulting.Channel);
+        Assert.Equal(
+            1,
+            await cache.GetOrCreateAsync(
+                "k",
+                _ => ValueTask.FromResult(1),
+                TimeSpan.FromMinutes(1),
+                token
+            )
+        );
+        await cache.RemoveAsync("k", token);
+        Assert.Contains(
+            "no channel",
+            CachingProbe.Describe(cache).Invalidation,
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
     public async Task FlushInvalidation_ClearsTheInProcessTierAndIsCounted()
     {
         using var metrics = new CacheMetricRecorder("flush");

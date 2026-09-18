@@ -17,6 +17,10 @@ service instances sharing a backend: they share payloads and invalidate each oth
 constructors are public, so this adds nothing a test could not write itself; it removes the
 boilerplate and keeps every test on one composition, with jitter and the stampede pause off.
 
+`FaultingCacheStore` passes invalidations through to the channel it was given, or to the inner
+store's own; over a store with neither, such as `RedisCacheStore` whose channel is a separate
+class, it fans out nothing and the probe reports "no channel: TTL-only", so a simulated outage
+does not also need a live channel that would evict the copies the outage is meant to serve.
 `FaultingCacheStore` wraps any store and fails the next `n` calls, or every call, with a chosen
 `CacheFailureKind`, which is how a test proves a consumer behaves when the distributed tier is
 down: the cache serves from the in-process tier and the factory, and nothing throws.
