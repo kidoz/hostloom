@@ -54,7 +54,9 @@ var dto = mapper.From(customer).To<CustomerDto>();
 
 For sequences and nulls, pick the extension whose name carries the
 policy: `MapMany` (null source rejected), `MapManyOrEmpty` (null source
-treated as empty), `MapOrNull` (null maps to null).
+treated as empty), `MapOrNull` (null maps to null). Dictionaries need no
+extension: copy with an explicit comparer, and decide null at the call
+site ([recipe](../reference/mapping.md#dictionaries)).
 
 ## 5. Update an existing object
 

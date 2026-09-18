@@ -139,6 +139,27 @@ result then trips CA1826, so index it with `[0]`. `MapManyDeferred` validates it
 lazily — do not let its result outlive the scope that resolved the mapper, or a map class holding
 scoped dependencies will be enumerated after they are disposed.
 
+### Dictionaries
+
+There is no dictionary extension, because the standard constructors already give every property
+one would add — a new dictionary, an explicit comparer rather than one silently inherited from the
+input, and a throw on a key that collides under that comparer — and the null policy can be named
+at the call site the same way the sequence extensions name it:
+
+```csharp
+var data = new Dictionary<string, string>(source.Data, StringComparer.Ordinal);   // null throws
+var data = source.Data is null                                                    // null -> empty
+    ? new Dictionary<string, string>(StringComparer.Ordinal)
+    : new Dictionary<string, string>(source.Data, StringComparer.Ordinal);
+var products = source.Products.ToDictionary(                                      // projected
+    pair => pair.Key.Trim(),
+    pair => productMapper.Map(pair.Value),
+    StringComparer.OrdinalIgnoreCase);
+```
+
+Reference-type keys and values are shared with the source, as `MapMany` shares elements; map them
+explicitly when a copy is required.
+
 ### Migrating from a convention mapper
 
 AutoMapper's null handling differs from these contracts in three places, all verified against

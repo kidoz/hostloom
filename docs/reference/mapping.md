@@ -41,6 +41,31 @@ The name carries the null policy:
 | `MapManyDeferred(IEnumerable<TSource>)` | rejected | lazy `IEnumerable<TDestination>` |
 | `MapOrNull(TSource?)` | maps to null | `TDestination?`; constrained `class`/`class`, unlike the others (`notnull`) |
 
+## Dictionaries
+
+There is no dictionary extension; the standard constructors already give every property one
+would add, and the null policy stays visible at the call site:
+
+```csharp
+// Null source rejected. A new dictionary with an explicit comparer; a key that collides under
+// that comparer throws ArgumentException rather than winning silently.
+var data = new Dictionary<string, string>(source.Data, StringComparer.Ordinal);
+
+// Null source treated as empty — said where it is decided.
+var data = source.Data is null
+    ? new Dictionary<string, string>(StringComparer.Ordinal)
+    : new Dictionary<string, string>(source.Data, StringComparer.Ordinal);
+
+// Projected keys or values through a closed map. ToDictionary also throws on a duplicate key.
+var products = source.Products.ToDictionary(
+    pair => pair.Key.Trim(),
+    pair => productMapper.Map(pair.Value),
+    StringComparer.OrdinalIgnoreCase);
+```
+
+The result is a new dictionary that later mutation of the source does not affect. Reference-type
+keys and values are shared, as with `MapMany`; map them explicitly when a copy is required.
+
 ## Registration (DependencyInjection)
 
 ```csharp
