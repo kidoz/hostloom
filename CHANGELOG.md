@@ -17,6 +17,18 @@ are derived from release tags at publish time.
   nested maps, collection mapping, `MapMany` strategies, and map lifetimes, with
   `just benchmark-mapping-check` and `benchmark-mapping-update` recipes, so a mapping regression
   fails a gate like the cache, lock, composition, and WebSocket fan-out baselines do.
+- `IUpdateMapper<TSource, TDestination>`, an explicit update contract in `HostLoom.Mapping`:
+  `MapInto(source, destination)` writes into the instance it is handed and never replaces it, so a
+  caller keeps the identity it already holds and every member the map does not assign keeps its
+  value. The destination is constrained to a reference type; both arguments are non-null by
+  contract. A creation map and an update map for one pair are distinct services and coexist.
+- `MappingBuilder.AddUpdate` overloads mirroring `Add`: pair inference from the one
+  `IUpdateMapper<,>` a class implements, the explicit triple, a factory, and a prebuilt instance.
+  Each call registers exactly one contract, so a class that both creates and updates registers
+  through `Add` and `AddUpdate`. Update maps are never resolved by the `IMapper` dispatcher and
+  are therefore exempt from the singleton-dispatcher lifetime rule.
+- `MappedPairRegistry.UpdatePairs` and `ContainsUpdate`, listed separately from creation pairs so
+  `MappingNotFoundException` never suggests an update map the dispatcher cannot resolve.
 
 ### Changed
 
