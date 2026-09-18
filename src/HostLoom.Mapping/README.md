@@ -159,6 +159,63 @@ Translate to the `OrEmpty` and `OrNull` forms first, which preserves behaviour e
 each one as its own decision. Because the tolerance is named at the call site rather than set
 globally, every place that depends on it stays greppable — which a configuration flag does not.
 
+## Updating an existing object
+
+A creation map returns a new destination. When the caller already holds the destination — an
+entity a persistence context is tracking, whose identity and audit members the source does not
+carry — replacing it discards those members and breaks the tracking. An update map writes into
+the instance instead:
+
+```csharp
+public sealed record VendorUpdate(string Name, string Region);
+
+public sealed class VendorUpdateMapper : IUpdateMapper<VendorUpdate, VendorEntity>
+{
+    // Id and CreatedAt are outside the update contract and keep their values.
+    public void MapInto(VendorUpdate source, VendorEntity destination)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(destination);
+        destination.Name = source.Name;
+        destination.Region = source.Region;
+    }
+}
+
+services.AddHostLoomMapping(mapping =>
+    mapping.Add<VendorMapper>().AddUpdate<VendorUpdateMapper>());
+
+public sealed class VendorService(
+    IVendorRepository vendors,
+    IUpdateMapper<VendorUpdate, VendorEntity> apply)
+{
+    public async Task UpdateAsync(Guid id, VendorUpdate update, CancellationToken cancellationToken)
+    {
+        VendorEntity entity = await vendors.GetAsync(id, cancellationToken);
+        apply.MapInto(update, entity);   // same instance: the repository still tracks it
+        await vendors.SaveAsync(cancellationToken);
+    }
+}
+```
+
+`MapInto` returns nothing, so "the supplied instance is the one that changed" is a property of the
+signature. Both arguments are non-null by contract and a null is rejected with
+`ArgumentNullException` rather than read as "nothing to update". The destination is a reference
+type, because updating a copy of a struct would update nothing the caller can see.
+
+A partial update is the normal case, which is what separates this contract from a creation map.
+The completeness analyzers (`HLM0004`, `HLM0005`) inspect `Map` only; an update map states the
+members it leaves alone in its class documentation and pins them with a test. Nested objects are
+updated by composing another closed update map, as creation maps compose. Collection behavior is
+chosen in the body and nowhere else — clear and refill the list the entity owns, merge by key, or
+leave it untouched — since the framework adds no automatic merging or implicit replacement.
+
+`AddUpdate` has the same four overloads as `Add`: pair inference from the one
+`IUpdateMapper<,>` the class implements, the explicit triple, a factory, and a prebuilt instance.
+Each call registers exactly one contract, so a class that both creates and updates one pair goes
+through `Add` and `AddUpdate`; the two are distinct services and coexist. The `IMapper` dispatcher
+never resolves an update map — inject the closed `IUpdateMapper<TSource, TDestination>` — which
+also means the singleton-dispatcher lifetime rule does not constrain one.
+
 ## Asserting the registered pairs
 
 A missing pair is a runtime failure on the first code path that needs it. `GetMappedPairs` exposes
@@ -172,6 +229,9 @@ if (!pairs.Contains(typeof(TransferModel), typeof(PaymentTransfer)))
     throw new InvalidOperationException("the transfer map is not registered");
 }
 ```
+
+Update maps are listed separately, as `UpdatePairs` and `ContainsUpdate`, so the hint below never
+points at a map the dispatcher cannot resolve.
 
 When a pair really is missing, `MappingNotFoundException` names the destinations the source *is*
 registered to map to. The near miss is usually the diagnosis — a destination named one letter
@@ -189,8 +249,9 @@ IMapper mapper = new TestMapperBuilder()
     .Build();
 ```
 
-A consumer that takes a closed `IMapper<TSource, TDestination>` — the shape recommended above —
-needs nothing from that package: construct the map class and pass it.
+A consumer that takes a closed `IMapper<TSource, TDestination>` or
+`IUpdateMapper<TSource, TDestination>` — the shapes recommended above — needs nothing from that
+package: construct the map class and pass it.
 
 ## Completeness
 
@@ -233,6 +294,9 @@ already present. The analyzer package itself is compiler-only and carries no run
   nullable result explicitly in the destination model when that is meaningful.
 - Prefer immutable destination records and constructor mapping. Required members and constructors
   make incomplete mappings compile-time failures.
+- Reach for an update map only when the caller already holds the destination and its identity or
+  retained members matter. Creating a fresh destination is the default; an update map is a
+  deliberate partial write, documented as such.
 
 Both packages target .NET 10, enable the SDK's Native AOT and trimming analyzers, and keep the map
 dispatch path free of reflection and dynamic code generation.

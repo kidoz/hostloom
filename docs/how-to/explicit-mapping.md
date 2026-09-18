@@ -56,7 +56,37 @@ For sequences and nulls, pick the extension whose name carries the
 policy: `MapMany` (null source rejected), `MapManyOrEmpty` (null source
 treated as empty), `MapOrNull` (null maps to null).
 
-## 5. Verify
+## 5. Update an existing object
+
+When the caller already holds the destination — an entity a persistence
+context is tracking — a creation map would replace it and drop every
+member the source does not carry. Write an update map instead:
+
+```csharp
+public sealed class CustomerUpdateMapper : IUpdateMapper<CustomerUpdate, Customer>
+{
+    // Id and CreatedAt are outside the update contract and keep their values.
+    public void MapInto(CustomerUpdate source, Customer destination)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(destination);
+        destination.Name = source.Name.Trim();
+        destination.Region = source.Region;
+    }
+}
+
+builder.Services.AddHostLoomMapping(mapping =>
+    mapping.Add<CustomerMapper>().AddUpdate<CustomerUpdateMapper>());
+```
+
+Inject `IUpdateMapper<CustomerUpdate, Customer>` and call `MapInto`; the
+instance you passed is the instance that changed. A creation map and an
+update map for the same pair are separate services and coexist. The
+analyzers do not check an update map for completeness, because leaving
+members alone is the point — say which ones in the class documentation
+and pin them with a test.
+
+## 6. Verify
 
 Add `HostLoom.Analyzers` to the project: `HLM0004` flags a destination
 member the map never assigns and `HLM0005` a map body it cannot verify —
@@ -69,7 +99,8 @@ tests, `HostLoom.Mapping.Testing` composes mappers without a container.
   exception names both types and what the source *is* registered to map
   to.
 - **Registration throws on a duplicate pair** — two map classes declare
-  the same source/destination pair; remove one.
+  the same source/destination pair; remove one. A creation map and an
+  update map for one pair do not collide; they are different contracts.
 - **`HLM0006` warning** — the scoped `IMapper` dispatcher is being
   captured in a singleton; inject the specific `IMapper<TSource, TDestination>`
   there instead.

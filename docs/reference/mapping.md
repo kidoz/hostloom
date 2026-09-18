@@ -16,11 +16,19 @@ dotnet add package HostLoom.Mapping.Testing               # container-free compo
 | Type | Members |
 | --- | --- |
 | `IMapper<in TSource, out TDestination>` | `TDestination Map(TSource source)` — implement this per pair; constraints `TSource : notnull`, `TDestination : notnull` |
-| `IMapper` (dispatcher) | `TDestination Map<TSource, TDestination>(TSource source)` |
+| `IUpdateMapper<in TSource, in TDestination>` | `void MapInto(TSource source, TDestination destination)` — writes into the supplied instance and never replaces it; constraints `TSource : notnull`, `TDestination : class`; not reachable through the dispatcher |
+| `IMapper` (dispatcher) | `TDestination Map<TSource, TDestination>(TSource source)` — creation maps only |
 | `MappingSource<TSource>` | returned by `From`; `To<TDestination>()` completes the fluent call |
 
 The fluent shape `mapper.From(customer).To<CustomerDto>()` comes from the
 `MapperExtensions.From` extension on the dispatcher.
+
+An update map is a partial write by design: members it does not assign keep their values, the
+caller keeps the identity it already holds (an entity tracked by a persistence context, for
+example), and collection behavior — replace, merge, or leave alone — is chosen in the map body.
+Both arguments are non-null by contract; an implementation throws `ArgumentNullException` rather
+than treating a null as "nothing to update". `HLM0004`/`HLM0005` do not inspect `MapInto`
+([boundaries](analyzer-rules.md#mapping-completeness-boundaries)).
 
 ## Sequence and null extensions (`MapperExtensions`)
 
@@ -67,9 +75,18 @@ registered; the map class implements zero or more than one closed
 `IMapper<,>`; the dispatcher is singleton but a map is not; a factory
 returns null at resolve time.
 
-`MappedPairRegistry` (singleton) exposes `Pairs` (registration order),
-`DestinationsFor(Type)`, and `Contains(source, destination)` — useful for
-architecture tests.
+`MappingBuilder.AddUpdate` overloads register an `IUpdateMapper<TSource, TDestination>` with the
+same four shapes — `AddUpdate<TMapper>()` inferring the pair from the one `IUpdateMapper<,>` the
+class implements, `AddUpdate<TSource, TDestination, TMapper>()`, a factory, and an instance — and
+the same defaults. Each call registers exactly one contract: a class implementing both
+`IMapper<,>` and `IUpdateMapper<,>` for a pair goes through `Add` and `AddUpdate`. A creation
+map and an update map for one pair coexist; duplicates are rejected per contract. The dispatcher
+never resolves an update map, so the singleton-dispatcher rule does not constrain one.
+
+`MappedPairRegistry` (singleton) exposes `Pairs` (creation maps, registration order),
+`UpdatePairs`, `DestinationsFor(Type)` (creation maps), `Contains(source, destination)`, and
+`ContainsUpdate(source, destination)` — useful for architecture tests. The two lists are kept
+apart so `MappingNotFoundException` never suggests an update map the dispatcher cannot reach.
 
 ## Exceptions and attributes
 
@@ -91,6 +108,9 @@ var mapper = new TestMapperBuilder()
 `Add` accepts an `IMapper<TSource, TDestination>` instance or a plain
 `Func<TSource, TDestination>`; duplicate pairs throw, and the built
 dispatcher throws `MappingNotFoundException` for unknown pairs.
+
+A consumer taking a closed `IUpdateMapper<TSource, TDestination>` needs nothing from this
+package: construct the update map class and pass it.
 
 ## Benchmarks
 
@@ -117,3 +137,6 @@ AutoMapper is a comparison dependency of this benchmark project and does not ent
 - No convention matching, expression compilation, or runtime code
   generation exists to configure; a map does exactly what its class body
   says.
+- An update map has no automatic merging or implicit collection
+  replacement; what it leaves alone and how it treats collections is
+  written in the map body and stated in its documentation.

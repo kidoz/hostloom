@@ -437,6 +437,12 @@ invisibly. `HostLoom.Analyzers` reports a destination member a map never assigns
 map body it cannot verify (`HLM0005`), which is what keeps a forgotten member from shipping as
 silent data loss.
 
+When the caller already holds the destination — an entity a persistence context is tracking — an
+update map, `IUpdateMapper<TSource, TDestination>`, writes into that instance through `MapInto`
+instead of replacing it, so identity and the members the source does not carry are retained. It is
+registered with `AddUpdate`, coexists with the creation map for the same pair, is injected as the
+closed contract, and is a deliberate partial write the completeness analyzers do not check.
+
 Mapping is deliberately synchronous and performs no I/O. Fetch and enrich data outside a map, use
 distinct destination types for distinct semantic views, and write database projections directly
 as `IQueryable.Select` expressions. All three mapping packages enable the .NET SDK Native AOT and
