@@ -394,6 +394,62 @@ public sealed partial class MappingCompletenessAnalyzerTests
         Assert.Empty(diagnostics);
     }
 
+    // -- Generic maps: the blind spot is reported, not skipped ---------------------------------
+
+    [Fact]
+    public async Task A_map_whose_destination_is_a_type_parameter_reports_that_it_is_not_checked()
+    {
+        // The destination has no members until the map is closed, so HLM0004 cannot apply. The
+        // rule that replaces silence names the map and the parameter so the closed pairs can be
+        // covered by tests instead.
+        Diagnostic[] diagnostics = await AnalyzeAsync(
+            """
+            public sealed class EntityMapper<TEntity, TModel> : IMapper<TEntity, TModel>
+                where TEntity : notnull
+                where TModel : notnull, new()
+            {
+                public TModel Map(TEntity source) => new();
+            }
+            """
+        );
+
+        Diagnostic diagnostic = Assert.Single(diagnostics);
+        Assert.Equal(HostLoomDiagnosticDescriptors.GenericMapNotCheckedDiagnosticId, diagnostic.Id);
+        Assert.Equal(DiagnosticSeverity.Info, diagnostic.Severity);
+        Assert.Contains(
+            "EntityMapper<TEntity, TModel>",
+            diagnostic.GetMessage(CultureInfo.InvariantCulture),
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "'TModel'",
+            diagnostic.GetMessage(CultureInfo.InvariantCulture),
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
+    public async Task A_generic_map_closed_over_a_concrete_destination_is_checked_as_usual()
+    {
+        // Only the source is generic here: the destination's members are known, so the ordinary
+        // completeness rule applies and the informational rule stays quiet.
+        Diagnostic[] diagnostics = await AnalyzeAsync(
+            """
+            public sealed class NamedMapper<TSource> : IMapper<TSource, Destination>
+                where TSource : notnull
+            {
+                public Destination Map(TSource source) => new() { Name = "", City = "" };
+            }
+            """
+        );
+
+        Diagnostic diagnostic = Assert.Single(diagnostics);
+        Assert.Equal(
+            HostLoomDiagnosticDescriptors.UnassignedDestinationMemberDiagnosticId,
+            diagnostic.Id
+        );
+    }
+
     private static Task<Diagnostic[]> AnalyzeAsync(string mapper) =>
         AnalyzerTestHarness.AnalyzeAsync(
             Contracts + Environment.NewLine + mapper,

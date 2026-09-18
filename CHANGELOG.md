@@ -8,6 +8,12 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- `HLM0017`, an informational analyzer rule: a generic map whose destination is a type parameter
+  cannot have its completeness checked by `HLM0004`, and was previously skipped in silence. The
+  rule names the map and the parameter so each closed pair can be covered by a test instead.
+
 ## [0.7.0] - 2026-09-17
 
 Upgrading changes no public contract. Two behaviours change by default: a backend invalidation

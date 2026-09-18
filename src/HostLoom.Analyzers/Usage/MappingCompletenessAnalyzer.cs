@@ -33,7 +33,8 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } =
         ImmutableArray.Create(
             HostLoomDiagnosticDescriptors.UnassignedDestinationMember,
-            HostLoomDiagnosticDescriptors.MappingNotVerifiable
+            HostLoomDiagnosticDescriptors.MappingNotVerifiable,
+            HostLoomDiagnosticDescriptors.GenericMapNotChecked
         );
 
     public override void Initialize(AnalysisContext context)
@@ -50,11 +51,30 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeMapBody(OperationBlockAnalysisContext context)
     {
-        if (
-            context.OwningSymbol is not IMethodSymbol method
-            || !IsMapImplementation(method)
-            || method.ReturnType is not INamedTypeSymbol destination
-        )
+        if (context.OwningSymbol is not IMethodSymbol method || !IsMapImplementation(method))
+        {
+            return;
+        }
+
+        if (method.ReturnType is ITypeParameterSymbol parameter)
+        {
+            // A generic map has no destination members to enumerate until it is closed, so
+            // completeness cannot be checked here. Say so, rather than let silence read as
+            // "checked and complete".
+            context.ReportDiagnostic(
+                Diagnostic.Create(
+                    HostLoomDiagnosticDescriptors.GenericMapNotChecked,
+                    method.Locations.FirstOrDefault() ?? Location.None,
+                    method.ContainingType.ToDisplayString(
+                        SymbolDisplayFormat.MinimallyQualifiedFormat
+                    ),
+                    parameter.Name
+                )
+            );
+            return;
+        }
+
+        if (method.ReturnType is not INamedTypeSymbol destination)
         {
             return;
         }

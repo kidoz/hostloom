@@ -21,6 +21,8 @@ public static class HostLoomDiagnosticDescriptors
 
     public const string FactoryIgnoresCancellationTokenDiagnosticId = "HLM0008";
 
+    public const string GenericMapNotCheckedDiagnosticId = "HLM0017";
+
     internal static readonly DiagnosticDescriptor MissingCancellationToken = new(
         MissingCancellationTokenDiagnosticId,
         "Pass an available cancellation token to HostLoom async calls",
@@ -107,5 +109,16 @@ public static class HostLoomDiagnosticDescriptors
         isEnabledByDefault: true,
         description: "GetOrCreateAsync hands the caller's cancellation token to the factory so the work it starts stops with the request. A factory that declares the token and never forwards it keeps running after the caller has gone, and holds the per-key guard while it does.",
         helpLinkUri: "https://github.com/kidoz/hostloom/tree/main/src/HostLoom.Analyzers#hlm0008"
+    );
+
+    internal static readonly DiagnosticDescriptor GenericMapNotChecked = new(
+        GenericMapNotCheckedDiagnosticId,
+        "Completeness of a generic map is not checked",
+        "The destination of '{0}' is the type parameter '{1}', so its members cannot be enumerated and HLM0004 does not apply; test each closed pair of this map for completeness",
+        "Usage",
+        DiagnosticSeverity.Info,
+        isEnabledByDefault: true,
+        description: "HLM0004 enumerates the settable members of a concrete destination type. A map whose destination is a type parameter has no members to enumerate until it is closed, so a forgotten assignment in it is not reported. This diagnostic makes that silence visible at the map, so the closed pairs can be covered by tests instead.",
+        helpLinkUri: "https://github.com/kidoz/hostloom/tree/main/src/HostLoom.Analyzers#hlm0017"
     );
 }

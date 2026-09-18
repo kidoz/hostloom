@@ -16,6 +16,7 @@ repository.
 | `HLM0006` | The scoped mapping dispatcher captured in a singleton |
 | `HLM0007` | A cache or lock key built from a token, secret, password, or API key without `FromSensitive` |
 | `HLM0008` | A get-or-create factory that declares its cancellation token and never forwards it |
+| `HLM0017` | A generic map whose destination is a type parameter, so completeness is not checked (informational) |
 
 ## Why these rules exist
 
@@ -38,6 +39,10 @@ repository.
 - **`HLM0008`** — a get-or-create factory receives the caller's token so its
   work stops with the request; declaring the token and ignoring it keeps the
   work, and the per-key guard, alive after the caller has gone.
+- **`HLM0017`** — `HLM0004` cannot enumerate the members of a destination
+  that is a type parameter, so a generic map is the one place a forgotten
+  assignment still ships silently; this informational rule marks such maps
+  so their closed pairs get tested instead.
 
 ## Mapping completeness boundaries
 
@@ -51,8 +56,9 @@ Lambda and local-function bodies do not supply returns or assignments to the enc
 Computing a member value with a lambda can still be supported, but a nested function that captures
 the destination local produces `HLM0005` because its effects cannot be established from the outer
 body. Conditional assignment counts as assignment; these rules do not prove every execution path.
-Destinations that are type parameters cannot have their members enumerated and are not checked.
-Test those maps independently even when neither diagnostic appears.
+Destinations that are type parameters cannot have their members enumerated and are not checked;
+`HLM0017` reports each such map at information level. Test those maps' closed pairs
+independently.
 
 ## Composition generator diagnostics
 

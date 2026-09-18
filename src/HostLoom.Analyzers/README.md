@@ -82,9 +82,19 @@ captures the destination local produces HLM0005: its effects cannot be verified 
 when and how the function executes. A concrete local may be returned through a base-class or
 interface destination contract.
 
-**Known blind spot.** A map whose destination is a type parameter — a generic map class closed
-through `MappingBuilder.Add<TSource, TDestination>(factory)` — cannot have its members enumerated,
-so it is skipped silently and reports neither rule. Completeness of a generic map is not checked.
+A map whose destination is a type parameter — a generic map class closed through
+`MappingBuilder.Add<TSource, TDestination>(factory)` — cannot have its members enumerated, so
+neither rule applies to it; HLM0017 reports that instead of staying silent.
+
+### HLM0017
+
+Know which maps completeness does not cover. A generic map whose destination is a type parameter
+has no members to enumerate until it is closed, so HLM0004 cannot check it and a forgotten
+assignment in it ships silently. This informational diagnostic marks the map so the omission is
+visible in the build output and in the editor, and its message names the map and the parameter.
+Cover each closed pair of such a map with a test that asserts every destination member, or close
+the pair in a concrete map class where HLM0004 applies. A map generic only in its source is still
+checked, because its destination is concrete.
 
 ### HLM0006
 
