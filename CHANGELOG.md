@@ -14,6 +14,11 @@ are derived from release tags at publish time.
   cannot have its completeness checked by `HLM0004`, and was previously skipped in silence. The
   rule names the map and the parameter so each closed pair can be covered by a test instead.
 
+### Changed
+
+- The `HostLoom.Mapping` README leads with closed-map injection, the shape every adopter has used,
+  and presents the dispatcher as the tool for an orchestration that maps several pairs.
+
 ## [0.7.0] - 2026-09-17
 
 Upgrading changes no public contract. Two behaviours change by default: a backend invalidation

@@ -21,16 +21,26 @@ public sealed class CustomerMapper : IMapper<Customer, CustomerDto>
 services.AddHostLoomMapping(mapping =>
     mapping.Add<CustomerMapper>());
 
-// Prefer the closed mapper when only this pair is needed.
-var customerMapper = provider.GetRequiredService<IMapper<Customer, CustomerDto>>();
-var dto = customerMapper.Map(customer);
+// Inject the closed map. This is the default shape: it names the pair, resolves at any lifetime
+// the map's own graph allows, costs one virtual call, and is what every adopter so far has used.
+public sealed class CustomerService(IMapper<Customer, CustomerDto> toDto)
+{
+    public CustomerDto Describe(Customer customer) => toDto.Map(customer);
+}
+```
 
-// Or use the dispatcher when an orchestration maps several pairs. It is scoped, so resolve it
-// from a scope — a request, a delivery, or an explicit CreateScope.
+The non-generic `IMapper` dispatcher exists for one case: an orchestration that maps several pairs
+and would otherwise take one closed map per pair. It resolves the closed map from the container per
+call, so it costs a service lookup and is registered scoped:
+
+```csharp
 using var scope = provider.CreateScope();
 var mapper = scope.ServiceProvider.GetRequiredService<IMapper>();
-var sameDto = mapper.From(customer).To<CustomerDto>();
+var dto = mapper.From(customer).To<CustomerDto>();
 ```
+
+Reach for it only when the closed maps would number more than the readability gain is worth; two
+closed maps still read better than one dispatcher.
 
 `IMapper` is registered scoped, which has two consequences worth knowing before the first run.
 Resolving it from the root provider throws once scope validation is on — the default for the
