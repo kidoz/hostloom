@@ -100,3 +100,13 @@ dotnet run --project benchmarks/HostLoom.Mapping.Benchmarks -c Release -- --job 
 ```
 
 This checks execution only; dry-job timings do not establish a performance baseline.
+
+## Regression gate
+
+`just benchmark-mapping-check` runs the flat and nested maps, the collection suite, the `MapMany`
+strategies, and the lifetime suite as a short job and compares every mean and allocation with
+`benchmarks/baselines/mapping.json`, failing above a 10 % regression;
+`just benchmark-mapping-update` rewrites the baseline. The checker refuses a report from another
+machine, runtime, or job, so the baseline is only ever updated deliberately on the reference
+machine. The gate includes the AutoMapper rows of the comparison suites, so a change in that
+package's number is reported too and read as a comparison shift rather than a HostLoom regression.

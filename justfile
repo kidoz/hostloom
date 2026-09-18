@@ -70,6 +70,18 @@ benchmark-mapping:
 benchmark-mapping-smoke:
     dotnet run --project benchmarks/HostLoom.Mapping.Benchmarks -c Release -- --job Dry --filter "*"
 
+# Produce stable mapping reports (flat/nested maps, collections, MapMany strategies, lifetimes) for the regression gate.
+benchmark-mapping-gate:
+    dotnet run --project benchmarks/HostLoom.Mapping.Benchmarks -c Release -- --job Short --exporters json --filter "HostLoom.Mapping.Benchmarks.MappingBenchmarks.*" "HostLoom.Mapping.Benchmarks.MappingCollectionBenchmarks.*" "HostLoom.Mapping.Benchmarks.MapManyStrategyBenchmarks.*" "HostLoom.Mapping.Benchmarks.MappingLifetimeBenchmarks.*"
+
+# Fail when a mapping benchmark regresses more than 10% against benchmarks/baselines/mapping.json.
+benchmark-mapping-check: benchmark-mapping-gate
+    python3 benchmarks/check_mapping_baseline.py
+
+# Rewrite the committed mapping baseline from the current reports.
+benchmark-mapping-update: benchmark-mapping-gate
+    python3 benchmarks/check_mapping_baseline.py --update
+
 # Compare HostLoom, HybridCache, and FusionCache on process-local cache paths.
 benchmark-cache-libraries:
     dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --filter "*CacheLibrary*"

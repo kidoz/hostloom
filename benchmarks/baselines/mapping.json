@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "regressionThreshold": 0.1,
+  "environment": {
+    "BenchmarkDotNetVersion": "0.15.8",
+    "ProcessorName": "Apple M4 Max",
+    "RuntimeVersion": ".NET 10.0.12 (10.0.12, 10.0.1226.42308)",
+    "Architecture": "Arm64"
+  },
+  "job": "ShortRun(IterationCount=3, LaunchCount=1, WarmupCount=3)",
+  "benchmarks": {
+    "HostLoom.Mapping.Benchmarks.MapManyStrategyBenchmarks.Array_Enumerated(Count: 100)": {
+      "meanNanoseconds": 816.033535639445,
+      "allocatedBytes": 9656.0
+    },
+    "HostLoom.Mapping.Benchmarks.MapManyStrategyBenchmarks.Array_Enumerated(Count: 1000)": {
+      "meanNanoseconds": 8289.111022949219,
+      "allocatedBytes": 96056.0
+    },
+    "HostLoom.Mapping.Benchmarks.MapManyStrategyBenchmarks.Array_Indexed(Count: 100)": {
+      "meanNanoseconds": 797.6946957906088,
+      "allocatedBytes": 9624.0
+    },
+    "HostLoom.Mapping.Benchmarks.MapManyStrategyBenchmarks.Array_Indexed(Count: 1000)": {
+      "meanNanoseconds": 8036.093811035156,
+      "allocatedBytes": 96024.0
+    },
+    "HostLoom.Mapping.Benchmarks.MapManyStrategyBenchmarks.Array_Span(Count: 100)": {
+      "meanNanoseconds": 762.7196842829386,
+      "allocatedBytes": 9624.0
+    },
+    "HostLoom.Mapping.Benchmarks.MapManyStrategyBenchmarks.Array_Span(Count: 1000)": {
+      "meanNanoseconds": 7834.16325378418,
+      "allocatedBytes": 96024.0
+    },
+    "HostLoom.Mapping.Benchmarks.MapManyStrategyBenchmarks.List_Enumerated(Count: 100)": {
+      "meanNanoseconds": 813.32732518514,
+      "allocatedBytes": 9656.0
+    },
+    "HostLoom.Mapping.Benchmarks.MapManyStrategyBenchmarks.List_Enumerated(Count: 1000)": {
+      "meanNanoseconds": 8288.915201822916,
+      "allocatedBytes": 96056.0
+    },
+    "HostLoom.Mapping.Benchmarks.MapManyStrategyBenchmarks.List_Indexed(Count: 100)": {
+      "meanNanoseconds": 803.7435604731241,
+      "allocatedBytes": 9624.0
+    },
+    "HostLoom.Mapping.Benchmarks.MapManyStrategyBenchmarks.List_Indexed(Count: 1000)": {
+      "meanNanoseconds": 8014.263799031575,
+      "allocatedBytes": 96024.0
+    },
+    "HostLoom.Mapping.Benchmarks.MapManyStrategyBenchmarks.List_Span(Count: 100)": {
+      "meanNanoseconds": 772.3718757629395,
+      "allocatedBytes": 9624.0
+    },
+    "HostLoom.Mapping.Benchmarks.MapManyStrategyBenchmarks.List_Span(Count: 1000)": {
+      "meanNanoseconds": 7900.404830932617,
+      "allocatedBytes": 96024.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingBenchmarks.AutoMapper_Flat": {
+      "meanNanoseconds": 34.79230526089668,
+      "allocatedBytes": 88.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingBenchmarks.AutoMapper_Nested": {
+      "meanNanoseconds": 83.45267347494762,
+      "allocatedBytes": 432.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingBenchmarks.HostLoom_Closed_Flat": {
+      "meanNanoseconds": 7.484971851110458,
+      "allocatedBytes": 88.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingBenchmarks.HostLoom_Closed_Nested": {
+      "meanNanoseconds": 35.59889684120814,
+      "allocatedBytes": 360.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingBenchmarks.HostLoom_Dispatcher_Flat": {
+      "meanNanoseconds": 19.278833438952763,
+      "allocatedBytes": 112.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingBenchmarks.HostLoom_Dispatcher_Nested": {
+      "meanNanoseconds": 50.90115135908127,
+      "allocatedBytes": 440.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingBenchmarks.HostLoom_FromTo_Flat": {
+      "meanNanoseconds": 18.879476537307102,
+      "allocatedBytes": 112.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingCollectionBenchmarks.AutoMapper_Collection(Count: 100)": {
+      "meanNanoseconds": 805.487990061442,
+      "allocatedBytes": 9624.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingCollectionBenchmarks.AutoMapper_Collection(Count: 1000)": {
+      "meanNanoseconds": 8051.9211985270185,
+      "allocatedBytes": 96024.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingCollectionBenchmarks.HostLoom_Loop(Count: 100)": {
+      "meanNanoseconds": 845.1588678359985,
+      "allocatedBytes": 9624.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingCollectionBenchmarks.HostLoom_Loop(Count: 1000)": {
+      "meanNanoseconds": 8594.859237670898,
+      "allocatedBytes": 96024.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingCollectionBenchmarks.HostLoom_MapMany(Count: 100)": {
+      "meanNanoseconds": 842.1741329828898,
+      "allocatedBytes": 9624.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingCollectionBenchmarks.HostLoom_MapMany(Count: 1000)": {
+      "meanNanoseconds": 8604.798838297525,
+      "allocatedBytes": 96024.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingLifetimeBenchmarks.Closed_Injected": {
+      "meanNanoseconds": 7.473523000876109,
+      "allocatedBytes": 88.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingLifetimeBenchmarks.Dispatcher_SingletonMap": {
+      "meanNanoseconds": 14.837100694576899,
+      "allocatedBytes": 88.0
+    },
+    "HostLoom.Mapping.Benchmarks.MappingLifetimeBenchmarks.Dispatcher_TransientMap": {
+      "meanNanoseconds": 17.33438338836034,
+      "allocatedBytes": 112.0
+    }
+  }
+}

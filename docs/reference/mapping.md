@@ -104,6 +104,10 @@ dotnet run --project benchmarks/HostLoom.Mapping.Benchmarks -c Release -- --job 
 
 The first command measures steady-state mapping, collections, resolution, registration and startup,
 plus strategy cases. The dry run checks setup and execution only; its timings are not a baseline.
+`just benchmark-mapping-check` runs the flat and nested maps, collection mapping, `MapMany`
+strategies, and lifetime suites as a short job and fails when a mean or an allocation regresses
+more than 10 % against `benchmarks/baselines/mapping.json`; `benchmark-mapping-update` rewrites
+that baseline on the reference machine.
 AutoMapper is a comparison dependency of this benchmark project and does not enter runtime packages.
 
 ## Limitations

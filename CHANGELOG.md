@@ -13,6 +13,10 @@ are derived from release tags at publish time.
 - `HLM0017`, an informational analyzer rule: a generic map whose destination is a type parameter
   cannot have its completeness checked by `HLM0004`, and was previously skipped in silence. The
   rule names the map and the parameter so each closed pair can be covered by a test instead.
+- A committed mapping benchmark baseline (`benchmarks/baselines/mapping.json`) over the flat and
+  nested maps, collection mapping, `MapMany` strategies, and map lifetimes, with
+  `just benchmark-mapping-check` and `benchmark-mapping-update` recipes, so a mapping regression
+  fails a gate like the cache, lock, composition, and WebSocket fan-out baselines do.
 
 ### Changed
 
