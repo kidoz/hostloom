@@ -47,7 +47,10 @@ repository.
 ## Mapping completeness boundaries
 
 `HLM0004` and `HLM0005` inspect implementations of `IMapper<TSource, TDestination>.Map`,
-including explicit interface implementations. Unrelated methods named `Map` are excluded.
+including explicit interface implementations. Unrelated methods named `Map` are excluded, and so
+is `IUpdateMapper<TSource, TDestination>.MapInto`: an update map writes into an existing instance
+and a partial update is its normal case, so the members it leaves alone are a documented choice
+rather than a defect. A class that both creates and updates one pair is checked on `Map` only.
 Inherited destination members participate in completeness checks, overridden properties count
 once, and assignments to a concrete implementation can satisfy a base-class or interface
 destination contract. Constructor assignments to inherited members also count.

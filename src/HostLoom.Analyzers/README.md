@@ -86,6 +86,12 @@ A map whose destination is a type parameter — a generic map class closed throu
 `MappingBuilder.Add<TSource, TDestination>(factory)` — cannot have its members enumerated, so
 neither rule applies to it; HLM0017 reports that instead of staying silent.
 
+Neither rule inspects `IUpdateMapper<TSource, TDestination>.MapInto`. An update map writes into
+an instance the caller already holds, and a partial update is its normal case: every member it
+does not assign keeps its value by design, so an unassigned member is not the data loss HLM0004
+exists to catch. State the members an update map leaves alone in its documentation and pin them
+with a test. A class that both creates and updates one pair is checked on its `Map` body only.
+
 ### HLM0017
 
 Know which maps completeness does not cover. A generic map whose destination is a type parameter

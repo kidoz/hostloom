@@ -450,6 +450,59 @@ public sealed partial class MappingCompletenessAnalyzerTests
         );
     }
 
+    // -- Out of scope: update maps ------------------------------------------------------------
+
+    [Fact]
+    public async Task An_update_map_is_outside_completeness_checking()
+    {
+        // A partial update is the normal case for IUpdateMapper: members it does not assign keep
+        // their values by design, so neither the completeness rule nor the not-verifiable rule
+        // has anything to report. Only IMapper<,>.Map is inspected.
+        Diagnostic[] diagnostics = await AnalyzeAsync(
+            """
+            public sealed class Updater : IUpdateMapper<Source, Destination>
+            {
+                public void MapInto(Source source, Destination destination)
+                {
+                    destination.Name = source.Name;
+                }
+            }
+            """
+        );
+
+        Assert.Empty(diagnostics);
+    }
+
+    [Fact]
+    public async Task A_class_that_creates_and_updates_is_checked_on_its_creation_map_only()
+    {
+        Diagnostic[] diagnostics = await AnalyzeAsync(
+            """
+            public sealed class Both : IMapper<Source, Destination>, IUpdateMapper<Source, Destination>
+            {
+                public Destination Map(Source source) =>
+                    new Destination { Name = source.Name, City = source.City };
+
+                public void MapInto(Source source, Destination destination)
+                {
+                    destination.Name = source.Name;
+                }
+            }
+            """
+        );
+
+        Diagnostic diagnostic = Assert.Single(diagnostics);
+        Assert.Equal(
+            HostLoomDiagnosticDescriptors.UnassignedDestinationMemberDiagnosticId,
+            diagnostic.Id
+        );
+        Assert.Contains(
+            "Mask",
+            diagnostic.GetMessage(CultureInfo.InvariantCulture),
+            StringComparison.Ordinal
+        );
+    }
+
     private static Task<Diagnostic[]> AnalyzeAsync(string mapper) =>
         AnalyzerTestHarness.AnalyzeAsync(
             Contracts + Environment.NewLine + mapper,

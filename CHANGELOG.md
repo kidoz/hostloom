@@ -34,6 +34,9 @@ are derived from release tags at publish time.
 
 - The `HostLoom.Mapping` README leads with closed-map injection, the shape every adopter has used,
   and presents the dispatcher as the tool for an orchestration that maps several pairs.
+- The analyzer documentation states that `HLM0004` and `HLM0005` inspect creation maps only: a
+  partial update is the normal case for `IUpdateMapper`, so its body is not checked for
+  completeness.
 
 ### Fixed
 
