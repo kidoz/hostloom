@@ -73,7 +73,11 @@ export interface HostLoomReconnectOptions {
     readonly multiplier?: number;
     /** Symmetric random variation from 0 (none) to less than 1. Defaults to 0.2. */
     readonly jitterRatio?: number;
-    /** Refreshes browser credentials after close code 1008 and before a replacement socket opens. */
+    /**
+     * Runs after every close with code 1008 and before a replacement socket opens. It receives the
+     * close details; the HostLoom gateway reports `session_expired` or `rate_limited` in
+     * `close.reason`, so a callback can return without refreshing for a rate-limited close.
+     */
     readonly refreshCredentials?: (close: HostLoomCloseInfo) => void | Promise<void>;
 }
 
@@ -85,7 +89,11 @@ export interface HostLoomConnectionOptions {
      * must be 32 lowercase hex digits and must not repeat within a session.
      */
     readonly streamIdFactory?: () => string;
-    /** Enables automatic reconnect when present. Omit it to retain manual reconnect behavior. */
+    /**
+     * Enables automatic reconnect when present, after a session that received its welcome is
+     * lost. A first `connect()` that never reaches a welcome rejects and stays `disconnected`.
+     * Omit it to retain manual reconnect behavior.
+     */
     readonly reconnect?: HostLoomReconnectOptions;
 }
 
@@ -204,6 +212,7 @@ export class HostLoomConnection {
     #state: HostLoomConnectionState = "disconnected";
     #socket: HostLoomWebSocket | undefined;
     #opened = false;
+    #welcomed = false;
     #welcome: WelcomeFrame | undefined;
     #lastClose: HostLoomCloseInfo | undefined;
     #connectPromise: Promise<WelcomeFrame> | undefined;
@@ -288,6 +297,7 @@ export class HostLoomConnection {
         this.#lastClose = undefined;
         this.#socket = socket;
         this.#opened = false;
+        this.#welcomed = false;
         const connectPromise = new Promise<WelcomeFrame>((resolve, reject) => {
             this.#resolveConnect = resolve;
             this.#rejectConnect = reject;
@@ -583,6 +593,7 @@ export class HostLoomConnection {
             }
 
             this.#welcome = frame;
+            this.#welcomed = true;
             const subscriptionsToRestart = [...this.#logicalSubscriptions].filter(
                 (subscription) => subscription.canRestart,
             );
@@ -891,12 +902,26 @@ export class HostLoomConnection {
         return (
             this.#reconnect !== undefined &&
             disposition === undefined &&
+            this.#hasSessionToRecover() &&
             (close.code !== 1008 || this.#reconnect.refreshCredentials !== undefined)
         );
     }
 
     #shouldPreserveSubscriptions(): boolean {
-        return this.#reconnect !== undefined && this.#closeDisposition === undefined;
+        return (
+            this.#reconnect !== undefined &&
+            this.#closeDisposition === undefined &&
+            this.#hasSessionToRecover()
+        );
+    }
+
+    /**
+     * Automatic reconnect recovers a session, so it needs one: either the current socket received
+     * its welcome, or a reconnect cycle is already running. A first attempt that never reaches a
+     * welcome has nothing to recover and is reported to the caller instead.
+     */
+    #hasSessionToRecover(): boolean {
+        return this.#welcomed || this.#reconnectPromise !== undefined;
     }
 
     #allocateStreamId(): string {

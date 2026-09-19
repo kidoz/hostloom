@@ -43,9 +43,11 @@ import {
 
 const connection = new HostLoomConnection("wss://inventory.example.com/realtime", {
     reconnect: {
-        // Required only when the gateway uses 1008 to report an expired session.
-        refreshCredentials: async () => {
-            await fetch("/api/session/refresh", { method: "POST" });
+        // Runs after every 1008 close. The gateway reports why in close.reason.
+        refreshCredentials: async (close) => {
+            if (close.reason === "session_expired") {
+                await fetch("/api/session/refresh", { method: "POST" });
+            }
         },
     },
 });
@@ -87,13 +89,19 @@ calls share one promise: the client waits for the close event before opening exa
 socket. A close caused by a protocol failure remains terminal and rejects `connect()` until teardown
 finishes.
 
-Providing `reconnect` enables automatic retry after unexpected connection loss. The delay starts at
-1 second, doubles after each failed attempt, is capped at 30 seconds, and applies ±20% jitter by
-default. Each value is configurable. A valid `welcome` resets the delay. Calling `close()` or
-encountering a protocol error is terminal and never retries. Close code `1008` is also terminal
-unless `refreshCredentials` is provided; the client awaits that callback before creating the next
-socket. A rejected refresh ends reconnection. Browser handshake failures remain generic
-`HostLoomConnectionError` values because browsers do not expose the HTTP response details.
+Providing `reconnect` enables automatic retry after an established session is lost, meaning the
+socket had received its `welcome`. A first `connect()` that never reaches a welcome rejects and
+leaves the connection `disconnected`, so the application decides whether to try again; once a
+retry cycle is running, attempts that fail before their welcome keep the cycle alive. The delay
+starts at 1 second, doubles after each failed attempt, is capped at 30 seconds, and applies ±20%
+jitter by default. Each value is configurable. A valid `welcome` resets the delay. Calling
+`close()` or encountering a protocol error is terminal and never retries. Close code `1008` is also
+terminal unless `refreshCredentials` is provided; the client awaits that callback before creating
+the next socket. The callback runs for every `1008` close and receives the close details. The
+HostLoom gateway reports `session_expired` or `rate_limited` in `close.reason`, so a callback can
+return without refreshing when the session is still valid. A rejected refresh ends reconnection.
+Browser handshake failures remain generic `HostLoomConnectionError` values because browsers do not
+expose the HTTP response details.
 
 `request()` allocates a new stream identifier for each request and resolves with the opaque Base64
 response payload. It rejects with `HostLoomRemoteFaultError` when the gateway sends a fault, and

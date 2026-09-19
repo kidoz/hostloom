@@ -227,6 +227,37 @@ test("an unexpected close retries and restores a logical subscription without re
     assert.deepEqual(closes, []);
 });
 
+test("a first connect that never reaches a welcome rejects and stays disconnected", async () => {
+    vi.useFakeTimers();
+    const { connection, sockets } = createHarness();
+    const pending = connection.connect();
+    socketAt(sockets, 0).error();
+    socketAt(sockets, 0).closed(1006, "", false);
+
+    await assert.rejects(pending, HostLoomConnectionError);
+    assert.equal(connection.state, "disconnected");
+    await vi.advanceTimersByTimeAsync(60_000);
+    assert.equal(sockets.length, 1);
+
+    const opened = connection.connect();
+    socketAt(sockets, 1).open();
+    socketAt(sockets, 1).closed(1006, "", false);
+    await assert.rejects(opened, HostLoomConnectionClosedError);
+    assert.equal(connection.state, "disconnected");
+    await vi.advanceTimersByTimeAsync(60_000);
+    assert.equal(sockets.length, 2);
+
+    const established = await connect(connection, sockets);
+    established.closed(1006, "", false);
+    assert.equal(connection.state, "reconnecting");
+    await vi.advanceTimersByTimeAsync(1_000);
+    assert.equal(sockets.length, 4);
+    socketAt(sockets, 3).closed(1006, "", false);
+    assert.equal(connection.state, "reconnecting");
+    await vi.advanceTimersByTimeAsync(2_000);
+    assert.equal(sockets.length, 5);
+});
+
 test("backoff doubles after failed attempts and resets after a welcome", async () => {
     vi.useFakeTimers();
     const { connection, sockets } = createHarness();

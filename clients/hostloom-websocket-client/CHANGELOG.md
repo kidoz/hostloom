@@ -5,6 +5,14 @@ independent [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Automatic reconnect starts only after a session that received its `welcome` is lost. A first
+  `connect()` that never reaches a welcome now rejects and leaves the connection `disconnected`
+  instead of also retrying in the background; attempts that fail inside a running retry cycle
+  still keep it alive. The `refreshCredentials` documentation states that the callback runs for
+  every `1008` close and can branch on `close.reason`.
+
 ### Fixed
 
 - Ignore credential-refresh results after their reconnect cycle has ended, and preserve manual
