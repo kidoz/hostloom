@@ -26,9 +26,10 @@ HostLoom                      ← contracts + runtime, builds on pipelines
 HostLoom.Transport.*          ← one adapter per broker
 ```
 
-Alongside, three families stand **independent of the messaging core** and
-are usable on their own: `HostLoom.Mapping.*`, `HostLoom.Logging`, and
-`HostLoom.Diagnostics`. Independence is a design rule, not an accident — a
+Alongside, several families stand **independent of the messaging core** and
+are usable on their own: `HostLoom.Mapping.*`, `HostLoom.Logging`,
+`HostLoom.Diagnostics`, and the caching, locking, and scheduling kernels with
+their `DependencyInjection` packages. Independence is a design rule, not an accident — a
 library should not drag a message broker into an application that only
 wanted explicit object mapping.
 

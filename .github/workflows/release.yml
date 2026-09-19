@@ -190,6 +190,10 @@ jobs:
             HostLoom.Locking.DependencyInjection
             HostLoom.Locking.Testing
             HostLoom.Locking.Pipelines
+            HostLoom.Scheduling
+            HostLoom.Scheduling.DependencyInjection
+            HostLoom.Scheduling.Locking
+            HostLoom.Scheduling.Testing
             HostLoom.Redis
             HostLoom.Valkey
           )

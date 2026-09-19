@@ -12,16 +12,17 @@ configuration needs.
 | `HostLoom.Logging` | `Meter` | logging provider health |
 | `HostLoom.Caching` | `ActivitySource` and `Meter` | every `TieredCache` |
 | `HostLoom.Locking` | `ActivitySource` and `Meter` | every `DistributedLock` |
+| `HostLoom.Scheduling` | `ActivitySource` and `Meter` | every `Scheduler` |
 | `HostLoom.Redis` | `ActivitySource` and `Meter` | the Redis connection |
 | `HostLoom.AspNetCore.WebSockets` | `ActivitySource` and `Meter` | raw WebSocket gateway |
 
 ```csharp
 builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics => metrics.AddMeter(
-        "HostLoom", "HostLoom.Pipelines", "HostLoom.Logging", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Redis",
+        "HostLoom", "HostLoom.Pipelines", "HostLoom.Logging", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Scheduling", "HostLoom.Redis",
         "HostLoom.AspNetCore.WebSockets"))
     .WithTracing(tracing => tracing.AddSource(
-        "HostLoom", "HostLoom.Pipelines", "HostLoom.Caching", "HostLoom.Locking",
+        "HostLoom", "HostLoom.Pipelines", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Scheduling",
         "HostLoom.AspNetCore.WebSockets"));
 ```
 
@@ -111,6 +112,16 @@ Identity is the `hostloom.lock.namespace` tag.
 | `hostloom.lock.active` | up-down counter | Locks currently held |
 | `hostloom.lock.lost` | counter | Leases that ended before release |
 | `hostloom.lock.enabled` | observable gauge | 1 when the lock coordinates, 0 in single-instance mode |
+
+## Schedule instruments (`HostLoom.Scheduling`)
+
+Identity is the `hostloom.schedule.name` tag. The `schedule.run` activity carries the same tag, the run sequence, and the outcome.
+
+| Instrument | Kind | Meaning |
+| --- | --- | --- |
+| `hostloom.schedule.run.duration` | histogram (s) | Time a run executed, tagged `hostloom.schedule.outcome` (`succeeded`, `failed`, `timed_out`, `canceled`, `claim_lost`) |
+| `hostloom.schedule.lag` | histogram (s) | Time between a run's due time and its start |
+| `hostloom.schedule.skipped` | counter | Runs that did not execute, tagged `hostloom.schedule.skip_reason` (`claimed_elsewhere`, `guard_failed`) |
 
 Activities: `lock.acquire` and `lock.execute`, tagged `hostloom.lock.key`,
 `hostloom.lock.acquired`, `hostloom.lock.wait_ms`, and `hostloom.lock.hold_ms`.

@@ -31,6 +31,10 @@ recorded in `CHANGELOG.md`.
 | `HostLoom.Locking.DependencyInjection` | Lock registration, options validation, and health checks |
 | `HostLoom.Locking.Testing` | Container-free lock composition, scripted, recording, and fault-injecting providers |
 | `HostLoom.Locking.Pipelines` | Distributed-lock filter for HostLoom pipelines |
+| `HostLoom.Scheduling` | Cron, fixed-rate, and fixed-delay schedules over `TimeProvider`, sequential runs, guard contract |
+| `HostLoom.Scheduling.DependencyInjection` | Schedule registration, per-run scopes, options validation, and hosting |
+| `HostLoom.Scheduling.Locking` | One-instance-runs guard over the HostLoom distributed lock |
+| `HostLoom.Scheduling.Testing` | Scripted schedule guard for tests |
 | `HostLoom.Valkey` | Standalone Valkey cache, explicit invalidation, coordination locks, and health probes over ValkeyDotNet |
 | `HostLoom.Redis` | Redis cache store, invalidation channel, lock provider, and health probes over one connection |
 | `HostLoom.Analyzers` | Compile-time checks for asynchronous, DI, mapping, and caching usage |
@@ -92,6 +96,14 @@ The package's conformance tests consume the schema and exact fixtures from
   reference each other.
 - `HostLoom.Caching.Testing` and `HostLoom.Locking.Testing` depend on their
   kernel only, as `HostLoom.Mapping.Testing` does.
+- `HostLoom.Scheduling` is a kernel with the same single reference as caching
+  and locking; `HostLoom.Scheduling.DependencyInjection` adds the Microsoft
+  dependency-injection, options, and hosting abstractions;
+  `HostLoom.Scheduling.Testing` depends on the kernel only.
+  `HostLoom.Scheduling.Locking` depends on `HostLoom.Locking`,
+  `HostLoom.Scheduling`, and `HostLoom.Scheduling.DependencyInjection`, as
+  `HostLoom.Redis` depends on `DependencyInjection` packages for its `Use*`
+  extension; the scheduling and locking kernels never reference each other.
 - `HostLoom.Caching.Pipelines` depends on `HostLoom.Pipelines` and
   `HostLoom.Caching`; `HostLoom.Locking.Pipelines` on `HostLoom.Pipelines`
   and `HostLoom.Locking`. Neither references a `DependencyInjection` package
@@ -110,8 +122,10 @@ The package's conformance tests consume the schema and exact fixtures from
 `HostLoom.Mapping.DependencyInjection`, `HostLoom.Mapping.Testing`,
 `HostLoom.Caching`, `HostLoom.Caching.DependencyInjection`,
 `HostLoom.Caching.Testing`, `HostLoom.Caching.Pipelines`, `HostLoom.Locking`,
-`HostLoom.Locking.DependencyInjection`, `HostLoom.Locking.Testing`, and
-`HostLoom.Locking.Pipelines` enable the
+`HostLoom.Locking.DependencyInjection`, `HostLoom.Locking.Testing`,
+`HostLoom.Locking.Pipelines`, `HostLoom.Scheduling`,
+`HostLoom.Scheduling.DependencyInjection`, `HostLoom.Scheduling.Locking`, and
+`HostLoom.Scheduling.Testing` enable the
 .NET SDK Native AOT and trimming analyzers (`IsAotCompatible=true`).
 `examples/HostLoom.Examples.CachingAot` publishes with `PublishAot=true`
 and exercises a serialized cache round trip through a source-generated

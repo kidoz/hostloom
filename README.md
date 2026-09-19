@@ -24,6 +24,9 @@ implements:
 - a two-tier cache with per-key single-flight, cross-instance invalidation, and
   fail-open reads, and a distributed lock with leases, owner tokens, bounded
   retry, and lost-lease detection, backed by Redis or standalone Valkey;
+- scheduled jobs on cron, fixed-rate, and fixed-delay triggers over
+  `TimeProvider`, run sequentially per schedule and, when marked exclusive, on
+  one instance at a time through the distributed lock;
 - typed `IRequest<TResponse>` contracts with handler, behavior, and client
   abstractions;
 - typed `IEvent` contracts published to a topic and fanned out to named
@@ -99,6 +102,10 @@ packages are versioned together:
 | `HostLoom.Locking.DependencyInjection` | Lock registration, options validation, and health checks |
 | `HostLoom.Locking.Testing` | Container-free lock composition, scripted, recording, and fault-injecting providers |
 | `HostLoom.Locking.Pipelines` | Distributed-lock filter for HostLoom pipelines |
+| `HostLoom.Scheduling` | Cron, fixed-rate, and fixed-delay schedules over `TimeProvider`, sequential runs, guard contract |
+| `HostLoom.Scheduling.DependencyInjection` | Schedule registration, per-run scopes, options validation, and hosting |
+| `HostLoom.Scheduling.Locking` | One-instance-runs guard over the HostLoom distributed lock |
+| `HostLoom.Scheduling.Testing` | Scripted schedule guard for tests |
 | `HostLoom.Valkey` | Standalone Valkey cache store, explicit invalidation, coordination locks, and health probes over ValkeyDotNet |
 | `HostLoom.Redis` | Redis cache store, invalidation channel, lock provider, and health probes over one connection |
 
@@ -497,6 +504,47 @@ BenchmarkDotNet comparisons cover HostLoom against Microsoft `HybridCache` and F
 cache paths, and against Medallion `DistributedLock.Redis` for Redis locking. The deterministic
 HostLoom-only cases have a committed, machine-checked 10% regression gate. See the
 [benchmark guide](benchmarks/HostLoom.Benchmarks/README.md).
+
+## Scheduling
+
+`HostLoom.Scheduling` runs jobs on cron, fixed-rate, and fixed-delay triggers, the three shapes
+Spring's `@Scheduled` offers, over a `TimeProvider` so tests advance a clock instead of sleeping.
+Each schedule is one sequential loop: a run never overlaps the previous run in the same process, a
+late run starts at once without replaying what it missed, and an exception ends the run as `Failed`
+while the schedule continues. A schedule marked `Exclusive` claims itself through a guard before
+every run and is skipped when another instance holds the claim; `HostLoom.Scheduling.Locking`
+supplies that guard over the distributed lock, the way ShedLock guards a Spring scheduled method.
+
+```csharp
+builder.Services
+    .AddHostLoomLocking(locking => locking.Namespace = "catalog")
+    .UseRedis();
+
+builder.Services
+    .AddHostLoomScheduling()
+    .UseDistributedLock()
+    .AddSchedule<RebuildCatalogJob>(
+        "catalog:rebuild",
+        ScheduleTrigger.Cron("0 0 2 * * *"),
+        options => { options.Exclusive = true; options.Timeout = TimeSpan.FromMinutes(30); })
+    .AddSchedule<SyncInventoryJob>(
+        "inventory:sync",
+        ScheduleTrigger.FixedDelay(TimeSpan.FromSeconds(30)));
+```
+
+```csharp
+public sealed class RebuildCatalogJob(CatalogService catalog) : IScheduledJob
+{
+    public ValueTask ExecuteAsync(ScheduledRun run, CancellationToken cancellationToken) =>
+        catalog.RebuildAsync(cancellationToken);
+}
+```
+
+A job is resolved from a fresh dependency-injection scope for every run, so it takes scoped
+dependencies through its constructor like a request handler. The token it receives is cancelled
+when the host stops, when the schedule's timeout elapses, or when an exclusive claim is lost. The
+kernel composes with `new` and reports its schedules through `SchedulingProbe`; see the
+[scheduling reference](docs/reference/scheduling.md).
 
 ## Logging
 

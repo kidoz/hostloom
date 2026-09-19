@@ -77,6 +77,7 @@ nav:
       - Mapping: reference/mapping.md
       - Caching: reference/caching.md
       - Locking: reference/locking.md
+      - Scheduling: reference/scheduling.md
       - Logging: reference/logging.md
       - WebSocket gateway: reference/websocket-gateway.md
       - Composition plans: reference/composition.md

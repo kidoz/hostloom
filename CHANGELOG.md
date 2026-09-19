@@ -8,6 +8,29 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- `HostLoom.Scheduling`, a scheduled-job kernel in the shape of the caching and locking kernels:
+  `IScheduledJob`, `ScheduleTrigger.Cron` (five or six fields, names, steps, `?`, Sunday as 0
+  or 7, either-day matching, time zones with daylight-saving handling), `FixedRate` counted from
+  the previous due time, `FixedDelay` counted from the previous completion, and a `Scheduler`
+  that runs each schedule as one sequential loop over `TimeProvider` with per-run timeout, typed
+  outcomes, state, an execution-free probe, and the `HostLoom.Scheduling` meter and activity
+  source. A late run starts at once and missed occurrences are not replayed; a failed run is
+  logged and the schedule continues.
+- `IScheduleGuard`, the contract that runs an `Exclusive` schedule on one instance at a time:
+  a claim is granted or refused at once, a refused claim skips the run, and a guard failure
+  skips it as `GuardFailed` rather than running unguarded.
+- `HostLoom.Scheduling.DependencyInjection`: `AddHostLoomScheduling`, `AddSchedule<TJob>` with a
+  fresh scope per run, a delegate overload, `UseGuard<TGuard>(name)` with the exactly-one rule,
+  startup validation naming the builder method an exclusive schedule needs, and the hosted
+  service that starts and stops the scheduler with the host.
+- `HostLoom.Scheduling.Locking`: `DistributedLockScheduleGuard` over `IDistributedLock`, one
+  skip-if-busy acquisition of `schedule:{name}` per run with automatic extension up to
+  `Locking:MaxHold`, and `UseDistributedLock()`.
+- `HostLoom.Scheduling.Testing`: `ManualScheduleGuard`, scripted with `Hold`, `Release`, `Lose`,
+  and `FailNext`, recording every claim.
+
 ### Changed
 
 - The WebSocket gateway ends a subscription before it answers an invalid `credit` or `ack` frame
