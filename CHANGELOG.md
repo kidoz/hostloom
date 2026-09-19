@@ -8,6 +8,16 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-19
+
+Upgrading changes no public contract and no default behaviour. Every addition is opt-in: an update
+map exists only where `MappingBuilder.AddUpdate` registers one, it is resolved as its own service
+and never through the `IMapper` dispatcher, and `HLM0017` reports at information severity. The one
+fix is confined to `HostLoom.Caching.Testing` and changes how `FaultingCacheStore` composes over a
+store without an invalidation channel.
+
+No package is published for the first time; the set is the same as 0.7.0.
+
 ### Added
 
 - `HLM0017`, an informational analyzer rule: a generic map whose destination is a type parameter
@@ -870,7 +880,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/kidoz/hostloom/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/kidoz/hostloom/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/kidoz/hostloom/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/kidoz/hostloom/compare/v0.4.0...v0.5.0
