@@ -30,6 +30,14 @@ are derived from release tags at publish time.
   `Locking:MaxHold`, and `UseDistributedLock()`.
 - `HostLoom.Scheduling.Testing`: `ManualScheduleGuard`, scripted with `Hold`, `Release`, `Lose`,
   and `FailNext`, recording every claim.
+- A transactional outbox in `HostLoom`: `IOutboxStore` (append inside the caller's unit of work,
+  atomic claim with a lease, mark published or failed), `OutboxMessage` carrying the encoded
+  frame, `UseOutbox<TStore>()` and `UseInMemoryOutbox()` on the builder, which route every
+  `IPublishEndpoint.PublishAsync` through the store from the caller's scope, and `OutboxRelay`, a
+  hosted loop that drains when woken and every `Outbox:PollInterval`, publishes each frame
+  unchanged through the transport, and leaves a failed message pending with its error. Delivery
+  is at-least-once. Metrics `hostloom.outbox.published`, `hostloom.outbox.failed`, and
+  `hostloom.outbox.lag`; log events 3300 to 3303.
 
 ### Changed
 

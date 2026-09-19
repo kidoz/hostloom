@@ -37,4 +37,22 @@ public static class HostLoomDiagnostics
         "{retry}",
         "Handler invocations beyond the first, contributed by the receive pipeline."
     );
+
+    internal static readonly Counter<long> OutboxPublished = Meter.CreateCounter<long>(
+        "hostloom.outbox.published",
+        "{message}",
+        "Outbox messages the relay published and marked."
+    );
+
+    internal static readonly Counter<long> OutboxFailed = Meter.CreateCounter<long>(
+        "hostloom.outbox.failed",
+        "{attempt}",
+        "Outbox publish attempts that failed and left the message pending."
+    );
+
+    internal static readonly Histogram<double> OutboxLag = Meter.CreateHistogram<double>(
+        "hostloom.outbox.lag",
+        "s",
+        "Time between appending an outbox message and publishing it."
+    );
 }
