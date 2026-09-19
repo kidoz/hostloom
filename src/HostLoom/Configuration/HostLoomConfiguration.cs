@@ -21,10 +21,18 @@ internal sealed class HostLoomConfiguration
     /// Receive-pipeline filters, in registration order. Composed once when the dispatcher is
     /// constructed, so stateful filters such as a circuit breaker span every delivery.
     /// </summary>
-    public Action<PipeBuilder<ReceiveContext>>? ReceivePipeline { get; private set; }
+    public Action<PipeBuilder<ReceiveContext>, IServiceProvider>? ReceivePipeline
+    {
+        get;
+        private set;
+    }
 
     public void ConfigureReceivePipeline(Action<PipeBuilder<ReceiveContext>> configure) =>
-        ReceivePipeline += configure;
+        ReceivePipeline += (builder, _) => configure(builder);
+
+    public void ConfigureReceivePipeline(
+        Action<PipeBuilder<ReceiveContext>, IServiceProvider> configure
+    ) => ReceivePipeline += configure;
 
     public void AddHandler(HandlerRegistration registration, RequestAddress endpoint)
     {

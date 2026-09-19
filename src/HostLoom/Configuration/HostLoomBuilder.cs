@@ -103,6 +103,20 @@ public sealed class HostLoomBuilder
     }
 
     /// <summary>
+    /// Adds filters that need services from the container, such as a store. The pipeline is
+    /// composed once, when the runtime resolves it, so <paramref name="configure"/> receives the
+    /// root provider and its filters are shared by every delivery like any other.
+    /// </summary>
+    public HostLoomBuilder ConfigureReceivePipeline(
+        Action<PipeBuilder<ReceiveContext>, IServiceProvider> configure
+    )
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        Configuration.ConfigureReceivePipeline(configure);
+        return this;
+    }
+
+    /// <summary>
     /// Registers HostLoom's liveness and readiness checks, tagged <c>live</c> and <c>ready</c> so
     /// they can be mapped to separate probe endpoints. Liveness never contacts the broker.
     /// </summary>

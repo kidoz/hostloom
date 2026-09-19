@@ -48,9 +48,10 @@ store always leads to processing. The marker written is the identity string itse
 serializer can write; a source-generated `JsonSerializerContext` used as the cache serializer
 must be able to serialize `string`.
 
-This filter is offered for generic pipelines. HostLoom does not wire it into the messaging
-receive pipeline: the messaging kernel defers idempotent consumer storage, and a database inbox
-remains the answer where a platform's concurrency rules require one.
+This filter is offered for generic pipelines. The messaging receive pipeline has its own
+idempotent consumer, `UseInbox` in the `HostLoom` package, which keys on the topic, subscription,
+and message id; `InboxStore.FromClaim` turns this cache's `SetIfAbsentAsync` into its store in one
+line, and a database inbox remains the answer where a platform's concurrency rules require one.
 
 ## From the container
 

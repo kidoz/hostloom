@@ -16,11 +16,15 @@ internal sealed class ReceivePipeline
 {
     private readonly IPipe<ReceiveContext> _pipe;
 
-    public ReceivePipeline(HostLoomConfiguration configuration, IServiceScopeFactory scopeFactory)
+    public ReceivePipeline(
+        HostLoomConfiguration configuration,
+        IServiceScopeFactory scopeFactory,
+        IServiceProvider provider
+    )
     {
         _pipe = Pipe.Create<ReceiveContext>(builder =>
         {
-            configuration.ReceivePipeline?.Invoke(builder);
+            configuration.ReceivePipeline?.Invoke(builder, provider);
             builder.Use(new ExecuteReceiveFilter(scopeFactory));
         });
     }

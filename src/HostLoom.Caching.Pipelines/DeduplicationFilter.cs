@@ -27,9 +27,9 @@ public sealed record DeduplicationSkipped(string Id, CacheFailureKind Kind);
 /// <para>
 /// When the store is unavailable the claim cannot be made, and the pipe runs anyway with
 /// <see cref="DeduplicationSkipped"/> on the context: at-least-once is the safe side of an
-/// outage. This filter is offered for generic pipelines; deduplication on the messaging
-/// receive pipeline is not provided by HostLoom until the decision deferring idempotent consumer
-/// storage is revisited.
+/// outage. This filter is offered for generic pipelines; the messaging receive pipeline has its
+/// own idempotent consumer, <c>UseInbox</c> in the <c>HostLoom</c> package, whose store can be
+/// this cache's set-if-absent.
 /// </para>
 /// </remarks>
 public sealed class DeduplicationFilter<TContext> : IFilter<TContext>

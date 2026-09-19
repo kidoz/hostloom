@@ -55,4 +55,10 @@ public static class HostLoomDiagnostics
         "s",
         "Time between appending an outbox message and publishing it."
     );
+
+    internal static readonly Counter<long> InboxDuplicates = Meter.CreateCounter<long>(
+        "hostloom.inbox.duplicates",
+        "{delivery}",
+        "Redelivered events the inbox recognised and did not run handlers for."
+    );
 }

@@ -38,6 +38,17 @@ are derived from release tags at publish time.
   unchanged through the transport, and leaves a failed message pending with its error. Delivery
   is at-least-once. Metrics `hostloom.outbox.published`, `hostloom.outbox.failed`, and
   `hostloom.outbox.lag`; log events 3300 to 3303.
+- An idempotent inbox in `HostLoom`: `IInboxStore` with one set-if-absent member,
+  `InboxStore.FromClaim` for a cache-backed store in one line, `InMemoryInboxStore`, and
+  `InboxFilter`, appended to the receive pipeline by `UseInbox<TStore>(window)`,
+  `UseInbox(factory, window)`, or `UseInMemoryInbox(window)`. It records
+  `{topic}:{subscription}:{messageId}` before the handlers run, skips a delivery seen inside the
+  window with an `InboxDuplicate` payload, runs anyway with an `InboxSkipped` payload when the
+  store cannot answer, and passes requests through untouched. Metric
+  `hostloom.inbox.duplicates`; log events 3310 and 3311.
+- `HostLoomBuilder.ConfigureReceivePipeline(Action<PipeBuilder<ReceiveContext>, IServiceProvider>)`,
+  for a filter that needs a service from the container, such as a store. The pipeline is still
+  composed once, from the root provider.
 
 ### Changed
 
