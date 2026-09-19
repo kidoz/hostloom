@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>A scripted ILeadership for testing leader-only consumers of HostLoom without an elector or a lock backend.</Description>
+    <PackageId>HostLoom.Leadership.Testing</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>hostloom;leader-election;leadership;testing;aot</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HostLoom.Leadership/HostLoom.Leadership.csproj" />
+  </ItemGroup>
+</Project>
