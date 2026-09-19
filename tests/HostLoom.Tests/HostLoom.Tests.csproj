@@ -30,6 +30,7 @@
     <ProjectReference Include="../../src/HostLoom.Locking.DependencyInjection/HostLoom.Locking.DependencyInjection.csproj" />
     <ProjectReference Include="../../src/HostLoom.Locking.Pipelines/HostLoom.Locking.Pipelines.csproj" />
     <ProjectReference Include="../../src/HostLoom.Locking.Testing/HostLoom.Locking.Testing.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Leadership.DependencyInjection/HostLoom.Leadership.DependencyInjection.csproj" />
     <ProjectReference Include="../../src/HostLoom.Leadership.Testing/HostLoom.Leadership.Testing.csproj" />
     <ProjectReference Include="../../src/HostLoom.Leadership/HostLoom.Leadership.csproj" />
     <ProjectReference Include="../../src/HostLoom.Locking/HostLoom.Locking.csproj" />
@@ -41,6 +42,7 @@
     <ProjectReference Include="../../src/HostLoom.Pipelines.Testing/HostLoom.Pipelines.Testing.csproj" />
     <ProjectReference Include="../../src/HostLoom.Pipelines/HostLoom.Pipelines.csproj" />
     <ProjectReference Include="../../src/HostLoom.Scheduling.DependencyInjection/HostLoom.Scheduling.DependencyInjection.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Scheduling.Leadership/HostLoom.Scheduling.Leadership.csproj" />
     <ProjectReference Include="../../src/HostLoom.Scheduling.Locking/HostLoom.Scheduling.Locking.csproj" />
     <ProjectReference Include="../../src/HostLoom.Scheduling.Testing/HostLoom.Scheduling.Testing.csproj" />
     <ProjectReference Include="../../src/HostLoom.Scheduling/HostLoom.Scheduling.csproj" />

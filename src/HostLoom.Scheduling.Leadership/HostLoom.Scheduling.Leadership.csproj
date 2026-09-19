@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Runs exclusive HostLoom schedules on the elected leader only, without a lock round trip per occurrence.</Description>
+    <PackageId>HostLoom.Scheduling.Leadership</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>hostloom;scheduling;scheduler;leader-election;aot</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HostLoom.Leadership/HostLoom.Leadership.csproj" />
+    <ProjectReference Include="../HostLoom.Scheduling/HostLoom.Scheduling.csproj" />
+    <ProjectReference Include="../HostLoom.Scheduling.DependencyInjection/HostLoom.Scheduling.DependencyInjection.csproj" />
+  </ItemGroup>
+</Project>

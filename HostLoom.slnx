@@ -27,6 +27,7 @@
     <Project Path="src/HostLoom.Locking.DependencyInjection/HostLoom.Locking.DependencyInjection.csproj" />
     <Project Path="src/HostLoom.Locking.Pipelines/HostLoom.Locking.Pipelines.csproj" />
     <Project Path="src/HostLoom.Locking.Testing/HostLoom.Locking.Testing.csproj" />
+    <Project Path="src/HostLoom.Leadership.DependencyInjection/HostLoom.Leadership.DependencyInjection.csproj" />
     <Project Path="src/HostLoom.Leadership.Testing/HostLoom.Leadership.Testing.csproj" />
     <Project Path="src/HostLoom.Leadership/HostLoom.Leadership.csproj" />
     <Project Path="src/HostLoom.Locking/HostLoom.Locking.csproj" />
@@ -38,6 +39,7 @@
     <Project Path="src/HostLoom.Pipelines.Testing/HostLoom.Pipelines.Testing.csproj" />
     <Project Path="src/HostLoom.Pipelines/HostLoom.Pipelines.csproj" />
     <Project Path="src/HostLoom.Scheduling.DependencyInjection/HostLoom.Scheduling.DependencyInjection.csproj" />
+    <Project Path="src/HostLoom.Scheduling.Leadership/HostLoom.Scheduling.Leadership.csproj" />
     <Project Path="src/HostLoom.Scheduling.Locking/HostLoom.Scheduling.Locking.csproj" />
     <Project Path="src/HostLoom.Scheduling.Testing/HostLoom.Scheduling.Testing.csproj" />
     <Project Path="src/HostLoom.Scheduling/HostLoom.Scheduling.csproj" />
