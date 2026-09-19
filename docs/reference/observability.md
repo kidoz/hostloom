@@ -13,16 +13,17 @@ configuration needs.
 | `HostLoom.Caching` | `ActivitySource` and `Meter` | every `TieredCache` |
 | `HostLoom.Locking` | `ActivitySource` and `Meter` | every `DistributedLock` |
 | `HostLoom.Scheduling` | `ActivitySource` and `Meter` | every `Scheduler` |
+| `HostLoom.Leadership` | `ActivitySource` and `Meter` | every `LeaderElector` |
 | `HostLoom.Redis` | `ActivitySource` and `Meter` | the Redis connection |
 | `HostLoom.AspNetCore.WebSockets` | `ActivitySource` and `Meter` | raw WebSocket gateway |
 
 ```csharp
 builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics => metrics.AddMeter(
-        "HostLoom", "HostLoom.Pipelines", "HostLoom.Logging", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Scheduling", "HostLoom.Redis",
+        "HostLoom", "HostLoom.Pipelines", "HostLoom.Logging", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Scheduling", "HostLoom.Leadership", "HostLoom.Redis",
         "HostLoom.AspNetCore.WebSockets"))
     .WithTracing(tracing => tracing.AddSource(
-        "HostLoom", "HostLoom.Pipelines", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Scheduling",
+        "HostLoom", "HostLoom.Pipelines", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Scheduling", "HostLoom.Leadership",
         "HostLoom.AspNetCore.WebSockets"));
 ```
 
@@ -126,6 +127,16 @@ Identity is the `hostloom.schedule.name` tag. The `schedule.run` activity carrie
 | `hostloom.schedule.run.duration` | histogram (s) | Time a run executed, tagged `hostloom.schedule.outcome` (`succeeded`, `failed`, `timed_out`, `canceled`, `claim_lost`) |
 | `hostloom.schedule.lag` | histogram (s) | Time between a run's due time and its start |
 | `hostloom.schedule.skipped` | counter | Runs that did not execute, tagged `hostloom.schedule.skip_reason` (`claimed_elsewhere`, `guard_failed`) |
+
+## Leadership instruments (`HostLoom.Leadership`)
+
+Identity is the `hostloom.leader.role` tag. The `leader.acquire` activity carries the role and whether the attempt acquired.
+
+| Instrument | Kind | Meaning |
+| --- | --- | --- |
+| `hostloom.leader.is_leader` | observable gauge | 1 while this instance leads the role, 0 otherwise |
+| `hostloom.leader.changes` | counter | Transitions, tagged `hostloom.leader.reason` (`acquired`, `lost`, `resigned`, `stopped`) |
+| `hostloom.leader.renew.duration` | histogram (s) | Lease renewals, tagged `hostloom.leader.outcome` (`renewed`, `refused`, `failed`) |
 
 Activities: `lock.acquire` and `lock.execute`, tagged `hostloom.lock.key`,
 `hostloom.lock.acquired`, `hostloom.lock.wait_ms`, and `hostloom.lock.hold_ms`.

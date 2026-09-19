@@ -194,6 +194,10 @@ jobs:
             HostLoom.Scheduling.DependencyInjection
             HostLoom.Scheduling.Locking
             HostLoom.Scheduling.Testing
+            HostLoom.Scheduling.Leadership
+            HostLoom.Leadership
+            HostLoom.Leadership.DependencyInjection
+            HostLoom.Leadership.Testing
             HostLoom.Redis
             HostLoom.Valkey
           )

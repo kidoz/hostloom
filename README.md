@@ -27,6 +27,8 @@ implements:
 - scheduled jobs on cron, fixed-rate, and fixed-delay triggers over
   `TimeProvider`, run sequentially per schedule and, when marked exclusive, on
   one instance at a time through the distributed lock;
+- lease-based leader election over the distributed lock, one elector per role
+  with a leadership token, and leader-only schedules;
 - typed `IRequest<TResponse>` contracts with handler, behavior, and client
   abstractions;
 - typed `IEvent` contracts published to a topic and fanned out to named
@@ -108,6 +110,10 @@ packages are versioned together:
 | `HostLoom.Scheduling.DependencyInjection` | Schedule registration, per-run scopes, options validation, and hosting |
 | `HostLoom.Scheduling.Locking` | One-instance-runs guard over the HostLoom distributed lock |
 | `HostLoom.Scheduling.Testing` | Scripted schedule guard for tests |
+| `HostLoom.Leadership` | Lease-based leader election over the distributed lock, one elector per role, leadership token |
+| `HostLoom.Leadership.DependencyInjection` | Roles keyed by name, options validation, and hosting for electors |
+| `HostLoom.Leadership.Testing` | Scripted `ILeadership` for leader-only consumers |
+| `HostLoom.Scheduling.Leadership` | Runs exclusive schedules on the elected leader only |
 | `HostLoom.Valkey` | Standalone Valkey cache store, explicit invalidation, coordination locks, and health probes over ValkeyDotNet |
 | `HostLoom.Redis` | Redis cache store, invalidation channel, lock provider, and health probes over one connection |
 
@@ -587,6 +593,48 @@ job again. When the lock backend is unreachable the job runs nowhere and every i
 composes with `new` and reports its schedules through `SchedulingProbe`; see the
 [scheduling reference](docs/reference/scheduling.md) and
 [Run a schedule on every instance or on one](docs/how-to/schedule-on-one-instance.md).
+
+## Leader election
+
+`HostLoom.Leadership` elects one leader for a role among the instances of a service, the
+lease-based election that Kubernetes controllers and Spring Integration's leader initiator use,
+over the HostLoom distributed lock. A candidate tries to take the lease `leader:{role}`, the leader
+renews it on its own cadence, and a renewal that fails or a lease that expires steps the instance
+back to candidate at once. `ILeadership` is what consumers inject: `IsLeader`, `Term`, a
+`LeadershipToken` cancelled when leadership ends, `WaitForLeadershipAsync`, and `OnChange`.
+
+```csharp
+builder.Services
+    .AddHostLoomLeadership()
+    .AddRole("reconciler");
+
+builder.Services
+    .AddHostLoomScheduling()
+    .UseLeader("reconciler")                 // exclusive schedules run on the leader only
+    .AddSchedule<RebuildCatalogJob>("catalog:rebuild", ScheduleTrigger.Cron("0 0 2 * * *"),
+        options => options.Exclusive = true);
+```
+
+```csharp
+public sealed class ReconcilerLoop(ILeadership leadership) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            await leadership.WaitForLeadershipAsync(stoppingToken);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, leadership.LeadershipToken);
+            await RunWhileLeaderAsync(linked.Token);
+        }
+    }
+}
+```
+
+The guarantee is the lock's: at most one leader per role while clocks and the backend behave, a
+window bounded by the lease plus clock skew in which a cut-off leader may still believe it leads,
+and no fencing. A graceful stop hands over at once; a crash hands over at lease expiry. See the
+[leadership reference](docs/reference/leadership.md) and
+[Run one leader among replicas](docs/how-to/run-one-leader.md).
 
 ## Logging
 

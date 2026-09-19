@@ -63,6 +63,7 @@ nav:
       - Cache and lock over Redis: how-to/use-redis.md
       - Keep serving when the cache backend is down: how-to/cache-and-lock-fail-open.md
       - Run a schedule on every instance or on one: how-to/schedule-on-one-instance.md
+      - Run one leader among replicas: how-to/run-one-leader.md
       - Harden the receive pipeline: how-to/harden-receive-pipeline.md
       - Register pipelines with stages: how-to/register-pipelines.md
       - Test pipelines deterministically: how-to/test-pipelines.md
@@ -79,6 +80,7 @@ nav:
       - Caching: reference/caching.md
       - Locking: reference/locking.md
       - Scheduling: reference/scheduling.md
+      - Leadership: reference/leadership.md
       - Logging: reference/logging.md
       - WebSocket gateway: reference/websocket-gateway.md
       - Composition plans: reference/composition.md

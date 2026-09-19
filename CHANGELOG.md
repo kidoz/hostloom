@@ -34,6 +34,23 @@ are derived from release tags at publish time.
   `Locking:MaxHold`, and `UseDistributedLock()`.
 - `HostLoom.Scheduling.Testing`: `ManualScheduleGuard`, scripted with `Hold`, `Release`, `Lose`,
   and `FailNext`, recording every claim.
+- `HostLoom.Leadership`, lease-based leader election over the distributed lock: `ILeadership`
+  (`Role`, `IsLeader`, `Term`, `LeadershipToken`, `WaitForLeadershipAsync`, `OnChange`),
+  `LeaderElector` with a candidate loop on a jittered retry cadence, explicit renewal that is not
+  capped by `Locking:MaxHold`, immediate step-down on a refused renewal or an expired lease
+  followed by one retry interval, `ResignAsync`, release on stop, a probe, the
+  `HostLoom.Leadership` meter and activity source, and log events 3400 to 3407. The guarantee is
+  stated as the lock's: at most one leader while clocks and the backend behave, a window bounded
+  by the lease on expiry, and no fencing; `Term` counts this instance's acquisitions.
+- `HostLoom.Leadership.DependencyInjection`: `AddHostLoomLeadership().AddRole(role, configure)`,
+  electors and `ILeadership` keyed by role with the single role also resolving unkeyed, named
+  options validated per role, and the hosted service that starts and stops every elector.
+- `HostLoom.Scheduling.Leadership`: `LeaderScheduleGuard` and `UseLeader(role)`, which run
+  exclusive schedules on the elected leader with no lock round trip per occurrence; a run in
+  progress ends as `ClaimLost` when leadership ends.
+- `HostLoom.Leadership.Testing`: `ManualLeadership`, flipped with `Acquire`, `Lose`, and `Resign`.
+- Two-elector tests over the in-process lock and a fake clock, and a real-Redis test plus an
+  opt-in outage experiment that measures the hand-over window against the lease.
 - A transactional outbox in `HostLoom`: `IOutboxStore` (append inside the caller's unit of work,
   atomic claim with a lease, mark published or failed), `OutboxMessage` carrying the encoded
   frame, `UseOutbox<TStore>()` and `UseInMemoryOutbox()` on the builder, which route every

@@ -35,6 +35,10 @@ recorded in `CHANGELOG.md`.
 | `HostLoom.Scheduling.DependencyInjection` | Schedule registration, per-run scopes, options validation, and hosting |
 | `HostLoom.Scheduling.Locking` | One-instance-runs guard over the HostLoom distributed lock |
 | `HostLoom.Scheduling.Testing` | Scripted schedule guard for tests |
+| `HostLoom.Leadership` | Lease-based leader election over the distributed lock, one elector per role, leadership token |
+| `HostLoom.Leadership.DependencyInjection` | Roles keyed by name, options validation, and hosting for electors |
+| `HostLoom.Leadership.Testing` | Scripted `ILeadership` for leader-only consumers |
+| `HostLoom.Scheduling.Leadership` | Runs exclusive schedules on the elected leader only |
 | `HostLoom.Valkey` | Standalone Valkey cache, explicit invalidation, coordination locks, and health probes over ValkeyDotNet |
 | `HostLoom.Redis` | Redis cache store, invalidation channel, lock provider, and health probes over one connection |
 | `HostLoom.Analyzers` | Compile-time checks for asynchronous, DI, mapping, and caching usage |
@@ -104,6 +108,12 @@ The package's conformance tests consume the schema and exact fixtures from
   `HostLoom.Scheduling`, and `HostLoom.Scheduling.DependencyInjection`, as
   `HostLoom.Redis` depends on `DependencyInjection` packages for its `Use*`
   extension; the scheduling and locking kernels never reference each other.
+- `HostLoom.Leadership` references `HostLoom.Locking`, the one kernel-to-kernel
+  edge, because leadership is a use of a lock rather than a peer of it;
+  `HostLoom.Leadership.DependencyInjection` adds the Microsoft dependency-injection,
+  options, and hosting abstractions; `HostLoom.Leadership.Testing` depends on the
+  kernel only. `HostLoom.Scheduling.Leadership` depends on `HostLoom.Leadership`,
+  `HostLoom.Scheduling`, and `HostLoom.Scheduling.DependencyInjection`.
 - `HostLoom.Caching.Pipelines` depends on `HostLoom.Pipelines` and
   `HostLoom.Caching`; `HostLoom.Locking.Pipelines` on `HostLoom.Pipelines`
   and `HostLoom.Locking`. Neither references a `DependencyInjection` package
@@ -124,8 +134,9 @@ The package's conformance tests consume the schema and exact fixtures from
 `HostLoom.Caching.Testing`, `HostLoom.Caching.Pipelines`, `HostLoom.Locking`,
 `HostLoom.Locking.DependencyInjection`, `HostLoom.Locking.Testing`,
 `HostLoom.Locking.Pipelines`, `HostLoom.Scheduling`,
-`HostLoom.Scheduling.DependencyInjection`, `HostLoom.Scheduling.Locking`, and
-`HostLoom.Scheduling.Testing` enable the
+`HostLoom.Scheduling.DependencyInjection`, `HostLoom.Scheduling.Locking`,
+`HostLoom.Scheduling.Testing`, `HostLoom.Scheduling.Leadership`, `HostLoom.Leadership`,
+`HostLoom.Leadership.DependencyInjection`, and `HostLoom.Leadership.Testing` enable the
 .NET SDK Native AOT and trimming analyzers (`IsAotCompatible=true`).
 `examples/HostLoom.Examples.CachingAot` publishes with `PublishAot=true`
 and exercises a serialized cache round trip through a source-generated
