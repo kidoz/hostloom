@@ -706,48 +706,62 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
     private void AddCredit(HubFrame frame)
     {
         if (
-            !_subscriptions.TryGetValue(frame.StreamId, out var subscription)
-            || frame.Credit is not { } credit
-            || !subscription.TryAddCredit(
+            _subscriptions.TryGetValue(frame.StreamId, out var subscription)
+            && frame.Credit is { } credit
+            && subscription.TryAddCredit(
                 credit,
                 _configuration.Options.MaximumCreditPerSubscription
             )
         )
         {
-            _ = TryQueue(
-                WebSocketRequestRouter.Fault(
-                    frame.StreamId,
-                    HubFaultCodes.InvalidFrame,
-                    "Credit is invalid for this subscription."
-                )
-            );
+            return;
         }
+
+        FaultSubscription(frame.StreamId, "Credit is invalid for this subscription.");
     }
 
     private void Acknowledge(HubFrame frame)
     {
         if (
-            !_subscriptions.TryGetValue(frame.StreamId, out var subscription)
-            || frame.Sequence is not { } sequence
-            || sequence <= 0
+            _subscriptions.TryGetValue(frame.StreamId, out var subscription)
+            && frame.Sequence is { } sequence
+            && sequence > 0
         )
         {
-            _ = TryQueue(
-                WebSocketRequestRouter.Fault(
-                    frame.StreamId,
-                    HubFaultCodes.InvalidFrame,
-                    "The acknowledgement is invalid."
-                )
-            );
+            subscription.Acknowledge(sequence);
             return;
         }
 
-        subscription.Acknowledge(sequence);
+        FaultSubscription(frame.StreamId, "The acknowledgement is invalid.");
+    }
+
+    /// <summary>
+    /// A fault after <c>subscribed</c> is terminal for the peer, so the subscription is removed
+    /// before the fault is queued and no <c>complete</c> follows. Leaving it live would keep
+    /// delivering events on a stream the client has already discarded.
+    /// </summary>
+    private void FaultSubscription(Guid streamId, string message)
+    {
+        _ = TryRemoveSubscription(streamId);
+        _ = TryQueue(WebSocketRequestRouter.Fault(streamId, HubFaultCodes.InvalidFrame, message));
+    }
+
+    private bool TryRemoveSubscription(Guid streamId)
+    {
+        if (!_subscriptions.TryRemove(streamId, out var subscription))
+        {
+            return false;
+        }
+
+        _registry.Unsubscribe(this, subscription.Topic, subscription.Key);
+        subscription.Stop(_outbound.Release);
+        WebSocketDiagnostics.SubscriptionRemoved(subscription.Topic);
+        return true;
     }
 
     private void Unsubscribe(Guid streamId, bool sendComplete)
     {
-        if (!_subscriptions.TryRemove(streamId, out var subscription))
+        if (!TryRemoveSubscription(streamId))
         {
             _ = TryQueue(
                 WebSocketRequestRouter.Fault(
@@ -759,9 +773,6 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             return;
         }
 
-        _registry.Unsubscribe(this, subscription.Topic, subscription.Key);
-        subscription.Stop(_outbound.Release);
-        WebSocketDiagnostics.SubscriptionRemoved(subscription.Topic);
         if (sendComplete)
         {
             _ = TryQueue(new HubFrame { Kind = HubFrameKind.Complete, StreamId = streamId });

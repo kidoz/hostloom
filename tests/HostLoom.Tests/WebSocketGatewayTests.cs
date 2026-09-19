@@ -1058,6 +1058,99 @@ public sealed class WebSocketGatewayTests
     }
 
     [Fact]
+    public async Task Invalid_credit_and_acknowledgement_end_their_subscription()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
+            .AddTopic<OrderChanged>("orders.changed", "orders", value => value.CustomerId);
+        await using var provider = services.BuildServiceProvider();
+        var directory = provider.GetRequiredService<IWebSocketSessionDirectory>();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, new ClaimsPrincipal());
+        foreach (var streamId in new[] { Stream(43), Stream(44) })
+        {
+            socket.Enqueue(
+                protocol.Encode(
+                    new HubFrame
+                    {
+                        Kind = HubFrameKind.Subscribe,
+                        StreamId = streamId,
+                        Topic = "orders.changed",
+                        Key = "customer-1",
+                        Credit = 1,
+                    }
+                ),
+                protocol.MessageType
+            );
+        }
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, Assert.Single(directory.GetSessions()).SubscriptionCount);
+
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Credit,
+                    StreamId = Stream(43),
+                    Credit = 1_024,
+                }
+            ),
+            protocol.MessageType
+        );
+        var creditFault = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        Assert.Equal(HubFrameKind.Fault, creditFault.Kind);
+        Assert.Equal(Stream(43), creditFault.StreamId);
+        Assert.Equal(HubFaultCodes.InvalidFrame, creditFault.Code);
+        Assert.Equal(1, Assert.Single(directory.GetSessions()).SubscriptionCount);
+
+        socket.Enqueue(
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Ack,
+                    StreamId = Stream(44),
+                    Sequence = 0,
+                }
+            ),
+            protocol.MessageType
+        );
+        var ackFault = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        Assert.Equal(HubFrameKind.Fault, ackFault.Kind);
+        Assert.Equal(Stream(44), ackFault.StreamId);
+        Assert.Equal(HubFaultCodes.InvalidFrame, ackFault.Code);
+        Assert.Equal(0, Assert.Single(directory.GetSessions()).SubscriptionCount);
+
+        // Neither ended stream receives the event: the next frame on the wire is the pong.
+        provider
+            .GetRequiredService<WebSocketSessionRegistry>()
+            .Publish("orders.changed", "customer-1", new byte[] { 9, 8 });
+        socket.Enqueue(
+            protocol.Encode(new HubFrame { Kind = HubFrameKind.Ping, StreamId = Stream(45) }),
+            protocol.MessageType
+        );
+        var pong = protocol.Decode(
+            (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
+        );
+        Assert.Equal(HubFrameKind.Pong, pong.Kind);
+
+        socket.EnqueueClose();
+        await run;
+    }
+
+    [Fact]
     public async Task Unsubscribing_one_duplicate_topic_key_stream_keeps_the_sibling_live()
     {
         var services = new ServiceCollection();

@@ -246,7 +246,10 @@ WebSocket message type after negotiation closes the connection.
 
 Every client stream picks its own `streamId`, which must not be the all-zero session identifier. A
 request stream lives until `response` or `fault`; a subscription stream lives until `unsubscribe`
-and `complete`. Identifiers are never reused within a session.
+and `complete`, or until a `fault` ends it. A fault after `subscribed` is terminal: the gateway
+removes the subscription before sending it, so an invalid `credit` or `ack` frame ends the stream
+instead of leaving a live subscription behind a fault the client cannot classify. Identifiers are
+never reused within a session.
 
 | Direction | `kind` | Required fields | Meaning |
 |---|---|---|---|
