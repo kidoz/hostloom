@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Runs exclusive HostLoom schedules on one instance at a time by claiming them through the HostLoom distributed lock.</Description>
+    <PackageId>HostLoom.Scheduling.Locking</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>hostloom;scheduling;scheduler;distributed-lock;aot</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HostLoom.Locking/HostLoom.Locking.csproj" />
+    <ProjectReference Include="../HostLoom.Scheduling/HostLoom.Scheduling.csproj" />
+    <ProjectReference Include="../HostLoom.Scheduling.DependencyInjection/HostLoom.Scheduling.DependencyInjection.csproj" />
+  </ItemGroup>
+</Project>

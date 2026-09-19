@@ -35,6 +35,8 @@
     <Project Path="src/HostLoom.Pipelines.DependencyInjection/HostLoom.Pipelines.DependencyInjection.csproj" />
     <Project Path="src/HostLoom.Pipelines.Testing/HostLoom.Pipelines.Testing.csproj" />
     <Project Path="src/HostLoom.Pipelines/HostLoom.Pipelines.csproj" />
+    <Project Path="src/HostLoom.Scheduling.DependencyInjection/HostLoom.Scheduling.DependencyInjection.csproj" />
+    <Project Path="src/HostLoom.Scheduling.Locking/HostLoom.Scheduling.Locking.csproj" />
     <Project Path="src/HostLoom.Scheduling.Testing/HostLoom.Scheduling.Testing.csproj" />
     <Project Path="src/HostLoom.Scheduling/HostLoom.Scheduling.csproj" />
     <Project Path="src/HostLoom.Valkey/HostLoom.Valkey.csproj" />
