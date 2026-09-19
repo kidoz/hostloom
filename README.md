@@ -28,7 +28,7 @@ implements:
   `TimeProvider`, run sequentially per schedule and, when marked exclusive, on
   one instance at a time through the distributed lock;
 - lease-based leader election over the distributed lock, one elector per role
-  with a leadership token, and leader-only schedules;
+  with a leadership token, leader-only schedules, and a leader-gated channel;
 - typed `IRequest<TResponse>` contracts with handler, behavior, and client
   abstractions;
 - typed `IEvent` contracts published to a topic and fanned out to named
@@ -110,7 +110,7 @@ packages are versioned together:
 | `HostLoom.Scheduling.DependencyInjection` | Schedule registration, per-run scopes, options validation, and hosting |
 | `HostLoom.Scheduling.Locking` | One-instance-runs guard over the HostLoom distributed lock |
 | `HostLoom.Scheduling.Testing` | Scripted schedule guard for tests |
-| `HostLoom.Leadership` | Lease-based leader election over the distributed lock, one elector per role, leadership token |
+| `HostLoom.Leadership` | Lease-based leader election over the distributed lock, one elector per role, leadership token, leader-gated channel |
 | `HostLoom.Leadership.DependencyInjection` | Roles keyed by name, options validation, and hosting for electors |
 | `HostLoom.Leadership.Testing` | Scripted `ILeadership` for leader-only consumers |
 | `HostLoom.Scheduling.Leadership` | Runs exclusive schedules on the elected leader only |
@@ -638,6 +638,11 @@ public sealed class ReconcilerLoop(ILeadership leadership) : BackgroundService
     }
 }
 ```
+
+`LeaderChannel<T>` gates a producer on the role: every instance writes to it, a leader's items
+reach the reader, and a follower's are accepted and discarded, so a warm standby keeps its state
+current without acting. Drops are counted on the meter by reason and summarised in the log once
+per interval.
 
 The guarantee is the lock's: at most one leader per role while clocks and the backend behave, a
 window bounded by the lease plus clock skew in which a cut-off leader may still believe it leads,

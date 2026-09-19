@@ -39,7 +39,7 @@ are derived from release tags at publish time.
   `LeaderElector` with a candidate loop on a jittered retry cadence, explicit renewal that is not
   capped by `Locking:MaxHold`, immediate step-down on a refused renewal or an expired lease
   followed by one retry interval, `ResignAsync`, release on stop, a probe, the
-  `HostLoom.Leadership` meter and activity source, and log events 3400 to 3407. The guarantee is
+  `HostLoom.Leadership` meter and activity source, and log events 3400 to 3408. The guarantee is
   stated as the lock's: at most one leader while clocks and the backend behave, a window bounded
   by the lease on expiry, and no fencing; `Term` counts this instance's acquisitions.
 - `HostLoom.Leadership.DependencyInjection`: `AddHostLoomLeadership().AddRole(role, configure)`,
@@ -49,6 +49,14 @@ are derived from release tags at publish time.
   exclusive schedules on the elected leader with no lock round trip per occurrence; a run in
   progress ends as `ClaimLost` when leadership ends.
 - `HostLoom.Leadership.Testing`: `ManualLeadership`, flipped with `Acquire`, `Lose`, and `Resign`.
+- `LeaderChannel<T>` in `HostLoom.Leadership`, a bounded `Channel<T>` gated on a role: every
+  instance writes to it, a leader's items reach the reader, and a follower's are accepted and
+  discarded so a warm standby keeps its state current without acting. `LeaderChannelOptions`
+  sets the capacity, full mode (`DropOldest` by default), and drop report interval, validated by
+  key. Drops are counted on `hostloom.leader.channel.dropped` by channel and reason (`follower`
+  or `full`) and summarised in the log at most once per interval, with the tail flushed when the
+  instance becomes leader and on disposal: `LeaderChannelFollowerDropped` (3409) at Information
+  and `LeaderChannelFull` (3410) at Warning.
 - Two-elector tests over the in-process lock and a fake clock, and a real-Redis test plus an
   opt-in outage experiment that measures the hand-over window against the lease.
 - A transactional outbox in `HostLoom`: `IOutboxStore` (append inside the caller's unit of work,

@@ -104,12 +104,53 @@ a run in progress ends as `ClaimLost` when leadership ends. Compared with
 across instances, this keeps every exclusive schedule on one instance. One
 guard per service collection.
 
+## Leader-gated channel (`LeaderChannel<T>`)
+
+`new LeaderChannel<T>(name, leadership, options?, logger?, clock?)` is a
+`Channel<T>` whose writes count only while this instance leads the role.
+Producers on every instance run the same code and write to it; a leader's item
+is buffered for the reader, a follower's is accepted and discarded, so a warm
+standby keeps its state current without acting on it. Register one as a
+singleton and inject it, or compose it without a container.
+
+| Member | Behaviour |
+| --- | --- |
+| `Writer.TryWrite(item)` | leading: the bounded channel's answer; following: `true`, the item is discarded; completed: `false` |
+| `Writer.WriteAsync(item, ct)` | leading: waits for room under `FullMode = Wait`; following: completes at once, the item is discarded; completed: `ChannelClosedException` |
+| `Writer.TryComplete(error)` | completes the channel for every instance's writes |
+| `Reader` | the bounded channel's reader |
+| `FollowerDrops`, `CapacityDrops` | items discarded while following, and items the full channel dropped under `FullMode` |
+| `Dispose()` | stops following leadership changes and writes the pending drop summary; the channel stays usable |
+
+A follower's `TryWrite` answers `true` because a drop by policy is not a
+retryable refusal: a producer written as a wait-then-try loop would otherwise
+spin while not leading. A `WriteAsync` that is waiting for room under
+`FullMode = Wait` when leadership ends keeps waiting; it honours only the
+caller's token.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `LeaderChannel:Capacity` | 10 000 | items the channel holds before `FullMode` applies |
+| `LeaderChannel:FullMode` | `DropOldest` | what a leader's write does when the channel is full |
+| `LeaderChannel:DropReportInterval` | 1 minute | how often drops are summarised in the log |
+| `LeaderChannel:SingleReader`, `LeaderChannel:SingleWriter` | `false` | the bounded channel's synchronisation hints |
+
+Drops are counted on `hostloom.leader.channel.dropped`, tagged with the role,
+the channel name, and the reason `follower` or `full`. The first drop after a
+quiet period is logged at once so an operator sees discarding start; further
+drops within the interval are counted and reported together on the next drop
+after it, when this instance becomes leader, and on disposal. Follower drops
+are `LeaderChannelFollowerDropped` (3409) at Information because they are the
+design; a full channel is `LeaderChannelFull` (3410) at Warning because the
+reader is slower than the leader's writes.
+
 ## Observability
 
 Meter and activity source `HostLoom.Leadership`, tagged `hostloom.leader.role`:
 `hostloom.leader.is_leader` (gauge), `hostloom.leader.changes` (counter by
-reason), and `hostloom.leader.renew.duration` (histogram by outcome). Log
-events in `LeadershipEvents` (3400 to 3408). A throwing leadership-token
+reason), `hostloom.leader.renew.duration` (histogram by outcome), and
+`hostloom.leader.channel.dropped` (counter by channel and reason). Log
+events in `LeadershipEvents` (3400 to 3410). A throwing leadership-token
 cancellation callback is logged without preventing lease release or subsequent
 elections.
 
@@ -118,6 +159,10 @@ elections.
 Deterministic tests run two electors over one in-process lock and a fake clock
 (`LeadershipTests`): one leader, renewal past the lock's extension cap, a refused
 renewal handing over, resignation, stop, a provider outage, and listener order.
+`LeaderChannelTests` drive the channel with the scripted leadership and a fake
+clock: follower writes discarded and leader writes buffered, the full-mode drop
+counted apart, the summary cadence and its flush on acquisition and disposal,
+the meter by reason, and a completed channel refusing every writer.
 `RedisLeadershipTests` runs two electors over a real Redis and, behind
 `HOSTLOOM_REDIS_CHAOS=1`, cuts the leader's connection through a loopback proxy
 and measures the hand-over: the follower acquires when the server-side lease

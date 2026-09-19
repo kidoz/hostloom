@@ -36,6 +36,18 @@ The elector owns renewal instead of the lock's automatic extension, which stops 
 the lease. An unreachable lock provider makes nobody leader, is logged once per outage, and is
 retried on the candidate cadence.
 
+`LeaderChannel<T>` is a bounded channel gated on a role: producers on every instance write to
+it, a leader's items reach the reader, and a follower's are accepted and discarded. That keeps a
+warm standby current without letting it act. Drops are counted on the meter by reason
+(`follower` or `full`) and summarised in the log at most once per
+`LeaderChannel:DropReportInterval`, with the tail written when the instance becomes leader.
+
+```csharp
+var changes = new LeaderChannel<InventoryChange>("inventory-changes", leadership);
+await changes.Writer.WriteAsync(change);          // discarded unless this instance leads
+await foreach (var change in changes.Reader.ReadAllAsync(stoppingToken)) { ... }
+```
+
 `LeadershipProbe.Describe(elector)` reports the composition without executing anything. Metrics
 and activities live under the `HostLoom.Leadership` meter and activity source. Install
 `HostLoom.Leadership.DependencyInjection` to register electors by role, and

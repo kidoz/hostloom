@@ -77,7 +77,48 @@ builder.Services
 
 The leader runs every exclusive schedule; followers record `Skipped`.
 
-## 4. What happens when things fail
+## 4. Gate a producer on the leader
+
+When every instance consumes the same feed but only the leader may act on it,
+put a `LeaderChannel<T>` between the consumer and the actor. Every instance
+writes; only the leader's items reach the reader.
+
+```csharp
+builder.Services.AddSingleton(provider => new LeaderChannel<InventoryChange>(
+    "inventory-changes",
+    provider.GetRequiredService<ILeadership>(),
+    new LeaderChannelOptions { Capacity = 10_000 },
+    provider.GetRequiredService<ILogger<LeaderChannel<InventoryChange>>>()));
+```
+
+```csharp
+public sealed class InventoryChangeConsumer(LeaderChannel<InventoryChange> changes)
+    : IEventHandler<InventoryChanged>
+{
+    public ValueTask HandleAsync(InventoryChanged @event, CancellationToken cancellationToken) =>
+        changes.Writer.WriteAsync(@event.Change, cancellationToken);   // discarded on a follower
+}
+
+public sealed class InventoryChangeActor(LeaderChannel<InventoryChange> changes, Inventory inventory)
+    : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        await foreach (var change in changes.Reader.ReadAllAsync(stoppingToken))
+        {
+            await inventory.ApplyAsync(change, stoppingToken);
+        }
+    }
+}
+```
+
+A follower's write is accepted and discarded, not refused, so the consumer
+needs no leadership check of its own. Discards are counted on
+`hostloom.leader.channel.dropped` and summarised in the log once per
+`LeaderChannel:DropReportInterval`; a full channel under the default
+`DropOldest` mode is reported as a warning.
+
+## 5. What happens when things fail
 
 | Condition | What happens |
 | --- | --- |
@@ -93,7 +134,7 @@ already hold the lease. It is bounded by the lease plus clock skew. Work that
 must stop when leadership ends honours the token; nothing else bounds a stale
 leader, and there is no fencing token a storage layer can check.
 
-## 5. Verify
+## 6. Verify
 
 ```text
 docker compose up -d --wait redis

@@ -35,7 +35,7 @@ recorded in `CHANGELOG.md`.
 | `HostLoom.Scheduling.DependencyInjection` | Schedule registration, per-run scopes, options validation, and hosting |
 | `HostLoom.Scheduling.Locking` | One-instance-runs guard over the HostLoom distributed lock |
 | `HostLoom.Scheduling.Testing` | Scripted schedule guard for tests |
-| `HostLoom.Leadership` | Lease-based leader election over the distributed lock, one elector per role, leadership token |
+| `HostLoom.Leadership` | Lease-based leader election over the distributed lock, one elector per role, leadership token, leader-gated channel |
 | `HostLoom.Leadership.DependencyInjection` | Roles keyed by name, options validation, and hosting for electors |
 | `HostLoom.Leadership.Testing` | Scripted `ILeadership` for leader-only consumers |
 | `HostLoom.Scheduling.Leadership` | Runs exclusive schedules on the elected leader only |
