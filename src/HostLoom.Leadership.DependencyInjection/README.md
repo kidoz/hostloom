@@ -32,8 +32,17 @@ public sealed class ReconcilerLoop(ILeadership leadership) : BackgroundService
         while (!stoppingToken.IsCancellationRequested)
         {
             await leadership.WaitForLeadershipAsync(stoppingToken);
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, leadership.LeadershipToken);
-            await RunWhileLeaderAsync(linked.Token);   // returns when leadership ends
+            var leadershipToken = leadership.LeadershipToken;
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                stoppingToken, leadershipToken);
+            try
+            {
+                await RunWhileLeaderAsync(linked.Token);
+            }
+            catch (OperationCanceledException) when (leadershipToken.IsCancellationRequested)
+            {
+                // Lost this term; wait to lead again.
+            }
         }
     }
 }

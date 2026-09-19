@@ -109,7 +109,9 @@ guard per service collection.
 Meter and activity source `HostLoom.Leadership`, tagged `hostloom.leader.role`:
 `hostloom.leader.is_leader` (gauge), `hostloom.leader.changes` (counter by
 reason), and `hostloom.leader.renew.duration` (histogram by outcome). Log
-events in `LeadershipEvents` (3400 to 3407).
+events in `LeadershipEvents` (3400 to 3408). A throwing leadership-token
+cancellation callback is logged without preventing lease release or subsequent
+elections.
 
 ## Evidence
 

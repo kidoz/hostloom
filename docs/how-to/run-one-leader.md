@@ -41,13 +41,14 @@ public sealed class ReconcilerLoop(ILeadership leadership, Reconciler reconciler
         while (!stoppingToken.IsCancellationRequested)
         {
             await leadership.WaitForLeadershipAsync(stoppingToken);
+            var leadershipToken = leadership.LeadershipToken;
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-                stoppingToken, leadership.LeadershipToken);
+                stoppingToken, leadershipToken);
             try
             {
                 await reconciler.RunAsync(linked.Token);   // returns when leadership ends
             }
-            catch (OperationCanceledException) when (leadership.LeadershipToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (leadershipToken.IsCancellationRequested)
             {
                 // Lost the role; wait to lead again.
             }
@@ -55,6 +56,10 @@ public sealed class ReconcilerLoop(ILeadership leadership, Reconciler reconciler
     }
 }
 ```
+
+Capture the token for each run: the elector may acquire a new term before the
+previous run finishes handling cancellation. Catch cancellation from that captured
+token so the loop can resume on the next term.
 
 With several roles, inject `[FromKeyedServices("reconciler")] ILeadership`.
 
