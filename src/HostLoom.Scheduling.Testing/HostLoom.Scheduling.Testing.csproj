@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Scripted schedule guard and claim recording for testing HostLoom scheduling consumers without a backend.</Description>
+    <PackageId>HostLoom.Scheduling.Testing</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>hostloom;scheduling;scheduler;testing;aot</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HostLoom.Scheduling/HostLoom.Scheduling.csproj" />
+  </ItemGroup>
+</Project>

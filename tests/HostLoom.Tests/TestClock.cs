@@ -42,6 +42,18 @@ internal sealed class TestClock : TimeProvider
         return timer;
     }
 
+    /// <summary>Timers registered and not yet fired, so a test can wait for a loop to arm one.</summary>
+    public int PendingTimers
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _timers.Count;
+            }
+        }
+    }
+
     public void Advance(TimeSpan delta)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(delta, TimeSpan.Zero);
