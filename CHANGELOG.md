@@ -56,7 +56,10 @@ are derived from release tags at publish time.
   key. Drops are counted on `hostloom.leader.channel.dropped` by channel and reason (`follower`
   or `full`) and summarised in the log at most once per interval, with the tail flushed when the
   instance becomes leader and on disposal: `LeaderChannelFollowerDropped` (3409) at Information
-  and `LeaderChannelFull` (3410) at Warning.
+  and `LeaderChannelFull` (3410) at Warning. Fault tests feed a channel on each of two electors
+  through a refused renewal, a provider outage, racing writers, a throwing listener, and
+  disposal mid-term, and a real-Redis case with the leader cut off measures the items that land
+  on both instances against the lease.
 - Two-elector tests over the in-process lock and a fake clock, and a real-Redis test plus an
   opt-in outage experiment that measures the hand-over window against the lease.
 - A transactional outbox in `HostLoom`: `IOutboxStore` (append inside the caller's unit of work,

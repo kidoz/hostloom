@@ -146,6 +146,13 @@ The chaos case cuts the leader's connection through a loopback proxy, waits for
 the follower to take the lease, restores the connection, and asserts the
 overlap between the old belief and the new lease is shorter than one lease.
 
+To see the channel of step 4 under the same cut, add `RedisLeaderChannelTests`
+to the filter. A producer writes to both instances throughout; the items that
+land on both span less than one lease, items on neither were written while
+nobody led, and everything after the follower acquired lands on the follower
+alone. Without Redis, `LeaderChannelChaosTests` in the unit suite proves the
+same accounting over the in-process lock with a fake clock.
+
 ## Related
 
 - [Leadership reference](../reference/leadership.md)

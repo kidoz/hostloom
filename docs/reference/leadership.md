@@ -163,6 +163,18 @@ renewal handing over, resignation, stop, a provider outage, and listener order.
 clock: follower writes discarded and leader writes buffered, the full-mode drop
 counted apart, the summary cadence and its flush on acquisition and disposal,
 the meter by reason, and a completed channel refusing every writer.
+`LeaderChannelChaosTests` put a channel on each of two real electors over the
+in-process lock and feed both from one producer under injected faults: a
+refused renewal moves the feed to the new leader with no item on both and the
+no-leader gap counted, a provider outage during candidacy discards every write
+and the first term reports the tail, four writers racing fifty leadership flips
+never fail and every item is buffered or counted, a listener that throws ahead
+of the channel does not lose its summary, and a channel disposed mid-term stays
+gated. `RedisLeaderChannelTests` repeats the feed over a real Redis with a
+graceful hand-over and, behind `HOSTLOOM_REDIS_CHAOS=1`, with the leader cut
+off: the items that land on both instances span less than one lease, items on
+neither were written while nobody led, and everything after the follower's
+acquisition lands on the follower alone.
 `RedisLeadershipTests` runs two electors over a real Redis and, behind
 `HOSTLOOM_REDIS_CHAOS=1`, cuts the leader's connection through a loopback proxy
 and measures the hand-over: the follower acquires when the server-side lease
