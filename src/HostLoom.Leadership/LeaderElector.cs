@@ -371,7 +371,7 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
             while (true)
             {
                 await Task.Delay(Options.RenewInterval, _clock, linked.Token).ConfigureAwait(false);
-                if (!await RenewAsync(handle, stopping).ConfigureAwait(false))
+                if (!await RenewAsync(handle, linked.Token).ConfigureAwait(false))
                 {
                     reason = LeadershipChangeReason.Lost;
                     break;
@@ -395,7 +395,7 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
         return reason;
     }
 
-    private async Task<bool> RenewAsync(ILockHandle handle, CancellationToken stopping)
+    private async Task<bool> RenewAsync(ILockHandle handle, CancellationToken cancellationToken)
     {
         var start = _clock.GetTimestamp();
         string outcome;
@@ -403,10 +403,12 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
         try
         {
             // A provider failure is logged by the lock and reported as false, never thrown.
-            renewed = await handle.ExtendAsync(Options.Lease, stopping).ConfigureAwait(false);
+            renewed = await handle
+                .ExtendAsync(Options.Lease, cancellationToken)
+                .ConfigureAwait(false);
             outcome = renewed ? "renewed" : "refused";
         }
-        catch (OperationCanceledException) when (stopping.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
@@ -473,8 +475,23 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
 
         if (leaderToken is not null)
         {
-            await leaderToken.CancelAsync().ConfigureAwait(false);
-            leaderToken.Dispose();
+            try
+            {
+                await leaderToken.CancelAsync().ConfigureAwait(false);
+            }
+            catch (AggregateException exception)
+            {
+                _logger.LogWarning(
+                    LeadershipEvents.CancellationCallbackFailed,
+                    exception,
+                    "A leadership cancellation callback for role '{Role}' threw; the lease will still be released and the elector continues.",
+                    Role
+                );
+            }
+            finally
+            {
+                leaderToken.Dispose();
+            }
         }
 
         // A refused release is reported by the lock as a lost lease, never thrown.

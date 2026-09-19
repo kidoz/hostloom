@@ -28,4 +28,10 @@ public static class LeadershipEvents
 
     /// <summary>Warning: a change listener threw; the elector continues.</summary>
     public static readonly EventId ListenerFailed = new(3407, "LeadershipListenerFailed");
+
+    /// <summary>Warning: a leadership token cancellation callback threw; cleanup and election continue.</summary>
+    public static readonly EventId CancellationCallbackFailed = new(
+        3408,
+        "LeadershipCancellationCallbackFailed"
+    );
 }
