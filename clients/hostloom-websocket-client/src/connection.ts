@@ -460,8 +460,7 @@ export class HostLoomConnection {
             return Promise.reject(asError(error));
         }
 
-        let controller: SubscriptionController;
-        controller = new SubscriptionController({
+        const controller: SubscriptionController = new SubscriptionController({
             streamId,
             topic,
             key: options.key,

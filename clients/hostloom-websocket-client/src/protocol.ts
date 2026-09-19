@@ -361,7 +361,7 @@ function validateProvidedProperties(frame: JsonObject): void {
 
     if (Object.hasOwn(frame, "payload")) {
         const payload = frame.payload as string;
-        if (payload.length % 4 !== 0 || BASE64_PATTERN.exec(payload)?.[0] !== payload) {
+        if (payload.length % 4 !== 0 || !BASE64_PATTERN.test(payload)) {
             throw new HostLoomProtocolError(
                 "The WebSocket frame property 'payload' must be a Base64 string.",
             );
