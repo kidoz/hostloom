@@ -34,4 +34,13 @@ public static class LeadershipEvents
         3408,
         "LeadershipCancellationCallbackFailed"
     );
+
+    /// <summary>Information, at most once per report interval: a leader channel discarded items written while this instance was not leading.</summary>
+    public static readonly EventId ChannelFollowerDropped = new(
+        3409,
+        "LeaderChannelFollowerDropped"
+    );
+
+    /// <summary>Warning, at most once per report interval: a leader channel was full and dropped items.</summary>
+    public static readonly EventId ChannelFull = new(3410, "LeaderChannelFull");
 }

@@ -22,6 +22,18 @@ public static class LeadershipDiagnostics
     /// <summary>Tag on <c>hostloom.leader.renew.duration</c>: <c>renewed</c>, <c>refused</c>, or <c>failed</c>.</summary>
     public const string OutcomeTag = "hostloom.leader.outcome";
 
+    /// <summary>Tag on <c>hostloom.leader.channel.dropped</c>: the <see cref="LeaderChannel{T}"/> name.</summary>
+    public const string ChannelTag = "hostloom.leader.channel";
+
+    /// <summary>Tag on <c>hostloom.leader.channel.dropped</c>: <see cref="FollowerDrop"/> or <see cref="FullDrop"/>.</summary>
+    public const string DropReasonTag = "hostloom.leader.channel.reason";
+
+    /// <summary><see cref="DropReasonTag"/> value: the item was written while this instance was not leading.</summary>
+    public const string FollowerDrop = "follower";
+
+    /// <summary><see cref="DropReasonTag"/> value: the channel was full and its full mode dropped an item.</summary>
+    public const string FullDrop = "full";
+
     internal static readonly ActivitySource ActivitySource = new(ActivitySourceName);
 
     private static readonly Meter Meter = new(MeterName);
@@ -38,6 +50,12 @@ public static class LeadershipDiagnostics
         "hostloom.leader.renew.duration",
         "s",
         "Time a lease renewal took, by outcome."
+    );
+
+    internal static readonly Counter<long> ChannelDropped = Meter.CreateCounter<long>(
+        "hostloom.leader.channel.dropped",
+        "{item}",
+        "Items a leader channel discarded, by reason."
     );
 
     // Declared after Meter and Electors on purpose: static initialisers run in textual order.
