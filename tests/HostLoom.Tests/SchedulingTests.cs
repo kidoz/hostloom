@@ -214,9 +214,16 @@ public sealed class SchedulingTests
         await WaitUntilAsync(() => clock.PendingTimers == 1);
 
         Assert.Equal(2, run.Sequence);
-        Assert.Equal(ScheduleRunOutcome.Succeeded, scheduler.GetState("nightly").LastOutcome);
-        Assert.Empty(guard.Active);
+        var state = scheduler.GetState("nightly");
+        Assert.Equal(ScheduleRunOutcome.Succeeded, state.LastOutcome);
         Assert.True(guard.Claims[^1].Granted);
+        // The claim outlives the run: another instance reaching this occurrence is refused until
+        // the lease ends or this one's next occurrence is due, whichever comes first.
+        Assert.Contains("nightly", guard.Active);
+        Assert.Equal(run.StartedAt + TimeSpan.FromMinutes(2), state.ClaimHeldUntil);
+        clock.Advance(TenSeconds);
+        _ = await probe.NextRunAsync();
+        Assert.Equal(3, guard.Claims.Count);
     }
 
     [Fact]

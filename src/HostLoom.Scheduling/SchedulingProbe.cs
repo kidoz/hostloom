@@ -54,6 +54,7 @@ public static class SchedulingProbe
                         + $"; timeout = {(options.Timeout is { } t ? t.ToString() : "none")}"
                         + $"; next due = {(state.NextDue is { } due ? due.ToString("O", invariant) : state.Running ? "(running)" : "(not scheduled)")}"
                         + $"; last outcome = {(state.LastOutcome is { } outcome ? SchedulingDiagnostics.OutcomeName(outcome) : "(none)")}"
+                        + $"{(state.ClaimHeldUntil is { } held ? $"; claim held until {held.ToString("O", invariant)}" : "")}"
                 )
             );
         }

@@ -10,7 +10,13 @@ public sealed class ScheduleOptions
     /// </summary>
     public bool Exclusive { get; set; }
 
-    /// <summary>How long an exclusive claim is held before the guard lets it expire. Default: <see cref="SchedulingOptions.DefaultLease"/>.</summary>
+    /// <summary>
+    /// How long other instances are refused after this one claims an occurrence. The claim is kept
+    /// past the run until the lease ends or this instance's next occurrence is due, whichever
+    /// comes first, so a slower instance reaching the same occurrence is refused rather than
+    /// running it again. Choose at least the clock skew between instances plus the run's
+    /// duration, and no more than the schedule's period. Default: <see cref="SchedulingOptions.DefaultLease"/>.
+    /// </summary>
     public TimeSpan? Lease { get; set; }
 
     /// <summary>

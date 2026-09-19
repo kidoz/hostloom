@@ -223,6 +223,8 @@ public sealed class Scheduler : IAsyncDisposable
         private ScheduleRunOutcome? _lastOutcome;
         private DateTimeOffset? _lastStartedAt;
         private DateTimeOffset? _lastCompletedAt;
+        private IScheduleClaim? _heldClaim;
+        private DateTimeOffset _heldUntil;
 
         public ScheduleDefinition Definition { get; } = definition;
 
@@ -237,7 +239,8 @@ public sealed class Scheduler : IAsyncDisposable
                     _runs,
                     _lastOutcome,
                     _lastStartedAt,
-                    _lastCompletedAt
+                    _lastCompletedAt,
+                    _heldClaim is null ? null : _heldUntil
                 );
             }
         }
@@ -256,6 +259,7 @@ public sealed class Scheduler : IAsyncDisposable
                     var due = Definition.Trigger.GetNextDue(now, history);
                     if (due is null)
                     {
+                        await ReleaseHeldClaimAsync().ConfigureAwait(false);
                         SetNextDue(null);
                         if (logger.IsEnabled(LogLevel.Information))
                         {
@@ -289,15 +293,29 @@ public sealed class Scheduler : IAsyncDisposable
                     var remaining = due.Value - now;
                     while (remaining > TimeSpan.Zero)
                     {
-                        await Task.Delay(
-                                remaining > MaxWaitChunk ? MaxWaitChunk : remaining,
-                                clock,
-                                stopping
-                            )
-                            .ConfigureAwait(false);
+                        var wait = remaining > MaxWaitChunk ? MaxWaitChunk : remaining;
+                        if (_heldClaim is not null)
+                        {
+                            // The claim is kept past the run so a slower instance that reaches
+                            // the same occurrence is refused; it goes at the lease end.
+                            var untilRelease = _heldUntil - clock.GetUtcNow();
+                            if (untilRelease <= TimeSpan.Zero)
+                            {
+                                await ReleaseHeldClaimAsync().ConfigureAwait(false);
+                            }
+                            else if (untilRelease < wait)
+                            {
+                                wait = untilRelease;
+                            }
+                        }
+
+                        await Task.Delay(wait, clock, stopping).ConfigureAwait(false);
                         remaining = due.Value - clock.GetUtcNow();
                     }
 
+                    // Never across an occurrence: a claim this instance still held would refuse
+                    // its own next run as surely as another instance's.
+                    await ReleaseHeldClaimAsync().ConfigureAwait(false);
                     var run = new ScheduledRun(
                         Definition.Name,
                         due.Value,
@@ -329,7 +347,23 @@ public sealed class Scheduler : IAsyncDisposable
             }
             finally
             {
+                await ReleaseHeldClaimAsync().ConfigureAwait(false);
                 SetNextDue(null);
+            }
+        }
+
+        private async ValueTask ReleaseHeldClaimAsync()
+        {
+            IScheduleClaim? claim;
+            lock (_gate)
+            {
+                claim = _heldClaim;
+                _heldClaim = null;
+            }
+
+            if (claim is not null)
+            {
+                await claim.DisposeAsync().ConfigureAwait(false);
             }
         }
 
@@ -404,17 +438,50 @@ public sealed class Scheduler : IAsyncDisposable
                 }
             }
 
+            var claimedAt = clock.GetUtcNow();
+            ScheduleRunOutcome outcome;
             try
             {
-                return await RunClaimedAsync(run, claim, nameTag, stopping).ConfigureAwait(false);
+                outcome = await RunClaimedAsync(run, claim, nameTag, stopping)
+                    .ConfigureAwait(false);
             }
-            finally
+            catch
             {
                 if (claim is not null)
                 {
                     await claim.DisposeAsync().ConfigureAwait(false);
                 }
+
+                throw;
             }
+
+            if (claim is null)
+            {
+                return outcome;
+            }
+
+            // The claim outlives the run until its lease ends, so an instance that reaches this
+            // occurrence later is refused rather than running it again. A claim that is no
+            // longer held, or a run cut short by stopping or loss, has nothing to keep.
+            var holdUntil = claimedAt + (options.Lease ?? scheduler.Options.DefaultLease);
+            if (
+                claim.IsHeld
+                && outcome is not (ScheduleRunOutcome.Canceled or ScheduleRunOutcome.ClaimLost)
+                && holdUntil > clock.GetUtcNow()
+            )
+            {
+                lock (_gate)
+                {
+                    _heldClaim = claim;
+                    _heldUntil = holdUntil;
+                }
+            }
+            else
+            {
+                await claim.DisposeAsync().ConfigureAwait(false);
+            }
+
+            return outcome;
         }
 
         private async ValueTask<ScheduleRunOutcome> RunClaimedAsync(

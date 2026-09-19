@@ -8,6 +8,10 @@ namespace HostLoom.Scheduling;
 /// <param name="LastOutcome">How the most recent run ended, or <see langword="null"/> before the first.</param>
 /// <param name="LastStartedAt">When the most recent run started.</param>
 /// <param name="LastCompletedAt">When the most recent run ended.</param>
+/// <param name="ClaimHeldUntil">
+/// For an exclusive schedule, when the claim kept after the last run is released, or
+/// <see langword="null"/> when none is held. Other instances are refused until then.
+/// </param>
 public sealed record ScheduleState(
     string Name,
     DateTimeOffset? NextDue,
@@ -15,5 +19,6 @@ public sealed record ScheduleState(
     long Runs,
     ScheduleRunOutcome? LastOutcome,
     DateTimeOffset? LastStartedAt,
-    DateTimeOffset? LastCompletedAt
+    DateTimeOffset? LastCompletedAt,
+    DateTimeOffset? ClaimHeldUntil
 );

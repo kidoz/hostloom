@@ -181,10 +181,15 @@ public sealed class SchedulingRegistrationTests
         );
         clock.Advance(TenSeconds);
         await log.WaitForRunsAsync(1);
-        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 1);
+        await SchedulingTests.WaitUntilAsync(() =>
+            scheduler.GetState("nightly").NextDue is not null
+        );
 
-        Assert.Equal(ScheduleRunOutcome.Succeeded, scheduler.GetState("nightly").LastOutcome);
-        Assert.Equal(0, lockProvider.Count);
+        var state = scheduler.GetState("nightly");
+        Assert.Equal(ScheduleRunOutcome.Succeeded, state.LastOutcome);
+        // Held for the one-minute lease: the lock key stays taken and the lease timers are armed.
+        Assert.Equal(1, lockProvider.Count);
+        Assert.NotNull(state.ClaimHeldUntil);
         Assert.Equal("schedule:nightly", DistributedLockScheduleGuard.KeyFor("nightly"));
     }
 

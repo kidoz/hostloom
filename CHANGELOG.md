@@ -17,7 +17,11 @@ are derived from release tags at publish time.
   that runs each schedule as one sequential loop over `TimeProvider` with per-run timeout, typed
   outcomes, state, an execution-free probe, and the `HostLoom.Scheduling` meter and activity
   source. A late run starts at once and missed occurrences are not replayed; a failed run is
-  logged and the schedule continues.
+  logged and the schedule continues. An exclusive schedule keeps its claim past the run until the
+  lease ends or its next occurrence is due, so a slower instance reaching the same occurrence is
+  refused; `ScheduleState.ClaimHeldUntil` reports the hold. Two-instance cluster tests cover
+  local and exclusive schedules, hand-over on stop, a lock backend outage, and a lost lease, and a
+  real-Redis contention test plus an opt-in outage experiment run in the integration suite.
 - `IScheduleGuard`, the contract that runs an `Exclusive` schedule on one instance at a time:
   a claim is granted or refused at once, a refused claim skips the run, and a guard failure
   skips it as `GuardFailed` rather than running unguarded.
