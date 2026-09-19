@@ -13,6 +13,7 @@
     <ProjectReference Include="../../src/HostLoom.Transport.RabbitMq/HostLoom.Transport.RabbitMq.csproj" />
     <ProjectReference Include="../../src/HostLoom.Valkey/HostLoom.Valkey.csproj" />
     <ProjectReference Include="../../src/HostLoom.Redis/HostLoom.Redis.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Leadership/HostLoom.Leadership.csproj" />
     <ProjectReference Include="../../src/HostLoom.Scheduling/HostLoom.Scheduling.csproj" />
     <ProjectReference Include="../../src/HostLoom.Scheduling.Locking/HostLoom.Scheduling.Locking.csproj" />
     <ProjectReference Include="../HostLoom.Conformance/HostLoom.Conformance.csproj" />
