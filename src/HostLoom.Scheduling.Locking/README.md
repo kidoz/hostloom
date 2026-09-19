@@ -20,9 +20,11 @@ services
 `DistributedLockScheduleGuard` is an `IScheduleGuard` over `IDistributedLock`. Each run of an
 exclusive schedule makes one skip-if-busy acquisition of the key `schedule:{name}` for the
 schedule's lease (`ScheduleOptions.Lease`, else `Scheduling:DefaultLease`), so the lock's
-namespace, provider, and `Locking:MaxLease` apply. The lease is extended automatically while the
-run lasts, up to `Locking:MaxHold`; a run that outlives that bound loses its claim, and the
-claim's lost token cancels it. A lock provider that cannot be reached throws, and the scheduler
+namespace, provider, and `Locking:MaxLease` apply. The scheduler keeps the claim past the run
+until the lease ends or its own next occurrence is due, so another instance reaching the same
+occurrence is refused. The lease is extended automatically while the claim is held, up to
+`Locking:MaxHold`; a run that outlives that bound loses its claim, and the claim's lost token
+cancels it. An instance that crashes leaves its key to expire at the lease end. A lock provider that cannot be reached throws, and the scheduler
 skips that run as `GuardFailed` rather than running unguarded.
 
 The guard composes without a container, `new DistributedLockScheduleGuard(distributedLock)`, for

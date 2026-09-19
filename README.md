@@ -576,9 +576,17 @@ public sealed class RebuildCatalogJob(CatalogService catalog) : IScheduledJob
 
 A job is resolved from a fresh dependency-injection scope for every run, so it takes scoped
 dependencies through its constructor like a request handler. The token it receives is cancelled
-when the host stops, when the schedule's timeout elapses, or when an exclusive claim is lost. The
-kernel composes with `new` and reports its schedules through `SchedulingProbe`; see the
-[scheduling reference](docs/reference/scheduling.md).
+when the host stops, when the schedule's timeout elapses, or when an exclusive claim is lost.
+
+Local or cluster is decided per schedule. A schedule without `Exclusive` runs on every instance,
+each on its own clock. An `Exclusive` schedule runs on exactly one instance per occurrence: the
+claim is kept past the run until the lease ends or that instance's next occurrence is due, so an
+instance whose clock runs a little behind finds the claim taken and skips instead of running the
+job again. When the lock backend is unreachable the job runs nowhere and every instance records
+`GuardFailed`, because nobody can tell whether another instance already runs it. The kernel
+composes with `new` and reports its schedules through `SchedulingProbe`; see the
+[scheduling reference](docs/reference/scheduling.md) and
+[Run a schedule on every instance or on one](docs/how-to/schedule-on-one-instance.md).
 
 ## Logging
 

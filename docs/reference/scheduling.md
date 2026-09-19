@@ -68,7 +68,7 @@ running anything.
 | Property | Meaning |
 | --- | --- |
 | `Exclusive` | claim the schedule through the guard before every run; requires a guard |
-| `Lease` | how long a claim is held; defaults to `Scheduling:DefaultLease` |
+| `Lease` | how long other instances are refused after a claim, kept past the run up to the next occurrence; defaults to `Scheduling:DefaultLease` |
 | `Timeout` | cancel the run's token after this long; default none |
 
 ## Configuration (`SchedulingOptions`)
@@ -82,6 +82,20 @@ running anything.
 constructor throws with the same text, so a container-free composition fails as
 a hosted one does. The constructor also rejects a repeated schedule name and an
 exclusive schedule composed without a guard.
+
+## Local and cluster schedules
+
+A schedule without `Exclusive` runs on every instance that hosts it, each on
+its own clock. An `Exclusive` schedule runs on one instance per occurrence:
+every instance claims the schedule through the guard before the run, and a
+refused claim skips that occurrence. The claim is kept past the run until the
+lease ends or this instance's next occurrence is due, whichever comes first,
+so an instance reaching the same occurrence a little later is refused rather
+than running it again; `ScheduleState.ClaimHeldUntil` and the probe report the
+hold. There is no leader election and no affinity. When the guard throws, the
+job runs on no instance. See
+[Run a schedule on every instance or on one](../how-to/schedule-on-one-instance.md)
+for the failure table and the verification steps.
 
 ## The guard (`IScheduleGuard`)
 
