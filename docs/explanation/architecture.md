@@ -100,7 +100,8 @@ beside the registration it describes.
 ## Where it is heading
 
 The roadmap runs toward the Spring analogy: hardened delivery policies,
-outbox/inbox, starter packages with conditional auto-configuration over
+starter packages with conditional auto-configuration over
 `Microsoft.Extensions.*`, validation and observability starters, and
-AOT-safe compile-time registration. The current slice is intentionally a
+AOT-safe compile-time registration. The transactional outbox, the
+idempotent inbox, and scheduled jobs are the first steps taken. The current slice is intentionally a
 small foundation laid carefully.

@@ -91,6 +91,80 @@ Filters registered with `ConfigureReceivePipeline` observe:
 | `RequestReceiveContext` | — |
 | `EventReceiveContext` | adds `string Subscription` |
 
+## Outbox
+
+`UseOutbox<TStore>()` routes every `IPublishEndpoint.PublishAsync` through an
+`IOutboxStore` instead of the transport, and starts a relay with the host that
+publishes what the store holds. The endpoint encodes the same envelope a direct
+publish would send, appends it from the caller's dependency-injection scope, and
+wakes the relay. Publishing completes when the append does.
+
+| `IOutboxStore` member | Contract |
+| --- | --- |
+| `AppendAsync(message, ct)` | store as pending, inside the caller's unit of work when the store has one |
+| `ClaimAsync(batchSize, lease, ct)` | the oldest pending messages not under an unexpired lease, leased and in enqueue order; atomic against concurrent relays |
+| `MarkPublishedAsync(id, ct)` | never claimed again |
+| `MarkFailedAsync(id, error, ct)` | record the error, increment `Attempts`, release the lease |
+
+`OutboxMessage` carries `MessageId`, `Topic`, `MessageType`, the encoded
+`Frame`, `EnqueuedAt`, and `Attempts`. Register the store scoped (the default)
+when it writes through the same unit of work as the handlers, which is what
+makes the outbox transactional; the relay resolves it from a scope of its own
+per call. `UseInMemoryOutbox()` supplies a per-process store that joins no
+transaction, for tests and single-process deployments.
+
+The relay (`OutboxRelay`, also constructible with `new` for a manual relay)
+drains when woken and every `Outbox:PollInterval` regardless, so a message
+committed after the wake or appended by another process is still relayed.
+Within a drain it claims `Outbox:BatchSize` messages under an
+`Outbox:ClaimLease`, publishes each frame unchanged through the transport's
+`IEventBroker`, and marks it. A publish that fails leaves the message pending
+with its error; the rest of the batch still goes out, and the drain stops after
+that batch. Delivery is at-least-once: a relay that dies between publishing and
+marking lets the next claim publish again after the lease.
+
+| Key | Default |
+| --- | --- |
+| `Outbox:PollInterval` | 5 seconds |
+| `Outbox:BatchSize` | 100 |
+| `Outbox:ClaimLease` | 1 minute |
+
+A transport without publish/subscribe fails the host at startup, as it does for
+a subscription. Metrics: `hostloom.outbox.published`, `hostloom.outbox.failed`,
+and `hostloom.outbox.lag`; log events in `OutboxEvents` (3300 to 3303).
+
+## Inbox
+
+`UseInbox<TStore>(window)`, `UseInbox(provider => store, window)`, and
+`UseInMemoryInbox(window)` append the `InboxFilter` to the receive pipeline at
+that point in registration order. Before an event's handlers run, the filter
+records `{topic}:{subscription}:{messageId}` with the `IInboxStore` for the
+window; a key already present marks the delivery with an `InboxDuplicate`
+payload and skips the handlers. Requests pass through untouched, because a
+request that is not answered leaves its caller waiting for a timeout.
+
+`IInboxStore` has one member, `TryRecordAsync(key, window, ct)`, the atomic
+set-if-absent every idempotency store reduces to. `InboxStore.FromClaim`
+wraps a delegate, so a cache's set-if-absent with the key as its own value is
+a store:
+
+```csharp
+.UseInbox(
+    provider => InboxStore.FromClaim((key, window, token) =>
+        provider.GetRequiredService<ICache>().SetIfAbsentAsync(
+            key, key, new CacheEntryOptions(window) { OnUnavailable = UnavailableBehavior.Throw }, token)),
+    TimeSpan.FromDays(1))
+```
+
+A store that throws lets the handlers run with an `InboxSkipped` payload on the
+context and a warning in the log: processing twice is recoverable, dropping a
+delivery on an outage is not. The key is recorded before processing, so a run
+that fails after recording is not repeated by a later redelivery inside the
+window; register `UseInbox` before a `ConfigureReceivePipeline` that adds
+`UseRetry` when a failed run should be retried in process. The filter reports
+itself in the receive-pipeline probe as `inbox` with its window and store.
+Metric: `hostloom.inbox.duplicates`; log events in `InboxEvents` (3310, 3311).
+
 ## Cancellation and concurrency
 
 - Every handler, behavior, and client method takes a `CancellationToken`;

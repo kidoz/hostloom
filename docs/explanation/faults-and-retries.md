@@ -63,9 +63,18 @@ processes), not a breaker setting.
 
 ## Where the guarantees stop
 
-HostLoom's current slice does not yet include dead-letter behaviors,
-outbox/inbox, or delivery policies beyond the receive pipeline — they are
-on the roadmap. Until then, plan poison-message handling around the
-broker's own redelivery and dead-letter configuration rather than
-assuming framework support that does not yet exist — this page states the
-boundary so that plan can be made deliberately.
+HostLoom's current slice does not yet include dead-letter behaviors or
+delivery policies beyond the receive pipeline — they are on the roadmap.
+Until then, plan poison-message handling around the broker's own
+redelivery and dead-letter configuration rather than assuming framework
+support that does not yet exist — this page states the boundary so that
+plan can be made deliberately.
+
+What the slice does include is the pair that makes at-least-once delivery
+safe to build on: the transactional outbox, which stores an event with the
+business change and relays it afterwards, and the inbox, which runs a
+redelivered event's handlers once per subscription inside a window. See
+[Outbox](../reference/messaging.md#outbox) and
+[Inbox](../reference/messaging.md#inbox). Neither changes what a broker
+guarantees: the outbox relay itself delivers at least once, and the inbox
+is what absorbs the duplicate.

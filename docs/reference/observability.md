@@ -42,6 +42,10 @@ Tagged by destination and message type.
 | `hostloom.request.active` | up-down counter | In-flight requests |
 | `hostloom.request.faults` | counter | Failed requests |
 | `hostloom.request.retries` | counter | Receive-pipeline retry attempts |
+| `hostloom.outbox.published` | counter | Outbox messages the relay published and marked, tagged `messaging.destination.name` |
+| `hostloom.outbox.failed` | counter | Outbox publish attempts that failed and left the message pending |
+| `hostloom.outbox.lag` | histogram (s) | Time between appending an outbox message and publishing it |
+| `hostloom.inbox.duplicates` | counter | Redelivered events the inbox recognised, tagged destination and `messaging.consumer.group.name` |
 
 ## Pipeline instruments (`HostLoom.Pipelines`)
 

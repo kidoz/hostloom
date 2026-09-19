@@ -32,6 +32,8 @@ implements:
 - typed `IEvent` contracts published to a topic and fanned out to named
   subscriptions;
 - a configurable receive pipeline wrapping handler execution on every transport;
+- a transactional outbox with a hosted relay and an idempotent inbox filter,
+  both over stores the application supplies or the in-memory references;
 - one dependency-injection scope per delivery attempt;
 - explicit wire envelopes carrying message id, correlation id, logical type
   name, timestamp, and remote faults;
@@ -253,6 +255,38 @@ A filter receives a `ReceiveContext`, which is a `RequestReceiveContext` or an
 the event form adds `Subscription`. One pipeline serves both, so a breaker
 tripped by failing requests also rejects events — a single verdict on whether
 this process should be taking work.
+
+## Reliable delivery: outbox and inbox
+
+A publish that runs after a database write can be lost between the two, and a broker that
+redelivers after a crash hands the same event to a handler twice. Spring Modulith answers both
+with an event publication registry and an idempotent consumer; HostLoom answers with an outbox on
+the publishing side and an inbox on the receiving side, both transport-neutral:
+
+```csharp
+builder.Services
+    .AddHostLoom()
+    .UseRabbitMq()
+    .UseOutbox<OrdersOutboxStore>()                  // IOutboxStore over the orders database
+    .UseInbox(
+        provider => InboxStore.FromClaim((key, window, token) =>
+            provider.GetRequiredService<ICache>().SetIfAbsentAsync(
+                key, key, new CacheEntryOptions(window) { OnUnavailable = UnavailableBehavior.Throw }, token)),
+        TimeSpan.FromDays(1))
+    .AddSubscriber<OrderPlaced, ShippingHandler>("orders", subscription: "shipping");
+```
+
+With the outbox on, `IPublishEndpoint.PublishAsync` encodes the same envelope a direct publish
+would send and appends it to the `IOutboxStore` from the caller's scope, so a store that writes
+through the handler's unit of work makes the event part of the business transaction. A relay
+hosted with the application claims pending messages in batches, publishes each frame unchanged
+through the transport, and marks it published; a publish that fails leaves the message pending
+with its error and attempt count for a later claim. Delivery is at-least-once, which is why the
+inbox exists: it records `{topic}:{subscription}:{messageId}` with an `IInboxStore` before the
+handlers run and skips a delivery it has seen inside the window. A store that cannot answer lets
+the handlers run and flags the delivery, because processing twice is recoverable and dropping is
+not. `UseInMemoryOutbox` and `UseInMemoryInbox` supply per-process stores for tests and
+single-process deployments. See the [messaging reference](docs/reference/messaging.md#outbox).
 
 ## Raw WebSocket gateway
 
@@ -952,8 +986,10 @@ tests/HostLoom.Analyzers.Tests/  compiler-level analyzer tests
 ## Roadmap toward a Spring-like framework
 
 1. Harden messaging: delivery policies, retry/dead-letter behaviors,
-   outbox/inbox, cross-process trace-context propagation, and source-generated
-   contract manifests.
+   cross-process trace-context propagation, and source-generated contract
+   manifests. The transactional outbox and the idempotent inbox exist; a
+   database-backed outbox store is the application's, with the contract and
+   the in-memory reference shipped.
 2. Close the two topology gaps this README names: partition-affine Kafka reply
    routing, and a WebSocket fan-out backplane with replayable subscriptions.
 3. Add starter packages and conditional auto-configuration over

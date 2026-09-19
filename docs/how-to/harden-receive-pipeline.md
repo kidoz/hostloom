@@ -49,6 +49,27 @@ pipe.Use(async (context, next) =>
 }, "receive-timing");
 ```
 
+## 2b. Absorb redeliveries with the inbox
+
+A broker that redelivers after a crash hands the same event to the handlers
+twice. `UseInbox` records each `(topic, subscription, message id)` before the
+handlers run and skips a delivery it has seen inside the window:
+
+```csharp
+builder.Services
+    .AddHostLoom()
+    .UseRabbitMq()
+    .UseInMemoryInbox(TimeSpan.FromDays(1))       // or UseInbox<TStore> over a shared store
+    .ConfigureReceivePipeline(pipe => pipe.UseRetry(RetryPolicy.Immediate(3)));
+```
+
+Register it before the retry: the key is recorded before processing, so a run
+that fails after recording is not repeated by a later redelivery, and the
+in-process retry is what gives a failed run another chance. A store that cannot
+answer lets the handlers run and leaves an `InboxSkipped` payload on the
+context. See [Inbox](../reference/messaging.md#inbox) for the store contract
+and the cache-backed one-liner.
+
 ## 3. Verify
 
 Make a handler throw and watch the retry: with the policy above, a
