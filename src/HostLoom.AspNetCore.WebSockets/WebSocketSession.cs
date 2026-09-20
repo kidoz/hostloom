@@ -577,6 +577,8 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                 HubFaultCodes.DuplicateStream,
                 "The subscription stream is already active."
             );
+            state.Stop(_outbound.Release);
+            state.InitializationFinished();
             return;
         }
 
@@ -595,6 +597,8 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             )
         )
         {
+            state.Stop(_outbound.Release);
+            state.InitializationFinished();
             Abort();
             return;
         }
@@ -699,6 +703,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         }
         finally
         {
+            state.InitializationFinished();
             _subscriptionTasks.TryRemove(state.StreamId, out _);
         }
     }

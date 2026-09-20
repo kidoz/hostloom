@@ -2,33 +2,46 @@ using System.Net.WebSockets;
 
 namespace HostLoom.AspNetCore.WebSockets;
 
-internal sealed class SubscriptionState(
-    Guid streamId,
-    string topic,
-    string? key,
-    int initialCredit,
-    CancellationToken cancellationToken = default
-)
+internal sealed class SubscriptionState
 {
+    public SubscriptionState(
+        Guid streamId,
+        string topic,
+        string? key,
+        int initialCredit,
+        CancellationToken cancellationToken = default
+    )
+    {
+        StreamId = streamId;
+        Topic = topic;
+        Key = key;
+        _credit = initialCredit;
+        _snapshotCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        SnapshotCancellationToken = _snapshotCancellation.Token;
+    }
+
     private readonly Lock _gate = new();
     private readonly Queue<OutboundFrame> _bufferedLiveEvents = [];
     private readonly SemaphoreSlim _creditAvailable = new(0, 1);
-    private readonly CancellationTokenSource _snapshotCancellation =
-        CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-    private int _credit = initialCredit;
+    private readonly CancellationTokenSource _snapshotCancellation;
+    private int _credit;
+    private bool _initializationFinished;
+    private bool _canceling;
+    private bool _sourceDisposed;
+    private bool _creditDisposed;
     private long _lastAcknowledged;
     private bool _initializing = true;
     private bool _stopped;
 
-    public Guid StreamId { get; } = streamId;
+    public Guid StreamId { get; }
 
-    public string Topic { get; } = topic;
+    public string Topic { get; }
 
-    public string? Key { get; } = key;
+    public string? Key { get; }
 
     public long LastAcknowledged => Interlocked.Read(ref _lastAcknowledged);
 
-    public CancellationToken SnapshotCancellationToken => _snapshotCancellation.Token;
+    public CancellationToken SnapshotCancellationToken { get; }
 
     public LiveEventDisposition AcceptLiveEvent(
         ByteBoundedOutboundQueue outbound,
@@ -127,15 +140,51 @@ internal sealed class SubscriptionState(
 
             _stopped = true;
             ReleaseBuffered(release, "subscription_stopped");
+            if (_initializationFinished)
+            {
+                DisposeFinishedResources();
+                return;
+            }
+            _canceling = true;
         }
 
         try
         {
             _snapshotCancellation.Cancel();
         }
-        catch (ObjectDisposedException)
+        finally
         {
-            // A completed subscription raced with session cleanup.
+            lock (_gate)
+            {
+                _canceling = false;
+                DisposeFinishedResources();
+            }
+        }
+    }
+
+    // Called by initialization's finally, or by the rejecting path when it never started.
+    public void InitializationFinished()
+    {
+        lock (_gate)
+        {
+            _initializationFinished = true;
+            DisposeFinishedResources();
+        }
+    }
+
+    private void DisposeFinishedResources()
+    {
+        if (!_initializationFinished || _canceling)
+            return;
+        if (!_sourceDisposed)
+        {
+            _snapshotCancellation.Dispose();
+            _sourceDisposed = true;
+        }
+        if (_stopped && !_creditDisposed)
+        {
+            _creditAvailable.Dispose();
+            _creditDisposed = true;
         }
     }
 
@@ -171,29 +220,34 @@ internal sealed class SubscriptionState(
             return false;
         }
 
-        while (true)
+        lock (_gate)
         {
-            var current = Volatile.Read(ref _credit);
-            if (amount > maximum - current)
-            {
+            if (_stopped)
                 return false;
-            }
-
-            if (Interlocked.CompareExchange(ref _credit, current + amount, current) == current)
+            while (true)
             {
-                if (current == 0 && Volatile.Read(ref _initializing))
+                var current = Volatile.Read(ref _credit);
+                if (amount > maximum - current)
                 {
-                    try
-                    {
-                        _creditAvailable.Release();
-                    }
-                    catch (SemaphoreFullException)
-                    {
-                        // A prior zero-to-positive transition already left a wake-up pending.
-                    }
+                    return false;
                 }
 
-                return true;
+                if (Interlocked.CompareExchange(ref _credit, current + amount, current) == current)
+                {
+                    if (current == 0 && Volatile.Read(ref _initializing))
+                    {
+                        try
+                        {
+                            _creditAvailable.Release();
+                        }
+                        catch (SemaphoreFullException)
+                        {
+                            // A prior zero-to-positive transition already left a wake-up pending.
+                        }
+                    }
+
+                    return true;
+                }
             }
         }
     }

@@ -103,6 +103,7 @@ are derived from release tags at publish time.
 - Valkey tag invalidation removes only snapshotted members, retaining concurrently added keys for
   later invalidation. Restricted cache ACLs now also need `SREM` permission.
 - Concurrent L1 mutations keep byte accounting consistent with the stored entries.
+- WebSocket subscription initialization and removal detach linked cancellation resources safely.
 
 ## [0.8.0] - 2026-09-19
 
