@@ -54,6 +54,9 @@ Native AOT. The Valkey service in `docker-compose.yml` listens on localhost:1637
 tests; those tests can be required with `HOSTLOOM_REQUIRE_VALKEY=1`.
 
 
+Tag invalidation uses `SREM` inside its script to remove processed tag members without losing
+concurrent additions. Include `SREM` in restricted cache command ACLs.
+
 ## Validate TLS, ACL and restart recovery
 
 On Linux or macOS, install Docker and OpenSSL, then run:

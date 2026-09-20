@@ -31,6 +31,15 @@ public sealed class ValkeyCacheStore : IDistributedCacheStore, ICacheStoreHealth
         return 1
         """
     );
+    private static readonly ValkeyScript RemoveTagMembers = new(
+        """
+        for i = 2, #KEYS do
+            redis.call('UNLINK', KEYS[i])
+            redis.call('SREM', KEYS[1], KEYS[i])
+        end
+        return #KEYS - 1
+        """
+    );
     private readonly ValkeyConnection _connection;
 
     /// <summary>Borrows a connection shared with locks and invalidation publishing.</summary>
@@ -224,19 +233,20 @@ public sealed class ValkeyCacheStore : IDistributedCacheStore, ICacheStoreHealth
             var members = reply.AsArray();
             foreach (var chunk in members.Chunk(500))
             {
+                // Remove only this snapshot's memberships. Deleting the entire index would
+                // orphan a different value tagged by a concurrent writer after SMEMBERS.
                 await _connection
-                    .ExecuteAsync(
-                        new ValkeyCommand(
-                            "UNLINK",
-                            [.. chunk.Select(static member => (ValkeyArgument)member.AsBytes())]
-                        ),
+                    .ScriptAsync(
+                        RemoveTagMembers,
+                        [
+                            tagKey,
+                            .. chunk.Select(static member => (ValkeyArgument)member.AsBytes()),
+                        ],
+                        [],
                         cancellationToken
                     )
                     .ConfigureAwait(false);
             }
-            await _connection
-                .ExecuteAsync(new ValkeyCommand("UNLINK", tagKey), cancellationToken)
-                .ConfigureAwait(false);
         }
         catch (Exception exception)
             when (!ValkeyFailures.IsCallerCancellation(exception, cancellationToken))

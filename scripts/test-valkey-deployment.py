@@ -196,7 +196,7 @@ def main() -> None:
         digest = hashlib.sha256(password.encode()).hexdigest()
         runtime = directory / "runtime"
         # Explicit commands plus key/channel patterns. No administrative commands, no default user.
-        commands = "+hello +ping +select +get +set +exists +pttl +pexpire +sadd +smembers +unlink +del +eval +evalsha +publish +subscribe +unsubscribe"
+        commands = "+hello +ping +select +get +set +exists +pttl +pexpire +sadd +smembers +srem +unlink +del +eval +evalsha +publish +subscribe +unsubscribe"
         (runtime / "users.acl").write_text(
             f"user default off\nuser catalog on #{digest} ~deployment-* &deployment-* -@all {commands}\n"
         )
