@@ -63,7 +63,7 @@ services:
     ports:
       - "127.0.0.1:6379:6379"
     # Keyspace notifications for the broadcast invalidation mode; harmless otherwise.
-    command: ["redis-server", "--notify-keyspace-events", "Kxe"]
+    command: ["redis-server", "--notify-keyspace-events", "Kg$$xe"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s

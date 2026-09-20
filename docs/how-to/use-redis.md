@@ -109,7 +109,9 @@ entries another instance simply overwrites, or the server expires, set
   on the server.
 - `Broadcast` subscribes to keyspace notifications for the namespace's
   entries, or for `Caching:Invalidation:KeyPrefixFilters` when set, and needs
-  `notify-keyspace-events Kxe` on the server.
+  `notify-keyspace-events Kg$xe` on the server (`g` for deletion, `$` for string writes,
+  `x`/`e` for expiry/eviction). Quote this value in shell commands; use `Kg$$xe` in Docker
+  Compose to preserve the literal `$`.
 
 `CachingProbe.Describe(cache)` reports the transport in effect. A mode that
 cannot be enabled falls back to the explicit channel and logs once.

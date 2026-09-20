@@ -14,7 +14,7 @@ namespace HostLoom.Redis;
 /// <see cref="CacheInvalidationOptions.Mode"/> adds one server-side transport: client tracking
 /// (<c>CLIENT TRACKING ON REDIRECT … BCAST PREFIX</c> to this process's subscriber connection,
 /// covering namespace entries populated by reads or writes) or keyspace notifications for
-/// the filtered prefixes (which need <c>notify-keyspace-events Kxe</c> on the server).
+/// the filtered prefixes (which need <c>notify-keyspace-events Kg$xe</c> on the server).
 /// <c>Auto</c> picks tracking on Redis 6.0 or later and broadcast below that.
 /// </summary>
 /// <remarks>
@@ -51,6 +51,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     private readonly List<Action<CacheInvalidation>> _handlers = [];
     private readonly CancellationTokenSource _disposal = new();
     private Task? _subscribing;
+    private Task? _disposing;
     private readonly SemaphoreSlim _trackingRefresh = new(0, 1);
     private readonly List<ChannelMessageQueue> _queues = [];
     private ChannelMessageQueue? _trackingQueue;
@@ -148,17 +149,18 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         }})";
 
     /// <inheritdoc />
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
         lock (_gate)
         {
-            if (_disposed != 0)
-            {
-                return;
-            }
             _disposed = 1;
+            _handlers.Clear();
+            return new ValueTask(_disposing ??= DisposeCoreAsync());
         }
+    }
 
+    private async Task DisposeCoreAsync()
+    {
         _connection.Restored -= OnRestored;
         _connection.SubscriptionRestored -= OnSubscriptionRestored;
         _connection.TopologyChanged -= OnTopologyChanged;
@@ -175,18 +177,16 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             }
         }
 
-        if (IsSubscribed && _connection.IsConnected)
+        // Queues belong to this channel even while the externally owned multiplexer
+        // is disconnected. Detach them so the SDK cannot restore them after disposal.
+        foreach (var queue in _queues)
         {
             try
             {
-                foreach (var queue in _queues)
-                {
-                    await queue.UnsubscribeAsync().ConfigureAwait(false);
-                }
+                await queue.UnsubscribeAsync().ConfigureAwait(false);
             }
-            catch (Exception exception) when (exception is not OperationCanceledException)
+            catch (Exception exception)
             {
-                // The subscription dies with the connection either way.
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
                     _logger.LogDebug(
@@ -197,6 +197,8 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
                 }
             }
         }
+        _queues.Clear();
+        IsSubscribed = false;
 
         lock (_gate)
         {
@@ -308,13 +310,13 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
                 var multiplexer = await _connection
                     .GetMultiplexerAsync(cancellationToken)
                     .ConfigureAwait(false);
-                var queue = await multiplexer
-                    .GetSubscriber()
-                    .SubscribeAsync(_channel)
-                    .WaitAsync(cancellationToken)
+                await SubscribeOwnedAsync(
+                        multiplexer.GetSubscriber(),
+                        _channel,
+                        OnExplicitMessage,
+                        cancellationToken
+                    )
                     .ConfigureAwait(false);
-                _queues.Add(queue);
-                queue.OnMessage(OnExplicitMessage);
                 IsSubscribed = true;
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
@@ -418,15 +420,13 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             {
                 if (_trackingQueue is null)
                 {
-                    _trackingQueue = await multiplexer
-                        .GetSubscriber()
-                        .SubscribeAsync(
-                            RedisChannel.Literal(RedisInvalidationDecoder.TrackingChannel)
+                    _trackingQueue = await SubscribeOwnedAsync(
+                            multiplexer.GetSubscriber(),
+                            RedisChannel.Literal(RedisInvalidationDecoder.TrackingChannel),
+                            OnTrackingMessage,
+                            cancellationToken
                         )
-                        .WaitAsync(cancellationToken)
                         .ConfigureAwait(false);
-                    _queues.Add(_trackingQueue);
-                    _trackingQueue.OnMessage(OnTrackingMessage);
                 }
 
                 var servers = multiplexer
@@ -598,12 +598,13 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             var subscriber = multiplexer.GetSubscriber();
             foreach (var pattern in KeyspacePatterns())
             {
-                var queue = await subscriber
-                    .SubscribeAsync(RedisChannel.Pattern(pattern))
-                    .WaitAsync(cancellationToken)
+                await SubscribeOwnedAsync(
+                        subscriber,
+                        RedisChannel.Pattern(pattern),
+                        OnKeyspaceMessage,
+                        cancellationToken
+                    )
                     .ConfigureAwait(false);
-                _queues.Add(queue);
-                queue.OnMessage(OnKeyspaceMessage);
             }
 
             return true;
@@ -617,11 +618,28 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             _logger.LogWarning(
                 new EventId(1316, "RedisBroadcastUnavailable"),
                 exception,
-                "Could not subscribe to keyspace notifications for namespace {Namespace}; the explicit invalidation channel is the only fan-out. The server needs notify-keyspace-events Kxe.",
+                "Could not subscribe to keyspace notifications for namespace {Namespace}; the explicit invalidation channel is the only fan-out. The server needs notify-keyspace-events Kg$xe.",
                 _options.Namespace
             );
             return false;
         }
+    }
+
+    private async Task<ChannelMessageQueue> SubscribeOwnedAsync(
+        ISubscriber subscriber,
+        RedisChannel channel,
+        Action<ChannelMessage> handler,
+        CancellationToken cancellationToken
+    )
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        // The SDK call cannot be cancelled. Join it before the worker stops so a late
+        // result is still owned and disposed instead of abandoning its subscription.
+        var queue = await subscriber.SubscribeAsync(channel).ConfigureAwait(false);
+        _queues.Add(queue);
+        cancellationToken.ThrowIfCancellationRequested();
+        queue.OnMessage(handler);
+        return queue;
     }
 
     private IReadOnlyList<string> KeyspacePatterns() =>
@@ -669,9 +687,18 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         Dispatch(invalidation);
     }
 
-    private void OnTrackingMessage(ChannelMessage message)
+    private void OnTrackingMessage(ChannelMessage message) =>
+        HandleTrackingMessage(message.Message);
+
+    internal void HandleTrackingMessage(RedisValue message)
     {
-        if (RedisInvalidationDecoder.TryParseTrackingKey(_layout, message.Message, out var key))
+        // Redis sends a null payload for FLUSHDB and FLUSHALL, without any keys.
+        if (message.IsNull)
+        {
+            Dispatch(CacheInvalidation.Flush);
+            return;
+        }
+        if (RedisInvalidationDecoder.TryParseTrackingKey(_layout, message, out var key))
         {
             Dispatch(new CacheInvalidation([key], []));
         }
@@ -697,12 +724,35 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         Action<CacheInvalidation>[] handlers;
         lock (_gate)
         {
+            if (_disposed != 0)
+            {
+                return;
+            }
             handlers = [.. _handlers];
         }
 
         foreach (var handler in handlers)
         {
-            handler(invalidation);
+            lock (_gate)
+            {
+                if (_disposed != 0)
+                {
+                    return;
+                }
+                try
+                {
+                    handler(invalidation);
+                }
+                catch (Exception exception)
+                {
+                    _logger.LogWarning(
+                        new EventId(1318, "RedisInvalidationHandlerFailed"),
+                        exception,
+                        "An invalidation subscriber failed for {Channel}; continuing with the remaining subscribers.",
+                        ChannelName
+                    );
+                }
+            }
         }
     }
 

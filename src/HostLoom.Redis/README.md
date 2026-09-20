@@ -88,8 +88,13 @@ expires, leaves every in-process tier without anyone publishing:
 | Mode | What the package does | Needs |
 |---|---|---|
 | `Tracking` | `CLIENT TRACKING ON REDIRECT <subscriber> BCAST PREFIX <data-prefix> NOLOOP`: the server reports changes to every cache-data key in the namespace, including entries populated locally by writes or warmup | Redis 6.0 or later |
-| `Broadcast` | pattern subscriptions to `__keyspace@{db}__:{prefix}*` for `Caching:Invalidation:KeyPrefixFilters`, or the namespace's entries when the list is empty | `notify-keyspace-events Kxe` on the server |
+| `Broadcast` | pattern subscriptions to `__keyspace@{db}__:{prefix}*` for `Caching:Invalidation:KeyPrefixFilters`, or the namespace's entries when the list is empty | `notify-keyspace-events Kg$xe` on the server |
 | `Auto` (default) | `Tracking` on Redis 6.0 or later, read from the server version at connect, otherwise `Broadcast` | |
+
+For broadcast mode, `K` enables keyspace messages, `g` covers deletion, `$` covers string
+writes, and `x`/`e` cover expiry/eviction. Quote `Kg$xe` in shell commands; in Docker Compose
+write `Kg$$xe` so Compose passes a literal `$` to Redis. Tracking also turns Redis's null
+`FLUSHDB`/`FLUSHALL` notification into a local cache flush.
 
 `NOLOOP` keeps a connection's own writes from evicting the in-process entry it has just written.
 Prefix-based tracking remains active after those writes, without requiring a Redis read to register
@@ -111,7 +116,9 @@ and retried on the next reconnect or topology refresh. `CachingProbe.Describe` r
 transport in effect. Registration runs serially across channels sharing a connection and checks
 existing prefixes before updating tracking. Replacing a subscriber preserves those prefixes.
 Disposing a channel removes only its own
-subscription handlers.
+subscription handlers, including while the shared multiplexer is disconnected. Disposal joins
+pending subscription calls before detaching their queues. An observer that throws is logged
+without preventing delivery to the remaining observers.
 
 Two connection settings follow from this and are applied by the package: the client-side
 `allowAdmin` flag, because StackExchange.Redis gates every `CLIENT` command behind it (this
@@ -182,6 +189,15 @@ owner; they do not make Redis locks a consensus-backed mutual-exclusion guarante
 The repository's `just test-redis-cluster` command creates an isolated local six-node Docker
 fixture and tests cache operations, tracking, explicit invalidation, and replicated lock ownership
 while crashing each primary. It restores the failed processes and removes its container afterward.
+
+The standalone invalidation regressions own a separate loopback-only Redis container, so
+`FLUSHDB` and `FLUSHALL` never touch the developer database. With Docker running, execute:
+
+```bash
+HOSTLOOM_REDIS_INVALIDATION_TESTS=1 dotnet test \
+  --project tests/HostLoom.IntegrationTests/HostLoom.IntegrationTests.csproj \
+  -c Release -- --filter-class '*RedisInvalidationRegressionTests'
+```
 
 ## Compatibility
 
