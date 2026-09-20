@@ -46,6 +46,13 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     private readonly ITimer _maintenance;
     private int _disposed;
 
+    // One bounded generation conservatively rejects every fill overlapping an invalidation.
+    // The gate makes generation checks and L1 insertion atomic with local eviction.
+    private readonly Lock _invalidationGate = new();
+    private long _invalidationGeneration;
+
+    private long FillGeneration => Interlocked.Read(ref _invalidationGeneration);
+
     /// <summary>Composes a cache.</summary>
     /// <param name="options">Validated with <see cref="CachingOptions.Validate"/>.</param>
     /// <param name="store">The distributed tier, or null for an in-process-only cache.</param>
@@ -243,7 +250,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
         using var activity = StartActivity("cache.set", key);
         var start = Stopwatch.GetTimestamp();
-        var degraded = await WriteAsync(key, value, options, cancellationToken)
+        var degraded = await WriteAsync(key, value, options, FillGeneration, cancellationToken)
             .ConfigureAwait(false);
         activity?.SetTag("hostloom.cache.degraded", degraded);
         RecordOperation("set", degraded ? "degraded" : "miss", start);
@@ -278,13 +285,17 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         var start = Stopwatch.GetTimestamp();
         if (_store is null)
         {
-            var added = _local!.SetIfAbsent(
-                key,
-                value,
-                options.Expiration,
-                options.Tags,
-                options.Size
-            );
+            bool added;
+            lock (_invalidationGate)
+            {
+                added = _local!.SetIfAbsent(
+                    key,
+                    value,
+                    options.Expiration,
+                    options.Tags,
+                    options.Size
+                );
+            }
             RecordOperation("set_if_absent", added ? "miss" : "hit_l1", start);
             return added;
         }
@@ -296,6 +307,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             return false;
         }
 
+        var generation = FillGeneration;
         bool written;
         try
         {
@@ -320,14 +332,20 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
         if (written)
         {
-            _local?.Set(
-                key,
-                value,
-                options.LocalExpiration ?? options.Expiration,
-                options.Tags,
-                payload.WrittenCount,
-                options.EffectiveStaleGrace
-            );
+            lock (_invalidationGate)
+            {
+                if (generation == _invalidationGeneration)
+                {
+                    _local?.Set(
+                        key,
+                        value,
+                        options.LocalExpiration ?? options.Expiration,
+                        options.Tags,
+                        payload.WrittenCount,
+                        options.EffectiveStaleGrace
+                    );
+                }
+            }
             if (compressed)
             {
                 CachingDiagnostics.Compressions.Add(1, _namespaceTag);
@@ -345,7 +363,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         ThrowIfDisposed();
         using var activity = StartActivity("cache.remove", key);
         var start = Stopwatch.GetTimestamp();
-        _local?.Remove(key);
+        InvalidateLocal(new CacheInvalidation([key], []));
         var degraded = false;
         if (_store is not null)
         {
@@ -360,6 +378,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             }
         }
 
+        InvalidateLocal(new CacheInvalidation([key], []));
         await PublishAsync(new CacheInvalidation([key], []), cancellationToken)
             .ConfigureAwait(false);
         RecordOperation("remove", degraded ? "degraded" : "miss", start);
@@ -385,7 +404,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         }
 
         var start = Stopwatch.GetTimestamp();
-        _local?.Remove(list);
+        InvalidateLocal(new CacheInvalidation(list, []));
         var degraded = false;
         if (_store is not null)
         {
@@ -402,6 +421,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             }
         }
 
+        InvalidateLocal(new CacheInvalidation(list, []));
         await PublishAsync(new CacheInvalidation(list, []), cancellationToken)
             .ConfigureAwait(false);
         RecordOperation("remove", degraded ? "degraded" : "miss", start);
@@ -416,7 +436,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         CacheKey.Validate(tag, _options.MaxKeyLength, nameof(tag));
         ThrowIfDisposed();
         var start = Stopwatch.GetTimestamp();
-        _local?.RemoveByTag(tag);
+        InvalidateLocal(new CacheInvalidation([], [tag]));
         var degraded = false;
         if (_store is not null && _store.Capabilities.HasFlag(CacheStoreCapabilities.Tags))
         {
@@ -433,6 +453,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             }
         }
 
+        InvalidateLocal(new CacheInvalidation([], [tag]));
         await PublishAsync(new CacheInvalidation([], [tag]), cancellationToken)
             .ConfigureAwait(false);
         RecordOperation("remove_by_tag", degraded ? "degraded" : "miss", start);
@@ -466,6 +487,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         var degraded = false;
         if (_store is not null && missing is { Count: > 0 })
         {
+            var generation = FillGeneration;
             IReadOnlyDictionary<string, CacheStoreEntry> entries;
             try
             {
@@ -484,7 +506,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             {
                 if (
                     entries.TryGetValue(DataKey(key), out var entry)
-                    && Decode<T>(key, entry, null) is { Found: true } lookup
+                    && Decode<T>(key, entry, null, generation) is { Found: true } lookup
                 )
                 {
                     found[key] = lookup.Value!;
@@ -757,6 +779,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
         try
         {
+            var generation = FillGeneration;
             var factoryStart = Stopwatch.GetTimestamp();
             T value;
             try
@@ -775,13 +798,13 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             {
                 if (options.CachesNull)
                 {
-                    degraded |= await WriteNullAsync(key, options, cancellationToken)
+                    degraded |= await WriteNullAsync(key, options, generation, cancellationToken)
                         .ConfigureAwait(false);
                 }
             }
             else if (options.Expiration > TimeSpan.Zero)
             {
-                degraded |= await WriteAsync(key, value, options, cancellationToken)
+                degraded |= await WriteAsync(key, value, options, generation, cancellationToken)
                     .ConfigureAwait(false);
             }
 
@@ -839,6 +862,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         CancellationToken cancellationToken
     )
     {
+        var generation = FillGeneration;
         CacheStoreEntry? entry;
         try
         {
@@ -850,10 +874,17 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             return CacheLookup.Miss<T>(degraded: true);
         }
 
-        return entry is { } found ? Decode<T>(key, found, options) : CacheLookup.Miss<T>();
+        return entry is { } found
+            ? Decode<T>(key, found, options, generation)
+            : CacheLookup.Miss<T>();
     }
 
-    private CacheLookup<T> Decode<T>(string key, CacheStoreEntry entry, CacheEntryOptions? options)
+    private CacheLookup<T> Decode<T>(
+        string key,
+        CacheStoreEntry entry,
+        CacheEntryOptions? options,
+        long generation
+    )
     {
         var status = CachePayloadCodec.TryDecode<T>(
             _serializer!,
@@ -874,22 +905,34 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                     return CacheLookup.Miss<T>();
                 }
 
-                _local?.SetNull(
-                    key,
-                    LocalTimeToLive(entry, options),
-                    tags,
-                    options?.EffectiveStaleGrace
-                );
+                lock (_invalidationGate)
+                {
+                    if (generation == _invalidationGeneration)
+                    {
+                        _local?.SetNull(
+                            key,
+                            LocalTimeToLive(entry, options),
+                            tags,
+                            options?.EffectiveStaleGrace
+                        );
+                    }
+                }
                 return CacheLookup.Hit<T>(default, CacheTier.L2);
             case PayloadDecodeStatus.Ok when value is not null:
-                _local?.Set(
-                    key,
-                    value,
-                    LocalTimeToLive(entry, options),
-                    tags,
-                    entry.Payload.Length,
-                    options?.EffectiveStaleGrace
-                );
+                lock (_invalidationGate)
+                {
+                    if (generation == _invalidationGeneration)
+                    {
+                        _local?.Set(
+                            key,
+                            value,
+                            LocalTimeToLive(entry, options),
+                            tags,
+                            entry.Payload.Length,
+                            options?.EffectiveStaleGrace
+                        );
+                    }
+                }
                 return CacheLookup.Hit(value, CacheTier.L2);
             case PayloadDecodeStatus.VersionMismatch:
                 // Written by a newer or older deploy: a miss, and deliberately not an error.
@@ -928,9 +971,14 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     private async ValueTask<bool> WriteNullAsync(
         string key,
         CacheEntryOptions options,
+        long generation,
         CancellationToken cancellationToken
     )
     {
+        if (generation != FillGeneration)
+        {
+            return false;
+        }
         var degraded = false;
         var expiration = options.NullExpiration!.Value;
         if (_store is not null)
@@ -960,7 +1008,13 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             options.LocalExpiration is { } explicitLocal && explicitLocal < expiration
                 ? explicitLocal
                 : expiration;
-        _local?.SetNull(key, local, options.Tags, options.EffectiveStaleGrace);
+        lock (_invalidationGate)
+        {
+            if (generation == _invalidationGeneration)
+            {
+                _local?.SetNull(key, local, options.Tags, options.EffectiveStaleGrace);
+            }
+        }
         return degraded;
     }
 
@@ -969,9 +1023,14 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         string key,
         T value,
         CacheEntryOptions options,
+        long generation,
         CancellationToken cancellationToken
     )
     {
+        if (generation != FillGeneration)
+        {
+            return false;
+        }
         var degraded = false;
         long? size = options.Size;
         if (_store is not null)
@@ -1005,14 +1064,20 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             }
         }
 
-        _local?.Set(
-            key,
-            value,
-            options.LocalExpiration ?? options.Expiration,
-            options.Tags,
-            size,
-            options.EffectiveStaleGrace
-        );
+        lock (_invalidationGate)
+        {
+            if (generation == _invalidationGeneration)
+            {
+                _local?.Set(
+                    key,
+                    value,
+                    options.LocalExpiration ?? options.Expiration,
+                    options.Tags,
+                    size,
+                    options.EffectiveStaleGrace
+                );
+            }
+        }
         return degraded;
     }
 
@@ -1022,6 +1087,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         CancellationToken cancellationToken
     )
     {
+        var generation = FillGeneration;
         if (_store is not null)
         {
             var writers = new List<PooledBufferWriter>(batch.Count);
@@ -1071,11 +1137,14 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             }
         }
 
-        if (_local is not null)
+        lock (_invalidationGate)
         {
-            foreach (var (key, value) in batch)
+            if (_local is not null && generation == _invalidationGeneration)
             {
-                _local.Set(key, value!, expiration);
+                foreach (var (key, value) in batch)
+                {
+                    _local.Set(key, value!, expiration);
+                }
             }
         }
 
@@ -1235,9 +1304,9 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 .ConfigureAwait(false)
         )
         {
+            InvalidateLocal(invalidation);
             if (invalidation.FlushAll)
             {
-                _local!.Clear();
                 CachingDiagnostics.Invalidations.Add(
                     1,
                     _namespaceTag,
@@ -1255,17 +1324,29 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 continue;
             }
 
-            _local!.Remove(invalidation.Keys);
-            foreach (var tag in invalidation.Tags)
-            {
-                _local.RemoveByTag(tag);
-            }
-
             CachingDiagnostics.Invalidations.Add(
                 1,
                 _namespaceTag,
                 new KeyValuePair<string, object?>(CachingDiagnostics.DirectionTag, "received")
             );
+        }
+    }
+
+    private void InvalidateLocal(CacheInvalidation invalidation)
+    {
+        lock (_invalidationGate)
+        {
+            Interlocked.Increment(ref _invalidationGeneration);
+            if (invalidation.FlushAll)
+            {
+                _local?.Clear();
+                return;
+            }
+            _local?.Remove(invalidation.Keys);
+            foreach (var tag in invalidation.Tags)
+            {
+                _local?.RemoveByTag(tag);
+            }
         }
     }
 

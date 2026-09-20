@@ -1,3 +1,4 @@
+using System.Diagnostics.Metrics;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using HostLoom.Caching;
@@ -243,12 +244,47 @@ public sealed class RedisInvalidationModeTests
             Task.FromResult(channelB.Transport == RedisInvalidationTransport.Tracking)
         );
 
+        // The first write also sends a tracking notification for price. Wait for its
+        // application before testing L2 -> L1: a notification during or just after the
+        // first read may legitimately suppress or evict that fill, even with per-key guards.
+        var initialInvalidationApplied = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        using var appliedListener = new MeterListener();
+        appliedListener.InstrumentPublished = (instrument, listener) =>
+        {
+            if (instrument.Name == "hostloom.cache.invalidations")
+            {
+                listener.EnableMeasurementEvents(instrument);
+            }
+        };
+        appliedListener.SetMeasurementEventCallback<long>(
+            (_, _, tags, _) =>
+            {
+                var matchingNamespace = false;
+                var received = false;
+                foreach (var tag in tags)
+                {
+                    matchingNamespace |=
+                        tag.Key == "hostloom.cache.namespace" && Equals(tag.Value, ns);
+                    received |=
+                        tag.Key == "hostloom.cache.direction" && Equals(tag.Value, "received");
+                }
+                if (matchingNamespace && received)
+                {
+                    initialInvalidationApplied.TrySetResult();
+                }
+            }
+        );
+        appliedListener.Start();
+
         await a.SetAsync(
             "price",
             new Payload("v1"),
             new CacheEntryOptions(TimeSpan.FromMinutes(1)),
             Token
         );
+        await initialInvalidationApplied.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
         Assert.Equal(CacheTier.L2, (await b.TryGetAsync<Payload>("price", Token)).Tier);
         Assert.Equal(CacheTier.L1, (await b.TryGetAsync<Payload>("price", Token)).Tier);
 

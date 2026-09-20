@@ -56,6 +56,19 @@ factory and every other caller receives the copy at once, as the `hit_stale` out
 reconnect, a backend channel clears the in-process tier (`Caching:Invalidation:FlushLocalOnReconnect`),
 because invalidations published during the outage were never delivered.
 
+An applied invalidation also prevents overlapping distributed reads, writes, warmup batches,
+and factory results from refilling the in-process tier. A factory invalidated before its write
+starts returns its result without caching it. This uses one generation per cache instance, so
+an unrelated invalidation can also suppress an in-flight fill. It does not make distributed
+operations atomic: an overlapping caller can still receive an older result, and missed or
+queued invalidations still leave a window of staleness.
+
+Tracking notifications and distributed reads can arrive in either order. Even a read of the
+latest value can overlap a delayed notification for that same key; the cache cannot determine
+which write the notification refers to. That fill is suppressed, or evicted if already inserted,
+so the next read may also come from L2. Once the notification has been applied, a subsequent
+read can populate L1 normally. Per-key generations would still need this same-key protection.
+
 ## Keys
 
 `CachingOptions.Namespace` is required and prefixes every key. Each kind of key has its own domain,
