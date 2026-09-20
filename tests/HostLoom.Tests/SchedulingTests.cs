@@ -8,6 +8,83 @@ public sealed class SchedulingTests
 {
     private static readonly TimeSpan TenSeconds = TimeSpan.FromSeconds(10);
 
+    [Theory]
+    [InlineData("timeout", false)]
+    [InlineData("claim", false)]
+    [InlineData("stop", false)]
+    [InlineData("timeout", true)]
+    [InlineData("claim", true)]
+    [InlineData("stop", true)]
+    [InlineData("timeout_claim", false)]
+    [InlineData("timeout_claim", true)]
+    [InlineData("stop_timeout_claim", false)]
+    [InlineData("stop_timeout_claim", true)]
+    public async Task Cooperative_returns_preserve_cancellation_outcomes(
+        string reason,
+        bool throwCancellation
+    )
+    {
+        var clock = new TestClock();
+        var guard = new ManualScheduleGuard();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        await using var scheduler = new Scheduler(
+            new(),
+            [
+                new ScheduleDefinition(
+                    "catalog",
+                    ScheduleTrigger.FixedRate(TenSeconds),
+                    async (_, token) =>
+                    {
+                        using var registration = token.Register(() => cancelled.TrySetResult());
+                        entered.TrySetResult();
+                        await cancelled.Task;
+                        await release.Task;
+                        if (throwCancellation)
+                            token.ThrowIfCancellationRequested();
+                    },
+                    new ScheduleOptions { Exclusive = true, Timeout = TimeSpan.FromSeconds(1) }
+                ),
+            ],
+            guard,
+            clock
+        );
+        await scheduler.StartAsync(TestContext.Current.CancellationToken);
+        await entered.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken
+        );
+        Task? stop = null;
+        try
+        {
+            if (reason.Contains("claim", StringComparison.Ordinal))
+                Assert.True(guard.Lose("catalog"));
+            if (reason.Contains("timeout", StringComparison.Ordinal))
+                clock.Advance(TimeSpan.FromSeconds(1));
+            if (reason.StartsWith("stop", StringComparison.Ordinal))
+                stop = scheduler.StopAsync(TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+        if (stop is not null)
+            await stop;
+        await WaitUntilAsync(() => !scheduler.GetState("catalog").Running);
+        Assert.Equal(
+            reason switch
+            {
+                "timeout" or "timeout_claim" => ScheduleRunOutcome.TimedOut,
+                "claim" => ScheduleRunOutcome.ClaimLost,
+                _ => ScheduleRunOutcome.Canceled,
+            },
+            scheduler.GetState("catalog").LastOutcome
+        );
+    }
+
     [Fact]
     public async Task A_fixed_delay_schedule_runs_after_the_delay_counted_from_completion()
     {

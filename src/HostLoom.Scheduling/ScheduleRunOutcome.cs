@@ -3,7 +3,7 @@ namespace HostLoom.Scheduling;
 /// <summary>How a scheduled run ended, as reported by state, metrics, and logs.</summary>
 public enum ScheduleRunOutcome
 {
-    /// <summary>The job returned.</summary>
+    /// <summary>The job returned without stop, timeout, or claim-loss cancellation.</summary>
     Succeeded,
 
     /// <summary>The job threw; the schedule continues.</summary>

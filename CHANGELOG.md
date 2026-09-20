@@ -105,6 +105,7 @@ are derived from release tags at publish time.
 - Concurrent L1 mutations keep byte accounting consistent with the stored entries.
 - WebSocket subscription initialization and removal detach linked cancellation resources safely.
 - Pending leader-channel writes wake on leadership loss and follow the follower discard policy.
+- Scheduled jobs retain stop, timeout and claim-loss outcomes after cooperative normal returns.
 
 ## [0.8.0] - 2026-09-19
 

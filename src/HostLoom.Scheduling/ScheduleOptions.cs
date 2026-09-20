@@ -22,7 +22,9 @@ public sealed class ScheduleOptions
     /// <summary>
     /// Cancels the run's token after this long. The run ends as
     /// <see cref="ScheduleRunOutcome.TimedOut"/> only when the job honours the token; a job that
-    /// ignores it keeps running and the next run waits for it. Default: no timeout.
+    /// ignores it keeps running and the next run waits for it. A cooperative normal return
+    /// after cancellation is also classified as timed out. Stop takes precedence over timeout,
+    /// and timeout over claim loss. Default: no timeout.
     /// </summary>
     public TimeSpan? Timeout { get; set; }
 

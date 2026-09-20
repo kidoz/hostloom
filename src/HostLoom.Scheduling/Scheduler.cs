@@ -513,33 +513,11 @@ public sealed class Scheduler : IAsyncDisposable
                 try
                 {
                     await Definition.Run(run, linked.Token).ConfigureAwait(false);
-                    outcome = ScheduleRunOutcome.Succeeded;
+                    outcome = CancellationOutcome();
                 }
-                catch (OperationCanceledException) when (stopping.IsCancellationRequested)
+                catch (OperationCanceledException) when (linked.IsCancellationRequested)
                 {
-                    outcome = ScheduleRunOutcome.Canceled;
-                }
-                catch (OperationCanceledException) when (timeout.IsCancellationRequested)
-                {
-                    outcome = ScheduleRunOutcome.TimedOut;
-                    logger.LogWarning(
-                        SchedulingEvents.RunTimedOut,
-                        "Run {Sequence} of schedule '{Schedule}' exceeded its timeout of {Timeout} and was cancelled.",
-                        run.Sequence,
-                        Definition.Name,
-                        options.Timeout
-                    );
-                }
-                catch (OperationCanceledException)
-                    when (claim?.LostToken.IsCancellationRequested == true)
-                {
-                    outcome = ScheduleRunOutcome.ClaimLost;
-                    logger.LogWarning(
-                        SchedulingEvents.ClaimLost,
-                        "The exclusive claim for schedule '{Schedule}' was lost during run {Sequence}; the run was cancelled.",
-                        Definition.Name,
-                        run.Sequence
-                    );
+                    outcome = CancellationOutcome();
                 }
                 catch (Exception exception)
                 {
@@ -554,6 +532,29 @@ public sealed class Scheduler : IAsyncDisposable
                         (long)elapsed.TotalMilliseconds
                     );
                 }
+
+                if (outcome == ScheduleRunOutcome.TimedOut)
+                    logger.LogWarning(
+                        SchedulingEvents.RunTimedOut,
+                        "Run {Sequence} of schedule '{Schedule}' exceeded its timeout of {Timeout} and was cancelled.",
+                        run.Sequence,
+                        Definition.Name,
+                        options.Timeout
+                    );
+                else if (outcome == ScheduleRunOutcome.ClaimLost)
+                    logger.LogWarning(
+                        SchedulingEvents.ClaimLost,
+                        "The exclusive claim for schedule '{Schedule}' was lost during run {Sequence}; the run was cancelled.",
+                        Definition.Name,
+                        run.Sequence
+                    );
+
+                ScheduleRunOutcome CancellationOutcome() =>
+                    stopping.IsCancellationRequested ? ScheduleRunOutcome.Canceled
+                    : timeout.IsCancellationRequested ? ScheduleRunOutcome.TimedOut
+                    : claim?.LostToken.IsCancellationRequested == true
+                        ? ScheduleRunOutcome.ClaimLost
+                    : ScheduleRunOutcome.Succeeded;
 
                 var outcomeName = SchedulingDiagnostics.OutcomeName(outcome);
                 activity?.SetTag(SchedulingDiagnostics.OutcomeTag, outcomeName);
