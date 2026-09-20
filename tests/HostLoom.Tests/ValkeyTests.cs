@@ -91,10 +91,12 @@ public sealed class ValkeyTests
     }
 
     [Fact]
-    public void Codec_RoundTripsArbitraryKeysAndRejectsMalformedMessages()
+    public void Codec_RoundTripsUnicodeAndQuotedKeysAndRejectsMalformedMessages()
     {
+        // Every item must be a valid cache key (the kernel validates before publishing), so the
+        // interesting inputs are the ones JSON has to escape, not whitespace or control characters.
         var input = new CacheInvalidation(
-            ["catalog\n\u0000:eu", "каталог", ""],
+            ["catalog:eu", "каталог", "catalog:\\eu\"/"],
             ["books\"", "music"]
         );
         var decoded = ValkeyInvalidationCodec.Decode(ValkeyInvalidationCodec.Encode(input));

@@ -14,6 +14,7 @@ public static class RedisDiagnostics
     public const string MeterName = "HostLoom.Redis";
 
     internal const string ClientTag = "hostloom.redis.client";
+    internal const string NamespaceTag = "hostloom.cache.namespace";
 
     internal static readonly ActivitySource ActivitySource = new(ActivitySourceName);
 
@@ -27,6 +28,18 @@ public static class RedisDiagnostics
         "hostloom.redis.reconnects",
         "{reconnect}",
         "Times the Redis connection was restored after a failure."
+    );
+
+    internal static readonly Counter<long> InvalidationMalformed = Meter.CreateCounter<long>(
+        "hostloom.redis.invalidation.malformed",
+        "{message}",
+        "Explicit invalidation messages dropped for exceeding the size or item bounds or carrying an invalid key or tag."
+    );
+
+    internal static readonly Counter<long> TagMembersRejected = Meter.CreateCounter<long>(
+        "hostloom.redis.tag.members_rejected",
+        "{member}",
+        "Tag-index members outside the namespace's cache-data prefix that were forgotten instead of unlinked."
     );
 
 #pragma warning disable CA1823 // observable instruments are kept alive by the meter, not read.

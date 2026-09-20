@@ -27,9 +27,12 @@ public sealed class ValkeyTagRaceTests
         await using var direct = new ValkeyConnection(ValkeyAvailability.Options());
         var writer = new ValkeyCacheStore(direct);
         var prefix = "tag-race-" + Guid.NewGuid().ToString("N");
-        var tag = prefix + ":tag";
-        var newKey = prefix + ":new";
-        var keys = Enumerable.Range(0, memberCount).Select(i => prefix + ":" + i).ToArray();
+        var tag = prefix + ":cache:tag:catalog";
+        var newKey = prefix + ":cache:data:new";
+        var keys = Enumerable
+            .Range(0, memberCount)
+            .Select(i => prefix + ":cache:data:" + i)
+            .ToArray();
         foreach (var key in keys)
             await writer.SetAsync(key, "old"u8.ToArray(), TimeSpan.FromMinutes(1), [tag], token);
         using var listener = new TcpListener(IPAddress.Loopback, 0);

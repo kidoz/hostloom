@@ -194,7 +194,14 @@ public sealed class RedisRegistrationTests
 
         Assert.False(cacheHealth.IsHealthy);
         Assert.False(lockHealth.IsHealthy);
-        Assert.Contains(Unreachable, cacheHealth.Description, StringComparison.Ordinal);
+        // Readiness output names no endpoint; the endpoint stays in logs via Describe().
+        foreach (var description in new[] { cacheHealth.Description, lockHealth.Description })
+        {
+            Assert.StartsWith("Redis unreachable", description, StringComparison.Ordinal);
+            Assert.DoesNotContain(Unreachable, description, StringComparison.Ordinal);
+        }
+
+        Assert.Contains(Unreachable, connection.Describe(), StringComparison.Ordinal);
     }
 
     [Fact]

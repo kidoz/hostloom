@@ -29,15 +29,24 @@ password is never logged; probe output and the startup line redact it.
 |---|---|
 | cache entry | `SET … PX`, a Lua `GET`/`PTTL` snapshot per key (pipelined for bulk reads), deletion |
 | set-if-absent and stampede lease | `SET … NX PX` |
-| tag index | `SADD`, `EXPIRE NX` then `EXPIRE GT`, `SMEMBERS`, atomic Lua `UNLINK`/`SREM` batches; a tagged set-if-absent indexes only after the write is known to have happened |
+| tag index | `SADD`, `EXPIRE NX` then `EXPIRE GT`, `SMEMBERS`, atomic Lua `UNLINK`/`SREM` batches; a tagged set-if-absent indexes only after the write is known to have happened. Only members under `{namespace}:cache:data:` are unlinked; any other member is dropped from the index with `SREM`, left untouched as a key, and counted on `hostloom.redis.tag.members_rejected` |
 | invalidation | `PUBLISH` and `SUBSCRIBE` on `{namespace}:cache:invalidate`; `CLIENT LIST`, `CLIENT TRACKINGINFO`, and `CLIENT TRACKING` in tracking mode; `PSUBSCRIBE __keyspace@{db}__:…` in broadcast mode |
 | lock | `SET {namespace}:lock:{key} owner NX PX lease`; release and extend are Lua compare-and-set, sent as `EVALSHA` with `EVAL` fallback |
-| readiness | `PING` bounded by `Redis:HealthTimeout` |
+| readiness | `PING` bounded by `Redis:HealthTimeout`. The health description reports reachability, latency, and the database index only; endpoints, the client name, and the process identity stay in logs through `RedisConnection.Describe()` |
 
 Nothing relies on `SELECT`: `DatabaseIndex` is passed per command and exists only so a service
 can coexist with keys from a previous library during a migration. `UseHashTags` wraps the
 namespace segment in `{…}` so every key of a service lands in one Redis Cluster slot. Keys are the
 kernels' fully prefixed keys, so a cache entry, a lease, a tag index, and a lock can never collide.
+
+Tagged writes through the store's public constructor require a value key in
+`namespace:cache:data:name` and tag keys in `namespace:cache:tag:name` with the same
+namespace. The adapter validates every tag before issuing any backend command; invalid
+combinations throw `ArgumentException`, including conditional writes. `RemoveByTagAsync`
+also requires a canonical tag key. Untagged operations still accept opaque keys. Calls
+through `ICache` already use these domains. Direct store callers using custom tagged
+keys must migrate them to these forms; changing only the index would leave old values
+outside the invalidation filter.
 
 A tag set gains members and loses them only when the whole index is removed, so an entry rewritten
 under different tags stays in its earlier sets and `RemoveByTagAsync` on one of those tags removes
@@ -109,6 +118,49 @@ Two connection settings follow from this and are applied by the package: the cli
 grants nothing on the server; ACLs still apply), and RESP2, so subscriptions run on a dedicated
 connection that tracking can redirect to. An externally supplied multiplexer needs both for
 tracking to work; without them the package falls back to the explicit channel.
+
+The explicit channel is writable by anything with `PUBLISH` rights on it, so what arrives is
+bounded before it reaches the in-process tier. A message over 1 MiB is dropped before it is
+decoded, one carrying more than 10 000 keys and tags together is dropped whole, and so is one
+naming a key or tag the kernel would reject (empty, longer than `Caching:MaxKeyLength`, or
+containing whitespace or control characters). Dropped messages are counted on
+`hostloom.redis.invalidation.malformed` and on `RedisCacheInvalidationChannel.MalformedMessages`;
+their content is never logged. The bounds cannot tell a well-formed flush or removal from a
+foreign publisher apart from one of ours, which is what the channel pattern in the ACL below is
+for.
+
+## Server-side account and TLS
+
+The package sets StackExchange.Redis's client-side `allowAdmin` flag because tracking needs the
+`CLIENT` subcommands it gates; the flag grants nothing on the server. Give the service its own ACL
+user rather than `default`, limited to the namespace's keys and channels and stripped of the
+dangerous category:
+
+```text
+ACL SETUSER catalog-svc on >replace-me resetkeys resetchannels \
+  ~catalog:* "~{catalog}:*" \
+  "&catalog:cache:invalidate" "&__redis__:invalidate" "&__keyspace@0__:catalog:cache:data:*" \
+  -@all +@read +@write +@set +@scripting +@pubsub +@connection -@dangerous \
+  +info +client|setname +client|list +client|tracking +client|trackinginfo
+```
+
+- `~catalog:*` and `~{catalog}:*` cover the plain and hash-tagged key layouts; every cache entry,
+  lease, tag index, and lock of the service lives under one of them.
+- `&catalog:cache:invalidate` limits `PUBLISH` on the explicit channel to this user. Any client
+  allowed to publish there can evict or flush every instance's in-process tier, so no other user
+  should carry that channel. `&__redis__:invalidate` is the RESP2 tracking redirect channel and
+  `&__keyspace@{db}__:…` the broadcast-mode subscription; drop whichever mode is not in use.
+- `-@dangerous` removes `FLUSHALL`, `KEYS`, `CONFIG`, `DEBUG`, `CLIENT`, and the rest. The four
+  `client|` subcommands are added back because tracking needs them and the client names its
+  connections; `info` is added back so the client can read the server version that `Auto` uses to
+  choose tracking. The client also sends `CONFIG GET` during its handshake and treats a refusal
+  as "not available". Leave the `client|` subcommands out and invalidation falls back to the
+  explicit channel only, logged once.
+
+Encrypt the connection: add `ssl=true` (and `sslHost=…` when the certificate name differs from
+the endpoint) to `Redis:Configuration`, or set `Ssl` on `Redis:ConfigurationOptions`. The package
+does not turn TLS on by itself, because a local or sidecar deployment may not offer it, so an
+unencrypted production connection is a configuration choice to review rather than a default.
 
 ## Redis Cluster
 

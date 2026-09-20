@@ -1,3 +1,4 @@
+using System.Text;
 using HostLoom.Caching;
 using HostLoom.Valkey.Internal;
 using ValkeyDotNet;
@@ -102,6 +103,7 @@ public sealed class ValkeyCacheStore : IDistributedCacheStore, ICacheStoreHealth
         CancellationToken token
     )
     {
+        ValidateTaggedWrite(key, tagKeys);
         var milliseconds = ValkeyFailures.Milliseconds(timeToLive);
         try
         {
@@ -220,28 +222,50 @@ public sealed class ValkeyCacheStore : IDistributedCacheStore, ICacheStoreHealth
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Only members under the namespace's cache-data prefix are unlinked. The index is a plain
+    /// set, so anything with <c>SADD</c> rights on it could otherwise name an arbitrary key for
+    /// deletion. A member outside the prefix is dropped from the index without touching the key
+    /// it names, so the index heals itself, and is counted on
+    /// <c>hostloom.valkey.tag.members_rejected</c>.
+    /// </remarks>
     public async ValueTask RemoveByTagAsync(
         string tagKey,
         CancellationToken cancellationToken = default
     )
     {
+        var dataPrefix = DataPrefixFor(tagKey);
         try
         {
             var reply = await _connection
                 .ExecuteAsync(new ValkeyCommand("SMEMBERS", tagKey), cancellationToken)
                 .ConfigureAwait(false);
-            var members = reply.AsArray();
-            foreach (var chunk in members.Chunk(500))
+            var (accepted, rejected) = Partition(
+                reply.AsArray().Select(static member => member.AsBytes()),
+                Encoding.UTF8.GetBytes(dataPrefix)
+            );
+            if (rejected.Count > 0)
+            {
+                ValkeyDiagnostics.TagMembersRejected.Add(rejected.Count);
+                await _connection
+                    .ExecuteAsync(
+                        new ValkeyCommand(
+                            "SREM",
+                            [tagKey, .. rejected.Select(static member => (ValkeyArgument)member)]
+                        ),
+                        cancellationToken
+                    )
+                    .ConfigureAwait(false);
+            }
+
+            foreach (var chunk in accepted.Chunk(500))
             {
                 // Remove only this snapshot's memberships. Deleting the entire index would
                 // orphan a different value tagged by a concurrent writer after SMEMBERS.
                 await _connection
                     .ScriptAsync(
                         RemoveTagMembers,
-                        [
-                            tagKey,
-                            .. chunk.Select(static member => (ValkeyArgument)member.AsBytes()),
-                        ],
+                        [tagKey, .. chunk.Select(static member => (ValkeyArgument)member)],
                         [],
                         cancellationToken
                     )
@@ -253,6 +277,67 @@ public sealed class ValkeyCacheStore : IDistributedCacheStore, ICacheStoreHealth
         {
             throw ValkeyFailures.Cache(exception, "remove tag");
         }
+    }
+
+    private static void ValidateTaggedWrite(string key, IReadOnlyCollection<string>? tagKeys)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        if (tagKeys is null)
+        {
+            return;
+        }
+
+        foreach (var tag in tagKeys)
+        {
+            var prefix = DataPrefixFor(tag);
+            if (!key.StartsWith(prefix, StringComparison.Ordinal) || key.Length == prefix.Length)
+            {
+                throw new ArgumentException(
+                    "Tagged values must use the tag namespace's cache:data: domain.",
+                    nameof(key)
+                );
+            }
+        }
+    }
+
+    /// <summary>
+    /// The prefix every member of the index at <paramref name="tagKey"/> must carry to be
+    /// unlinked: the tag key's namespace followed by <c>:cache:data:</c>. Tagged operations
+    /// require the kernel's canonical key domains.
+    /// </summary>
+    internal static string DataPrefixFor(string tagKey)
+    {
+        ArgumentNullException.ThrowIfNull(tagKey);
+        const string tagSegment = ":cache:tag:";
+        var end = tagKey.IndexOf(tagSegment, StringComparison.Ordinal);
+        if (end <= 0 || end + ":cache:tag:".Length == tagKey.Length)
+        {
+            throw new ArgumentException(
+                "Tag keys must use the namespace:cache:tag:name form.",
+                nameof(tagKey)
+            );
+        }
+
+        return string.Concat(tagKey.AsSpan(0, end), ":cache:data:");
+    }
+
+    /// <summary>Splits index members into those under <paramref name="prefix"/> and the rest.</summary>
+    internal static (
+        List<ReadOnlyMemory<byte>> Accepted,
+        List<ReadOnlyMemory<byte>> Rejected
+    ) Partition(IEnumerable<ReadOnlyMemory<byte>> members, ReadOnlySpan<byte> prefix)
+    {
+        var accepted = new List<ReadOnlyMemory<byte>>();
+        var rejected = new List<ReadOnlyMemory<byte>>();
+        foreach (var member in members)
+        {
+            if (member.Span.StartsWith(prefix))
+                accepted.Add(member);
+            else
+                rejected.Add(member);
+        }
+
+        return (accepted, rejected);
     }
 
     /// <inheritdoc />

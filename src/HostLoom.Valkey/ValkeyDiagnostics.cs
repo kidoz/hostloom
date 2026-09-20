@@ -20,4 +20,9 @@ public static class ValkeyDiagnostics
     internal static readonly Counter<long> HandlerFailures = Meter.CreateCounter<long>(
         "hostloom.valkey.invalidation.handler_failures"
     );
+    internal static readonly Counter<long> TagMembersRejected = Meter.CreateCounter<long>(
+        "hostloom.valkey.tag.members_rejected",
+        "{member}",
+        "Tag-index members outside the namespace's cache-data prefix that were forgotten instead of unlinked."
+    );
 }

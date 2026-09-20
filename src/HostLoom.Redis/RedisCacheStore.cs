@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using HostLoom.Caching;
 using HostLoom.Redis.Internal;
 using StackExchange.Redis;
@@ -21,6 +23,8 @@ public sealed class RedisCacheStore
         IAsyncDisposable
 {
     private const int RemoveBatchSize = 500;
+    private const string TagSegment = ":cache:tag:";
+    private const string DataSegment = ":cache:data:";
     private const string ReadScript = """
         local value = redis.call('GET', KEYS[1])
         if not value then return false end
@@ -100,6 +104,7 @@ public sealed class RedisCacheStore
         CancellationToken cancellationToken = default
     )
     {
+        ValidateTaggedWrite(key, tagKeys);
         try
         {
             var db = await _connection.GetDatabaseAsync(cancellationToken).ConfigureAwait(false);
@@ -142,6 +147,7 @@ public sealed class RedisCacheStore
         CancellationToken cancellationToken = default
     )
     {
+        ValidateTaggedWrite(key, tagKeys);
         try
         {
             var db = await _connection.GetDatabaseAsync(cancellationToken).ConfigureAwait(false);
@@ -280,28 +286,61 @@ public sealed class RedisCacheStore
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Only members under the namespace's cache-data prefix are unlinked. The index is a plain
+    /// set, so anything with <c>SADD</c> rights on it could otherwise name an arbitrary key for
+    /// deletion. A member outside the prefix is dropped from the index without touching the key
+    /// it names, so the index heals itself, and is counted on
+    /// <c>hostloom.redis.tag.members_rejected</c>.
+    /// </remarks>
     public async ValueTask RemoveByTagAsync(
         string tagKey,
         CancellationToken cancellationToken = default
     )
     {
-        ArgumentNullException.ThrowIfNull(tagKey);
+        var dataPrefix = DataPrefixFor(tagKey);
         try
         {
             var db = await _connection.GetDatabaseAsync(cancellationToken).ConfigureAwait(false);
             var tag = Key(tagKey);
+            var prefix = Encoding.UTF8.GetBytes((string)Key(dataPrefix)!);
             var members = await db.SetMembersAsync(tag)
                 .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
-            for (var offset = 0; offset < members.Length; offset += RemoveBatchSize)
+            var accepted = new List<RedisKey>(members.Length);
+            List<RedisValue>? rejected = null;
+            foreach (var member in members)
             {
-                var count = Math.Min(RemoveBatchSize, members.Length - offset);
+                if ((byte[]?)member is { } bytes && bytes.AsSpan().StartsWith(prefix))
+                {
+                    accepted.Add(bytes);
+                }
+                else
+                {
+                    (rejected ??= []).Add(member);
+                }
+            }
+
+            if (rejected is not null)
+            {
+                RedisDiagnostics.TagMembersRejected.Add(
+                    rejected.Count,
+                    new KeyValuePair<string, object?>(
+                        RedisDiagnostics.ClientTag,
+                        _connection.Options.ClientName
+                    )
+                );
+                await db.SetRemoveAsync(tag, [.. rejected])
+                    .WaitAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            for (var offset = 0; offset < accepted.Count; offset += RemoveBatchSize)
+            {
+                var count = Math.Min(RemoveBatchSize, accepted.Count - offset);
                 var chunk = new RedisKey[count + 1];
                 chunk[0] = tag;
-                for (var i = 0; i < count; i++)
-                {
-                    chunk[i + 1] = (byte[])members[offset + i]!;
-                }
+                accepted.CopyTo(offset, chunk, 1, count);
 
                 // Remove only the memberships in this snapshot, atomically with their values.
                 // SREM removes an empty index; a concurrent writer's new members survive.
@@ -317,7 +356,52 @@ public sealed class RedisCacheStore
         }
     }
 
+    private static void ValidateTaggedWrite(string key, IReadOnlyCollection<string>? tagKeys)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        if (tagKeys is null)
+        {
+            return;
+        }
+
+        foreach (var tag in tagKeys)
+        {
+            var prefix = DataPrefixFor(tag);
+            if (!key.StartsWith(prefix, StringComparison.Ordinal) || key.Length == prefix.Length)
+            {
+                throw new ArgumentException(
+                    "Tagged values must use the tag namespace's cache:data: domain.",
+                    nameof(key)
+                );
+            }
+        }
+    }
+
+    /// <summary>
+    /// The prefix, in the kernel's key form, that every member of the index at
+    /// <paramref name="tagKey"/> must carry to be unlinked: the tag key's namespace followed by
+    /// <c>:cache:data:</c>. Tagged operations require the kernel's canonical key domains.
+    /// </summary>
+    internal static string DataPrefixFor(string tagKey)
+    {
+        ArgumentNullException.ThrowIfNull(tagKey);
+        var end = tagKey.IndexOf(TagSegment, StringComparison.Ordinal);
+        if (end <= 0 || end + ":cache:tag:".Length == tagKey.Length)
+        {
+            throw new ArgumentException(
+                "Tag keys must use the namespace:cache:tag:name form.",
+                nameof(tagKey)
+            );
+        }
+
+        return string.Concat(tagKey.AsSpan(0, end), DataSegment);
+    }
+
     /// <inheritdoc />
+    /// <remarks>
+    /// The description is meant for a readiness endpoint, so it names no endpoint, host,
+    /// machine, or process; <see cref="RedisConnection.Describe"/> keeps those for logs.
+    /// </remarks>
     public async ValueTask<CacheStoreHealth> CheckHealthAsync(CancellationToken cancellationToken)
     {
         var timeout = _connection.Options.HealthTimeout;
@@ -328,14 +412,17 @@ public sealed class RedisCacheStore
             var db = await _connection.GetDatabaseAsync(bounded.Token).ConfigureAwait(false);
             var latency = await db.PingAsync().WaitAsync(bounded.Token).ConfigureAwait(false);
             return CacheStoreHealth.Healthy(
-                $"Redis answered PING in {latency.TotalMilliseconds:F1} ms ({_connection.Describe()})."
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Redis reachable; PING answered in {latency.TotalMilliseconds:F1} ms on database {_connection.Options.DatabaseIndex}."
+                )
             );
         }
         catch (Exception exception)
             when (!RedisFailures.IsCallerCancellation(exception, cancellationToken))
         {
             return CacheStoreHealth.Unhealthy(
-                $"Redis did not answer PING within {timeout} ({_connection.Describe()}): {exception.GetType().Name}."
+                $"Redis unreachable; PING did not answer within {timeout} ({exception.GetType().Name})."
             );
         }
     }

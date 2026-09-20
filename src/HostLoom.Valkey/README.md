@@ -52,7 +52,19 @@ A standalone `ServiceCollection` needs a DI container implementation to call `Bu
   back partial writes; reserved key domains must contain the expected value/index types.
 - Tag memberships are monotonic: rewriting under other tags can leave earlier memberships.
   Tag removal is best-effort across concurrent writers, as in the Redis adapter.
+- Tag removal unlinks only members under the namespace's `:cache:data:` prefix. A member outside
+  it is dropped from the index with `SREM`, left untouched as a key, and counted on
+  `hostloom.valkey.tag.members_rejected`, so an index something else has written to heals itself.
 - Pipeline server errors are checked individually and surfaced as `CacheStoreException`.
+
+Tagged writes through the store's public constructor require a value key in
+`namespace:cache:data:name` and tag keys in `namespace:cache:tag:name` with the same
+namespace. The adapter validates every tag before issuing any backend command; invalid
+combinations throw `ArgumentException`, including conditional writes. `RemoveByTagAsync`
+also requires a canonical tag key. Untagged operations still accept opaque keys. Calls
+through `ICache` already use these domains. Direct store callers using custom tagged
+keys must migrate them to these forms; changing only the index would leave old values
+outside the invalidation filter.
 
 ## Invalidation
 
@@ -74,6 +86,13 @@ disconnection loses them too; in either case **L1 expiry bounds staleness**; cho
 `CacheEntryOptions.LocalExpiration`. No stronger consistency is promised. A published flush is a
 fourth array element on the wire; an instance on an earlier package version counts it as
 malformed. Handler exceptions do not stop other handlers. Handlers must not block.
+
+Messages are bounded to 1 MiB and 10 000 items per array, and every key and tag in them is
+validated as a cache key (at most `Caching:MaxKeyLength`, no whitespace or control characters); a
+message with one bad item is dropped whole and counted as malformed. A well-formed flush or
+removal from any client that may publish on the channel still clears other instances' in-process
+entries, so restrict `PUBLISH` with an ACL channel pattern such as
+`&{namespace}:cache:invalidate:db:*` to the service's own user.
 
 The `HostLoom.Valkey` meter records invalidation failures, queue drops, malformed messages, and
 handler failures; recovery also records the kernel's resubscription counter. Warnings are limited

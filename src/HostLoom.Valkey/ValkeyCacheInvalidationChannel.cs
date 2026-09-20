@@ -20,6 +20,7 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
     private readonly ValkeyConnection _connection;
     private readonly string _namespace;
     private readonly bool _flushOnReconnect;
+    private readonly int _maxKeyLength;
     private readonly ILogger _logger;
     private readonly Lock _gate = new();
     private readonly List<Action<CacheInvalidation>> _handlers = [];
@@ -51,6 +52,7 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
         _connection = connection;
         _namespace = options.Namespace;
         _flushOnReconnect = options.Invalidation.FlushLocalOnReconnect;
+        _maxKeyLength = options.MaxKeyLength;
         // Pub/Sub ignores SELECT; isolate namespaces that happen to use different logical databases.
         ChannelName =
             options.Namespace
@@ -168,7 +170,10 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
                     )
                     {
                         RecordDrops(subscription, ref drops);
-                        if (ValkeyInvalidationCodec.Decode(message.Payload) is { } invalidation)
+                        if (
+                            ValkeyInvalidationCodec.Decode(message.Payload, _maxKeyLength) is
+                            { } invalidation
+                        )
                             Dispatch(invalidation);
                         else
                             ValkeyDiagnostics.Malformed.Add(1);

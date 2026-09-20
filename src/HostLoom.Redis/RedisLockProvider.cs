@@ -1,3 +1,4 @@
+using System.Globalization;
 using HostLoom.Locking;
 using HostLoom.Redis.Internal;
 using StackExchange.Redis;
@@ -127,6 +128,10 @@ public sealed class RedisLockProvider : ILockProvider, ILockProviderHealthProbe,
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The description is meant for a readiness endpoint, so it names no endpoint, host,
+    /// machine, or process; <see cref="RedisConnection.Describe"/> keeps those for logs.
+    /// </remarks>
     public async ValueTask<LockProviderHealth> CheckHealthAsync(CancellationToken cancellationToken)
     {
         var timeout = _connection.Options.HealthTimeout;
@@ -137,14 +142,17 @@ public sealed class RedisLockProvider : ILockProvider, ILockProviderHealthProbe,
             var db = await _connection.GetDatabaseAsync(bounded.Token).ConfigureAwait(false);
             var latency = await db.PingAsync().WaitAsync(bounded.Token).ConfigureAwait(false);
             return LockProviderHealth.Healthy(
-                $"Redis answered PING in {latency.TotalMilliseconds:F1} ms ({_connection.Describe()})."
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Redis reachable; PING answered in {latency.TotalMilliseconds:F1} ms on database {_connection.Options.DatabaseIndex}."
+                )
             );
         }
         catch (Exception exception)
             when (!RedisFailures.IsCallerCancellation(exception, cancellationToken))
         {
             return LockProviderHealth.Unhealthy(
-                $"Redis did not answer PING within {timeout} ({_connection.Describe()}): {exception.GetType().Name}."
+                $"Redis unreachable; PING did not answer within {timeout} ({exception.GetType().Name})."
             );
         }
     }

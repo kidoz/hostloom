@@ -33,6 +33,13 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
 {
     private const string FormatMarker = "v1";
     private const char FlushLine = '*';
+
+    /// <summary>Largest explicit message accepted, in bytes as published; larger ones are dropped unread.</summary>
+    internal const int MaxPayloadBytes = 1_048_576;
+
+    /// <summary>Most keys and tags together in one explicit message.</summary>
+    internal const int MaxItems = 10_000;
+
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(30);
 
     private readonly RedisConnection _connection;
@@ -48,6 +55,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     private readonly List<ChannelMessageQueue> _queues = [];
     private ChannelMessageQueue? _trackingQueue;
     private long _trackingInitialisations;
+    private long _malformed;
     private int _disposed;
 
     /// <summary>Creates the channel for the namespace in <paramref name="options"/> over the shared connection.</summary>
@@ -86,6 +94,13 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
 
     /// <summary>Successful tracking registration passes, including reconnects and topology refreshes.</summary>
     public long TrackingInitialisations => Interlocked.Read(ref _trackingInitialisations);
+
+    /// <summary>
+    /// Explicit messages dropped without dispatch because they exceeded
+    /// <see cref="MaxPayloadBytes"/> or <see cref="MaxItems"/>, or carried a key or tag the kernel
+    /// would reject. Also counted on <c>hostloom.redis.invalidation.malformed</c>.
+    /// </summary>
+    public long MalformedMessages => Interlocked.Read(ref _malformed);
 
     /// <inheritdoc />
     public async ValueTask PublishAsync(
@@ -190,8 +205,15 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         _disposal.Dispose();
     }
 
+    /// <summary>Serialises a message; one every subscriber would drop is rejected here instead.</summary>
+    /// <exception cref="ArgumentException">More than <see cref="MaxItems"/> keys and tags, or over <see cref="MaxPayloadBytes"/>.</exception>
     internal static string Encode(CacheInvalidation invalidation)
     {
+        if (invalidation.Keys.Count + invalidation.Tags.Count > MaxItems)
+        {
+            throw new ArgumentException("Too many invalidation items.", nameof(invalidation));
+        }
+
         var builder = new StringBuilder(FormatMarker);
         if (invalidation.FlushAll)
         {
@@ -210,12 +232,26 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             builder.Append('\n').Append('t').Append(tag);
         }
 
-        return builder.ToString();
+        var message = builder.ToString();
+        if (Encoding.UTF8.GetByteCount(message) > MaxPayloadBytes)
+        {
+            throw new ArgumentException("Invalidation payload is too large.", nameof(invalidation));
+        }
+
+        return message;
     }
 
-    internal static CacheInvalidation? Decode(string? message)
+    /// <summary>
+    /// Parses a message from the explicit channel, or returns null for one that is not
+    /// <c>v1</c>, exceeds <see cref="MaxPayloadBytes"/> characters or <see cref="MaxItems"/> keys
+    /// and tags, or names a key or tag the kernel itself would reject (empty, longer than
+    /// <paramref name="maxKeyLength"/>, or containing whitespace or control characters). The
+    /// whole message is dropped on any violation so a publisher cannot smuggle one bad item in
+    /// among good ones. Unknown line kinds are skipped for forward compatibility.
+    /// </summary>
+    internal static CacheInvalidation? Decode(string? message, int maxKeyLength = 512)
     {
-        if (message is null)
+        if (message is null || message.Length > MaxPayloadBytes)
         {
             return null;
         }
@@ -229,6 +265,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         var keys = new List<string>();
         var tags = new List<string>();
         var flush = false;
+        var items = 0;
         for (var i = 1; i < lines.Length; i++)
         {
             var line = lines[i];
@@ -243,17 +280,19 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
                 continue;
             }
 
-            switch (line[0])
+            var kind = line[0];
+            if (kind is not ('k' or 't'))
             {
-                case 'k':
-                    keys.Add(line[1..]);
-                    break;
-                case 't':
-                    tags.Add(line[1..]);
-                    break;
-                default:
-                    break;
+                continue;
             }
+
+            var item = line[1..];
+            if (++items > MaxItems || !CacheKey.IsValid(item, maxKeyLength))
+            {
+                return null;
+            }
+
+            (kind == 'k' ? keys : tags).Add(item);
         }
 
         return new CacheInvalidation(keys, tags) { FlushAll = flush };
@@ -592,12 +631,42 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             [.. _options.Invalidation.KeyPrefixFilters]
         );
 
-    private void OnExplicitMessage(ChannelMessage message)
+    private void OnExplicitMessage(ChannelMessage message) =>
+        HandleExplicitMessage(message.Message);
+
+    /// <summary>
+    /// Applies one explicit-channel payload. Anything over <see cref="MaxPayloadBytes"/> is
+    /// dropped before it is decoded, so an oversized publish never costs more than a length
+    /// check on the single reader that serves every subscriber; a message that decodes to
+    /// nothing valid is dropped as a whole. Both are counted, and the content is never logged.
+    /// </summary>
+    internal void HandleExplicitMessage(RedisValue message)
     {
-        if (Decode(message.Message) is { } invalidation)
+        var length = message.IsNull ? 0 : message.Length();
+        if (
+            length > MaxPayloadBytes
+            || Decode((string?)message, _options.MaxKeyLength) is not { } invalidation
+        )
         {
-            Dispatch(invalidation);
+            Interlocked.Increment(ref _malformed);
+            RedisDiagnostics.InvalidationMalformed.Add(
+                1,
+                new KeyValuePair<string, object?>(RedisDiagnostics.NamespaceTag, _options.Namespace)
+            );
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    new EventId(1317, "RedisInvalidationMalformed"),
+                    "Dropped a malformed or oversized message of {Length} bytes on {Channel}.",
+                    length,
+                    ChannelName
+                );
+            }
+
+            return;
         }
+
+        Dispatch(invalidation);
     }
 
     private void OnTrackingMessage(ChannelMessage message)

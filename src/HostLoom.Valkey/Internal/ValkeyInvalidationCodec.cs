@@ -7,7 +7,10 @@ namespace HostLoom.Valkey.Internal;
 internal static class ValkeyInvalidationCodec
 {
     internal const int MaxPayloadBytes = 1_048_576;
-    private const int MaxItems = 10_000;
+    internal const int MaxItems = 10_000;
+
+    /// <summary>The kernel's default <c>Caching:MaxKeyLength</c>, used when no options are at hand.</summary>
+    internal const int DefaultMaxKeyLength = 512;
 
     internal static byte[] Encode(CacheInvalidation invalidation)
     {
@@ -32,7 +35,17 @@ internal static class ValkeyInvalidationCodec
         return buffer.WrittenSpan.ToArray();
     }
 
-    internal static CacheInvalidation? Decode(ReadOnlyMemory<byte> payload)
+    internal static CacheInvalidation? Decode(ReadOnlyMemory<byte> payload) =>
+        Decode(payload, DefaultMaxKeyLength);
+
+    /// <summary>
+    /// Decodes a message received from the channel, or returns null when it is oversized, has
+    /// too many items, or names a key or tag the kernel itself would reject (empty, longer than
+    /// <paramref name="maxKeyLength"/>, or containing whitespace or control characters). The
+    /// whole message is dropped on any violation so a publisher cannot smuggle one bad item in
+    /// among good ones.
+    /// </summary>
+    internal static CacheInvalidation? Decode(ReadOnlyMemory<byte> payload, int maxKeyLength)
     {
         if (payload.Length > MaxPayloadBytes)
             return null;
@@ -58,8 +71,8 @@ internal static class ValkeyInvalidationCodec
                     return null;
                 flush = true;
             }
-            var keys = ReadItems(root[1]);
-            var tags = ReadItems(root[2]);
+            var keys = ReadItems(root[1], maxKeyLength);
+            var tags = ReadItems(root[2], maxKeyLength);
             return keys is null || tags is null
                 ? null
                 : new CacheInvalidation(keys, tags) { FlushAll = flush };
@@ -86,7 +99,7 @@ internal static class ValkeyInvalidationCodec
         writer.WriteEndArray();
     }
 
-    private static string[]? ReadItems(JsonElement array)
+    private static string[]? ReadItems(JsonElement array, int maxKeyLength)
     {
         if (array.ValueKind != JsonValueKind.Array || array.GetArrayLength() > MaxItems)
             return null;
@@ -96,7 +109,10 @@ internal static class ValkeyInvalidationCodec
         {
             if (item.ValueKind != JsonValueKind.String)
                 return null;
-            items[index++] = item.GetString()!;
+            var value = item.GetString();
+            if (!CacheKey.IsValid(value, maxKeyLength))
+                return null;
+            items[index++] = value!;
         }
         return items;
     }

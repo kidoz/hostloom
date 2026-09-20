@@ -114,7 +114,42 @@ entries another instance simply overwrites, or the server expires, set
 `CachingProbe.Describe(cache)` reports the transport in effect. A mode that
 cannot be enabled falls back to the explicit channel and logs once.
 
-## 7. Watch it
+Whatever arrives on the explicit channel is bounded before it touches the
+in-process tier: a message over 1 MiB, one with more than 10 000 keys and
+tags, or one naming a key the kernel would reject is dropped whole and
+counted on `hostloom.redis.invalidation.malformed`. A well-formed message
+from any client that may publish there still evicts or flushes every
+instance, which is what the next step is for.
+
+## 7. Restrict the account and encrypt the connection
+
+The package sets StackExchange.Redis's client-side `allowAdmin` flag so it
+can issue the `CLIENT` subcommands tracking needs; that flag grants nothing
+on the server. Give the service its own ACL user, limited to the namespace's
+keys and channels and stripped of the dangerous category:
+
+```text
+ACL SETUSER catalog-svc on >replace-me resetkeys resetchannels \
+  ~catalog:* "~{catalog}:*" \
+  "&catalog:cache:invalidate" "&__redis__:invalidate" "&__keyspace@0__:catalog:cache:data:*" \
+  -@all +@read +@write +@set +@scripting +@pubsub +@connection -@dangerous \
+  +info +client|setname +client|list +client|tracking +client|trackinginfo
+```
+
+`&catalog:cache:invalidate` is the important line: only a user carrying that
+channel pattern can publish invalidations, and so only that user can evict
+other instances' in-process entries. Keep `__redis__:invalidate` for
+tracking mode or the `__keyspace@…` pattern for broadcast mode, not both.
+The `client|` subcommands and `info` are added back after `-@dangerous`
+because tracking and the `Auto` mode's version check need them; without them
+invalidation falls back to the explicit channel only.
+
+Then put `ssl=true` in `Redis:Configuration` (with `sslHost=…` when the
+certificate name differs from the endpoint), or set `Ssl` on
+`Redis:ConfigurationOptions`. The package does not default TLS on, so an
+unencrypted production connection is a choice you made in configuration.
+
+## 8. Watch it
 
 Enable the `HostLoom.Caching`, `HostLoom.Locking`, and `HostLoom.Redis`
 meters. `hostloom.redis.connection.state` drops to 0 during an outage and
