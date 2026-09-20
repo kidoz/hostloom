@@ -65,7 +65,9 @@ public sealed class HostLoomLoggerOptions
     /// <summary>
     /// How long disposal may spend draining and flushing before abandoning the writer. Records
     /// still queued at the deadline are counted as dropped rather than waited for: logging must
-    /// never be the reason a service cannot shut down.
+    /// never be the reason a service cannot shut down. Sink disposal has a separate budget of
+    /// the same length, including its synchronous prefix. Cancellation has a 250 ms grace;
+    /// stalled external code may remain on an abandoned background thread.
     /// </summary>
     public TimeSpan ShutdownTimeout { get; set; } = TimeSpan.FromSeconds(5);
 

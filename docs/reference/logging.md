@@ -35,7 +35,7 @@ runs before the provider; HostLoom does no level filtering of its own.
 | `QueueFullPolicy` | `DropBelowWarning` | `Block` \| `DropNewest` \| `DropBelowWarning` |
 | `BatchSize` | `256` | Records per writer batch |
 | `EnqueueTimeout` | null (block without limit) | Cap on how long a log call may block under `Block` |
-| `ShutdownTimeout` | 5 s | Drain window on dispose |
+| `ShutdownTimeout` | 5 s | Separate budgets for draining writes and disposing the sink |
 | `MaxFieldNameLength` | `128` | — |
 | `MaxFieldsPerRecord` | `64` | — |
 | `AttachMachineName` | `true` | Adds the machine name as a static field |
@@ -44,6 +44,13 @@ runs before the provider; HostLoom does no level filtering of its own.
 | `Enrichers` | empty | `ILogEnricher` list |
 | `Destructuring` | see below | `{@...}` destructuring limits |
 | `TimeProvider` | `TimeProvider.System` | Testable timestamps |
+
+Shutdown grants the writer `ShutdownTimeout`, then up to 250 ms for cancellation, and grants
+sink disposal a separate `ShutdownTimeout` after the writer has stopped. Cancellation callbacks
+and the entire sink disposal invocation run on dedicated background threads, so a synchronous
+stall also respects these phase budgets. A sink whose writer or callbacks remain blocked is
+abandoned without concurrent disposal. Bounded shutdown cannot force that external code to
+release its resources.
 
 `DestructuringOptions`: `MaxDepth` 5, `MaxCollectionItems` 32,
 `MaxObjectMembers` 64, `MaxStringLength` 4096,

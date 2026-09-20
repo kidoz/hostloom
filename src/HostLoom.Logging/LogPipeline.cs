@@ -465,11 +465,31 @@ internal sealed class LogPipeline : IAsyncDisposable
         _queue.Writer.TryComplete();
 
         var finished = await WaitForWriterAsync(_options.ShutdownTimeout).ConfigureAwait(false);
+        Task<Exception?>? cancellation = null;
         if (!finished)
         {
-            // Deadline reached: ask the sink to abort cooperatively, then grant a short grace.
-            await _shutdown.CancelAsync().ConfigureAwait(false);
-            finished = await WaitForWriterAsync(AbandonGrace).ConfigureAwait(false);
+            // Callbacks can block synchronously too. Neither they nor sink disposal may
+            // occupy the caller or an abandoned shared thread-pool worker.
+#pragma warning disable CA1849 // Synchronous callbacks stay on our owned background thread, not the shared pool.
+            cancellation = RunShutdownWorker(() =>
+            {
+                _shutdown.Cancel();
+                return ValueTask.CompletedTask;
+            });
+#pragma warning restore CA1849
+            try
+            {
+                await Task.WhenAll(_completion.Task, cancellation)
+                    .WaitAsync(AbandonGrace)
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException) { }
+            finished = _completion.Task.IsCompleted && cancellation.IsCompleted;
+            if (
+                cancellation.IsCompletedSuccessfully
+                && await cancellation.ConfigureAwait(false) is not null
+            )
+                _metrics.RecordFailure(LoggingMetrics.ComponentSink);
         }
 
         if (finished)
@@ -478,11 +498,11 @@ internal sealed class LogPipeline : IAsyncDisposable
             {
                 // Bounded like the drain: a sink that hangs inside its own flush-on-dispose must
                 // not be able to hang application shutdown.
-                await _sink
-                    .DisposeAsync()
-                    .AsTask()
+                var failure = await RunShutdownWorker(_sink.DisposeAsync)
                     .WaitAsync(_options.ShutdownTimeout)
                     .ConfigureAwait(false);
+                if (failure is not null)
+                    _metrics.RecordFailure(LoggingMetrics.ComponentSink);
             }
             catch (Exception)
             {
@@ -515,6 +535,32 @@ internal sealed class LogPipeline : IAsyncDisposable
         }
 
         _metrics.Dispose();
+    }
+
+    // Returning failures as values also observes a worker that finishes after its deadline.
+    private static Task<Exception?> RunShutdownWorker(Func<ValueTask> action)
+    {
+        var completion = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var worker = new Thread(() =>
+        {
+            try
+            {
+                action().AsTask().GetAwaiter().GetResult();
+                completion.TrySetResult(null);
+            }
+            catch (Exception exception)
+            {
+                completion.TrySetResult(exception);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "HostLoom Logging Shutdown",
+        };
+        worker.Start();
+        return completion.Task;
     }
 
     private async ValueTask<bool> WaitForWriterAsync(TimeSpan timeout)

@@ -106,6 +106,8 @@ are derived from release tags at publish time.
 - WebSocket subscription initialization and removal detach linked cancellation resources safely.
 - Pending leader-channel writes wake on leadership loss and follow the follower discard policy.
 - Scheduled jobs retain stop, timeout and claim-loss outcomes after cooperative normal returns.
+- Logging shutdown bounds synchronous sink disposal and cancellation callbacks as well as
+  asynchronous stalls.
 
 ## [0.8.0] - 2026-09-19
 
