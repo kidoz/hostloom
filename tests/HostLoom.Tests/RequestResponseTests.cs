@@ -55,8 +55,16 @@ public sealed class RequestResponseTests
             )
         );
 
-        Assert.Equal(typeof(InvalidOperationException).FullName, exception.ErrorType);
-        Assert.Contains("deliberate", exception.Message, StringComparison.Ordinal);
+        // The handler's exception type and message stay on the handling side by default; the
+        // caller learns only that the handler failed.
+        Assert.Equal("HandlerFault", exception.ErrorType);
+        Assert.Contains("The request handler failed.", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("deliberate", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            nameof(InvalidOperationException),
+            exception.Message,
+            StringComparison.Ordinal
+        );
         Assert.DoesNotContain("   at ", exception.Message, StringComparison.Ordinal);
     }
 

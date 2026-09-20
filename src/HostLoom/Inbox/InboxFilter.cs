@@ -46,11 +46,27 @@ public sealed class InboxFilter : IFilter<ReceiveContext>
         _logger = logger ?? NullLogger<InboxFilter>.Instance;
     }
 
-    /// <summary>The inbox key for one delivery: <c>{topic}:{subscription}:{messageId}</c>.</summary>
+    /// <summary>
+    /// The inbox key for one delivery: <c>{topic.Length}:{topic}:{subscription.Length}:{subscription}:{messageId}</c>.
+    /// </summary>
+    /// <remarks>
+    /// The topic and subscription are length-prefixed rather than joined with a bare separator,
+    /// because both may contain <c>:</c>; without the prefix, <c>("a:b", "c")</c> and
+    /// <c>("a", "b:c")</c> would share a key and one subscription's delivery would silence the
+    /// other's. The message id is the sender's, so the framework rejects an empty one at decoding.
+    /// </remarks>
     public static string KeyFor(EventReceiveContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        return $"{context.Destination.Value}:{context.Subscription}:{context.MessageId:N}";
+        return KeyFor(context.Destination.Value, context.Subscription, context.MessageId);
+    }
+
+    /// <summary>Builds the key <see cref="KeyFor(EventReceiveContext)"/> builds, from its parts.</summary>
+    public static string KeyFor(string topic, string subscription, Guid messageId)
+    {
+        ArgumentNullException.ThrowIfNull(topic);
+        ArgumentNullException.ThrowIfNull(subscription);
+        return $"{topic.Length}:{topic}:{subscription.Length}:{subscription}:{messageId:N}";
     }
 
     /// <inheritdoc />

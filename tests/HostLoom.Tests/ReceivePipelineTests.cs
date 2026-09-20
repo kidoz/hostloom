@@ -84,7 +84,7 @@ public sealed class ReceivePipelineTests
                 )
         );
 
-        Assert.Equal(typeof(InvalidOperationException).FullName, exception.ErrorType);
+        Assert.Equal("HandlerFault", exception.ErrorType);
         Assert.Equal(3, attempts.Count);
     }
 
@@ -122,7 +122,9 @@ public sealed class ReceivePipelineTests
             )
         );
 
-        Assert.Equal(typeof(CircuitBreakerOpenException).FullName, exception.ErrorType);
+        // An open breaker is reported like any other failure: the caller is not told which
+        // internal exception type produced the fault.
+        Assert.Equal("HandlerFault", exception.ErrorType);
         Assert.Equal(2, attempts.Count);
     }
 

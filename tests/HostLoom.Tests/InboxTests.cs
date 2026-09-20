@@ -80,15 +80,15 @@ public sealed class InboxTests
         Assert.Equal(2, observed.Count(o => o == "handled"));
         Assert.Equal(
             2,
-            observed.Count(o => o.StartsWith("duplicate orders:", StringComparison.Ordinal))
+            observed.Count(o => o.StartsWith("duplicate 6:orders:", StringComparison.Ordinal))
         );
         Assert.Contains(
             observed,
-            o => o.StartsWith("duplicate orders:audit:", StringComparison.Ordinal)
+            o => o.StartsWith("duplicate 6:orders:5:audit:", StringComparison.Ordinal)
         );
         Assert.Contains(
             observed,
-            o => o.StartsWith("duplicate orders:shipping:", StringComparison.Ordinal)
+            o => o.StartsWith("duplicate 6:orders:8:shipping:", StringComparison.Ordinal)
         );
         Assert.Equal(2, host.Services.GetRequiredService<InMemoryInboxStore>().Count);
     }

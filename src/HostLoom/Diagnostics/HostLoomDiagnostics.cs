@@ -50,6 +50,12 @@ public static class HostLoomDiagnostics
         "Outbox publish attempts that failed and left the message pending."
     );
 
+    internal static readonly Counter<long> OutboxDeadLettered = Meter.CreateCounter<long>(
+        "hostloom.outbox.dead_lettered",
+        "{message}",
+        "Outbox messages that exhausted their attempts and are no longer claimed."
+    );
+
     internal static readonly Histogram<double> OutboxLag = Meter.CreateHistogram<double>(
         "hostloom.outbox.lag",
         "s",

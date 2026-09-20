@@ -44,14 +44,29 @@ through the configurable serialization boundary: `IMessageSerializer`,
 whose default is `SystemTextJsonMessageSerializer`, replaceable through
 dependency injection because it is registered with `TryAddSingleton`.
 
+## Identifier validation
+
+Decoding rejects an envelope whose `MessageId` is missing or the all-zero
+GUID, one whose `CorrelationId` is present but all-zero, and a `Response`
+or `Fault` without a `CorrelationId`. Each is a `MalformedEnvelopeException`
+raised before any handler runs: the message id is the sender's, and every
+inbox key and reply correlation is built on it, so an empty one would let
+unrelated deliveries collide.
+
 ## Faults
 
-A remote fault carries the error **type name and message only — no stack
-trace** crosses the wire. On the caller's side it surfaces as
-`RemoteRequestException`, whose `ErrorType` names the remote exception
-type. An envelope that cannot be decoded raises
-`MalformedEnvelopeException`; a reply that never arrives within the
-request timeout raises `RequestTimeoutException`.
+A remote fault carries a **type and a message only — no stack trace**
+crosses the wire. By default the type is `HandlerFault` and the message a
+fixed "The request handler failed."; the real exception stays in the
+handling side's log. The exception's own type name and message are sent
+only when it is a `RemoteFaultException` (thrown by the handler for the
+caller to read) or when `HostLoomOptions.IncludeFaultDetails` is on.
+Requests the endpoint cannot route are answered with the stable types
+`HandlerNotFound` and `ResponseTypeMismatch`. On the caller's side a fault
+surfaces as `RemoteRequestException`, whose `ErrorType` is that type. An
+envelope that cannot be decoded raises `MalformedEnvelopeException`; a
+reply that never arrives within the request timeout raises
+`RequestTimeoutException`.
 
 ## What rides where
 

@@ -18,10 +18,14 @@ public sealed class GreetHandler : IRequestHandler<Greet, Greeting>
         ValueTask.FromResult(new Greeting($"Hello, {request.Name}!"));
 }
 
+/// <summary>
+/// Fails with a <see cref="RemoteFaultException"/>, the one exception whose message is forwarded
+/// to the caller by default; any other type reaches the caller as an anonymous handler fault.
+/// </summary>
 public sealed class FailingHandler : IRequestHandler<Fail, Never>
 {
     public ValueTask<Never> HandleAsync(Fail request, CancellationToken cancellationToken) =>
-        throw new InvalidOperationException(request.Reason);
+        throw new RemoteFaultException(request.Reason);
 }
 
 /// <summary>Collects deliveries across subscriptions so fan-out can be asserted on.</summary>
