@@ -48,11 +48,16 @@ jobs:
       - name: Validate release version
         id: version
         shell: bash
+        env:
+          # Passed through the environment, never interpolated into the script: a release tag
+          # is attacker-influenced text and would otherwise be evaluated as shell.
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          PUBLISH_INPUT: ${{ inputs.publish }}
         run: |
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
-            tag="${{ github.event.release.tag_name }}"
-          elif [ "${{ inputs.publish }}" = "true" ]; then
+            tag="${RELEASE_TAG}"
+          elif [ "${PUBLISH_INPUT}" = "true" ]; then
             tag="${GITHUB_REF_NAME}"
           else
             version=$(node --print "require('./package.json').version")
@@ -115,9 +120,10 @@ jobs:
         run: npm install --global npm@11.19.1
 
       - name: Publish to npm
-        run: npm publish "artifacts/npm/hostloom-websocket-client-${{ needs.package.outputs.version }}.tgz"
         env:
+          PACKAGE_VERSION: ${{ needs.package.outputs.version }}
           # npm requires a token only for the first publication because trusted publishers can be
           # configured only after a package exists. Delete this secret after the bootstrap release;
           # npm 11.5.1+ then authenticates this same command through GitHub OIDC.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        run: npm publish "artifacts/npm/hostloom-websocket-client-${PACKAGE_VERSION}.tgz"
