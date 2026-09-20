@@ -102,6 +102,7 @@ are derived from release tags at publish time.
 - Lock-loss callback exceptions no longer escape timer callbacks or interrupt lease accounting.
 - Valkey tag invalidation removes only snapshotted members, retaining concurrently added keys for
   later invalidation. Restricted cache ACLs now also need `SREM` permission.
+- Concurrent L1 mutations keep byte accounting consistent with the stored entries.
 
 ## [0.8.0] - 2026-09-19
 

@@ -26,7 +26,11 @@ public sealed class LocalCacheStore : IDisposable
     private readonly TimeProvider _time;
     private readonly ILogger _logger;
     private readonly ITimer? _cleanup;
+    private readonly Lock _mutation = new();
     private long _approximateBytes;
+
+    // Mutated with the entries under _mutation; avoids dictionary-wide Count locks per write.
+    private int _count;
     private int _evicting;
 
     /// <summary>Creates the tier with <paramref name="options"/>.</summary>
@@ -56,7 +60,7 @@ public sealed class LocalCacheStore : IDisposable
     }
 
     /// <summary>Entries currently held, including ones that expired but were not yet reclaimed.</summary>
-    public int Count => _entries.Count;
+    public int Count => Volatile.Read(ref _count);
 
     /// <summary>Approximate bytes held, when sizes are known.</summary>
     public long ApproximateBytes => Interlocked.Read(ref _approximateBytes);
@@ -175,43 +179,33 @@ public sealed class LocalCacheStore : IDisposable
         var now = _time.GetUtcNow().UtcTicks;
         var expiresAt = now + timeToLive.Ticks;
         var entry = new Entry(value, expiresAt, expiresAt, now, size ?? 0, tags);
-        while (true)
+        lock (_mutation)
         {
-            if (_entries.TryAdd(key, entry))
-            {
-                Interlocked.Add(ref _approximateBytes, entry.Size);
-                EnforceBounds();
-                return true;
-            }
-
-            if (_entries.TryGetValue(key, out var existing))
-            {
-                if (existing.ExpiresAt > now)
-                {
-                    return false;
-                }
-
-                if (_entries.TryUpdate(key, entry, existing))
-                {
-                    Interlocked.Add(ref _approximateBytes, entry.Size - existing.Size);
-                    EnforceBounds();
-                    return true;
-                }
-            }
+            if (_entries.TryGetValue(key, out var existing) && existing.ExpiresAt > now)
+                return false;
+            _entries[key] = entry;
+            if (existing is null)
+                Interlocked.Increment(ref _count);
+            Interlocked.Add(ref _approximateBytes, entry.Size - (existing?.Size ?? 0));
         }
+        EnforceBounds();
+        return true;
     }
 
     /// <summary>Removes <paramref name="key"/>.</summary>
     public bool Remove(string key)
     {
         ArgumentNullException.ThrowIfNull(key);
-        if (_entries.TryRemove(key, out var entry))
+        lock (_mutation)
         {
-            Interlocked.Add(ref _approximateBytes, -entry.Size);
-            return true;
+            if (_entries.TryRemove(key, out var entry))
+            {
+                Interlocked.Decrement(ref _count);
+                Interlocked.Add(ref _approximateBytes, -entry.Size);
+                return true;
+            }
+            return false;
         }
-
-        return false;
     }
 
     /// <summary>Removes every key.</summary>
@@ -240,8 +234,12 @@ public sealed class LocalCacheStore : IDisposable
     /// <summary>Removes everything.</summary>
     public void Clear()
     {
-        _entries.Clear();
-        Interlocked.Exchange(ref _approximateBytes, 0);
+        lock (_mutation)
+        {
+            _entries.Clear();
+            Interlocked.Exchange(ref _count, 0);
+            Interlocked.Exchange(ref _approximateBytes, 0);
+        }
     }
 
     /// <summary>
@@ -283,13 +281,14 @@ public sealed class LocalCacheStore : IDisposable
         var staleUntil =
             staleGrace is { } grace && grace > TimeSpan.Zero ? expiresAt + grace.Ticks : expiresAt;
         var entry = new Entry(value, expiresAt, staleUntil, now, size ?? 0, tags);
-        if (_entries.TryGetValue(key, out var previous))
+        lock (_mutation)
         {
-            Interlocked.Add(ref _approximateBytes, -previous.Size);
+            _entries.TryGetValue(key, out var previous);
+            _entries[key] = entry;
+            if (previous is null)
+                Interlocked.Increment(ref _count);
+            Interlocked.Add(ref _approximateBytes, entry.Size - (previous?.Size ?? 0));
         }
-
-        _entries[key] = entry;
-        Interlocked.Add(ref _approximateBytes, entry.Size);
         EnforceBounds();
     }
 
@@ -341,15 +340,19 @@ public sealed class LocalCacheStore : IDisposable
 
     private void Evict(string key, Entry expected)
     {
-        if (_entries.TryRemove(new KeyValuePair<string, Entry>(key, expected)))
+        lock (_mutation)
         {
-            Interlocked.Add(ref _approximateBytes, -expected.Size);
+            if (_entries.TryRemove(new KeyValuePair<string, Entry>(key, expected)))
+            {
+                Interlocked.Decrement(ref _count);
+                Interlocked.Add(ref _approximateBytes, -expected.Size);
+            }
         }
     }
 
     private void EnforceBounds()
     {
-        var count = _entries.Count;
+        var count = Count;
         var overBytes = _options.MaxBytes is { } maxBytes && ApproximateBytes > maxBytes;
         if (count <= _options.MaxEntries && !overBytes)
         {
@@ -387,14 +390,14 @@ public sealed class LocalCacheStore : IDisposable
     private void EvictLeastRecentlyAccessed(bool overBytes)
     {
         var target = (int)Math.Ceiling(_options.MaxEntries * _options.EvictionFraction);
-        if (_entries.Count <= _options.MaxEntries && !overBytes)
+        if (Count <= _options.MaxEntries && !overBytes)
         {
             return;
         }
 
         // Sample rather than sort the whole dictionary: a few times the eviction target is enough
         // to find old entries, and it keeps the cost of a write bounded under a full cache.
-        var sampleSize = Math.Min(_entries.Count, Math.Max(target * 4, 64));
+        var sampleSize = Math.Min(Count, Math.Max(target * 4, 64));
         var sample = new List<KeyValuePair<string, Entry>>(sampleSize);
         foreach (var pair in _entries)
         {
