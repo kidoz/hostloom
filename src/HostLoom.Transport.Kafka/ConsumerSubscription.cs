@@ -14,7 +14,8 @@ namespace HostLoom.Transport.Kafka;
 /// <para>
 /// Commit responsibility is split. The <c>handler</c> commits on success, because the offset must
 /// not advance until the reply has actually been produced. This loop commits only when it gives up
-/// on a record — a malformed one, or one past the redelivery cap — so that a skip is durable.
+/// on a record — a malformed one, one whose reply could not be produced, or one past the
+/// redelivery cap — so that a skip is durable.
 /// </para>
 /// <para>
 /// Takes <see cref="IConsumer{TKey,TValue}"/> rather than building one, so the loop can be
@@ -171,6 +172,22 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                     "HostLoom Kafka record at {Offset} on '{Topic}' is malformed; skipping it.",
                     record.TopicPartitionOffset,
                     _topic
+                );
+                TryCommit(record);
+                retries.Remove(record.TopicPartition);
+            }
+            catch (UnroutableReplyException exception)
+            {
+                // The handler completed; only the reply failed to leave. Rewinding would run the
+                // handler again for an answer that still has nowhere to go, so the record is
+                // committed past like a poison one and the caller's timeout reports the loss.
+                _logger.LogError(
+                    exception,
+                    "HostLoom Kafka record at {Offset} on '{Topic}' was handled but its reply to '{ReplyTopic}' could not be produced ({ExceptionType}); skipping it without re-running the handler.",
+                    record.TopicPartitionOffset,
+                    _topic,
+                    exception.ReplyTopic,
+                    exception.InnerException?.GetType().FullName
                 );
                 TryCommit(record);
                 retries.Remove(record.TopicPartition);

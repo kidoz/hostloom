@@ -1,3 +1,5 @@
+using Confluent.Kafka;
+using Confluent.Kafka.Admin;
 using HostLoom.Transport.Kafka;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -13,8 +15,10 @@ namespace HostLoom.IntegrationTests;
 /// </summary>
 [Collection(nameof(KafkaTransportTests))]
 [CollectionDefinition(nameof(KafkaTransportTests), DisableParallelization = true)]
-public sealed class KafkaTransportTests
+public sealed class KafkaTransportTests : IAsyncLifetime
 {
+    private readonly List<string> _topics = [];
+
     private static readonly TimeSpan Bound = TimeSpan.FromSeconds(60);
 
     public static bool Available => BrokerAvailability.Kafka;
@@ -22,7 +26,7 @@ public sealed class KafkaTransportTests
     [Fact(Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(Available))]
     public async Task Request_and_response_round_trip_over_a_real_broker()
     {
-        var address = Unique("greeter");
+        var address = await CreateTopicAsync("greeter");
         using var host = await StartAsync(hostLoom =>
             hostLoom.AddHandler<Greet, Greeting, GreetHandler>(address)
         );
@@ -36,7 +40,7 @@ public sealed class KafkaTransportTests
     [Fact(Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(Available))]
     public async Task Concurrent_requests_correlate_through_the_shared_response_topic()
     {
-        var address = Unique("concurrent");
+        var address = await CreateTopicAsync("concurrent");
         using var host = await StartAsync(hostLoom =>
             hostLoom.AddHandler<Greet, Greeting, GreetHandler>(address)
         );
@@ -63,7 +67,7 @@ public sealed class KafkaTransportTests
     [Fact(Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(Available))]
     public async Task A_handler_fault_returns_as_a_remote_fault_without_a_stack_trace()
     {
-        var address = Unique("failures");
+        var address = await CreateTopicAsync("failures");
         using var host = await StartAsync(hostLoom =>
             hostLoom.AddHandler<Fail, Never, FailingHandler>(address)
         );
@@ -85,7 +89,7 @@ public sealed class KafkaTransportTests
         await Assert.ThrowsAsync<RequestTimeoutException>(async () =>
             await ClientOf<Greet, Greeting>(host)
                 .GetResponseAsync(
-                    Unique("nobody-home"),
+                    await CreateTopicAsync("nobody-home"),
                     new Greet("Ada"),
                     timeout: TimeSpan.FromSeconds(5),
                     cancellationToken: Token
@@ -96,7 +100,7 @@ public sealed class KafkaTransportTests
     [Fact(Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(Available))]
     public async Task Each_subscription_is_its_own_consumer_group_and_sees_every_event()
     {
-        var topic = Unique("orders");
+        var topic = await CreateTopicAsync("orders");
         var received = new Received();
         received.Expect(2);
         using var host = await StartAsync(
@@ -116,7 +120,7 @@ public sealed class KafkaTransportTests
     [Fact(Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(Available))]
     public async Task Handlers_sharing_one_subscription_share_a_single_delivery()
     {
-        var topic = Unique("orders-shared");
+        var topic = await CreateTopicAsync("orders-shared");
         var received = new Received();
         received.Expect(2);
         using var host = await StartAsync(
@@ -135,7 +139,7 @@ public sealed class KafkaTransportTests
     [Fact(Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(Available))]
     public async Task Committed_offsets_survive_a_restart_so_events_are_not_redelivered()
     {
-        var topic = Unique("offsets");
+        var topic = await CreateTopicAsync("offsets");
         var group = Unique("group");
         var first = new Received();
         first.Expect(1);
@@ -166,6 +170,49 @@ public sealed class KafkaTransportTests
         Assert.Equal(["audit:A-5"], await second.WaitAsync(Bound));
     }
 
+    public ValueTask InitializeAsync() => ValueTask.CompletedTask;
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_topics.Count == 0)
+        {
+            return;
+        }
+
+        using var admin = new AdminClientBuilder(
+            new AdminClientConfig { BootstrapServers = "localhost:9092" }
+        ).Build();
+        await admin
+            .DeleteTopicsAsync(
+                _topics,
+                new DeleteTopicsOptions { RequestTimeout = TimeSpan.FromSeconds(10) }
+            )
+            .WaitAsync(TimeSpan.FromSeconds(15));
+    }
+
+    private async Task<string> CreateTopicAsync(string prefix)
+    {
+        var topic = Unique(prefix);
+        using var admin = new AdminClientBuilder(
+            new AdminClientConfig { BootstrapServers = "localhost:9092" }
+        ).Build();
+        await admin
+            .CreateTopicsAsync(
+                [
+                    new TopicSpecification
+                    {
+                        Name = topic,
+                        NumPartitions = 1,
+                        ReplicationFactor = 1,
+                    },
+                ],
+                new CreateTopicsOptions { RequestTimeout = TimeSpan.FromSeconds(10) }
+            )
+            .WaitAsync(TimeSpan.FromSeconds(15), Token);
+        _topics.Add(topic);
+        return topic;
+    }
+
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     private static string Unique(string prefix) => $"it-{prefix}-{Guid.NewGuid():N}";
@@ -178,12 +225,13 @@ public sealed class KafkaTransportTests
     private static IPublishEndpoint PublisherOf(IHost host) =>
         host.Services.GetRequiredService<IPublishEndpoint>();
 
-    private static async Task<IHost> StartAsync(
+    private async Task<IHost> StartAsync(
         Action<HostLoomBuilder> configure,
         Received? received = null,
         string? consumerGroup = null
     )
     {
+        var responseTopic = await CreateTopicAsync("responses");
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(received ?? new Received());
         configure(
@@ -193,7 +241,7 @@ public sealed class KafkaTransportTests
                 {
                     options.BootstrapServers = "localhost:9092";
                     options.ConsumerGroup = consumerGroup ?? Unique("group");
-                    options.ResponseTopic = Unique("responses");
+                    options.ResponseTopic = responseTopic;
                 })
         );
 

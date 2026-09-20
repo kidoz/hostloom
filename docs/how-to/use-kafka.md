@@ -42,7 +42,66 @@ builder.Services
 
 All options and defaults: [transports reference](../reference/transports.md#kafkaoptions).
 
-## 3. Verify
+## 3. Secure the connection
+
+The client library defaults to plaintext with no authentication. For
+anything but a local broker, set the security options; the transport
+applies them to every producer and consumer it builds, and refuses to
+start when SASL credentials are given without a SASL protocol rather than
+connect unauthenticated.
+
+```csharp
+using Confluent.Kafka;
+using HostLoom.Transport.Kafka;
+
+builder.Services
+    .AddHostLoom()
+    .UseKafka(options =>
+    {
+        options.BootstrapServers = "broker-1:9093,broker-2:9093";
+        options.ConsumerGroup = "greetings-service";
+        options.ResponseTopic = "greetings-service.replies";
+        options.SecurityProtocol = SecurityProtocol.SaslSsl;
+        options.SaslMechanism = SaslMechanism.ScramSha512;
+        options.SaslUsername = builder.Configuration["Kafka:Username"];
+        options.SaslPassword = builder.Configuration["Kafka:Password"];
+        options.SslCaLocation = "/etc/kafka/ca.pem";
+        // Anything the client library supports, applied last:
+        options.ConfigureClient = client =>
+        {
+            client.SslCertificateLocation = "/etc/kafka/client.pem";
+            client.SslKeyLocation = "/etc/kafka/client.key";
+        };
+    })
+    .AddHandler<GetGreeting, Greeting, GetGreetingHandler>("greetings");
+```
+
+Read the password from configuration or a secret store; the transport never
+logs it or puts it in an exception.
+
+Give each calling service its own response topic, named for the service.
+The reply consumer resolves the end of each initially assigned partition before any request
+is sent. Reassignments resume local progress; newly added partitions are read from the
+beginning to avoid skipping pending replies. If the initial watermark query fails, requests
+fail without publishing; correct the broker connectivity or permissions and recreate the
+client host to retry initialization. The ACL model stays legible: a handler service needs `Write` on the
+response topics of the services that call it and `Read` on its request
+topics; a calling service needs `Write` on the request topics it calls
+and `Read` on its own response topic. A handler service can pin that
+down with `AllowedReplyTopics`, so a request naming any other topic in its
+`hostloom-reply-to` header is rejected before the handler runs:
+
+```csharp
+options.AllowedReplyTopics.Add("orders-service.replies");
+options.AllowedReplyTopics.Add("billing-service.replies");
+```
+
+Without the allow list the header is still checked against Kafka's
+topic-name rules. `MaxRequestAge` additionally rejects a request record
+older than the given age, so a retained or replayed request stream cannot
+be pushed through the handlers again.
+
+## 4. Verify
 
 Run the application and send a request — the reply arrives as before.
 On the broker you should now see the request topic (`greetings`), the
@@ -54,7 +113,17 @@ your Kafka UI of choice).
 
 - **`RequestTimeoutException` on every request** — the handler
   application is not consuming the request topic, or the response topic
-  is missing so replies have nowhere to go.
+  is missing so replies have nowhere to go. When the inner exception says
+  the reply consumer was not assigned any partition, the response topic
+  does not exist or this client may not read it.
+- **Requests skipped with "hostloom-reply-to" in the handler's log** —
+  the caller's response topic is not a legal topic name or is not in
+  `AllowedReplyTopics`; the request is committed without running the
+  handler.
+- **"could not be produced" in the handler's log** — the handler ran but
+  the reply could not be written to the caller's response topic (missing
+  topic, no `Write` ACL); the request is committed and not re-run, and the
+  caller times out.
 - **Replies lost after long processing** — response-topic retention is
   shorter than the request timeout; re-provision it.
 - **Events arrive on only one instance** — instances share a consumer

@@ -176,7 +176,10 @@ public sealed class KafkaPublishSubscribeTests
                 }
             );
 
-        public IConsumer<string, byte[]> CreateConsumer(ConsumerConfig config)
+        public IConsumer<string, byte[]> CreateConsumer(
+            ConsumerConfig config,
+            PartitionsAssignedHandler? partitionsAssigned
+        )
         {
             lock (_gate)
             {
