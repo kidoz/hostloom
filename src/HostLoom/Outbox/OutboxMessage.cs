@@ -24,4 +24,10 @@ public sealed record OutboxMessage
 
     /// <summary>Publish attempts that failed so far, as the store reports them.</summary>
     public int Attempts { get; init; }
+
+    /// <summary>
+    /// The earliest time a claim may return the message again after a failed attempt, as the
+    /// store reports it; <see langword="null"/> when it is due at once.
+    /// </summary>
+    public DateTimeOffset? NextAttemptAt { get; init; }
 }

@@ -44,15 +44,16 @@ public sealed class OutboxTests
         await store.MarkPublishedAsync(first.MessageId, TestContext.Current.CancellationToken);
         await store.MarkFailedAsync(
             second.MessageId,
-            "broker down",
+            "System.IO.IOException",
+            clock.GetUtcNow(),
             TestContext.Current.CancellationToken
         );
         Assert.Equal([first.MessageId], store.Published.Select(m => m.MessageId));
         var pending = Assert.Single(store.Pending);
         Assert.Equal(second.MessageId, pending.MessageId);
         Assert.Equal(1, pending.Attempts);
-        Assert.Equal("broker down", store.LastError);
-        // The failure released the lease, so the message is claimable at once.
+        Assert.Equal("System.IO.IOException", store.LastError);
+        // The failure released the lease and its next attempt is due, so the message is claimable at once.
         Assert.Single(
             await store.ClaimAsync(
                 10,
@@ -100,14 +101,24 @@ public sealed class OutboxTests
         await store.AppendAsync(Message("orders", clock), TestContext.Current.CancellationToken);
         await store.AppendAsync(Message("orders", clock), TestContext.Current.CancellationToken);
 
-        // The failed message stays pending with its error, the rest of its batch still goes out,
-        // and the drain stops after that batch so the third message waits for the next one.
+        // The failed message stays pending with the failure's type (never its message), the rest
+        // of its batch still goes out, and the drain stops after that batch so the third message
+        // waits for the next one.
         Assert.Equal(1, await relay.DrainAsync(TestContext.Current.CancellationToken));
         Assert.Equal(2, store.Pending.Count);
         Assert.Equal(1, store.Pending[0].Attempts);
-        Assert.Equal("broker down", store.LastError);
+        Assert.Equal(typeof(InvalidOperationException).FullName, store.LastError);
         Assert.Equal(1, relay.Failed);
-        Assert.Equal(2, await relay.DrainAsync(TestContext.Current.CancellationToken));
+
+        // The failed message is held back for the first retry delay; the third goes out now.
+        Assert.Equal(
+            clock.GetUtcNow() + new OutboxOptions().RetryDelay,
+            store.Pending[0].NextAttemptAt
+        );
+        Assert.Equal(1, await relay.DrainAsync(TestContext.Current.CancellationToken));
+        Assert.Single(store.Pending);
+        clock.Advance(new OutboxOptions().RetryDelay);
+        Assert.Equal(1, await relay.DrainAsync(TestContext.Current.CancellationToken));
         Assert.Empty(store.Pending);
     }
 
@@ -306,8 +317,15 @@ public sealed class OutboxTests
         public ValueTask MarkFailedAsync(
             Guid messageId,
             string error,
+            DateTimeOffset nextAttemptAt,
             CancellationToken cancellationToken = default
-        ) => inner.MarkFailedAsync(messageId, error, cancellationToken);
+        ) => inner.MarkFailedAsync(messageId, error, nextAttemptAt, cancellationToken);
+
+        public ValueTask MarkDeadLetteredAsync(
+            Guid messageId,
+            string error,
+            CancellationToken cancellationToken = default
+        ) => inner.MarkDeadLetteredAsync(messageId, error, cancellationToken);
     }
 
     internal sealed class RecordingEventBroker : IEventBroker

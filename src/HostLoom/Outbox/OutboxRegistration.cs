@@ -169,6 +169,7 @@ internal sealed class ScopedOutboxStore(IServiceScopeFactory scopeFactory) : IOu
     public async ValueTask MarkFailedAsync(
         Guid messageId,
         string error,
+        DateTimeOffset nextAttemptAt,
         CancellationToken cancellationToken = default
     )
     {
@@ -176,7 +177,22 @@ internal sealed class ScopedOutboxStore(IServiceScopeFactory scopeFactory) : IOu
         await using (scope.ConfigureAwait(false))
         {
             await Resolve(scope)
-                .MarkFailedAsync(messageId, error, cancellationToken)
+                .MarkFailedAsync(messageId, error, nextAttemptAt, cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
+    public async ValueTask MarkDeadLetteredAsync(
+        Guid messageId,
+        string error,
+        CancellationToken cancellationToken = default
+    )
+    {
+        var scope = scopeFactory.CreateAsyncScope();
+        await using (scope.ConfigureAwait(false))
+        {
+            await Resolve(scope)
+                .MarkDeadLetteredAsync(messageId, error, cancellationToken)
                 .ConfigureAwait(false);
         }
     }

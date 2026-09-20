@@ -7,10 +7,12 @@ namespace HostLoom;
 /// <summary>
 /// Moves events from an <see cref="IOutboxStore"/> to the transport: claims a batch, publishes
 /// each frame unchanged through the <see cref="IEventBroker"/>, and marks it published, or marks
-/// it failed and leaves it for a later claim. Drains when woken by a publish and every
-/// <see cref="OutboxOptions.PollInterval"/> regardless, so a message appended by another process
-/// or committed after the wake is still relayed. Composes without a container:
-/// <c>new OutboxRelay(store, broker, options)</c>, then <see cref="StartAsync"/>.
+/// it failed with a backoff and leaves it for a later claim. A message that fails
+/// <see cref="OutboxOptions.MaxAttempts"/> times is dead-lettered and never claimed again.
+/// Drains when woken by a publish and every <see cref="OutboxOptions.PollInterval"/> regardless,
+/// so a message appended by another process or committed after the wake is still relayed.
+/// Composes without a container: <c>new OutboxRelay(store, broker, options)</c>, then
+/// <see cref="StartAsync"/>.
 /// </summary>
 public sealed class OutboxRelay : IAsyncDisposable
 {
@@ -27,6 +29,7 @@ public sealed class OutboxRelay : IAsyncDisposable
     private bool _disposed;
     private long _published;
     private long _failed;
+    private long _deadLettered;
 
     /// <summary>Composes the relay.</summary>
     /// <exception cref="ArgumentException"><see cref="OutboxOptions.Validate"/> reported a violation.</exception>
@@ -60,8 +63,11 @@ public sealed class OutboxRelay : IAsyncDisposable
     /// <summary>Messages this relay published since it was created.</summary>
     public long Published => Interlocked.Read(ref _published);
 
-    /// <summary>Publish attempts this relay recorded as failed since it was created.</summary>
+    /// <summary>Publish attempts this relay recorded as failed since it was created, dead-lettering attempts included.</summary>
     public long Failed => Interlocked.Read(ref _failed);
+
+    /// <summary>Messages this relay dead-lettered since it was created.</summary>
+    public long DeadLettered => Interlocked.Read(ref _deadLettered);
 
     /// <summary>Starts the drain loop on the thread pool and returns at once. Repeated calls do nothing.</summary>
     /// <exception cref="ObjectDisposedException">The relay was disposed.</exception>
@@ -85,10 +91,11 @@ public sealed class OutboxRelay : IAsyncDisposable
         {
             _logger.LogInformation(
                 OutboxEvents.RelayStarted,
-                "The outbox relay drains every {PollInterval} in batches of {BatchSize} with a {ClaimLease} claim lease.",
+                "The outbox relay drains every {PollInterval} in batches of {BatchSize} with a {ClaimLease} claim lease and dead-letters after {MaxAttempts} attempts.",
                 _options.PollInterval,
                 _options.BatchSize,
-                _options.ClaimLease
+                _options.ClaimLease,
+                _options.MaxAttempts
             );
         }
 
@@ -189,6 +196,10 @@ public sealed class OutboxRelay : IAsyncDisposable
     private static TaskCompletionSource NewSignal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    /// <summary>What the store keeps about a failure: the type, never the message, which can carry connection strings or payload fragments.</summary>
+    private static string Describe(Exception exception) =>
+        exception.GetType().FullName ?? exception.GetType().Name;
+
     private async Task<bool> PublishAsync(
         OutboxMessage message,
         CancellationToken cancellationToken
@@ -219,19 +230,19 @@ public sealed class OutboxRelay : IAsyncDisposable
         {
             Interlocked.Increment(ref _failed);
             HostLoomDiagnostics.OutboxFailed.Add(1, tags);
-            _logger.LogWarning(
-                OutboxEvents.PublishFailed,
-                exception,
-                "Publishing outbox message {MessageId} to '{Topic}' failed on attempt {Attempt}; it stays pending.",
-                message.MessageId,
-                message.Topic,
-                message.Attempts + 1
-            );
+            var attempts = message.Attempts + 1;
             try
             {
-                await _store
-                    .MarkFailedAsync(message.MessageId, exception.Message, cancellationToken)
-                    .ConfigureAwait(false);
+                if (attempts >= _options.MaxAttempts)
+                {
+                    await DeadLetterAsync(message, attempts, exception, tags, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    await HoldBackAsync(message, attempts, exception, cancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -250,6 +261,59 @@ public sealed class OutboxRelay : IAsyncDisposable
 
             return false;
         }
+    }
+
+    private async ValueTask HoldBackAsync(
+        OutboxMessage message,
+        int attempts,
+        Exception exception,
+        CancellationToken cancellationToken
+    )
+    {
+        var delay = _options.GetRetryDelay(attempts);
+        var nextAttemptAt = _clock.GetUtcNow() + delay;
+        _logger.LogWarning(
+            OutboxEvents.PublishFailed,
+            exception,
+            "Publishing outbox message {MessageId} to '{Topic}' failed on attempt {Attempt} of {MaxAttempts}; it is retried after {Delay}.",
+            message.MessageId,
+            message.Topic,
+            attempts,
+            _options.MaxAttempts,
+            delay
+        );
+        await _store
+            .MarkFailedAsync(
+                message.MessageId,
+                Describe(exception),
+                nextAttemptAt,
+                cancellationToken
+            )
+            .ConfigureAwait(false);
+    }
+
+    private async ValueTask DeadLetterAsync(
+        OutboxMessage message,
+        int attempts,
+        Exception exception,
+        TagList tags,
+        CancellationToken cancellationToken
+    )
+    {
+        _logger.LogError(
+            OutboxEvents.DeadLettered,
+            exception,
+            "Publishing outbox message {MessageId} to '{Topic}' failed on attempt {Attempt} of {MaxAttempts}; it is dead-lettered and will not be claimed again.",
+            message.MessageId,
+            message.Topic,
+            attempts,
+            _options.MaxAttempts
+        );
+        await _store
+            .MarkDeadLetteredAsync(message.MessageId, Describe(exception), cancellationToken)
+            .ConfigureAwait(false);
+        Interlocked.Increment(ref _deadLettered);
+        HostLoomDiagnostics.OutboxDeadLettered.Add(1, tags);
     }
 
     private async Task RunAsync(CancellationToken stopping)
