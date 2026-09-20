@@ -51,8 +51,8 @@ transport maps it onto its own fan-out primitive:
   `AggregateException` — so a local run surfaces handler failures instead
   of swallowing them. A networked broker decouples the publisher from its
   subscribers entirely; a publish there never observes a handler failure.
-- **RabbitMQ** — a fanout exchange per topic and a durable queue named
-  `topic.subscription` bound to it, so subscriptions accumulate their own
+- **RabbitMQ** — a fanout exchange per topic and a durable V2 queue derived from
+  the topic/subscription pair bound to it, so subscriptions accumulate their own
   backlog rather than competing for one queue. Events publish with no
   routing key and without `mandatory` — an event nobody subscribes to is
   dropped, not an error.

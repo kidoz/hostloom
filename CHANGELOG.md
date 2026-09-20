@@ -84,6 +84,14 @@ are derived from release tags at publish time.
 
 ### Changed
 
+- RabbitMQ defaults to versioned, role-qualified queue names that separate request routes and
+  event subscription pairs. Existing deployments must follow the
+  [queue migration guide](docs/how-to/use-rabbitmq.md#migrate-existing-queues) or explicitly set
+  `RabbitMqOptions.QueueNaming` to `RabbitMqQueueNaming.Legacy` during rollout.
+- RabbitMQ event publication waits for publisher confirmation and sets persistent delivery when
+  `DurableTopics` is enabled. Unconfirmed outbox messages remain retryable; retries can duplicate
+  an event whose confirmation was lost.
+
 - The WebSocket gateway ends a subscription before it answers an invalid `credit` or `ack` frame
   with a fault, so a fault after `subscribed` is terminal on both peers. Previously the
   subscription stayed live behind the fault and kept delivering events on a stream the browser

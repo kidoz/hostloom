@@ -7,6 +7,9 @@ public sealed class RabbitMqOptions
     public string ClientProvidedName { get; set; } =
         $"hostloom-{Environment.MachineName}-{Environment.ProcessId}";
 
+    /// <summary>Physical queue identity scheme. Version2 isolates request and event routes. Legacy requires coordinated migration and retains ambiguous dotted subscription names.</summary>
+    public RabbitMqQueueNaming QueueNaming { get; set; } = RabbitMqQueueNaming.Version2;
+
     public ushort PrefetchCount { get; set; } = 16;
 
     public bool DurableRequestQueues { get; set; } = true;

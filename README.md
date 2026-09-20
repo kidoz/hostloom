@@ -217,8 +217,8 @@ startup rather than starting up looking subscribed while nothing is delivered.
 Each transport maps a subscription onto its own fan-out primitive:
 
 - **In-memory** — a named handler on the topic, delivered to in process.
-- **RabbitMQ** — a **fanout exchange** per topic, and a durable queue named
-  `topic.subscription` bound to it, so subscriptions accumulate their own backlog rather
+- **RabbitMQ** — a **fanout exchange** per topic, and a durable V2 queue uniquely identifying
+  the topic/subscription pair bound to it, so subscriptions accumulate their own backlog rather
   than competing for one queue. Events publish with no routing key and without
   `mandatory`, so an event nobody subscribes to is dropped instead of failing the publish.
 - **Kafka** — the topic is a Kafka topic and each subscription is its own **consumer
@@ -805,6 +805,14 @@ The Kafka adapter gives every client instance a unique response consumer group,
 so each instance sees the shared response stream and ignores responses it does
 not own. That is correct for an initial implementation but not the final
 high-scale topology; partition-affine reply routing is on the roadmap.
+
+RabbitMQ defaults to `RabbitMqQueueNaming.Version2`, with separate hashed identities for
+request and event queues. Existing deployments must follow the
+[queue migration procedure](docs/how-to/use-rabbitmq.md#migrate-existing-queues), or explicitly
+select `Legacy` until ready. Durable event messages are persistent and publication awaits
+broker confirmation before the outbox relay retires a record. Confirmation proves broker
+acceptance, not handler completion; uncertain outcomes can still cause duplicate delivery.
+
 
 RabbitMQ and Kafka are not hidden behind an identical topology because they do
 not have identical semantics. RabbitMQ naturally supports an exclusive reply

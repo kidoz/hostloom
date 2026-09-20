@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using NSubstitute;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 using Xunit;
 
 namespace HostLoom.Tests;
@@ -16,6 +17,225 @@ namespace HostLoom.Tests;
 /// </summary>
 public sealed class RabbitMqBrokerTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Event_completion_waits_for_confirmation_and_preserves_durability(bool durable)
+    {
+        var rabbit = new FakeRabbit();
+        await using var broker = new RabbitMqRequestBroker(
+            Options.Create(new RabbitMqOptions { DurableTopics = durable }),
+            _ => ValueTask.FromResult(rabbit.Connection)
+        );
+        await broker.PublishAsync(
+            "catalog",
+            "ready"u8.ToArray(),
+            TestContext.Current.CancellationToken
+        );
+        var client = rabbit.Channels[0];
+        Assert.True(client.Options?.PublisherConfirmationsEnabled);
+        Assert.True(client.Options?.PublisherConfirmationTrackingEnabled);
+        Assert.Equal(durable, Assert.Single(client.Publishes).Persistent);
+        var confirmation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        client
+            .Channel.BasicPublishAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<BasicProperties>(),
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<CancellationToken>()
+            )
+            .Returns(call => new ValueTask(
+                confirmation.Task.WaitAsync(call.ArgAt<CancellationToken>(5))
+            ));
+        var store = new InMemoryOutboxStore();
+        await store.AppendAsync(
+            new OutboxMessage
+            {
+                MessageId = Guid.NewGuid(),
+                Topic = "catalog",
+                MessageType = "catalog",
+                Frame = "event"u8.ToArray(),
+                EnqueuedAt = DateTimeOffset.UtcNow,
+            },
+            TestContext.Current.CancellationToken
+        );
+        await using var relay = new OutboxRelay(store, broker, new OutboxOptions());
+        var drain = relay.DrainAsync(TestContext.Current.CancellationToken);
+        Assert.False(drain.IsCompleted);
+        Assert.Single(store.Pending);
+        confirmation.SetResult();
+        Assert.Equal(1, await drain);
+        Assert.Empty(store.Pending);
+    }
+
+    [Theory]
+    [InlineData("connection")]
+    [InlineData("nack")]
+    [InlineData("cancel")]
+    public async Task Failed_or_cancelled_confirmation_keeps_the_outbox_record(string failure)
+    {
+        var rabbit = new FakeRabbit();
+        await using var broker = Create(rabbit);
+        await broker.PublishAsync(
+            "catalog",
+            "ready"u8.ToArray(),
+            TestContext.Current.CancellationToken
+        );
+        var confirmation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        rabbit
+            .Channels[0]
+            .Channel.BasicPublishAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<BasicProperties>(),
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<CancellationToken>()
+            )
+            .Returns(call => new ValueTask(
+                confirmation.Task.WaitAsync(call.ArgAt<CancellationToken>(5))
+            ));
+        var store = new InMemoryOutboxStore();
+        await store.AppendAsync(
+            new OutboxMessage
+            {
+                MessageId = Guid.NewGuid(),
+                Topic = "catalog",
+                MessageType = "catalog",
+                Frame = "event"u8.ToArray(),
+                EnqueuedAt = DateTimeOffset.UtcNow,
+            },
+            TestContext.Current.CancellationToken
+        );
+        await using var relay = new OutboxRelay(store, broker, new OutboxOptions());
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken
+        );
+        var drain = relay.DrainAsync(cancellation.Token);
+        if (failure == "cancel")
+        {
+            await cancellation.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => drain.AsTask());
+        }
+        else
+        {
+            confirmation.SetException(
+                failure == "nack"
+                    ? new PublishException(1, false)
+                    : new IOException("Confirmation connection lost.")
+            );
+            Assert.Equal(0, await drain);
+        }
+        Assert.Single(store.Pending);
+        Assert.Equal(0, relay.Published);
+    }
+
+    [Fact]
+    public void Versioned_queue_names_separate_components_and_roles()
+    {
+        Assert.NotEqual(
+            RabbitMqQueueNames.Subscription("catalog.eu", "updates"),
+            RabbitMqQueueNames.Subscription("catalog", "eu.updates")
+        );
+        Assert.NotEqual(
+            RabbitMqQueueNames.Request("catalog.eu.updates"),
+            RabbitMqQueueNames.Subscription("catalog.eu", "updates")
+        );
+        Assert.Equal(
+            "catalog.eu.updates",
+            RabbitMqQueueNames.Subscription("catalog.eu", "updates", RabbitMqQueueNaming.Legacy)
+        );
+        Assert.Equal(
+            "catalog",
+            RabbitMqQueueNames.Request(" catalog ", RabbitMqQueueNaming.Legacy)
+        );
+        Assert.Throws<EncoderFallbackException>(() => RabbitMqQueueNames.Request("catalog\ud800"));
+        Assert.Equal(
+            RabbitMqQueueNames.Request("catalog"),
+            RabbitMqQueueNames.Request(" catalog ")
+        );
+        Assert.NotEqual(
+            RabbitMqQueueNames.Subscription("catalog", "updates"),
+            RabbitMqQueueNames.Subscription("catalog", " updates ")
+        );
+        var longName = RabbitMqQueueNames.Subscription(new string('é', 1000), "inventory");
+        Assert.True(longName.Length < 255);
+        Assert.All(longName, character => Assert.True(char.IsAscii(character)));
+        Assert.Equal(longName, RabbitMqQueueNames.Subscription(new string('é', 1000), "inventory"));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            RabbitMqQueueNames.Request("catalog", (RabbitMqQueueNaming)99)
+        );
+    }
+
+    [Fact]
+    public async Task Request_timeout_covers_an_unconfirmed_publish_and_cleans_up_correlation()
+    {
+        var rabbit = new FakeRabbit();
+        await using var broker = Create(rabbit);
+        var token = TestContext.Current.CancellationToken;
+        await broker.PublishAsync("catalog", "ready"u8.ToArray(), token);
+        var channel = rabbit.Channels[0].Channel;
+        var confirmation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        channel
+            .BasicPublishAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<BasicProperties>(),
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<CancellationToken>()
+            )
+            .Returns(call => new ValueTask(
+                confirmation.Task.WaitAsync(call.ArgAt<CancellationToken>(5))
+            ));
+        var id = Guid.NewGuid();
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            broker
+                .RequestAsync(
+                    "catalog",
+                    "request"u8.ToArray(),
+                    id,
+                    TimeSpan.FromMilliseconds(-2),
+                    token
+                )
+                .AsTask()
+        );
+        await Assert.ThrowsAsync<RequestTimeoutException>(() =>
+            broker
+                .RequestAsync(
+                    "catalog",
+                    "request"u8.ToArray(),
+                    id,
+                    TimeSpan.FromMilliseconds(40),
+                    token
+                )
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(5), token)
+        );
+        // Reusing the same id proves timeout removed the pending correlation and released the gate.
+        confirmation.SetResult();
+        await Assert.ThrowsAsync<RequestTimeoutException>(() =>
+            broker
+                .RequestAsync(
+                    "catalog",
+                    "request"u8.ToArray(),
+                    id,
+                    TimeSpan.FromMilliseconds(40),
+                    token
+                )
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(5), token)
+        );
+    }
+
     [Fact]
     public async Task Request_publishes_its_correlation_id_and_exclusive_reply_queue()
     {
@@ -37,7 +257,7 @@ public sealed class RabbitMqBrokerTests
         var published = client.Publishes[0];
 
         Assert.Equal(string.Empty, published.Exchange);
-        Assert.Equal("greetings", published.RoutingKey);
+        Assert.Equal(RabbitMqQueueNames.Request("greetings"), published.RoutingKey);
         Assert.Equal(requestId.ToString("N"), published.CorrelationId);
         Assert.Equal(FakeRabbit.GeneratedReplyQueue, published.ReplyTo);
         Assert.Equal("ping", Encoding.UTF8.GetString(published.Body));
@@ -209,7 +429,7 @@ public sealed class RabbitMqBrokerTests
         // The queue is named for the subscription, so a second subscriber gets its own backlog
         // rather than competing for the first one's messages.
         var binding = Assert.Single(channel.Bindings);
-        Assert.Equal("orders.audit", binding.Queue);
+        Assert.Equal(RabbitMqQueueNames.Subscription("orders", "audit"), binding.Queue);
         Assert.Equal("orders", binding.Exchange);
         Assert.Equal(string.Empty, binding.RoutingKey);
     }
@@ -237,7 +457,14 @@ public sealed class RabbitMqBrokerTests
             .Channels.SelectMany(channel => channel.Bindings)
             .Select(binding => binding.Queue)
             .Order(StringComparer.Ordinal);
-        Assert.Equal(["orders.audit", "orders.shipping"], queues);
+        Assert.Equal(
+            new[]
+            {
+                RabbitMqQueueNames.Subscription("orders", "audit"),
+                RabbitMqQueueNames.Subscription("orders", "shipping"),
+            }.Order(StringComparer.Ordinal),
+            queues
+        );
     }
 
     [Fact]
@@ -439,6 +666,14 @@ public sealed class RabbitMqBrokerTests
             .ConfigureAwait(true);
 
         Assert.Equal(2, connections);
+        Assert.All(
+            rabbit.Channels,
+            channel =>
+            {
+                Assert.True(channel.Options?.PublisherConfirmationsEnabled);
+                Assert.True(channel.Options?.PublisherConfirmationTrackingEnabled);
+            }
+        );
     }
 
     private static RabbitMqRequestBroker Create(FakeRabbit rabbit) =>
@@ -470,7 +705,8 @@ public sealed class RabbitMqBrokerTests
         string RoutingKey,
         string? CorrelationId,
         string? ReplyTo,
-        byte[] Body
+        byte[] Body,
+        bool Persistent
     );
 
     private sealed record DeclaredExchange(string Name, string Type, bool Durable);
@@ -493,6 +729,7 @@ public sealed class RabbitMqBrokerTests
                 .Returns(_ =>
                 {
                     var channel = new FakeChannel();
+                    channel.Options = _.ArgAt<CreateChannelOptions?>(0);
                     lock (_gate)
                     {
                         _channels.Add(channel);
@@ -545,6 +782,7 @@ public sealed class RabbitMqBrokerTests
                 .Returns(_ =>
                 {
                     var channel = new FakeChannel();
+                    channel.Options = _.ArgAt<CreateChannelOptions?>(0);
                     lock (_gate)
                     {
                         _channels.Add(channel);
@@ -568,6 +806,7 @@ public sealed class RabbitMqBrokerTests
 
     private sealed class FakeChannel
     {
+        public CreateChannelOptions? Options { get; set; }
         private readonly Lock _gate = new();
         private readonly List<Published> _publishes = [];
 
@@ -636,7 +875,8 @@ public sealed class RabbitMqBrokerTests
                                 call.ArgAt<string>(1),
                                 properties.CorrelationId,
                                 properties.ReplyTo,
-                                body.ToArray()
+                                body.ToArray(),
+                                properties.Persistent
                             )
                         );
                     }

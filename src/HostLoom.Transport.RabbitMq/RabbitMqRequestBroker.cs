@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 
 namespace HostLoom.Transport.RabbitMq;
 
@@ -9,6 +10,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 {
     private const string ContentType = "application/vnd.hostloom.envelope+json";
     private readonly RabbitMqOptions _options;
+    private readonly RabbitMqQueueNaming _queueNaming;
     private readonly Func<CancellationToken, ValueTask<IConnection>> _connectionFactory;
     private readonly SemaphoreSlim _initializationGate = new(1, 1);
     private readonly SemaphoreSlim _publishGate = new(1, 1);
@@ -36,6 +38,12 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
+        if (!Enum.IsDefined(_options.QueueNaming))
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                "RabbitMqOptions.QueueNaming must be a defined naming mode."
+            );
+        _queueNaming = _options.QueueNaming;
         _connectionFactory = connectionFactory ?? ConnectAsync;
     }
 
@@ -54,7 +62,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         {
             await channel
                 .QueueDeclareAsync(
-                    queue: address.Value,
+                    queue: RabbitMqQueueNames.Request(address.Value, _queueNaming),
                     durable: _options.DurableRequestQueues,
                     exclusive: false,
                     autoDelete: false,
@@ -116,7 +124,12 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             };
 
             await channel
-                .BasicConsumeAsync(address.Value, autoAck: false, consumer, cancellationToken)
+                .BasicConsumeAsync(
+                    RabbitMqQueueNames.Request(address.Value, _queueNaming),
+                    autoAck: false,
+                    consumer,
+                    cancellationToken
+                )
                 .ConfigureAwait(false);
             return new ChannelSubscription(channel);
         }
@@ -128,7 +141,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     }
 
     /// <summary>
-    /// A topic is a fanout exchange; a subscription is a queue named <c>topic.subscription</c> bound
+    /// A topic is a fanout exchange; a subscription is a versioned, role-qualified queue bound
     /// to it. Fanout because every subscription must receive every event, and a durable named queue
     /// because a subscription's backlog has to survive the consumer being away.
     /// </summary>
@@ -151,7 +164,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         {
             await DeclareTopicAsync(channel, topic, cancellationToken).ConfigureAwait(false);
 
-            var queue = $"{topic.Value}.{subscription}";
+            var queue = RabbitMqQueueNames.Subscription(topic.Value, subscription, _queueNaming);
             await channel
                 .QueueDeclareAsync(
                     queue: queue,
@@ -221,7 +234,11 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     {
         await EnsureClientAsync(cancellationToken).ConfigureAwait(false);
 
-        var properties = new BasicProperties { ContentType = ContentType };
+        var properties = new BasicProperties
+        {
+            ContentType = ContentType,
+            Persistent = _options.DurableTopics,
+        };
 
         await _publishGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -262,6 +279,11 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     )
     {
         await EnsureClientAsync(cancellationToken).ConfigureAwait(false);
+        using var deadline = new CancellationTokenSource(timeout);
+        using var operation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            deadline.Token
+        );
         var completion = new TaskCompletionSource<ReadOnlyMemory<byte>>(
             TaskCreationOptions.RunContinuationsAsynchronously
         );
@@ -279,35 +301,35 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                 ReplyTo = _replyQueue,
             };
 
-            await _publishGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await _publishGate.WaitAsync(operation.Token).ConfigureAwait(false);
             try
             {
                 await _clientChannel!
                     .BasicPublishAsync(
                         exchange: string.Empty,
-                        routingKey: address.Value,
+                        routingKey: RabbitMqQueueNames.Request(address.Value, _queueNaming),
                         mandatory: true,
                         basicProperties: properties,
                         body: request,
-                        cancellationToken: cancellationToken
+                        cancellationToken: operation.Token
                     )
                     .ConfigureAwait(false);
+            }
+            catch (PublishException exception) when (exception.IsReturn)
+            {
+                // An unroutable request still follows the request/response timeout contract.
             }
             finally
             {
                 _publishGate.Release();
             }
 
-            try
-            {
-                return await completion
-                    .Task.WaitAsync(timeout, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (TimeoutException exception)
-            {
-                throw new RequestTimeoutException(address, timeout, exception);
-            }
+            return await completion.Task.WaitAsync(operation.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException exception)
+            when (deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new RequestTimeoutException(address, timeout, exception);
         }
         finally
         {
@@ -436,7 +458,13 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             // is actually running. Assigning earlier lets a failure here leave the client
             // looking initialized while no reply consumer exists, so every request times out.
             var channel = await connection
-                .CreateChannelAsync(cancellationToken: cancellationToken)
+                .CreateChannelAsync(
+                    new CreateChannelOptions(
+                        publisherConfirmationsEnabled: true,
+                        publisherConfirmationTrackingEnabled: true
+                    ),
+                    cancellationToken
+                )
                 .ConfigureAwait(false);
             try
             {

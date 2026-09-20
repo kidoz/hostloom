@@ -21,7 +21,8 @@ A custom transport registers with
 | `ClientProvidedName` | `hostloom-{machine}-{pid}` | Connection name shown in the management UI |
 | `PrefetchCount` | `16` | Unacknowledged deliveries per consumer |
 | `DurableRequestQueues` | `true` | Request queues survive a broker restart |
-| `DurableTopics` | `true` | Topic exchanges and subscription queues are durable |
+| `DurableTopics` | `true` | Topic exchanges/queues are durable and event messages are persistent |
+| `QueueNaming` | `RabbitMqQueueNaming.Version2` | Role-qualified hashed request/subscription names; explicit `Legacy` supports migration |
 
 ## KafkaOptions
 
@@ -41,7 +42,7 @@ A custom transport registers with
 | Reply path | direct | exclusive reply queue per client | `ResponseTopic`, unique consumer group per client instance |
 | Correlation | in envelope | AMQP `CorrelationId` + `ReplyTo` | Kafka headers |
 | Event topic | in-process channel | fanout exchange | Kafka topic |
-| Subscription | named handler on the topic | durable queue `topic.subscription` | consumer group |
+| Subscription | named handler on the topic | durable V2 queue for the topic/subscription pair | consumer group |
 | Cross-subscription order | unspecified | unspecified | unspecified |
 | Ordering within a subscription | delivery order | queue order | per partition only (records produced without a key) |
 
@@ -69,6 +70,14 @@ broker outage that begins after startup.
   from subscribers entirely; a publish never observes a handler failure.
 - **RabbitMQ events** publish with no routing key and without
   `mandatory`: an event with no subscribers is dropped, not an error.
+  Publishing awaits broker confirmation; durable event messages are persistent.
+  Confirmation establishes broker acceptance, not handler completion. An uncertain
+  outcome can lead to duplicate delivery when the outbox retries.
+- **RabbitMQ queue identity**: V2 request and event names have separate role prefixes
+  and SHA-256 hashes of length-prefixed UTF-8 components. The public
+  `RabbitMqQueueNames.Request` and `.Subscription` helpers give the physical names.
+  See the [queue migration procedure](../how-to/use-rabbitmq.md#migrate-existing-queues)
+  before changing an existing deployment.
 - **Kafka replies**: every client instance consumes the shared response
   stream under a unique consumer group and ignores replies it does not
   own; partition-affine reply routing is on the roadmap.
