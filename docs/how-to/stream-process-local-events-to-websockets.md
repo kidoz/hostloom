@@ -62,6 +62,14 @@ builder.Services
 topic offered to clients. The key selector lets a client subscribe to one item identifier; omit it
 to make every authorized subscriber receive every event on the public topic.
 
+A scope-only policy such as `inventory.read` is acceptable here only because an item identifier
+is not caller-private: every reader may observe every item. When the key identifies a customer,
+tenant, or account, a policy that ignores `WebSocketTopicResource.Key` is unsafe, because it
+approves whichever key the caller names; use `TopicKeyPolicy.SubjectOnly` or a policy that
+inspects the key instead. On this keyed topic a `subscribe` without a key is denied with
+`forbidden`; pass `allowTopicWideSubscription: true` to `AddTopic` if an authorized reader may
+receive every item's events from one subscription.
+
 The default gateway subscription name, `hostloom-websocket`, is safe here because every process has
 its own in-memory broker. The name does not connect or coordinate replicas.
 

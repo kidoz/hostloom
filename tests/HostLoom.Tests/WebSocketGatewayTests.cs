@@ -26,7 +26,7 @@ using Xunit;
 
 namespace HostLoom.Tests;
 
-public sealed class WebSocketGatewayTests
+public sealed partial class WebSocketGatewayTests
 {
     private const string JsonV1Schema = "hostloom-websocket-json-v1.schema.json";
 
@@ -486,6 +486,22 @@ public sealed class WebSocketGatewayTests
             WebSocketEvents.OperationFailed
         );
         Assert.Equal(new EventId(4106, "WebSocketSnapshotFailed"), WebSocketEvents.SnapshotFailed);
+        Assert.Equal(
+            new EventId(4107, "WebSocketSnapshotStalled"),
+            WebSocketEvents.SnapshotStalled
+        );
+        Assert.Equal(
+            new EventId(4108, "WebSocketAuthorizationFailed"),
+            WebSocketEvents.AuthorizationFailed
+        );
+        Assert.Equal(
+            new EventId(4109, "WebSocketSessionExpiryFailed"),
+            WebSocketEvents.SessionExpiryFailed
+        );
+        Assert.Equal(
+            new EventId(4110, "WebSocketResponseTooLarge"),
+            WebSocketEvents.ResponseTooLarge
+        );
     }
 
     [Fact]
@@ -1234,7 +1250,12 @@ public sealed class WebSocketGatewayTests
             .AddHostLoom()
             .UseInMemory()
             .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
-            .AddTopic<OrderChanged>(topic, "orders", value => value.CustomerId);
+            .AddTopic<OrderChanged>(
+                topic,
+                "orders",
+                value => value.CustomerId,
+                allowTopicWideSubscription: true
+            );
         await using var provider = services.BuildServiceProvider();
         var protocol = new JsonWebSocketHubProtocol();
         using var socket = new ScriptedWebSocket();
@@ -1417,7 +1438,12 @@ public sealed class WebSocketGatewayTests
                 options.RequireAuthenticatedUser = false;
                 options.MaximumQueuedFramesPerConnection = 2;
             })
-            .AddTopic<OrderChanged>(topic, "orders", value => value.CustomerId);
+            .AddTopic<OrderChanged>(
+                topic,
+                "orders",
+                value => value.CustomerId,
+                allowTopicWideSubscription: true
+            );
         await using var provider = services.BuildServiceProvider();
         var protocol = new JsonWebSocketHubProtocol();
         using var socket = new ScriptedWebSocket();
@@ -1612,7 +1638,12 @@ public sealed class WebSocketGatewayTests
             .AddHostLoom()
             .UseInMemory()
             .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
-            .AddTopic<StatusChanged>("status.changed", "status", value => value.Key)
+            .AddTopic<StatusChanged>(
+                "status.changed",
+                "status",
+                value => value.Key,
+                allowTopicWideSubscription: true
+            )
             .AddTopicSnapshot<StatusChanged, ListStatusSnapshotProvider>("status.changed");
         await using var provider = services.BuildServiceProvider();
         var protocol = new JsonWebSocketHubProtocol();
@@ -1722,7 +1753,12 @@ public sealed class WebSocketGatewayTests
             .AddHostLoom()
             .UseInMemory()
             .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
-            .AddTopic<StatusChanged>("status.changed", "status", value => value.Key)
+            .AddTopic<StatusChanged>(
+                "status.changed",
+                "status",
+                value => value.Key,
+                allowTopicWideSubscription: true
+            )
             .AddTopicSnapshot<StatusChanged, FailingStatusSnapshotProvider>("status.changed");
         await using var provider = services.BuildServiceProvider();
         var protocol = new JsonWebSocketHubProtocol();
@@ -2916,6 +2952,10 @@ public sealed class WebSocketGatewayTests
 
         public ValueTask<ReadOnlyMemory<byte>> ReadSentAsync(CancellationToken cancellationToken) =>
             _sent.Reader.ReadAsync(cancellationToken);
+
+        /// <summary>Reads an already-sent frame without waiting, so a test can assert silence.</summary>
+        public bool TryReadSent(out ReadOnlyMemory<byte> payload) =>
+            _sent.Reader.TryRead(out payload);
 
         public override void Abort()
         {

@@ -108,6 +108,7 @@ internal sealed class GatewayConfiguration(HostLoomWebSocketOptions options)
                 route.Subscription,
                 TypeName(route.EventType),
                 route.Keyed,
+                route.AllowTopicWideSubscription,
                 route.AuthorizationPolicy,
                 route.SnapshotProviderType is null ? null : TypeName(route.SnapshotProviderType)
             ))
@@ -135,6 +136,7 @@ internal sealed class GatewayConfiguration(HostLoomWebSocketOptions options)
                 $"WebSockets:Topic:{topic.Topic}",
                 $"{topic.Source} via {topic.Subscription}",
                 $"AddTopic registered event={topic.EventType}; keyed={topic.Keyed}; "
+                    + $"topicWide={topic.AllowTopicWideSubscription}; "
                     + $"policy={topic.AuthorizationPolicy ?? "(none)"}; "
                     + $"snapshot={topic.SnapshotProvider ?? "(none)"}"
             ))
@@ -151,6 +153,51 @@ internal sealed class GatewayConfiguration(HostLoomWebSocketOptions options)
             topics,
             decisions
         );
+    }
+
+    /// <summary>
+    /// Every distinct policy name a route references, with the routes that use it, so startup can
+    /// prove each one resolves before a client can trigger the lookup.
+    /// </summary>
+    public IReadOnlyList<AuthorizationPolicyUsage> GetAuthorizationPolicyUsages()
+    {
+        var usages = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var route in _requests.Values)
+        {
+            if (route.AuthorizationPolicy is { } policy)
+            {
+                Add(usages, policy, $"request '{route.Name}'");
+            }
+        }
+
+        foreach (var route in _topics.Values)
+        {
+            if (route.AuthorizationPolicy is { } policy)
+            {
+                Add(usages, policy, $"topic '{route.Name}'");
+            }
+        }
+
+        return
+        [
+            .. usages
+                .OrderBy(static usage => usage.Key, StringComparer.Ordinal)
+                .Select(static usage => new AuthorizationPolicyUsage(
+                    usage.Key,
+                    usage.Value.OrderBy(static route => route, StringComparer.Ordinal).ToArray()
+                )),
+        ];
+
+        static void Add(Dictionary<string, List<string>> usages, string policy, string route)
+        {
+            if (!usages.TryGetValue(policy, out var routes))
+            {
+                routes = [];
+                usages.Add(policy, routes);
+            }
+
+            routes.Add(route);
+        }
     }
 
     private static string TypeName(Type type) => type.FullName ?? type.Name;
@@ -182,12 +229,18 @@ internal sealed record RequestRoute(
     string? AuthorizationPolicy
 );
 
+/// <param name="AllowTopicWideSubscription">
+/// Whether a subscribe without a key is accepted. A keyless registration is always topic-wide; a
+/// keyed registration must opt in, because a keyless subscriber to a keyed topic receives every
+/// key's events regardless of what the policy approved for one key.
+/// </param>
 internal sealed record TopicRoute(
     string Name,
     RequestAddress Source,
     string Subscription,
     Type EventType,
     bool Keyed,
+    bool AllowTopicWideSubscription,
     Func<object, string?> KeySelector,
     string? AuthorizationPolicy
 )
@@ -196,3 +249,6 @@ internal sealed record TopicRoute(
 
     public Type? SnapshotProviderType { get; set; }
 }
+
+/// <summary>One authorization policy name and the public routes that reference it.</summary>
+internal sealed record AuthorizationPolicyUsage(string Policy, IReadOnlyList<string> Routes);

@@ -36,6 +36,20 @@ public sealed class HostLoomWebSocketOptions
     public int MaximumControlFramesPerSecond { get; set; } = 50;
 
     /// <summary>
+    /// Gets or sets the maximum number of client <c>request</c> frames accepted in a one-second
+    /// window. The budget is checked before any scope, authorization, or payload work, so
+    /// unregistered operations count as well. Exceeding it closes with 1008 <c>rate_limited</c>.
+    /// </summary>
+    public int MaximumRequestsPerSecond { get; set; } = 100;
+
+    /// <summary>
+    /// Gets or sets how long a subscription may spend loading its snapshot, including time spent
+    /// waiting for the client to add credit. When it elapses the stream is faulted with
+    /// <c>snapshot_stalled</c>, the subscription is removed, and the provider is disposed.
+    /// </summary>
+    public TimeSpan SnapshotInitializationTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// Gets or sets the longest a session may remain connected, even when its credential has no
     /// expiry or expires later.
     /// </summary>
@@ -69,10 +83,22 @@ public sealed class HostLoomWebSocketOptions
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumSubscriptionsPerConnection);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumCreditPerSubscription);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumControlFramesPerSecond);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumRequestsPerSecond);
 
         if (MaximumSessionLifetime <= TimeSpan.Zero)
         {
             throw new InvalidOperationException("The maximum session lifetime must be positive.");
+        }
+
+        if (
+            SnapshotInitializationTimeout <= TimeSpan.Zero
+            || SnapshotInitializationTimeout > TimerLimits.MaximumDelay
+        )
+        {
+            throw new InvalidOperationException(
+                "The snapshot initialization timeout must be positive and at most "
+                    + $"{TimerLimits.MaximumDelay.TotalDays:F0} days."
+            );
         }
 
         if (string.IsNullOrWhiteSpace(SubjectClaimType))

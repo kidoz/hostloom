@@ -1,6 +1,11 @@
 namespace HostLoom.AspNetCore.WebSockets;
 
-internal sealed class ControlFrameRateLimiter(TimeProvider timeProvider, int limit)
+/// <summary>
+/// Counts acquisitions in fixed one-second windows measured by the injected
+/// <see cref="TimeProvider"/>. Each session owns one instance per budget and only its receive
+/// loop calls it, so no synchronization is needed.
+/// </summary>
+internal sealed class FixedWindowRateLimiter(TimeProvider timeProvider, int limit)
 {
     private long _windowStart = timeProvider.GetTimestamp();
     private int _count;

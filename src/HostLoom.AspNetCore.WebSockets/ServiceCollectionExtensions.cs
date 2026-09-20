@@ -80,6 +80,12 @@ public static class ServiceCollectionExtensions
         hostLoom.Services.TryAddEnumerable(
             ServiceDescriptor.Singleton<
                 Microsoft.Extensions.Hosting.IHostedService,
+                WebSocketGatewayStartupValidation
+            >()
+        );
+        hostLoom.Services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<
+                Microsoft.Extensions.Hosting.IHostedService,
                 WebSocketSessionShutdownService
             >()
         );

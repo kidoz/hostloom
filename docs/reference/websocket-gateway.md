@@ -42,7 +42,8 @@ HostLoomWebSocketBuilder AddTopic<TEvent>(
 
 HostLoomWebSocketBuilder AddTopic<TEvent>(
     string topic, RequestAddress source, Func<TEvent, string?> keySelector,
-    string subscription = "hostloom-websocket", string? authorizationPolicy = null);
+    string subscription = "hostloom-websocket", string? authorizationPolicy = null,
+    bool allowTopicWideSubscription = false);
 
 HostLoomWebSocketBuilder AddTopicSnapshot<TEvent, TProvider>(string topic)
     where TProvider : class, IWebSocketTopicSnapshotProvider<TEvent>;
@@ -51,6 +52,15 @@ HostLoomWebSocketBuilder AddTopicSnapshot<TEvent, TProvider>(string topic)
 `AddRequest` also registers the typed request client; `AddTopic` also
 registers a broker subscription under `subscription`. One event type maps
 to one public topic — a second mapping throws.
+
+On a keyed topic a `subscribe` without a key is denied with `forbidden` unless the registration
+sets `allowTopicWideSubscription: true`, because a keyless subscriber would receive every key's
+events. The check runs before the topic policy. A policy that ignores `WebSocketTopicResource.Key`
+is unsafe for a multi-tenant keyed topic; use `TopicKeyPolicy.SubjectOnly` or a key-aware policy
+whenever the key identifies a caller-private partition, and reserve the opt-in for topics whose
+keys every authorized caller may observe. Every policy name is resolved through
+`IAuthorizationPolicyProvider` when the host starts; an unregistered name fails startup with the
+policy and its routes in the message.
 
 `AddTopicSnapshot` must follow the matching `AddTopic` call. It registers one scoped snapshot
 provider for that topic; a provider already registered for
@@ -63,8 +73,11 @@ then live events with positive process-local sequences. Snapshot values consume 
 client may send `credit` or `unsubscribe` while the asynchronous provider is running. Live events
 arriving during initialization reserve capacity in the same connection-wide byte/frame budget and
 are released afterward. Keyed subscriptions receive only values whose event key matches; keyless
-subscriptions receive all provider values. A provider failure removes only that subscription and
-returns `snapshot_failed`; cancellation is silent.
+subscriptions receive all provider values. A provider failure, or a value that encodes above
+`MaximumMessageSize`, removes only that subscription and returns `snapshot_failed`; cancellation
+is silent. Initialization, including every wait for credit, must finish within
+`SnapshotInitializationTimeout`; otherwise the subscription is removed, the provider is cancelled
+and disposed, and the stream ends with `snapshot_stalled`.
 
 ## Middleware and endpoint
 
@@ -125,7 +138,8 @@ The topic resource includes the exact client-selected `Key`.
 `authorizationPolicy` to require an authenticated principal and an ordinal match between a
 nonempty key and the first claim named by `SubjectClaimType`. A mismatch returns `forbidden` before
 the subscription is registered. Applications that also require a scope or role define a normal
-composite ASP.NET Core policy and inspect `WebSocketTopicResource.Key` in that policy.
+composite ASP.NET Core policy and inspect `WebSocketTopicResource.Key` in that policy. A policy
+handler that throws denies the caller with `forbidden` and logs `WebSocketAuthorizationFailed`.
 
 A supplied Origin is validated before the upgrade. `SameOrigin` is the default;
 `AllowList` accepts configured exact origins and `Disabled` opts out. Native clients
@@ -148,6 +162,8 @@ headers must be configured earlier in the middleware pipeline.
 | `MaximumSubscriptionsPerConnection` | 32 |
 | `MaximumCreditPerSubscription` | 1024 |
 | `MaximumControlFramesPerSecond` | 50 |
+| `MaximumRequestsPerSecond` | 100 |
+| `SnapshotInitializationTimeout` | 30 s |
 | `MaximumSessionLifetime` | 12 h |
 | `SubjectClaimType` | `ClaimTypes.NameIdentifier` |
 | `DefaultRequestTimeout` | 10 s |
@@ -158,7 +174,13 @@ headers must be configured earlier in the middleware pipeline.
 
 All limits are validated at registration; the byte and frame bounds plus
 per-subscription credit are what keep a slow client from creating
-unbounded per-connection memory or work.
+unbounded per-connection memory or work. `MaximumSessionLifetime` accepts any positive value;
+lifetimes beyond a single timer's range (about 49.7 days) are waited in chunks.
+
+Exceeding the outbound byte or frame budget is the only size-related reason a session is
+aborted. An outbound frame above `MaximumMessageSize` never disconnects the session: a live
+event is dropped (`message_too_large`), an oversized snapshot value faults its stream with
+`snapshot_failed`, and an oversized response faults its request stream with `message_too_large`.
 
 ## Session lifetime and control
 
@@ -181,8 +203,11 @@ The reason must fit the WebSocket 123-byte UTF-8 close-description limit. During
 gateway closes all sessions with 1001 `server_shutdown` before HostLoom's broker listeners stop.
 
 Client control frames are bounded independently from request concurrency. More than
-`MaximumControlFramesPerSecond` `cancel`, `subscribe`, `credit`, `ack`, `unsubscribe`, or `ping`
-frames in one fixed one-second window closes the session with 1008 `rate_limited`.
+`MaximumControlFramesPerSecond` `cancel`, `subscribe`, `credit`, `ack`, `unsubscribe`, `ping`, or
+client-invalid frames in one fixed one-second window closes the session with 1008 `rate_limited`.
+`request` frames have a separate `MaximumRequestsPerSecond` window that is checked before any
+scope, authorization, or payload work, so unregistered operations count as well; exceeding it
+closes the same way.
 
 ## Application-level ping
 
@@ -231,8 +256,11 @@ addresses the session rather than a stream, so every client stream must use anot
 
 `HubFaultCodes` string constants: `invalid_frame`, `invalid_payload`,
 `operation_not_found`, `topic_not_found`, `forbidden`, `request_timeout`,
-`request_failed`, `snapshot_failed`, `canceled`, `duplicate_stream`, `capacity_exceeded`.
-`snapshot_failed` reports a sanitized topic-snapshot provider failure.
+`request_failed`, `snapshot_failed`, `snapshot_stalled`, `message_too_large`, `canceled`,
+`duplicate_stream`, `capacity_exceeded`. `snapshot_failed` reports a sanitized topic-snapshot
+provider failure or an oversized snapshot value; `snapshot_stalled` reports an initialization that
+exceeded `SnapshotInitializationTimeout`; `message_too_large` reports a response that exceeded
+`MaximumMessageSize`.
 
 Remote fault *messages* are withheld from clients unless
 `IncludeRemoteFaultMessages` is enabled; the code `request_failed` is
@@ -246,7 +274,8 @@ Both are execution-free: they do not resolve application services, start the hos
 configured transport.
 
 The result lists gateway and origin settings, preferred protocols, public request routes, and
-public topics with their source, subscription, policy, keyed-selection, and snapshot metadata.
+public topics with their source, subscription, policy, keyed-selection, topic-wide subscription
+opt-in, and snapshot metadata.
 Configured allowlisted origins are represented only by their count. Its `Decisions` collection has
 stable `WebSockets:Gateway`, `WebSockets:Origins`, and `WebSockets:Topic:<name>` component names that
 applications may explicitly copy into an optional HostLoom composition ledger. Protect any HTTP
@@ -291,9 +320,10 @@ the framework's authorization metrics for that path.
 
 ## Structured logs
 
-`WebSocketEvents` publishes stable event ids `4100`–`4106` for session open and close,
-subscription denial, slow-client abort, handshake rejection, operation failure, and snapshot
-failure. Session close logs use the same normalized reason vocabulary as the duration metric.
+`WebSocketEvents` publishes stable event ids `4100`–`4110` for session open and close,
+subscription denial, slow-client abort, handshake rejection, operation failure, snapshot failure,
+snapshot stall, authorization failure, expiry-timer failure, and oversized responses. Session
+close logs use the same normalized reason vocabulary as the duration metric.
 
 Lifecycle entries carry a session id, protocol, optional configured subject, and bounded reason;
 subscription entries carry only a registered topic and never echo an unknown client topic. The

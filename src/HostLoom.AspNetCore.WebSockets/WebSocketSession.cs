@@ -19,7 +19,8 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
     private readonly DateTimeOffset _connectedAt;
     private readonly DateTimeOffset _expiresAt;
     private readonly string? _subject;
-    private readonly ControlFrameRateLimiter _controlFrames;
+    private readonly FixedWindowRateLimiter _controlFrames;
+    private readonly FixedWindowRateLimiter _requestFrames;
     private readonly ILogger<WebSocketSession> _logger;
     private readonly CancellationTokenSource _stop = new();
     private readonly TaskCompletionSource _completion = new(
@@ -65,6 +66,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         _subject = subject;
         _logger = logger;
         _controlFrames = new(timeProvider, configuration.Options.MaximumControlFramesPerSecond);
+        _requestFrames = new(timeProvider, configuration.Options.MaximumRequestsPerSecond);
         _outbound = new ByteBoundedOutboundQueue(
             configuration.Options.MaximumQueuedBytesPerConnection,
             configuration.Options.MaximumQueuedFramesPerConnection
@@ -188,6 +190,13 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                 }
                 catch (OperationCanceledException) when (expiryCancellation.IsCancellationRequested)
                 { }
+                catch (Exception exception)
+                {
+                    // A failed timer must not skip the cleanup below: in-flight requests would
+                    // keep running, registry membership would leak, and the writer would never
+                    // complete. The session ends through its normal path and the cause is logged.
+                    WebSocketLog.SessionExpiryFailed(_logger, Id, exception);
+                }
 
                 await _stop.CancelAsync().ConfigureAwait(false);
                 foreach (var request in _requests.Values)
@@ -281,8 +290,10 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             );
             if (encoded.Length > _configuration.Options.MaximumMessageSize)
             {
+                // The producer, not this client, chose the size, so dropping the frame is the
+                // whole remedy. Reporting it as a failure would let one oversized event abort
+                // every subscriber on the topic.
                 WebSocketDiagnostics.EventDropped(topic, "message_too_large");
-                accepted = false;
                 continue;
             }
 
@@ -338,7 +349,12 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
 
     private async ValueTask HandleAsync(HubFrame frame)
     {
-        if (IsControlFrame(frame.Kind) && !_controlFrames.TryAcquire())
+        // Requests have their own budget, checked before any scope, authorization, or payload
+        // work so an unregistered operation costs the same as a registered one. Every other kind
+        // shares the control budget, including kinds a client may not send: the invalid_frame
+        // reply is still work this session performs on demand.
+        var budget = frame.Kind is HubFrameKind.Request ? _requestFrames : _controlFrames;
+        if (!budget.TryAcquire())
         {
             RequestDisconnect(WebSocketCloseStatus.PolicyViolation, "rate_limited");
             return;
@@ -475,7 +491,37 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             var response = await _router
                 .RouteAsync(frame, _user, cancellation.Token, _protocol.SubProtocol)
                 .ConfigureAwait(false);
-            if (!_stop.IsCancellationRequested && !TryQueue(response))
+            if (_stop.IsCancellationRequested)
+            {
+                return;
+            }
+
+            var encoded = _protocol.Encode(response);
+            var maximumMessageSize = _configuration.Options.MaximumMessageSize;
+            if (encoded.Length > maximumMessageSize)
+            {
+                // The handler, not this client, produced the size, so the stream ends with a
+                // fault the client can classify and the connection stays open. Only a registered
+                // operation name is logged; caller-supplied text never becomes a log property.
+                WebSocketLog.ResponseTooLarge(
+                    _logger,
+                    Id,
+                    frame.Operation is { } operation
+                    && _configuration.TryGetRequest(operation, out _)
+                        ? operation
+                        : null,
+                    encoded.Length,
+                    maximumMessageSize
+                );
+                response = WebSocketRequestRouter.Fault(
+                    frame.StreamId,
+                    HubFaultCodes.MessageTooLarge,
+                    "The response exceeded the maximum message size."
+                );
+                encoded = _protocol.Encode(response);
+            }
+
+            if (!TryQueue(response, encoded))
             {
                 Abort();
             }
@@ -520,6 +566,21 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                 "key_too_long",
                 HubFaultCodes.InvalidFrame,
                 "The subscription key is too long."
+            );
+            return;
+        }
+
+        if (topic.Keyed && !topic.AllowTopicWideSubscription && string.IsNullOrEmpty(frame.Key))
+        {
+            // A keyless subscriber to a keyed topic would receive every key's events, so unless
+            // the registration opted in, a missing key is denied before the policy runs: a policy
+            // that only checks scope would otherwise approve a cross-key wildcard.
+            DenySubscription(
+                frame.StreamId,
+                topic.Name,
+                "key_required",
+                HubFaultCodes.Forbidden,
+                "A subscription key is required for this topic."
             );
             return;
         }
@@ -620,13 +681,23 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
 
     private async Task InitializeSubscriptionAsync(TopicRoute topic, SubscriptionState state)
     {
+        // The timeout bounds the whole initialization, including every wait for credit. Without
+        // it a client that never adds credit would hold the provider's enumerator and its DI scope
+        // open for the life of the session.
+        var timeout = _configuration.Options.SnapshotInitializationTimeout;
+        using var stalled = new CancellationTokenSource(timeout, _timeProvider);
+        using var initialization = CancellationTokenSource.CreateLinkedTokenSource(
+            state.SnapshotCancellationToken,
+            stalled.Token
+        );
+        var cancellationToken = initialization.Token;
         try
         {
             var context = new WebSocketTopicSnapshotContext(topic.Name, state.Key, _user);
             await foreach (
                 var item in _router
-                    .GetTopicSnapshotAsync(topic, context, state.SnapshotCancellationToken)
-                    .WithCancellation(state.SnapshotCancellationToken)
+                    .GetTopicSnapshotAsync(topic, context, cancellationToken)
+                    .WithCancellation(cancellationToken)
                     .ConfigureAwait(false)
             )
             {
@@ -638,25 +709,35 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                     continue;
                 }
 
-                await state
-                    .WaitForCreditAsync(state.SnapshotCancellationToken)
-                    .ConfigureAwait(false);
-                var write = state.WriteSnapshot(() =>
-                    TryQueue(
-                        new HubFrame
-                        {
-                            Kind = HubFrameKind.Event,
-                            StreamId = state.StreamId,
-                            Topic = topic.Name,
-                            Key = item.Key,
-                            EventId = Guid.NewGuid(),
-                            Sequence = 0,
-                            Payload = item.Payload,
-                        }
-                    )
-                );
+                var frame = new HubFrame
+                {
+                    Kind = HubFrameKind.Event,
+                    StreamId = state.StreamId,
+                    Topic = topic.Name,
+                    Key = item.Key,
+                    EventId = Guid.NewGuid(),
+                    Sequence = 0,
+                    Payload = item.Payload,
+                };
+                var encoded = _protocol.Encode(frame);
+                var maximumMessageSize = _configuration.Options.MaximumMessageSize;
+                if (encoded.Length > maximumMessageSize)
+                {
+                    // The provider produced a value this session can never deliver. That is a
+                    // failure of this one stream, handled below like any other provider fault,
+                    // rather than a reason to abort the connection.
+                    WebSocketDiagnostics.EventDropped(topic.Name, "message_too_large");
+                    throw new InvalidDataException(
+                        $"A WebSocket topic snapshot value encoded to {encoded.Length} bytes, above the {maximumMessageSize} byte limit."
+                    );
+                }
+
+                await state.WaitForCreditAsync(cancellationToken).ConfigureAwait(false);
+                var write = state.WriteSnapshot(() => TryQueue(frame, encoded));
                 if (write is SnapshotWriteDisposition.Failed)
                 {
+                    // Size was checked above, so a failed write means the outbound budget was
+                    // exhausted (the slow-client path already aborted) or the session is ending.
                     Abort();
                     return;
                 }
@@ -675,36 +756,52 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         catch (OperationCanceledException)
             when (state.SnapshotCancellationToken.IsCancellationRequested) { }
         catch (Exception) when (state.SnapshotCancellationToken.IsCancellationRequested) { }
+        catch (Exception) when (stalled.IsCancellationRequested)
+        {
+            WebSocketLog.SnapshotStalled(_logger, topic.Name, Id, timeout.TotalMilliseconds);
+            RemoveFailedSubscription(
+                state,
+                HubFaultCodes.SnapshotStalled,
+                "The topic snapshot did not finish within the initialization timeout."
+            );
+        }
         catch (Exception exception)
         {
             WebSocketLog.SnapshotFailed(_logger, topic.Name, Id, exception);
-            if (
-                _subscriptions.TryRemove(
-                    new KeyValuePair<Guid, SubscriptionState>(state.StreamId, state)
-                )
-            )
-            {
-                _registry.Unsubscribe(this, state.Topic, state.Key);
-                state.Stop(_outbound.Release);
-                WebSocketDiagnostics.SubscriptionRemoved(state.Topic);
-                if (
-                    !TryQueue(
-                        WebSocketRequestRouter.Fault(
-                            state.StreamId,
-                            HubFaultCodes.SnapshotFailed,
-                            "The topic snapshot could not be loaded."
-                        )
-                    )
-                )
-                {
-                    Abort();
-                }
-            }
+            RemoveFailedSubscription(
+                state,
+                HubFaultCodes.SnapshotFailed,
+                "The topic snapshot could not be loaded."
+            );
         }
         finally
         {
             state.InitializationFinished();
             _subscriptionTasks.TryRemove(state.StreamId, out _);
+        }
+    }
+
+    /// <summary>
+    /// Ends a subscription whose initialization failed: membership and state go first so no live
+    /// event can follow the terminal fault on the stream.
+    /// </summary>
+    private void RemoveFailedSubscription(SubscriptionState state, string code, string message)
+    {
+        if (
+            !_subscriptions.TryRemove(
+                new KeyValuePair<Guid, SubscriptionState>(state.StreamId, state)
+            )
+        )
+        {
+            return;
+        }
+
+        _registry.Unsubscribe(this, state.Topic, state.Key);
+        state.Stop(_outbound.Release);
+        WebSocketDiagnostics.SubscriptionRemoved(state.Topic);
+        if (!TryQueue(WebSocketRequestRouter.Fault(state.StreamId, code, message)))
+        {
+            Abort();
         }
     }
 
@@ -796,14 +893,16 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         _ = TryQueue(WebSocketRequestRouter.Fault(streamId, faultCode, faultMessage));
     }
 
-    private bool TryQueue(HubFrame frame)
+    private bool TryQueue(HubFrame frame) => TryQueue(frame, _protocol.Encode(frame));
+
+    private bool TryQueue(HubFrame frame, byte[] encoded)
     {
         if (frame.Kind is HubFrameKind.Fault && frame.Code is { } code)
         {
             WebSocketDiagnostics.FaultGenerated(code);
         }
 
-        if (!TryReserve(frame, out var reserved))
+        if (!TryReserve(frame, encoded, out var reserved))
         {
             return false;
         }
@@ -821,11 +920,12 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         return false;
     }
 
-    private bool TryReserve(HubFrame frame, out OutboundFrame reserved)
+    private bool TryReserve(HubFrame frame, byte[] payload, out OutboundFrame reserved)
     {
-        var payload = _protocol.Encode(frame);
         if (payload.Length > _configuration.Options.MaximumMessageSize)
         {
+            // Size is a property of the frame, not of this client's pace, so an oversized frame
+            // is refused without the slow-client abort below.
             if (frame.Kind is HubFrameKind.Event && frame.Topic is { } topic)
             {
                 WebSocketDiagnostics.EventDropped(topic, "message_too_large");
@@ -979,10 +1079,30 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
 
     private async Task ExpireAsync(CancellationToken cancellationToken)
     {
-        var delay = _expiresAt - _timeProvider.GetUtcNow();
-        if (delay > TimeSpan.Zero)
+        if (_expiresAt == DateTimeOffset.MaxValue)
         {
-            await Task.Delay(delay, _timeProvider, cancellationToken).ConfigureAwait(false);
+            // No expiry applies; the only way out is the session ending, which cancels this wait.
+            await Task.Delay(Timeout.InfiniteTimeSpan, _timeProvider, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        while (true)
+        {
+            var remaining = _expiresAt - _timeProvider.GetUtcNow();
+            if (remaining <= TimeSpan.Zero)
+            {
+                break;
+            }
+
+            // Task.Delay rejects anything above about 49.7 days, so a longer lifetime waits in
+            // chunks and re-reads the clock between them instead of faulting the timer.
+            await Task.Delay(
+                    remaining > TimerLimits.MaximumDelay ? TimerLimits.MaximumDelay : remaining,
+                    _timeProvider,
+                    cancellationToken
+                )
+                .ConfigureAwait(false);
         }
 
         RequestDisconnect(WebSocketCloseStatus.PolicyViolation, "session_expired");
@@ -1012,15 +1132,6 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             _ => "other",
         };
     }
-
-    private static bool IsControlFrame(HubFrameKind kind) =>
-        kind
-            is HubFrameKind.Cancel
-                or HubFrameKind.Subscribe
-                or HubFrameKind.Credit
-                or HubFrameKind.Ack
-                or HubFrameKind.Unsubscribe
-                or HubFrameKind.Ping;
 
     private readonly record struct InboundMessage(
         ReadOnlyMemory<byte> Payload,

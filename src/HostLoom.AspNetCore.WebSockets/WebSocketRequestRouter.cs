@@ -230,7 +230,7 @@ internal sealed class WebSocketRequestRouter(
         }
     }
 
-    private static async ValueTask<bool> IsAuthorizedAsync(
+    private async ValueTask<bool> IsAuthorizedAsync(
         IServiceProvider services,
         ClaimsPrincipal user,
         object resource,
@@ -243,10 +243,21 @@ internal sealed class WebSocketRequestRouter(
         }
 
         var authorization = services.GetRequiredService<IAuthorizationService>();
-        var result = await authorization
-            .AuthorizeAsync(user, resource, policy)
-            .ConfigureAwait(false);
-        return result.Succeeded;
+        try
+        {
+            var result = await authorization
+                .AuthorizeAsync(user, resource, policy)
+                .ConfigureAwait(false);
+            return result.Succeeded;
+        }
+        catch (Exception exception)
+        {
+            // Startup already proved the policy name resolves, so this is a handler or provider
+            // failure. The only safe answer is a denial; the detail belongs in the log, not in a
+            // fault message, and it must not escape as an unanswered request or subscribe.
+            WebSocketLog.AuthorizationFailed(logger, policy, exception);
+            return false;
+        }
     }
 
     private static HubFrame CompleteActivity(Activity? activity, HubFrame response)

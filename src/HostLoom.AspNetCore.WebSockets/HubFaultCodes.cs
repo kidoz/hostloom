@@ -13,4 +13,17 @@ public static class HubFaultCodes
     public const string DuplicateStream = "duplicate_stream";
     public const string CapacityExceeded = "capacity_exceeded";
     public const string SnapshotFailed = "snapshot_failed";
+
+    /// <summary>
+    /// Snapshot initialization did not finish within
+    /// <see cref="HostLoomWebSocketOptions.SnapshotInitializationTimeout"/>, typically because the
+    /// client withheld credit. The subscription is removed before the fault is sent.
+    /// </summary>
+    public const string SnapshotStalled = "snapshot_stalled";
+
+    /// <summary>
+    /// The encoded response exceeded <see cref="HostLoomWebSocketOptions.MaximumMessageSize"/>.
+    /// The request stream ends with this fault; the session stays open.
+    /// </summary>
+    public const string MessageTooLarge = "message_too_large";
 }

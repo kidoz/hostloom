@@ -35,7 +35,7 @@ builder.Services
         "orders",
         changed => changed.CustomerId,
         subscription: "realtime-node-a",
-        authorizationPolicy: "orders.read");
+        authorizationPolicy: TopicKeyPolicy.SubjectOnly);
 
 var app = builder.Build();
 app.UseAuthentication();
@@ -114,12 +114,47 @@ denied with a `forbidden` fault before the subscription enters session state. De
 ASP.NET Core policy over `WebSocketTopicResource` when subject ownership must be combined with
 additional requirements.
 
+A policy that ignores `WebSocketTopicResource.Key` is unsafe for a multi-tenant keyed topic: it
+approves any key the caller names, including another tenant's. Use `TopicKeyPolicy.SubjectOnly`
+or a policy that inspects the key whenever the key identifies a customer, tenant, account, or
+other caller-private partition. A scope-only policy is appropriate only when every authorized
+caller may observe every key, such as public product or region identifiers.
+
+### Keyless subscriptions to keyed topics
+
+A subscriber that supplies no key would receive every key's events. For a topic registered with
+a key selector, a `subscribe` without a key is therefore denied with `forbidden` (denial reason
+`key_required`) and no fan-out membership is created. This check runs before the policy, so a
+policy that only checks scope cannot approve a cross-key wildcard by accident. A topic whose
+values are not caller-private can opt in:
+
+```csharp
+.AddTopic<InventoryLevelChanged>(
+    "inventory.level.changed",
+    "inventory",
+    changed => changed.ItemId,
+    authorizationPolicy: "inventory.read",
+    allowTopicWideSubscription: true)
+```
+
+With the opt-in, a keyless subscriber receives events for every key, and the policy sees a null
+`Key`; make sure it authorizes the whole topic in that case. Topics registered without a key
+selector are always topic-wide. `Probe()` and `WebSocketGatewayProbe.Describe()` report the
+setting as `AllowTopicWideSubscription` and in the `WebSockets:Topic:<name>` decision reason.
+
+Events whose key selector returns `null` are delivered only to topic-wide subscribers, so on a
+keyed topic without the opt-in they reach nobody.
+
 ## Snapshot on subscribe
 
 A topic can load its current application state from a scoped provider before live delivery begins:
 
 ```csharp
-.AddTopic<OrderChanged>("orders.changed", "orders", changed => changed.CustomerId)
+.AddTopic<OrderChanged>(
+    "orders.changed",
+    "orders",
+    changed => changed.CustomerId,
+    authorizationPolicy: TopicKeyPolicy.SubjectOnly)
 .AddTopicSnapshot<OrderChanged, OrderSnapshotProvider>("orders.changed");
 
 sealed class OrderSnapshotProvider(OrderStore store)
@@ -149,7 +184,16 @@ Live frames held during initialization reserve bytes and frames from the existin
 outbound limits. Overflow keeps the existing slow-client behavior and aborts the connection rather
 than allocating an unbounded snapshot side buffer. Provider cancellation ends silently;
 unsubscribe cancels it. Other provider failures remove that subscription and return a sanitized
-`snapshot_failed` fault without closing unrelated streams.
+`snapshot_failed` fault without closing unrelated streams. A snapshot value that encodes above
+`MaximumMessageSize` is treated the same way: the drop is counted under `message_too_large`, that
+stream ends with `snapshot_failed`, and sibling streams and the connection continue.
+
+Initialization as a whole, including every wait for credit, is bounded by
+`SnapshotInitializationTimeout` (30 seconds by default). A client that withholds credit cannot
+keep the provider's enumerator and its scoped services open for the life of the session: when the
+timeout elapses the subscription is removed, the provider is cancelled and disposed, and the
+stream ends with a `snapshot_stalled` fault. Size the timeout to the largest snapshot a slow but
+honest client must be able to drain.
 
 ## Origin validation
 
@@ -169,7 +213,10 @@ Every accepted session has a fixed expiry. The built-in
 `IWebSocketSessionLifetimeResolver` uses `AuthenticationProperties.ExpiresUtc` when authorization
 middleware exposes the authentication ticket, otherwise it reads the earliest valid JWT `exp`
 claim. `MaximumSessionLifetime` (12 hours by default) is always an upper bound, including for
-credentials without an expiry. At expiry the server closes with 1008 `session_expired`.
+credentials without an expiry. At expiry the server closes with 1008 `session_expired`. Any
+positive lifetime is accepted, including values beyond the roughly 49.7 days a single timer can
+wait; the gateway waits in chunks. Should the expiry timer itself fail, the session still runs its
+ordinary teardown and logs `WebSocketSessionExpiryFailed`.
 
 `IWebSocketSessionDirectory` exposes read-only point-in-time session metadata and can filter by the
 configured `SubjectClaimType`. It does not expose credentials. Application logout and role-change
@@ -185,12 +232,22 @@ and at most 123 UTF-8 bytes. Host shutdown closes every registered session with 
 `server_shutdown` and waits for session teardown before HostLoom broker subscriptions stop.
 Client `cancel`, `subscribe`, `credit`, `ack`, `unsubscribe`, and `ping` frames share a per-session
 fixed one-second rate window; exceeding `MaximumControlFramesPerSecond` closes with 1008
-`rate_limited`.
+`rate_limited`. Frame kinds a client may not send count against the same window, so a flood of
+`invalid_frame` replies is bounded too. `request` frames have their own window,
+`MaximumRequestsPerSecond` (100 by default), checked before any dependency-injection scope,
+authorization, or payload work; unregistered operations therefore cost the same as registered
+ones. Exceeding it closes with the same 1008 `rate_limited`.
 Register a custom `IWebSocketSessionLifetimeResolver` before `AddWebSocketGateway` when credential
 expiry lives elsewhere.
 
 Only registered operations and topics are reachable. Client-supplied CLR type names, broker
 addresses, and arbitrary handler names are never resolved.
+
+Every policy name passed to `AddRequest` or `AddTopic` is resolved through the application's
+`IAuthorizationPolicyProvider` when the host starts. An unregistered name fails startup with a
+message naming the policy and the routes that use it, instead of surfacing on the first client
+that reaches the route. If a policy handler throws at runtime, the caller receives `forbidden`
+and the gateway logs `WebSocketAuthorizationFailed`; the exception never reaches the client.
 
 ## Protocol negotiation
 
@@ -270,7 +327,11 @@ never reused within a session.
 
 For JSON, enum names are camelCase (for example `"request"`). Malformed frames close the
 connection. A decodable frame kind that is not valid from a client returns an `invalid_frame`
-fault. Route errors are returned as `fault` frames with codes from `HubFaultCodes`.
+fault. Route errors are returned as `fault` frames with codes from `HubFaultCodes`:
+`invalid_frame`, `invalid_payload`, `operation_not_found`, `topic_not_found`, `forbidden`,
+`request_timeout`, `request_failed`, `canceled`, `duplicate_stream`, `capacity_exceeded`,
+`snapshot_failed`, `snapshot_stalled`, and `message_too_large`. A fault code is an open string;
+clients should treat unknown codes as terminal for the stream rather than rejecting the frame.
 
 ### Application-level ping
 
@@ -294,6 +355,15 @@ concurrently up to `MaximumConcurrentRequestsPerConnection`; duplicate active st
 rejected. Outbound traffic uses a bounded channel with a separate byte budget. A connection whose
 writer cannot keep up is aborted instead of growing memory without limit.
 
+That slow-client abort is the only size-related abort. Frame size is a property of the producer,
+not of the client's pace, so an outbound frame that encodes above `MaximumMessageSize` never
+disconnects the session: a live event is dropped and counted under `message_too_large` for every
+subscriber it would have reached, an oversized snapshot value faults only its stream with
+`snapshot_failed`, and an oversized response ends its request stream with a `message_too_large`
+fault and a `WebSocketResponseTooLarge` warning naming the registered operation. Applications
+that see these signals should raise the limit or reduce the contract size; clients cannot cause
+them.
+
 Events consume one unit of subscription credit before entering the output queue. No event is sent
 when credit is zero. Version one is deliberately a **live, process-local subscription protocol**:
 event IDs and sequences are generated by the gateway process, acknowledgements are not persisted,
@@ -316,9 +386,9 @@ For a broker-free topology where every replica produces events for its own conne
 Important limits are `MaximumMessageSize`, `MaximumQueuedBytesPerConnection`,
 `MaximumQueuedFramesPerConnection`, `MaximumConcurrentRequestsPerConnection`,
 `MaximumSubscriptionsPerConnection`, `MaximumCreditPerSubscription`,
-`MaximumControlFramesPerSecond`, `MaximumSessionLifetime`, and `MaximumRequestTimeout`. Defaults are
-conservative and should be load-tested with the actual event size distribution and client
-population.
+`MaximumControlFramesPerSecond`, `MaximumRequestsPerSecond`, `SnapshotInitializationTimeout`,
+`MaximumSessionLifetime`, and `MaximumRequestTimeout`. Defaults are conservative and should be
+load-tested with the actual event size distribution and client population.
 
 ## Composition probe
 
@@ -344,7 +414,8 @@ app.MapGet(
 
 The description contains authentication and remote-fault settings, origin mode and allowlist
 count, protocol preference, request routes, and topic routes including source, subscription,
-authorization, keyed selection, and snapshot-provider metadata. Allowlisted origin values are not
+authorization, keyed selection, whether keyless topic-wide subscriptions are allowed, and
+snapshot-provider metadata. Allowlisted origin values are not
 returned. Protect a runtime endpoint because route destinations and application type names describe
 the service topology.
 
@@ -436,11 +507,16 @@ use cached `LoggerMessage` delegates.
 | `4104` / `WebSocketHandshakeRejected` | Warning | `Reason` |
 | `4105` / `WebSocketOperationFailed` | Error | `Operation`, exception |
 | `4106` / `WebSocketSnapshotFailed` | Error | `Topic`, `SessionId`, exception |
+| `4107` / `WebSocketSnapshotStalled` | Warning | `Topic`, `SessionId`, `TimeoutMilliseconds` |
+| `4108` / `WebSocketAuthorizationFailed` | Error | `Policy`, exception |
+| `4109` / `WebSocketSessionExpiryFailed` | Error | `SessionId`, exception |
+| `4110` / `WebSocketResponseTooLarge` | Warning | `SessionId`, `Operation`, `EncodedBytes`, `MaximumMessageSize` |
 
 Session close reasons use the same normalized vocabulary as
 `hostloom.websocket.session.duration`. Subscription-denial reasons are `topic_not_found`,
-`key_too_long`, `invalid_credit`, `capacity`, `forbidden`, and `duplicate_stream`. Only a registered
-topic is logged; an unknown client-supplied topic is represented as null. Subscription keys,
+`key_too_long`, `key_required`, `invalid_credit`, `capacity`, `forbidden`, and `duplicate_stream`.
+Only a registered topic is logged; an unknown client-supplied topic is represented as null, and
+`Operation` on a response-size warning is always a registered operation name. Subscription keys,
 payloads, credentials, handshake headers, caller-supplied close text, and remote fault messages are
 never added as structured properties. `Subject` is the configured subject claim and should remain
 a non-secret identifier. Exceptions on operation and snapshot-provider failures originate from

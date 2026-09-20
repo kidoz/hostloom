@@ -28,4 +28,27 @@ public static class WebSocketEvents
 
     /// <summary>Error: a registered topic snapshot provider failed.</summary>
     public static readonly EventId SnapshotFailed = new(4106, "WebSocketSnapshotFailed");
+
+    /// <summary>
+    /// Warning: snapshot initialization exceeded the configured timeout and the subscription was
+    /// removed.
+    /// </summary>
+    public static readonly EventId SnapshotStalled = new(4107, "WebSocketSnapshotStalled");
+
+    /// <summary>
+    /// Error: evaluating a registered authorization policy threw; the caller received
+    /// <c>forbidden</c>.
+    /// </summary>
+    public static readonly EventId AuthorizationFailed = new(4108, "WebSocketAuthorizationFailed");
+
+    /// <summary>
+    /// Error: the session expiry timer failed; the session still ran its ordinary cleanup.
+    /// </summary>
+    public static readonly EventId SessionExpiryFailed = new(4109, "WebSocketSessionExpiryFailed");
+
+    /// <summary>
+    /// Warning: an encoded response exceeded the maximum message size and was replaced by a
+    /// <c>message_too_large</c> fault.
+    /// </summary>
+    public static readonly EventId ResponseTooLarge = new(4110, "WebSocketResponseTooLarge");
 }

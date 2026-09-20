@@ -51,15 +51,28 @@ public sealed class HostLoomWebSocketBuilder
             static _ => null,
             subscription,
             authorizationPolicy,
-            keyed: false
+            keyed: false,
+            allowTopicWideSubscription: true
         );
 
+    /// <summary>
+    /// Registers a keyed topic. A client subscribes to one key, and the policy sees that key in
+    /// <see cref="WebSocketTopicResource.Key"/>. A subscribe without a key is denied with
+    /// <c>forbidden</c> unless <paramref name="allowTopicWideSubscription"/> is true, because a
+    /// keyless subscriber would otherwise receive every key's events.
+    /// </summary>
+    /// <param name="allowTopicWideSubscription">
+    /// Whether a keyless subscribe is accepted and receives every key's events. Leave it false
+    /// for tenant- or subject-scoped keys; when enabling it, ensure the policy authorizes the
+    /// caller for the whole topic when <see cref="WebSocketTopicResource.Key"/> is null.
+    /// </param>
     public HostLoomWebSocketBuilder AddTopic<TEvent>(
         string topic,
         RequestAddress source,
         Func<TEvent, string?> keySelector,
         string subscription = "hostloom-websocket",
-        string? authorizationPolicy = null
+        string? authorizationPolicy = null,
+        bool allowTopicWideSubscription = false
     )
         where TEvent : class, IEvent
     {
@@ -70,7 +83,8 @@ public sealed class HostLoomWebSocketBuilder
             value => keySelector((TEvent)value),
             subscription,
             authorizationPolicy,
-            keyed: true
+            keyed: true,
+            allowTopicWideSubscription
         );
     }
 
@@ -80,7 +94,8 @@ public sealed class HostLoomWebSocketBuilder
         Func<object, string?> keySelector,
         string subscription,
         string? authorizationPolicy,
-        bool keyed
+        bool keyed,
+        bool allowTopicWideSubscription
     )
         where TEvent : class, IEvent
     {
@@ -91,6 +106,7 @@ public sealed class HostLoomWebSocketBuilder
                 subscription,
                 typeof(TEvent),
                 keyed,
+                allowTopicWideSubscription,
                 keySelector,
                 authorizationPolicy
             )

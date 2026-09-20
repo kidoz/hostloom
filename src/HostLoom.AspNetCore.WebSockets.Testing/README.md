@@ -10,17 +10,20 @@ client.ConfigureRequest = request => request.Headers.Origin = "https://app.examp
 await client.ConnectAsync(new Uri("ws://localhost/hostloom"), cancellationToken);
 var welcome = await client.AwaitWelcomeAsync(cancellationToken);
 
+// Stream identifiers are Guids; the client picks one per stream and never reuses it.
+var streamId = Guid.NewGuid();
 await client.SendAsync(
     new HubFrame
     {
         Kind = HubFrameKind.Subscribe,
-        StreamId = 1,
+        StreamId = streamId,
         Topic = "orders.changed",
+        Key = "customer-1",
         Credit = 8,
     },
     cancellationToken);
 
-await client.AwaitSubscribedAsync(1, cancellationToken);
+await client.AwaitSubscribedAsync(streamId, cancellationToken);
 ```
 
 `ConfigureRequest` can add an Origin, cookies, or test authentication headers to the upgrade.

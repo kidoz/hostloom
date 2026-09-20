@@ -79,6 +79,10 @@ public sealed record WebSocketRequestDescription(
 /// <param name="Subscription">The HostLoom subscription name.</param>
 /// <param name="EventType">The registered event contract type.</param>
 /// <param name="Keyed">Whether the registration supplied a topic key selector.</param>
+/// <param name="AllowTopicWideSubscription">
+/// Whether a subscribe without a key is accepted. Always true for a keyless topic; true for a
+/// keyed topic only when its registration opted in.
+/// </param>
 /// <param name="AuthorizationPolicy">The per-subscription policy, or null when none was configured.</param>
 /// <param name="SnapshotProvider">The snapshot provider type, or null when none was configured.</param>
 public sealed record WebSocketTopicDescription(
@@ -87,6 +91,7 @@ public sealed record WebSocketTopicDescription(
     string Subscription,
     string EventType,
     bool Keyed,
+    bool AllowTopicWideSubscription,
     string? AuthorizationPolicy,
     string? SnapshotProvider
 );

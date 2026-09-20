@@ -88,6 +88,45 @@ internal static class WebSocketLog
             "WebSocket topic {Topic} snapshot failed for session {SessionId}."
         );
 
+    private static readonly Action<
+        ILogger,
+        string,
+        Guid,
+        double,
+        Exception?
+    > SnapshotStalledMessage = LoggerMessage.Define<string, Guid, double>(
+        LogLevel.Warning,
+        WebSocketEvents.SnapshotStalled,
+        "WebSocket topic {Topic} snapshot for session {SessionId} did not finish within {TimeoutMilliseconds} ms; the subscription was removed."
+    );
+
+    private static readonly Action<ILogger, string, Exception?> AuthorizationFailedMessage =
+        LoggerMessage.Define<string>(
+            LogLevel.Error,
+            WebSocketEvents.AuthorizationFailed,
+            "WebSocket authorization policy {Policy} threw during evaluation; the caller was denied."
+        );
+
+    private static readonly Action<ILogger, Guid, Exception?> SessionExpiryFailedMessage =
+        LoggerMessage.Define<Guid>(
+            LogLevel.Error,
+            WebSocketEvents.SessionExpiryFailed,
+            "WebSocket session {SessionId} expiry timer failed; session cleanup still ran."
+        );
+
+    private static readonly Action<
+        ILogger,
+        Guid,
+        string?,
+        int,
+        int,
+        Exception?
+    > ResponseTooLargeMessage = LoggerMessage.Define<Guid, string?, int, int>(
+        LogLevel.Warning,
+        WebSocketEvents.ResponseTooLarge,
+        "WebSocket session {SessionId} response for registered operation {Operation} encoded to {EncodedBytes} bytes, above the {MaximumMessageSize} byte limit, and was replaced by a fault."
+    );
+
     public static void SessionOpened(
         ILogger logger,
         Guid sessionId,
@@ -152,4 +191,33 @@ internal static class WebSocketLog
         Guid sessionId,
         Exception exception
     ) => SnapshotFailedMessage(logger, topic, sessionId, exception);
+
+    public static void SnapshotStalled(
+        ILogger logger,
+        string topic,
+        Guid sessionId,
+        double timeoutMilliseconds
+    ) => SnapshotStalledMessage(logger, topic, sessionId, timeoutMilliseconds, null);
+
+    public static void AuthorizationFailed(ILogger logger, string policy, Exception exception) =>
+        AuthorizationFailedMessage(logger, policy, exception);
+
+    public static void SessionExpiryFailed(ILogger logger, Guid sessionId, Exception exception) =>
+        SessionExpiryFailedMessage(logger, sessionId, exception);
+
+    public static void ResponseTooLarge(
+        ILogger logger,
+        Guid sessionId,
+        string? operation,
+        int encodedBytes,
+        int maximumMessageSize
+    ) =>
+        ResponseTooLargeMessage(
+            logger,
+            sessionId,
+            operation,
+            encodedBytes,
+            maximumMessageSize,
+            null
+        );
 }
