@@ -20,6 +20,14 @@ public interface ILockHandle : IAsyncDisposable
     DateTimeOffset LeaseEnd { get; }
 
     /// <summary>
+    /// <see langword="true"/> when this lease was taken on a shared backend and excludes other
+    /// instances. <see langword="false"/> for the placeholder single-instance mode hands out
+    /// (<c>Locking:Enabled = false</c>): it reports <see cref="IsHeld"/> for ever, never loses,
+    /// and excludes nobody.
+    /// </summary>
+    bool IsCoordinated { get; }
+
+    /// <summary>
     /// Cancelled when the lease is lost. Never cancelled by a normal release, so an action that
     /// honours it stops only when exclusivity is no longer guaranteed.
     /// </summary>

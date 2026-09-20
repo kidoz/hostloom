@@ -18,7 +18,9 @@ namespace HostLoom.Caching.DependencyInjection;
 /// adapter offers no sliding expiration. Store failures are fail-open here as everywhere: a read
 /// returns null and a write returns, each counted on <c>hostloom.cache.errors</c> and logged once
 /// per key per <c>Caching:Diagnostics:DegradedLogInterval</c>, because an outage otherwise turns
-/// every request into a log line.
+/// every request into a log line. Keys follow the kernel's rules: every asynchronous member
+/// rejects an empty key, one with whitespace or control characters, or one longer than
+/// <c>Caching:MaxKeyLength</c> with <see cref="ArgumentException"/> before touching the store.
 /// </remarks>
 internal sealed class HostLoomDistributedCache(
     IDistributedCacheStore store,
@@ -32,6 +34,7 @@ internal sealed class HostLoomDistributedCache(
         "The HostLoom distributed cache adapter is asynchronous only; use the *Async member.";
 
     private readonly string _prefix = options.Namespace + ":cache:external:";
+    private readonly int _maxKeyLength = options.MaxKeyLength;
     private readonly DegradedLogThrottle _throttle = new(
         time,
         options.Diagnostics.DegradedLogInterval
@@ -43,7 +46,7 @@ internal sealed class HostLoomDistributedCache(
     /// <inheritdoc />
     public async Task<byte[]?> GetAsync(string key, CancellationToken token = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(key);
+        CacheKey.Validate(key, _maxKeyLength, nameof(key));
         try
         {
             var entry = await store.GetAsync(_prefix + key, token).ConfigureAwait(false);
@@ -78,7 +81,7 @@ internal sealed class HostLoomDistributedCache(
     /// <inheritdoc />
     public Task RefreshAsync(string key, CancellationToken token = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(key);
+        CacheKey.Validate(key, _maxKeyLength, nameof(key));
         // The store contract has no touch operation, so there is no sliding window to reset.
         return Task.CompletedTask;
     }
@@ -89,7 +92,7 @@ internal sealed class HostLoomDistributedCache(
     /// <inheritdoc />
     public async Task RemoveAsync(string key, CancellationToken token = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(key);
+        CacheKey.Validate(key, _maxKeyLength, nameof(key));
         try
         {
             await store.RemoveAsync([_prefix + key], token).ConfigureAwait(false);
@@ -111,7 +114,7 @@ internal sealed class HostLoomDistributedCache(
         CancellationToken token = default
     )
     {
-        ArgumentException.ThrowIfNullOrEmpty(key);
+        CacheKey.Validate(key, _maxKeyLength, nameof(key));
         ArgumentNullException.ThrowIfNull(destination);
         try
         {
@@ -153,7 +156,7 @@ internal sealed class HostLoomDistributedCache(
         CancellationToken token
     )
     {
-        ArgumentException.ThrowIfNullOrEmpty(key);
+        CacheKey.Validate(key, _maxKeyLength, nameof(key));
         ArgumentNullException.ThrowIfNull(options);
         var timeToLive = TimeToLive(options);
         try

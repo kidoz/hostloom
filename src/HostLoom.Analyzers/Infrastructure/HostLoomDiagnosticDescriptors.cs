@@ -96,7 +96,7 @@ public static class HostLoomDiagnosticDescriptors
         "Usage",
         DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
-        description: "A cache or lock key is written to the backend, appears in logs, and is tagged on spans. A key built from a token, secret, password, or API key therefore copies the credential into all three. FromSensitive hashes the value so the key stays unique without carrying it.",
+        description: "A cache or lock key is written to the backend, appears in logs, and is tagged on spans. A key built from a token, secret, password, or API key therefore copies the credential into all three. FromSensitive hashes the value so the key stays unique without carrying it; use the keyed overload for a low-entropy secret such as a password or PIN so the hash cannot be brute-forced offline.",
         helpLinkUri: "https://github.com/kidoz/hostloom/tree/main/src/HostLoom.Analyzers#hlm0007"
     );
 

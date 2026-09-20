@@ -86,6 +86,9 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
     /// <summary>Whether the lock coordinates across instances or runs actions immediately.</summary>
     public bool Enabled => Options.Enabled;
 
+    /// <inheritdoc />
+    public bool IsCoordinated => Options.Enabled;
+
     internal LockingOptions Options { get; }
 
     internal TimeProvider Clock { get; }
@@ -426,6 +429,8 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
         public bool IsHeld => true;
 
         public DateTimeOffset LeaseEnd => DateTimeOffset.MaxValue;
+
+        public bool IsCoordinated => false;
 
         public CancellationToken LostToken => CancellationToken.None;
 

@@ -84,6 +84,8 @@ internal sealed class LockHandle : ILockHandle
 
     public string Key { get; }
 
+    public bool IsCoordinated => true;
+
     public string PrefixedKey => _prefixedKey;
 
     public bool IsHeld => Volatile.Read(ref _state) == HeldState;

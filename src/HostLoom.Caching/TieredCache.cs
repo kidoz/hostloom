@@ -90,7 +90,12 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         _time = timeProvider ?? TimeProvider.System;
         _logger = logger ?? NullLogger<TieredCache>.Instance;
         _local = options.L1.Enabled ? new LocalCacheStore(options.L1, _time) : null;
-        _guard = new KeyedAsyncGuard(_time);
+        // Four guards per in-process entry bounds the single-flight map; beyond that idle guards
+        // are reclaimed at once and further keys share striped guards.
+        _guard = new KeyedAsyncGuard(
+            _time,
+            (int)Math.Clamp(4L * options.L1.MaxEntries, 1, int.MaxValue)
+        );
         _throttle = new DegradedLogThrottle(_time, options.Diagnostics.DegradedLogInterval);
         _dataPrefix = options.Namespace + DataSegment;
         _leasePrefix = options.Namespace + LeaseSegment;

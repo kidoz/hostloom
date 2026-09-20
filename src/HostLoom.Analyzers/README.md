@@ -134,6 +134,10 @@ await cache.GetOrCreateAsync(
 );
 ```
 
+The one-argument form is a plain hash and suits only high-entropy inputs such as tokens and
+session ids. A password, PIN, or other low-entropy secret needs the keyed overload,
+`FromSensitive(value, key)`, whose HMAC cannot be brute-forced from a leaked key namespace.
+
 A key that is entirely a `FromSensitive` call is never reported. A `CancellationToken` operand is
 ignored even though its name contains `token`.
 

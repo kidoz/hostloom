@@ -26,9 +26,12 @@ the invariant.
 | `ExecuteWithLockAsync<T>(key, action, options, ct)` | Acquire, run `action`, release in `finally`, propagate the action's exception. The action receives the caller's token, linked to the lost-lease token when `OnLost = Cancel`. |
 | `ExecuteWithLockAsync(key, action, options, ct)` | The same without a result. |
 | `TryAcquireAsync(key, options, ct)` | An `ILockHandle`, or null when not acquired. With no options this is skip-if-busy (one attempt). |
+| `IsCoordinated` | `true` when a lease is a real claim on a shared backend; `false` in single-instance mode, where every acquisition is granted at once and coordinates nothing. |
 
 `ILockHandle` is `IAsyncDisposable` and exposes `Key`, `IsHeld`, `LeaseEnd`,
-`LostToken` (cancelled when the lease ends before release), and
+`IsCoordinated` (`false` for the placeholder single-instance mode hands out,
+which is held for ever and excludes nobody), `LostToken` (cancelled when the
+lease ends before release), and
 `ExtendAsync(lease, ct)`, which returns `false` when the lease was already
 lost. Disposing releases; a release failure is logged, never thrown.
 
@@ -70,7 +73,7 @@ a 50 ms step with 50 ms of jitter, about three seconds in total.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `Locking:Namespace` | required | `[a-z0-9-]+`; keys become `{namespace}:lock:{key}` |
-| `Locking:Enabled` | `true` | `false` is single-instance mode: a startup warning, the gauge `hostloom.lock.enabled = 0`, and actions run immediately |
+| `Locking:Enabled` | `true` | `false` is single-instance mode: a startup warning, the gauge `hostloom.lock.enabled = 0`, actions run immediately, and `IsCoordinated` is `false` on the lock and on every handle so leadership and schedule guards can tell a placeholder from a lease |
 | `Locking:DefaultLease` | 30 s | lease when a call gives none |
 | `Locking:MaxLease` | 5 min | cap on any lease |
 | `Locking:MaxHold` | 10 min | bound on automatic extension |
@@ -80,8 +83,14 @@ a 50 ms step with 50 ms of jitter, about three seconds in total.
 | `Locking:MaxKeyLength` | 512 | longest consumer key |
 
 `Validate()` returns every violation naming its option key; the
-`DependencyInjection` package runs it at startup. `LockKey.FromSensitive`
-hashes a credential so it never reaches the provider or a log.
+`DependencyInjection` package runs it at startup.
+`LockKey.FromSensitive(value)` hashes a high-entropy credential such as a
+token, session id, or API key (SHA-256, 32 hex characters) so it never
+reaches the provider or a log. The hash is unkeyed, so a low-entropy secret
+such as a password or PIN goes through `LockKey.FromSensitive(value, key)`
+instead: HMAC-SHA256 under a key held outside the provider, with the same
+output shape. Every instance of a service must use the same key, or they
+will not contend for the same lock.
 
 ## Backend contract (`ILockProvider`)
 

@@ -36,7 +36,9 @@ if (handle is not null)
 Keys are opaque strings without whitespace or control characters. The composed lock prefixes them
 as `{namespace}:lock:{key}` before they reach a provider, so consumers never repeat the prefix.
 Build a key from a credential with `LockKey.FromSensitive`, which hashes the value so it never
-reaches the provider, a log line, or a span.
+reaches the provider, a log line, or a span. The one-argument form suits high-entropy inputs such
+as tokens; a password or PIN goes through `LockKey.FromSensitive(value, key)`, whose keyed hash
+cannot be brute-forced from a leaked key namespace.
 
 Every lease has an owner token generated per acquisition; release and extension succeed only for
 the owner. The handle's `LostToken` is cancelled, `IsHeld` turns false, and `hostloom.lock.lost`
@@ -51,7 +53,9 @@ to 50 ms of additive jitter, about 3 s in total; `LockOptions.MaxWait` is a hard
 on top of it, cancelling the provider call it would otherwise outlive, and `TimeSpan.Zero` makes
 exactly one attempt. `LockingOptions.Enabled = false` is
 single-instance mode: a startup warning, `hostloom.lock.enabled = 0`, and every action running
-immediately.
+immediately; `IDistributedLock.IsCoordinated` and every handle's `IsCoordinated` report `false`
+there, so a consumer that gates exclusive work on a lease can tell the placeholder from a real
+one.
 
 `LockingProbe.Describe(lock)` reports the composition without executing anything. Metrics and
 activities live under the `HostLoom.Locking` meter and activity source. Install

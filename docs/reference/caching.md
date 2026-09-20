@@ -51,10 +51,18 @@ its own time to live.
 | `NullExpiration` | Negative caching. A null factory result is remembered in both tiers for this long, so a lookup for something that does not exist stops reaching the source on every call. A remembered null is a hit: `TryGetAsync` reports `Found` with a null `Value`, get-or-create returns null without running the factory, and `GetManyAsync` includes the key with a null value. For a non-nullable value type the entry is a miss. `SetAsync` still rejects null. Unset means a null result is not stored. |
 | `StaleGrace` | Stale-while-revalidate for an outage. The in-process copy is kept for this long past its expiry; while the distributed store is unavailable and a get-or-create finds such a copy, one caller refreshes through the factory and every other caller receives the copy at once, with the `hit_stale` outcome. While the store answers, an expired entry is an ordinary miss. Has no effect without a distributed store. |
 
-`CacheKey.FromSensitive(value)` hashes a credential (SHA-256, 32 hex
-characters) so it never reaches a store, a log, or a span.
-`CacheKey.Versioned(key, version)` appends a per-call-site schema version;
-`CachingOptions.PayloadVersion` bumps the whole cache.
+`CacheKey.FromSensitive(value)` hashes a high-entropy credential such as a
+bearer token, refresh token, or session id (SHA-256, 32 hex characters) so
+it never reaches a store, a log, or a span. The hash is unkeyed, so anyone
+who can read the key can confirm a guess of the input; a low-entropy secret
+such as a password, PIN, or one-time code goes through
+`CacheKey.FromSensitive(value, key)` instead, which is HMAC-SHA256 under a
+key you hold in configuration or a secret store, with the same 32-character
+output. Share that key across the instances of one service; rotating it
+turns every derived key into a miss. `CacheKey.IsValid(key, maxLength)` is
+the non-throwing form of `CacheKey.Validate` for input that arrives over the
+wire. `CacheKey.Versioned(key, version)` appends a per-call-site schema
+version; `CachingOptions.PayloadVersion` bumps the whole cache.
 
 ## Configuration (`CachingOptions`)
 
@@ -102,7 +110,15 @@ collide with a lease, a tag index, or a lock:
 | `IDistributedCache` adapter entry | `{namespace}:cache:external:{key}` |
 
 Consumers never see or repeat the prefix. Keys are opaque strings without
-whitespace or control characters.
+whitespace or control characters, at most `Caching:MaxKeyLength` long;
+`CacheKey.Validate` enforces this on every consumer entry point, including
+the `IDistributedCache` adapter's members.
+
+The single-flight guard map that backs get-or-create is bounded to four
+guards per `Caching:L1:MaxEntries`. Once it is full, idle guards are
+reclaimed at once instead of after `Caching:L1:GuardIdleTime`, and a key
+that still finds no room shares one of 256 striped guards, so memory grows
+with in-flight callers rather than with distinct keys.
 
 ## Backend contract (`IDistributedCacheStore`)
 

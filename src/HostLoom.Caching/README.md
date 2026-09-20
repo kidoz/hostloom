@@ -69,9 +69,18 @@ so a consumer key can never collide with a lease, a tag index, or a lock:
 | invalidation channel | `{namespace}:cache:invalidate` |
 
 Consumers never see or repeat the prefix. Keys are opaque strings without whitespace or control
-characters, bounded by `Caching:MaxKeyLength`. `CacheKey.FromSensitive` hashes a credential so it
-never reaches the store or a log; `CacheKey.Versioned` appends a per-call-site schema version;
-`CachingOptions.PayloadVersion` bumps the whole cache.
+characters, bounded by `Caching:MaxKeyLength`; `CacheKey.Validate` enforces this and
+`CacheKey.IsValid` is its non-throwing form. `CacheKey.FromSensitive(value)` hashes a high-entropy
+credential such as a token or session id so it never reaches the store or a log; because that hash
+is unkeyed, a low-entropy secret such as a password or PIN goes through
+`CacheKey.FromSensitive(value, key)`, HMAC-SHA256 under a key held in configuration or a secret
+store and shared by every instance of the service. `CacheKey.Versioned` appends a per-call-site
+schema version; `CachingOptions.PayloadVersion` bumps the whole cache.
+
+The single-flight guard map is bounded to four guards per `Caching:L1:MaxEntries`: at that size
+idle guards are reclaimed at once rather than after `Caching:L1:GuardIdleTime`, and a key that
+still finds no room shares one of 256 striped guards, so memory follows in-flight callers rather
+than the number of distinct keys seen.
 
 ## Serialization
 

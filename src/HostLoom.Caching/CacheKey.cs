@@ -7,14 +7,38 @@ namespace HostLoom.Caching;
 public static class CacheKey
 {
     /// <summary>
-    /// Hashes a credential-bearing value (SHA-256, first 32 lowercase hex characters) so the
-    /// secret itself never reaches the store, a log line, or a span.
+    /// Hashes a high-entropy credential such as a bearer token, refresh token, or session id
+    /// (SHA-256, first 32 lowercase hex characters) so the secret itself never reaches the store,
+    /// a log line, or a span. The hash is unkeyed: anyone who can read the key can confirm a
+    /// guess of the input, so a password, PIN, or other low-entropy secret must go through
+    /// <see cref="FromSensitive(string, ReadOnlySpan{byte})"/> instead.
     /// </summary>
     public static string FromSensitive(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
         Span<byte> hash = stackalloc byte[SHA256.HashSizeInBytes];
         SHA256.HashData(Encoding.UTF8.GetBytes(value), hash);
+        return Convert.ToHexStringLower(hash[..16]);
+    }
+
+    /// <summary>
+    /// Hashes a low-entropy secret such as a password, PIN, or one-time code with HMAC-SHA256
+    /// under <paramref name="key"/>, truncated and encoded like <see cref="FromSensitive(string)"/>
+    /// (first 32 lowercase hex characters). Without the key the stored value cannot be tested
+    /// against a guess. Keep the key outside the cache, in configuration or a secret store, and
+    /// share it across the instances of one service; rotating it makes every derived key a miss.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="key"/> is empty.</exception>
+    public static string FromSensitive(string value, ReadOnlySpan<byte> key)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (key.IsEmpty)
+        {
+            throw new ArgumentException("The HMAC key must not be empty.", nameof(key));
+        }
+
+        Span<byte> hash = stackalloc byte[HMACSHA256.HashSizeInBytes];
+        HMACSHA256.HashData(key, Encoding.UTF8.GetBytes(value), hash);
         return Convert.ToHexStringLower(hash[..16]);
     }
 
@@ -51,15 +75,34 @@ public static class CacheKey
             );
         }
 
+        if (!HasOnlyAllowedCharacters(key))
+        {
+            throw new ArgumentException(
+                "A cache key must not contain whitespace or control characters.",
+                parameterName
+            );
+        }
+    }
+
+    /// <summary>
+    /// Whether <see cref="Validate"/> would accept <paramref name="key"/>: not null or empty, at
+    /// most <paramref name="maxLength"/> characters, and free of whitespace and control
+    /// characters. Meant for input that arrives over the wire, where an exception per bad item
+    /// would be the wrong cost.
+    /// </summary>
+    public static bool IsValid(string? key, int maxLength) =>
+        key is { Length: > 0 } && key.Length <= maxLength && HasOnlyAllowedCharacters(key);
+
+    private static bool HasOnlyAllowedCharacters(string key)
+    {
         foreach (var character in key)
         {
             if (char.IsWhiteSpace(character) || char.IsControl(character))
             {
-                throw new ArgumentException(
-                    "A cache key must not contain whitespace or control characters.",
-                    parameterName
-                );
+                return false;
             }
         }
+
+        return true;
     }
 }

@@ -9,6 +9,15 @@ namespace HostLoom.Locking;
 public interface IDistributedLock
 {
     /// <summary>
+    /// <see langword="true"/> when a lease is a real claim on a shared backend, so at most one
+    /// holder exists across instances. <see langword="false"/> in single-instance mode
+    /// (<c>Locking:Enabled = false</c>): every acquisition is granted at once and coordinates
+    /// nothing. Consumers that gate leader-only or exclusive work on a lease check this, or
+    /// <see cref="ILockHandle.IsCoordinated"/> on the handle, before treating a grant as exclusivity.
+    /// </summary>
+    bool IsCoordinated { get; }
+
+    /// <summary>
     /// Acquires <paramref name="key"/>, runs <paramref name="action"/>, and releases the lease in a
     /// <c>finally</c>. The action's exception propagates unchanged. The token handed to the action
     /// is the caller's token, linked to the handle's <see cref="ILockHandle.LostToken"/> when

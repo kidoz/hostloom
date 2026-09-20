@@ -7,15 +7,39 @@ namespace HostLoom.Locking;
 public static class LockKey
 {
     /// <summary>
-    /// Hashes <paramref name="value"/> (SHA-256, first 32 lowercase hex characters) so a
-    /// credential never reaches the provider, a log line, or a span. Use it for keys built from
-    /// tokens, secrets, passwords, or API keys.
+    /// Hashes a high-entropy credential such as a bearer token, refresh token, session id, or
+    /// API key (SHA-256, first 32 lowercase hex characters) so it never reaches the provider, a
+    /// log line, or a span. The hash is unkeyed: anyone who can read the key can confirm a guess
+    /// of the input, so a password, PIN, or other low-entropy secret must go through
+    /// <see cref="FromSensitive(string, ReadOnlySpan{byte})"/> instead.
     /// </summary>
     public static string FromSensitive(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
         Span<byte> hash = stackalloc byte[SHA256.HashSizeInBytes];
         SHA256.HashData(Encoding.UTF8.GetBytes(value), hash);
+        return Convert.ToHexStringLower(hash[..16]);
+    }
+
+    /// <summary>
+    /// Hashes a low-entropy secret such as a password, PIN, or one-time code with HMAC-SHA256
+    /// under <paramref name="key"/>, truncated and encoded like <see cref="FromSensitive(string)"/>
+    /// (first 32 lowercase hex characters). Without the key the stored value cannot be tested
+    /// against a guess. Keep the key outside the provider, in configuration or a secret store,
+    /// and share it across the instances of one service, or two instances will not contend for
+    /// the same lock.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="key"/> is empty.</exception>
+    public static string FromSensitive(string value, ReadOnlySpan<byte> key)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (key.IsEmpty)
+        {
+            throw new ArgumentException("The HMAC key must not be empty.", nameof(key));
+        }
+
+        Span<byte> hash = stackalloc byte[HMACSHA256.HashSizeInBytes];
+        HMACSHA256.HashData(key, Encoding.UTF8.GetBytes(value), hash);
         return Convert.ToHexStringLower(hash[..16]);
     }
 
