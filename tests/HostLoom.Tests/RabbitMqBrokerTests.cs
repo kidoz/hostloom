@@ -344,13 +344,13 @@ public sealed class RabbitMqBrokerTests
         var listener = rabbit.Channels[0];
         await listener.DeliverAsync(
             "corr-1",
-            replyTo: "reply-queue",
+            replyTo: "amq.gen-reply-queue",
             body: Encoding.UTF8.GetBytes("ask"),
             deliveryTag: 7
         );
 
         var published = Assert.Single(listener.Publishes);
-        Assert.Equal("reply-queue", published.RoutingKey);
+        Assert.Equal("amq.gen-reply-queue", published.RoutingKey);
         Assert.Equal("corr-1", published.CorrelationId);
         Assert.Equal("handled", Encoding.UTF8.GetString(published.Body));
         Assert.Equal([7ul], listener.Acks);
@@ -398,7 +398,7 @@ public sealed class RabbitMqBrokerTests
         var listener = rabbit.Channels[0];
         await listener.DeliverAsync(
             "corr-1",
-            replyTo: "reply-queue",
+            replyTo: "amq.gen-reply-queue",
             body: Encoding.UTF8.GetBytes("ask"),
             deliveryTag: 11
         );

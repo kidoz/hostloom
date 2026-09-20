@@ -45,7 +45,37 @@ builder.Services
 
 All options and defaults: [transports reference](../reference/transports.md#rabbitmqoptions).
 
-## 3. Verify
+## 3. Decide who may be answered, and where rejections go
+
+A request's `ReplyTo` becomes a routing key on the default exchange, so it
+decides which queue the handler's reply is written to. By default a
+listener answers only server-named reply queues (`amq.gen-…`) and the
+direct reply-to pseudo-queue (`amq.rabbitmq.reply-to`), which is what
+HostLoom's own client declares; a request naming any other queue is
+rejected as malformed before its handler runs. Set
+`AllowNamedReplyQueues` only for a foreign client that replies through a
+queue it declared itself.
+
+A rejected delivery — a handler that failed, a malformed frame, a request
+with an unacceptable `ReplyTo` — is dropped unless the queue has a
+dead-letter exchange. Declare one and name it:
+
+```csharp
+.UseRabbitMq(options =>
+{
+    options.Uri = new Uri("amqps://greetings:secret@rabbit.internal:5671/");
+    options.DeadLetterExchange = "hostloom.dead-letters";
+})
+```
+
+Request and subscription queues are then declared with
+`x-dead-letter-exchange`. Existing queues cannot have their arguments
+changed: delete or migrate them first, following the procedure below. A
+delivery cancelled while in flight, because the listener is stopping or
+the client library cancelled it, is nacked with requeue instead, so a
+shutdown never dead-letters healthy work.
+
+## 4. Verify
 
 Run the application and send a request as in the tutorial — the reply
 arrives exactly as before. Then confirm the topology in the RabbitMQ
@@ -97,7 +127,12 @@ Events without any subscriptions retain ordinary fan-out discard behavior.
 - **Connection refused at startup** — broker not reachable at
   `Uri`; check `docker compose ps` and the port (5672).
 - **`RemoteRequestException`** — the request arrived and the handler
-  threw; the exception's `ErrorType` names the remote exception type.
+  threw; `ErrorType` is `HandlerFault` unless the handler threw a
+  `RemoteFaultException` or `HostLoomOptions.IncludeFaultDetails` is on.
+  The real exception is in the handler application's log.
+- **Requests rejected without the handler running** — the caller's
+  `ReplyTo` is not a server-named queue; a foreign client needs
+  `AllowNamedReplyQueues`.
 - **A broker outage after startup is not reflected in readiness** — the
   RabbitMQ adapter does not yet implement `IBrokerHealthProbe`; see
   [health checks](health-and-metrics.md).
