@@ -15,6 +15,56 @@ public sealed class LeaderChannelTests
 {
     private static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Losing_leadership_unblocks_a_full_channel_without_a_reader(bool write)
+    {
+        using var leadership = new ManualLeadership("catalog");
+        using var channel = new LeaderChannel<int>(
+            "catalog",
+            leadership,
+            new() { Capacity = 1, FullMode = BoundedChannelFullMode.Wait }
+        );
+        leadership.Acquire();
+        Assert.True(channel.Writer.TryWrite(1));
+        var waiting = write
+            ? channel.Writer.WriteAsync(2, TestContext.Current.CancellationToken).AsTask()
+            : channel.Writer.WaitToWriteAsync(TestContext.Current.CancellationToken).AsTask();
+        Assert.False(waiting.IsCompleted);
+        leadership.Lose();
+        await waiting.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.Equal(write ? 1 : 0, channel.FollowerDrops);
+        Assert.Equal(1, channel.Reader.Count);
+        Assert.True(await channel.Writer.WaitToWriteAsync(TestContext.Current.CancellationToken));
+        Assert.True(channel.Writer.TryComplete());
+        Assert.False(await channel.Writer.WaitToWriteAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Cancelling_a_capacity_wait_does_not_break_the_next_term()
+    {
+        using var leadership = new ManualLeadership("catalog");
+        using var channel = new LeaderChannel<int>(
+            "catalog",
+            leadership,
+            new() { Capacity = 1, FullMode = BoundedChannelFullMode.Wait }
+        );
+        leadership.Acquire();
+        channel.Writer.TryWrite(1);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken
+        );
+        var waiting = channel.Writer.WaitToWriteAsync(cancellation.Token).AsTask();
+        await cancellation.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+        leadership.Lose();
+        leadership.Acquire();
+        channel.Reader.TryRead(out _);
+        Assert.True(await channel.Writer.WaitToWriteAsync(TestContext.Current.CancellationToken));
+        Assert.True(channel.Writer.TryWrite(2));
+    }
+
     [Fact]
     public async Task A_follower_write_is_accepted_and_discarded_and_a_leader_write_is_buffered()
     {

@@ -48,6 +48,11 @@ await changes.Writer.WriteAsync(change);          // discarded unless this insta
 await foreach (var change in changes.Reader.ReadAllAsync(stoppingToken)) { ... }
 ```
 
+With `FullMode=Wait`, losing leadership wakes producers waiting for capacity; follower
+readiness succeeds even while the old buffer is full. Asynchronous writes recheck the role
+after waiting. Already accepted buffered items remain readable: use the leadership token
+around leader-only side effects, because channel admission is not a fencing guarantee.
+
 `LeadershipProbe.Describe(elector)` reports the composition without executing anything. Metrics
 and activities live under the `HostLoom.Leadership` meter and activity source. Install
 `HostLoom.Leadership.DependencyInjection` to register electors by role, and

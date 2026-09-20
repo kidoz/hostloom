@@ -123,8 +123,14 @@ public sealed class LeaderChannelChaosTests
         using var channel = new LeaderChannel<int>(
             "inventory-changes",
             leadership,
-            new LeaderChannelOptions { Capacity = writers * perWriter }
+            new LeaderChannelOptions { Capacity = writers * perWriter + 2 }
         );
+        // Seed both outcomes explicitly; task scheduling need not interleave a fast producer
+        // with the flipper, so the race itself cannot guarantee both outcomes occur.
+        Assert.True(channel.Writer.TryWrite(-1));
+        leadership.Acquire();
+        Assert.True(channel.Writer.TryWrite(-2));
+        leadership.Lose();
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var producers = Enumerable
             .Range(0, writers)
@@ -175,10 +181,10 @@ public sealed class LeaderChannelChaosTests
             buffered++;
         }
 
-        Assert.Equal(writers * perWriter, buffered + channel.FollowerDrops);
+        Assert.Equal(writers * perWriter + 2, buffered + channel.FollowerDrops);
         Assert.Equal(0, channel.CapacityDrops);
-        Assert.InRange(buffered, 1, writers * perWriter - 1);
-        Assert.Equal(flips + 1, leadership.Term);
+        Assert.InRange(buffered, 1, writers * perWriter + 1);
+        Assert.Equal(flips + 2, leadership.Term);
     }
 
     [Fact]

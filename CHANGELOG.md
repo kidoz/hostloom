@@ -104,6 +104,7 @@ are derived from release tags at publish time.
   later invalidation. Restricted cache ACLs now also need `SREM` permission.
 - Concurrent L1 mutations keep byte accounting consistent with the stored entries.
 - WebSocket subscription initialization and removal detach linked cancellation resources safely.
+- Pending leader-channel writes wake on leadership loss and follow the follower discard policy.
 
 ## [0.8.0] - 2026-09-19
 

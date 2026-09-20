@@ -197,30 +197,41 @@ public sealed class LeaderChannel<T> : Channel<T>, IDisposable
             return true;
         }
 
-        public override ValueTask WriteAsync(T item, CancellationToken cancellationToken = default)
-        {
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return ValueTask.FromCanceled(cancellationToken);
-            }
-
-            if (owner._leadership.IsLeader)
-            {
-                return inner.WriteAsync(item, cancellationToken);
-            }
-
-            if (owner._completed)
-            {
-                return ValueTask.FromException(new ChannelClosedException());
-            }
-
-            owner.Dropped(follower: true);
-            return ValueTask.CompletedTask;
-        }
-
-        public override ValueTask<bool> WaitToWriteAsync(
+        // The base writer retries through this writer's admission gate after a capacity wait.
+        public override ValueTask WriteAsync(
+            T item,
             CancellationToken cancellationToken = default
-        ) => inner.WaitToWriteAsync(cancellationToken);
+        ) => base.WriteAsync(item, cancellationToken);
+
+        public override async ValueTask<bool> WaitToWriteAsync(
+            CancellationToken cancellationToken = default
+        )
+        {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (owner._completed)
+                    return await inner.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
+                if (!owner._leadership.IsLeader)
+                    return true;
+
+                var lost = owner._leadership.LeadershipToken;
+                using var waiting = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    lost
+                );
+                try
+                {
+                    return await inner.WaitToWriteAsync(waiting.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                    when (!cancellationToken.IsCancellationRequested && lost.IsCancellationRequested
+                    )
+                {
+                    // Recheck both completion and the current role, including rapid reacquisition.
+                }
+            }
+        }
 
         public override bool TryComplete(Exception? error = null)
         {
