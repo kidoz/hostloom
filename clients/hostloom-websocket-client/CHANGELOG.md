@@ -5,6 +5,8 @@ independent [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-20
+
 ### Changed
 
 - Automatic reconnect starts only after a session that received its `welcome` is lost. A first
@@ -12,20 +14,6 @@ independent [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instead of also retrying in the background; attempts that fail inside a running retry cycle
   still keep it alive. The `refreshCredentials` documentation states that the callback runs for
   every `1008` close and can branch on `close.reason`.
-
-### Fixed
-
-- Ignore credential-refresh results after their reconnect cycle has ended, and preserve manual
-  closes made by connected-state observers without resubscribing on a closing socket.
-- Enforce the JSON-v1 integer bounds and Base64 payload syntax before sending client frames or
-  delivering server frames. Payload bytes remain opaque and need not contain JSON.
-- Enforce the welcome-advertised UTF-8 message-size limit before sending, with a typed error that
-  reports both sizes. Acknowledgements are safe no-ops during reconnect and invalid lifecycle uses
-  now throw a typed subscription-state error. Unowned subscription frames trigger one cleanup
-  `unsubscribe`, while subscriptions created through the low-level API remain caller-owned.
-- `connect()` called during a caller-requested close now waits for the close event and opens one
-  replacement socket; repeated calls share the same pending promise. Protocol-failure closes remain
-  terminal.
 
 ## [0.1.0] - 2026-09-03
 
@@ -43,3 +31,17 @@ independent [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   subscription resubscription without request or event replay.
 - Transition-safe subscription routing, idempotent terminal cleanup, non-string request validation,
   and independent duplicate topic/key subscription lifetimes.
+
+### Fixed
+
+- Ignore credential-refresh results after their reconnect cycle has ended, and preserve manual
+  closes made by connected-state observers without resubscribing on a closing socket.
+- Enforce the JSON-v1 integer bounds and Base64 payload syntax before sending client frames or
+  delivering server frames. Payload bytes remain opaque and need not contain JSON.
+- Enforce the welcome-advertised UTF-8 message-size limit before sending, with a typed error that
+  reports both sizes. Acknowledgements are safe no-ops during reconnect and invalid lifecycle uses
+  now throw a typed subscription-state error. Unowned subscription frames trigger one cleanup
+  `unsubscribe`, while subscriptions created through the low-level API remain caller-owned.
+- `connect()` called during a caller-requested close now waits for the close event and opens one
+  replacement socket; repeated calls share the same pending promise. Protocol-failure closes remain
+  terminal.
