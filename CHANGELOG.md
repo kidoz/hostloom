@@ -89,6 +89,10 @@ are derived from release tags at publish time.
   subscription stayed live behind the fault and kept delivering events on a stream the browser
   client had already discarded, until its orphan cleanup sent an `unsubscribe`.
 
+### Fixed
+
+- Lock-loss callback exceptions no longer escape timer callbacks or interrupt lease accounting.
+
 ## [0.8.0] - 2026-09-19
 
 Upgrading changes no public contract and no default behaviour. Every addition is opt-in: an update

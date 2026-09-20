@@ -9,6 +9,57 @@ public sealed class LockingTests
 {
     private static readonly TimeSpan OneSecond = TimeSpan.FromSeconds(1);
 
+    [Theory]
+    [InlineData("expiry")]
+    [InlineData("extend")]
+    [InlineData("release")]
+    public async Task Throwing_loss_callbacks_do_not_interrupt_cleanup(string transition)
+    {
+        var clock = new TestClock();
+        var backendClock = new TestClock();
+        var provider = new InMemoryLockProvider(backendClock);
+        var logger = new RecordingLogger<DistributedLock>();
+        var ns = "callback-" + Guid.NewGuid().ToString("N");
+        using var metrics = new MetricRecorder(ns);
+        await using var locks = Compose(
+            clock,
+            provider,
+            logger,
+            new LockingOptions { Namespace = ns }
+        );
+        await using var handle = await locks.TryAcquireAsync(
+            "catalog",
+            new LockOptions { Lease = OneSecond },
+            TestContext.Current.CancellationToken
+        );
+        Assert.NotNull(handle);
+        var lost = handle.LostToken;
+        var notified = 0;
+        using var normal = lost.Register(() => notified++);
+        using var throwing = lost.Register(() =>
+            throw new InvalidOperationException("Callback failed.")
+        );
+
+        backendClock.Advance(OneSecond);
+        if (transition == "expiry")
+            clock.Advance(OneSecond);
+        else if (transition == "extend")
+            Assert.False(
+                await handle.ExtendAsync(OneSecond, TestContext.Current.CancellationToken)
+            );
+        else
+            await handle.DisposeAsync();
+
+        Assert.True(lost.IsCancellationRequested);
+        Assert.False(handle.IsHeld);
+        Assert.Equal(1, notified);
+        Assert.True(logger.Has(LockingEvents.CancellationCallbackFailed));
+        await handle.DisposeAsync();
+        Assert.Equal(0, provider.Count);
+        Assert.Equal(0, metrics.Measurements("hostloom.lock.active").Sum(m => m.Value));
+        Assert.Equal(2, metrics.Measurements("hostloom.lock.active").Count);
+    }
+
     [Fact]
     public void Linear_default_delays_grow_by_the_step_and_bound_the_total()
     {

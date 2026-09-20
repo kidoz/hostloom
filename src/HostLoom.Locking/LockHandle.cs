@@ -316,6 +316,15 @@ internal sealed class LockHandle : ILockHandle
         {
             // Lost after release: nothing is waiting on the token any more.
         }
+        catch (AggregateException exception)
+        {
+            _owner.Logger.LogWarning(
+                LockingEvents.CancellationCallbackFailed,
+                exception,
+                "A cancellation callback for lost lock '{Key}' failed; lock cleanup continues.",
+                Key
+            );
+        }
     }
 
     private void Decrement()
