@@ -51,19 +51,21 @@ singletons defeats that isolation — the `HLM0003`
 
 ## Options
 
-`HostLoomOptions` has a single property:
+`HostLoomOptions`:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `RequestTimeout` | 30 seconds | How long a client waits for a reply before failing; overridable per call via `GetResponseAsync`'s `timeout` parameter |
+| `IncludeFaultDetails` | `false` | Forward every handler exception's type name and message in the fault envelope. Off, a caller sees `HandlerFault` / "The request handler failed." for everything except a `RemoteFaultException`; the full exception is logged on the handling side either way |
 
 ## Exceptions
 
 | Type | Raised when | Members |
 | --- | --- | --- |
-| `RemoteRequestException` | the remote handler failed; carries the fault from the wire | `string ErrorType` — the remote exception's type name |
+| `RemoteRequestException` | the remote handler failed; carries the fault from the wire | `string ErrorType` — `HandlerFault`, `HandlerNotFound`, `ResponseTypeMismatch`, or the remote exception's type name when details were forwarded |
+| `RemoteFaultException` (thrown by handlers, not raised by HostLoom) | a handler wants the caller to read its message; its type and message cross the wire verbatim, unlike any other exception | standard constructors; subclass it for typed faults |
 | `RequestTimeoutException` (`: TimeoutException`) | no reply within the timeout | `RequestAddress Address`, `TimeSpan Timeout` |
-| `MalformedEnvelopeException` | an envelope cannot be decoded | message only |
+| `MalformedEnvelopeException` | an envelope cannot be decoded, has no message id, or has an unusable correlation id | message only |
 | `NotSupportedException` | publishing through a transport without `IEventBroker` | — |
 
 ## Serialization boundary
@@ -104,10 +106,13 @@ wakes the relay. Publishing completes when the append does.
 | `AppendAsync(message, ct)` | store as pending, inside the caller's unit of work when the store has one |
 | `ClaimAsync(batchSize, lease, ct)` | the oldest pending messages not under an unexpired lease, leased and in enqueue order; atomic against concurrent relays |
 | `MarkPublishedAsync(id, ct)` | never claimed again |
-| `MarkFailedAsync(id, error, ct)` | record the error, increment `Attempts`, release the lease |
+| `MarkFailedAsync(id, error, nextAttemptAt, ct)` | record the error (the exception's type name, never its message), increment `Attempts`, release the lease, and hold the message back until `nextAttemptAt` |
+| `MarkDeadLetteredAsync(id, error, ct)` | move the message to a dead-letter state that no claim returns; keep it for an operator to requeue |
 
 `OutboxMessage` carries `MessageId`, `Topic`, `MessageType`, the encoded
-`Frame`, `EnqueuedAt`, and `Attempts`. Register the store scoped (the default)
+`Frame`, `EnqueuedAt`, `Attempts`, and `NextAttemptAt` (`null` when due at
+once). `ClaimAsync` must skip a message whose `NextAttemptAt` has not passed.
+Register the store scoped (the default)
 when it writes through the same unit of work as the handlers, which is what
 makes the outbox transactional; the relay resolves it from a scope of its own
 per call. `UseInMemoryOutbox()` supplies a per-process store that joins no
@@ -119,28 +124,42 @@ committed after the wake or appended by another process is still relayed.
 Within a drain it claims `Outbox:BatchSize` messages under an
 `Outbox:ClaimLease`, publishes each frame unchanged through the transport's
 `IEventBroker`, and marks it. A publish that fails leaves the message pending
-with its error; the rest of the batch still goes out, and the drain stops after
-that batch. Delivery is at-least-once: a relay that dies between publishing and
-marking lets the next claim publish again after the lease.
+with the failure's type name and a `NextAttemptAt` computed from
+`Outbox:RetryDelay` grown by `Outbox:RetryBackoffFactor` per attempt and
+clamped to `Outbox:MaxRetryDelay` (the same arithmetic as
+`RetryPolicy.Exponential`); the rest of the batch still goes out, and the drain
+stops after that batch. A message that fails `Outbox:MaxAttempts` times is
+dead-lettered: logged at error, counted, and never claimed again until an
+operator requeues it in the store (`InMemoryOutboxStore.Requeue` does this for
+the in-memory store). Delivery is at-least-once: a relay that dies between
+publishing and marking lets the next claim publish again after the lease.
 
 | Key | Default |
 | --- | --- |
 | `Outbox:PollInterval` | 5 seconds |
 | `Outbox:BatchSize` | 100 |
 | `Outbox:ClaimLease` | 1 minute |
+| `Outbox:MaxAttempts` | 10 |
+| `Outbox:RetryDelay` | 5 seconds |
+| `Outbox:MaxRetryDelay` | 5 minutes |
+| `Outbox:RetryBackoffFactor` | 2 |
 
 A transport without publish/subscribe fails the host at startup, as it does for
 a subscription. Metrics: `hostloom.outbox.published`, `hostloom.outbox.failed`,
-and `hostloom.outbox.lag`; log events in `OutboxEvents` (3300 to 3303).
+`hostloom.outbox.dead_lettered`, and `hostloom.outbox.lag`; log events in
+`OutboxEvents` (3300 to 3304).
 
 ## Inbox
 
 `UseInbox<TStore>(window)`, `UseInbox(provider => store, window)`, and
 `UseInMemoryInbox(window)` append the `InboxFilter` to the receive pipeline at
 that point in registration order. Before an event's handlers run, the filter
-records `{topic}:{subscription}:{messageId}` with the `IInboxStore` for the
-window; a key already present marks the delivery with an `InboxDuplicate`
-payload and skips the handlers. Requests pass through untouched, because a
+records `{topic.Length}:{topic}:{subscription.Length}:{subscription}:{messageId}`
+(`InboxFilter.KeyFor`) with the `IInboxStore` for the window; a key already
+present marks the delivery with an `InboxDuplicate` payload and skips the
+handlers. The names are length-prefixed because either may contain `:`, and a
+bare join would let two subscriptions share a key. The message id is the
+sender's; the codec rejects an empty one before the filter sees it. Requests pass through untouched, because a
 request that is not answered leaves its caller waiting for a timeout.
 
 `IInboxStore` has one member, `TryRecordAsync(key, window, ct)`, the atomic

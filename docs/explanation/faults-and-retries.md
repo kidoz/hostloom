@@ -11,13 +11,24 @@ between in-process retry and broker redelivery.
    breaking run here, *before* any encoding — this ordering is what makes
    them apply to handler failures at all.
 3. If the pipeline gives up (retries exhausted, breaker open), the
-   exception is encoded into the wire envelope as a fault: the error type
-   name and message, **no stack trace**. Implementation internals stay on
-   the server; the caller receives what it can act on.
+   failure is encoded into the wire envelope as a fault. By default the
+   fault is anonymous: type `HandlerFault`, message "The request handler
+   failed." The real exception type and message are logged on the
+   handling side and never cross the transport, because an exception
+   message can carry a connection string, a file path, or a fragment of
+   somebody else's data. Two things change that: throwing a
+   `RemoteFaultException` (or a subclass), which is the handler saying
+   "this message is written for the caller" and travels with its type and
+   message intact; or setting `HostLoomOptions.IncludeFaultDetails`, which
+   forwards every exception in full and belongs only in deployments where
+   every caller is trusted. In no case does a stack trace cross the wire.
 4. On the caller's side the fault surfaces as `RemoteRequestException`,
-   with `ErrorType` naming the remote exception type. A reply that never
-   arrives ends as `RequestTimeoutException` when the request timeout
-   elapses; an undecodable envelope raises `MalformedEnvelopeException`.
+   with `ErrorType` carrying the fault type: `HandlerFault`,
+   `HandlerNotFound` (no handler for that message type on the endpoint),
+   `ResponseTypeMismatch`, or the exception type name when details were
+   allowed. A reply that never arrives ends as `RequestTimeoutException`
+   when the request timeout elapses; an undecodable envelope raises
+   `MalformedEnvelopeException`.
 
 The wire contract is unchanged by resilience configuration: an exhausted
 retry looks to the caller exactly like an immediate failure — one fault
@@ -63,18 +74,34 @@ processes), not a breaker setting.
 
 ## Where the guarantees stop
 
-HostLoom's current slice does not yet include dead-letter behaviors or
-delivery policies beyond the receive pipeline — they are on the roadmap.
-Until then, plan poison-message handling around the broker's own
-redelivery and dead-letter configuration rather than assuming framework
-support that does not yet exist — this page states the boundary so that
-plan can be made deliberately.
+HostLoom does not provide a general delivery or dead-letter policy for
+inbound messages beyond the receive pipeline. What each transport does
+with a delivery this process could not handle is stated, not unified:
 
-What the slice does include is the pair that makes at-least-once delivery
-safe to build on: the transactional outbox, which stores an event with the
-business change and relays it afterwards, and the inbox, which runs a
-redelivered event's handlers once per subscription inside a window. See
-[Outbox](../reference/messaging.md#outbox) and
-[Inbox](../reference/messaging.md#inbox). Neither changes what a broker
-guarantees: the outbox relay itself delivers at least once, and the inbox
-is what absorbs the duplicate.
+- **RabbitMQ** rejects a failed or malformed delivery without requeue. Set
+  `RabbitMqOptions.DeadLetterExchange` to have the request and
+  subscription queues declared with `x-dead-letter-exchange`, so those
+  rejections are routed rather than dropped. A delivery that was
+  cancelled — the listener is stopping, or the client library cancelled
+  it — is nacked with requeue, because the process, not the message, is
+  the reason it was not handled.
+- **Kafka** rewinds a transiently failed record and re-consumes it up to a
+  cap, then commits past it; a malformed record, or a request whose reply
+  could not be produced after the handler ran, is committed past at once
+  without re-running the handler. Exhaustion is logged, not dead-lettered.
+
+Plan poison-message handling around those statements and the broker's own
+configuration; this page states the boundary so that plan can be made
+deliberately.
+
+What the framework does include is the pair that makes at-least-once
+delivery safe to build on: the transactional outbox, which stores an event
+with the business change and relays it afterwards, and the inbox, which
+runs a redelivered event's handlers once per subscription inside a window.
+See [Outbox](../reference/messaging.md#outbox) and
+[Inbox](../reference/messaging.md#inbox). The outbox relay retries a
+message the transport refuses with an exponential backoff and, after
+`Outbox:MaxAttempts`, moves it to a dead-letter state in the store that no
+claim returns; an operator requeues it from there. Neither changes what a
+broker guarantees: the outbox relay itself delivers at least once, and the
+inbox is what absorbs the duplicate.

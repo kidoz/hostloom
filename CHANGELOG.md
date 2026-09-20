@@ -84,6 +84,28 @@ are derived from release tags at publish time.
 
 ### Changed
 
+- Source-breaking contract additions from the security hardening below: `IsCoordinated` on
+  `IDistributedLock`, `ILockHandle`, `ILeadership`, and `IScheduleGuard`;
+  `IOutboxStore.MarkFailedAsync` takes the next attempt time and `MarkDeadLetteredAsync` is new;
+  `OutboxMessage.NextAttemptAt`, `WebSocketTopicDescription.AllowTopicWideSubscription`,
+  `LeadershipDescription.Coordinated`, and `SchedulingDescription.GuardCoordinated` are new
+  positional record parameters. In-repo implementations and the Testing packages are updated.
+- Remote faults no longer carry the handler's exception type and message by default. A handler
+  that wants the caller to see a message throws `RemoteFaultException`; the previous behavior is
+  available through `HostLoomOptions.IncludeFaultDetails`. Framework-routed faults use the stable
+  types `HandlerNotFound` and `ResponseTypeMismatch`.
+- A leader elector whose lock is disabled (`Locking:Enabled=false`) no longer leads on every
+  instance. `LeadershipOptions.WhenUncoordinated` defaults to `Follow`; a single-instance or
+  development host opts into `Lead`. The elector warns once per role either way.
+- A logging scope hole such as `{User}` destructures a non-scalar value through the same
+  fail-closed, mask-aware path as an event hole instead of calling `ToString()`; `{$User}` keeps
+  the plain text form. The templated scope text is rendered from the captured fields.
+- The inbox key is length-prefixed per component, so keys recorded before the upgrade are not
+  recognised for the remainder of their window.
+- Redis health-check descriptions report reachability and latency without endpoints, machine
+  name, or process id; `Describe()` is unchanged for logs.
+- The development `docker-compose.yml` binds RabbitMQ, Kafka, and Redis to loopback only.
+
 - RabbitMQ defaults to versioned, role-qualified queue names that separate request routes and
   event subscription pairs. Existing deployments must follow the
   [queue migration guide](docs/how-to/use-rabbitmq.md#migrate-existing-queues) or explicitly set
@@ -99,6 +121,16 @@ are derived from release tags at publish time.
 
 ### Fixed
 
+- Kafka reply consumers retain progress across reassignments and fail initialization instead of
+  falling back to an unresolved end offset. Live request/reply tests provision their owned topics.
+- RabbitMQ subscriptions close channels even when cancellation callbacks throw and tolerate
+  repeated disposal.
+- Redis and Valkey validate canonical tagged-write domains before backend I/O, preventing values
+  from being accepted and then orphaned by the tag invalidation filter.
+- Logging bounds message and text-field buffer growth before encoding and falls back to the
+  capped rendered message when a CLEF template exceeds the message budget.
+- The npm publish step uses one environment mapping for its version and bootstrap token.
+
 - Lock-loss callback exceptions no longer escape timer callbacks or interrupt lease accounting.
 - Valkey tag invalidation removes only snapshotted members, retaining concurrently added keys for
   later invalidation. Restricted cache ACLs now also need `SREM` permission.
@@ -108,6 +140,62 @@ are derived from release tags at publish time.
 - Scheduled jobs retain stop, timeout and claim-loss outcomes after cooperative normal returns.
 - Logging shutdown bounds synchronous sink disposal and cancellation callbacks as well as
   asynchronous stalls.
+
+### Security
+
+- The WebSocket gateway refuses a keyless `subscribe` to a keyed topic with `forbidden` unless
+  the registration passes `allowTopicWideSubscription: true`. Previously any principal who passed
+  a key-ignoring topic policy received every key's events and the whole snapshot. Keyed examples
+  now use `TopicKeyPolicy.SubjectOnly`.
+- The gateway drops an event that exceeds `MaximumMessageSize` instead of aborting every
+  subscriber, faults a stream whose snapshot value is too large with `snapshot_failed`, and
+  answers an oversized response with a `message_too_large` fault. Only the outbound budget still
+  aborts a connection.
+- `HostLoomWebSocketOptions.SnapshotInitializationTimeout` (30 seconds) bounds how long a
+  subscriber can hold a snapshot provider open by withholding credit; the stream faults with
+  `snapshot_stalled` and the provider scope is disposed.
+- `HostLoomWebSocketOptions.MaximumRequestsPerSecond` (100) budgets `request` frames before any
+  scope, authorization, or deserialization work; every other client frame kind shares the control
+  budget. Session expiry works for any lifetime, including `DateTimeOffset.MaxValue`, and cleanup
+  runs even when the expiry timer faults.
+- The gateway resolves every configured authorization policy name at startup and fails the host
+  with the missing names; a runtime authorization exception maps to `forbidden`.
+- Kafka validates the `hostloom-reply-to` header against topic-name rules and, when
+  `KafkaOptions.AllowedReplyTopics` is set, against that list before the handler runs. A reply
+  that cannot be produced is logged as `UnroutableReplyException`, committed, and skipped; the
+  handler is not re-run. The reply consumer starts from the latest offset, and
+  `KafkaOptions.MaxRequestAge` can reject stale records.
+- `KafkaOptions` gains `SecurityProtocol`, `SaslMechanism`, `SaslUsername`, `SaslPassword`,
+  `SslCaLocation`, and `ConfigureClient` so the transport can authenticate and use TLS; the Kafka
+  guide documents a secure baseline.
+- RabbitMQ accepts only server-named reply queues (`amq.gen-*`, `amq.rabbitmq.reply-to`) unless
+  `RabbitMqOptions.AllowNamedReplyQueues` is set, nacks with requeue when a delivery is cancelled
+  by shutdown, and declares queues with `x-dead-letter-exchange` when
+  `RabbitMqOptions.DeadLetterExchange` is set.
+- Envelope decoding rejects an empty `MessageId`, an empty `CorrelationId`, and a response or
+  fault without one, so a sender cannot poison the inbox window with a zero id.
+- The outbox retries with exponential backoff (`OutboxOptions.RetryDelay`, `MaxRetryDelay`,
+  `RetryBackoffFactor`) and dead-letters after `OutboxOptions.MaxAttempts` (10), counted on
+  `hostloom.outbox.dead_lettered`; the persisted failure text is the exception type name only.
+- The `messaging.message.type` tag is `unknown` for an unregistered type, bounding cardinality.
+- `[NotLogged]` and `[LogMasked]` are honoured on overridden virtual properties.
+  `HostLoomLoggerOptions.MaxMessageLength` (16 KiB) and `MaxTextFieldLength` (8 KiB) cap message
+  text, plain fields, and scope texts.
+- The Redis invalidation channel drops a message over 1 MiB, over 10 000 keys and tags, or with
+  an invalid key, counted on `hostloom.redis.invalidation.malformed`; the Valkey codec validates
+  each item the same way. Tag members outside the namespace's data prefix are removed from the
+  index instead of unlinked, counted on `hostloom.redis.tag.members_rejected` and
+  `hostloom.valkey.tag.members_rejected`. The Redis guide documents the ACL and TLS baseline.
+- The single-flight guard map is bounded at four times `L1.MaxEntries` and falls back to striped
+  semaphores, and the `IDistributedCache` adapter validates every key.
+- `CacheKey.FromSensitive(value, key)` and `LockKey.FromSensitive(value, key)` hash with
+  HMAC-SHA256 for low-entropy secrets; the unkeyed form is documented for high-entropy inputs.
+- `LeaderChannelOptions.DrainOnLoss` drops buffered leader-era items when leadership is lost.
+  The elector loop survives an unexpected exception (`hostloom.leader.loop.faults`, backoff, and
+  continue) and validates its delays against the timer limit. `UseGuard`, `AddHostLoomLeadership`,
+  and `AddRole` throw when an earlier registration would silently supersede the chosen guard or
+  leadership. Cron steps are bounded to the field range.
+- Release workflows pass tag and version values to shell steps through environment variables.
 
 ## [0.8.0] - 2026-09-19
 

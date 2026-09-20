@@ -246,7 +246,11 @@ builder.Services
 These filters see a handler failure as an exception, before it is encoded as a
 fault envelope, which is what makes retry and circuit breaking apply to it. The
 wire contract is unchanged: an exhausted retry or an open breaker still reaches
-the caller as a `RemoteRequestException`.
+the caller as a `RemoteRequestException`. By default that fault is anonymous
+(`HandlerFault`, "The request handler failed."); the exception is logged on the
+handling side and its type and message cross the wire only when the handler threw
+a `RemoteFaultException` for the caller to read, or when
+`HostLoomOptions.IncludeFaultDetails` is on.
 
 Each attempt runs in its own dependency-injection scope, so a retry never
 inherits scoped state left behind by the attempt that failed. The pipeline is
@@ -287,9 +291,11 @@ would send and appends it to the `IOutboxStore` from the caller's scope, so a st
 through the handler's unit of work makes the event part of the business transaction. A relay
 hosted with the application claims pending messages in batches, publishes each frame unchanged
 through the transport, and marks it published; a publish that fails leaves the message pending
-with its error and attempt count for a later claim. Delivery is at-least-once, which is why the
-inbox exists: it records `{topic}:{subscription}:{messageId}` with an `IInboxStore` before the
-handlers run and skips a delivery it has seen inside the window. A store that cannot answer lets
+with the failure's type and a growing, clamped retry delay, and after `Outbox:MaxAttempts` the
+message is dead-lettered in the store for an operator instead of claimed again. Delivery is
+at-least-once, which is why the inbox exists: it records a length-prefixed
+`{topic}:{subscription}:{messageId}` key with an `IInboxStore` before the handlers run and skips
+a delivery it has seen inside the window. A store that cannot answer lets
 the handlers run and flags the delivery, because processing twice is recoverable and dropping is
 not. `UseInMemoryOutbox` and `UseInMemoryInbox` supply per-process stores for tests and
 single-process deployments. See the [messaging reference](docs/reference/messaging.md#outbox).
@@ -306,7 +312,7 @@ builder.Services
     .AddWebSocketGateway()
     .AddRequest<GetOrder, OrderView>("orders.get", "orders-api", "orders.read")
     .AddTopic<OrderChanged>("orders.changed", "orders", e => e.CustomerId,
-        subscription: "realtime-node-a", authorizationPolicy: "orders.read");
+        subscription: "realtime-node-a", authorizationPolicy: TopicKeyPolicy.SubjectOnly);
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -351,18 +357,27 @@ per-connection work or memory.
 
 Topic policies receive the client-selected subscription key. The built-in
 `TopicKeyPolicy.SubjectOnly` policy restricts a keyed topic to the authenticated subject using the
-configured subject claim type and exact ordinal matching.
+configured subject claim type and exact ordinal matching. A policy that ignores the key is unsafe
+for a multi-tenant keyed topic, because it approves whichever key the caller names. A `subscribe`
+without a key is denied on a keyed topic unless its registration opts in with
+`allowTopicWideSubscription: true`, so a keyless subscriber cannot become a cross-key wildcard by
+accident. Every configured policy name is resolved when the host starts, and a policy handler
+that throws denies the caller with `forbidden`.
 
 Topics can also register a scoped `IWebSocketTopicSnapshotProvider<TEvent>`. Subscriptions receive
 `subscribed`, snapshot events marked by `sequence = 0`, and then any live events buffered within
-the existing connection limits while the snapshot was loading.
+the existing connection limits while the snapshot was loading. Initialization is bounded by
+`SnapshotInitializationTimeout`; a client that withholds credit gets `snapshot_stalled` instead of
+holding the provider open. Frames above `MaximumMessageSize` never disconnect a session: live
+events are dropped and counted, oversized snapshot values and responses fault only their stream.
 
 Supplied browser origins are checked against the effective request origin by default. Native
 clients may omit Origin; browser-only endpoints can reject a missing header, and cross-origin
 applications can configure an exact allowlist.
 
-Sessions are bounded by credential expiry and a 12-hour maximum, and control-frame floods close
-with a policy violation. `IWebSocketSessionDirectory` exposes safe active-session snapshots while
+Sessions are bounded by credential expiry and a 12-hour maximum (any longer configured lifetime
+works too), and control-frame or request floods close with a policy violation under separate
+per-second budgets. `IWebSocketSessionDirectory` exposes safe active-session snapshots while
 `IWebSocketSessionControl` disconnects one session or every session for a subject after logout or a
 role change. Host shutdown sends 1001 `server_shutdown` before broker subscriptions stop.
 
@@ -371,8 +386,9 @@ are available from the `HostLoom.AspNetCore.WebSockets` meter. Its low-cardinali
 only protocol, registered topic, and library-controlled reason or fault values—never session ids,
 subjects, subscription keys, payloads, or credentials.
 
-Stable structured log events `4100`–`4106` cover session lifecycle, rejected subscriptions,
-slow-client aborts, handler-level handshake rejection, and operation or snapshot failures.
+Stable structured log events `4100`–`4110` cover session lifecycle, rejected subscriptions,
+slow-client aborts, handler-level handshake rejection, operation or snapshot failures, stalled
+snapshots, authorization handler failures, expiry-timer failures, and oversized responses.
 Framework-controlled properties never include subscription keys, payloads, credentials, handshake
 headers, caller-supplied close text, or remote fault messages.
 
@@ -681,6 +697,8 @@ when supplied, applies after configuration, and invalid values fail at host star
       "EnqueueTimeout": "00:00:02",
       "ShutdownTimeout": "00:00:05",
       "ServiceName": "checkout",
+      "MaxMessageLength": 16384,
+      "MaxTextFieldLength": 8192,
       "Destructuring": { "MaxDepth": 5, "MaxStringLength": 4096 }
     }
   }
@@ -795,16 +813,21 @@ transport topology.
   composition.
 - `.UseRabbitMq(...)` — the address becomes a durable request queue. Each
   client opens an exclusive reply queue and correlates replies through the
-  AMQP `CorrelationId` and `ReplyTo` properties.
+  AMQP `CorrelationId` and `ReplyTo` properties. Listeners answer only
+  server-named reply queues unless `AllowNamedReplyQueues` is set, and route
+  rejected deliveries to `DeadLetterExchange` when one is configured.
 - `.UseKafka(...)` — the address becomes a request topic. Replies go to
   `KafkaOptions.ResponseTopic` and correlation travels in Kafka headers. The
   response topic must be provisioned with enough retention for the maximum
-  request timeout.
+  request timeout. TLS and SASL are configured through the typed security
+  options or `ConfigureClient`; a handler service can restrict the reply topics
+  it will produce to with `AllowedReplyTopics`.
 
-The Kafka adapter gives every client instance a unique response consumer group,
-so each instance sees the shared response stream and ignores responses it does
-not own. That is correct for an initial implementation but not the final
-high-scale topology; partition-affine reply routing is on the roadmap.
+The Kafka adapter gives every client instance a unique response consumer group
+that starts at the end of the response topic, so each instance sees new
+responses only and ignores those it does not own. That is correct for an
+initial implementation but not the final high-scale topology; partition-affine
+reply routing is on the roadmap.
 
 RabbitMQ defaults to `RabbitMqQueueNaming.Version2`, with separate hashed identities for
 request and event queues. Existing deployments must follow the

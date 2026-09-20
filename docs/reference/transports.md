@@ -23,6 +23,8 @@ A custom transport registers with
 | `DurableRequestQueues` | `true` | Request queues survive a broker restart |
 | `DurableTopics` | `true` | Topic exchanges/queues are durable and event messages are persistent |
 | `QueueNaming` | `RabbitMqQueueNaming.Version2` | Role-qualified hashed request/subscription names; explicit `Legacy` supports migration |
+| `AllowNamedReplyQueues` | `false` | Answer a request whose `ReplyTo` names a declared queue. Off, only server-named queues (`amq.gen-…`) and `amq.rabbitmq.reply-to` are answered, which is what HostLoom's own client uses; anything else is rejected as malformed before the handler runs |
+| `DeadLetterExchange` | `null` | When set, request and subscription queues are declared with `x-dead-letter-exchange`, so rejected deliveries are routed there. Declare the exchange yourself; changing it on an existing queue fails the declaration |
 
 ## KafkaOptions
 
@@ -30,9 +32,16 @@ A custom transport registers with
 | --- | --- | --- |
 | `BootstrapServers` | `localhost:9092` | Broker bootstrap list |
 | `ConsumerGroup` | `hostloom` | Stable group prefix shared by instances of the same logical service |
-| `ResponseTopic` | `hostloom.responses` | Topic on which this client receives replies; provision retention ≥ the maximum request timeout |
+| `ResponseTopic` | `hostloom.responses` | Topic on which this client receives replies; provision retention ≥ the maximum request timeout, one topic per calling service |
 | `ClientId` | `{machine}-{pid}-{random}` | Client identifier reported to the broker |
 | `EnableIdempotence` | `true` | Idempotent producer |
+| `AllowedReplyTopics` | empty | Reply topics a request may name in `hostloom-reply-to`. Empty accepts any syntactically valid topic name; otherwise the header must match an entry exactly, or the request is rejected as malformed before the handler runs |
+| `MaxRequestAge` | `null` | When set, a request record whose Kafka timestamp is older than this is rejected as malformed (committed, never handled) |
+| `SecurityProtocol` | `null` | `Plaintext`, `Ssl`, `SaslPlaintext`, or `SaslSsl`; unset leaves the client library's plaintext default |
+| `SaslMechanism` | `null` | SASL mechanism; requires a SASL `SecurityProtocol` |
+| `SaslUsername`, `SaslPassword` | `null` | SASL credentials; require a SASL `SecurityProtocol`, else the transport refuses to start rather than connect unauthenticated. The password is never logged or included in an exception |
+| `SslCaLocation` | `null` | CA bundle that signs the brokers' certificates |
+| `ConfigureClient` | `null` | `Action<ClientConfig>` run on every producer and consumer configuration after the options above, for client certificates, OAuth bearer, and tuning |
 
 ## Topology mapping
 
@@ -78,6 +87,19 @@ broker outage that begins after startup.
   `RabbitMqQueueNames.Request` and `.Subscription` helpers give the physical names.
   See the [queue migration procedure](../how-to/use-rabbitmq.md#migrate-existing-queues)
   before changing an existing deployment.
-- **Kafka replies**: every client instance consumes the shared response
-  stream under a unique consumer group and ignores replies it does not
-  own; partition-affine reply routing is on the roadmap.
+- **Kafka replies**: every client instance consumes the response topic
+  under a unique consumer group, starting at the end of the topic, and
+  ignores replies it does not own; the first request waits, within its
+  own timeout, for the reply consumer to be assigned partitions, so a
+  restart never replays the retained response stream. Partition-affine
+  reply routing is on the roadmap.
+- **Kafka reply routing**: the `hostloom-reply-to` header is validated
+  against Kafka's topic-name rules and `AllowedReplyTopics` before the
+  handler runs. A reply that cannot be produced after the handler ran is
+  logged with the exception type and the request is committed past, not
+  re-run: the handler's side effects would repeat for an answer that
+  still had nowhere to go.
+- **RabbitMQ cancellation**: a delivery cancelled in flight (the listener
+  is stopping, or the client library cancelled it) is nacked with requeue;
+  every other failure is rejected without requeue, to
+  `DeadLetterExchange` when one is set.

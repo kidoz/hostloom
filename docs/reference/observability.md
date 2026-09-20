@@ -45,6 +45,7 @@ Tagged by destination and message type.
 | `hostloom.request.retries` | counter | Receive-pipeline retry attempts |
 | `hostloom.outbox.published` | counter | Outbox messages the relay published and marked, tagged `messaging.destination.name` |
 | `hostloom.outbox.failed` | counter | Outbox publish attempts that failed and left the message pending |
+| `hostloom.outbox.dead_lettered` | counter | Outbox messages that exhausted `Outbox:MaxAttempts` and are no longer claimed |
 | `hostloom.outbox.lag` | histogram (s) | Time between appending an outbox message and publishing it |
 | `hostloom.inbox.duplicates` | counter | Redelivered events the inbox recognised, tagged destination and `messaging.consumer.group.name` |
 
@@ -149,6 +150,8 @@ Tagged `hostloom.redis.client` with the configured client name.
 | --- | --- | --- |
 | `hostloom.redis.connection.state` | observable gauge | 1 while connected, 0 while down or reconnecting |
 | `hostloom.redis.reconnects` | counter | Connections restored after a failure |
+| `hostloom.redis.invalidation.malformed` | counter | Explicit-channel messages dropped for exceeding the size or item bounds or naming an invalid key or tag; tagged `hostloom.cache.namespace` instead of the client |
+| `hostloom.redis.tag.members_rejected` | counter | Tag-index members outside the namespace's cache-data prefix, forgotten from the index instead of unlinked |
 
 A reconnect also increments `hostloom.cache.invalidation.resubscribed` on the
 caching meter, because the invalidation subscription is re-established with it.
