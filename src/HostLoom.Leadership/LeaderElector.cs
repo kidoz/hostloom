@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using HostLoom.Locking;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -17,7 +18,11 @@ namespace HostLoom.Leadership;
 /// The elector owns renewal instead of the lock's automatic extension, which stops at
 /// <c>Locking:MaxHold</c>; a leader must renew for as long as it lives. A stopped elector releases
 /// the lease so a graceful restart hands over at once; a crashed process hands over when the
-/// lease expires.
+/// lease expires. Over a lock that does not coordinate (<c>Locking:Enabled = false</c>) a lease
+/// proves nothing, so the elector follows <see cref="LeadershipOptions.WhenUncoordinated"/>,
+/// warns once per role, and reports <see cref="IsCoordinated"/> as <see langword="false"/>. The
+/// loop never stops on an unexpected exception: it logs, backs off one retry interval, and
+/// continues.
 /// </remarks>
 public sealed class LeaderElector : ILeadership, IAsyncDisposable
 {
@@ -39,6 +44,8 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
     private long _term;
     private bool _providerDown;
     private bool _disposed;
+    private volatile bool _uncoordinated;
+    private volatile bool _uncoordinatedWarned;
 
     /// <summary>Composes the elector.</summary>
     /// <param name="role">The role; see <see cref="LeadershipRole.Validate"/>.</param>
@@ -103,6 +110,14 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
 
     /// <inheritdoc />
     public bool IsLeader => Status == LeadershipStatus.Leader;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <see langword="false"/> when the lock reports that it does not coordinate, or once it has
+    /// handed this elector a placeholder lease; the elector then follows
+    /// <see cref="LeadershipOptions.WhenUncoordinated"/>.
+    /// </remarks>
+    public bool IsCoordinated => !_uncoordinated && _locks.IsCoordinated;
 
     /// <inheritdoc />
     public long Term => Interlocked.Read(ref _term);
@@ -176,6 +191,11 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
                 Options.RenewInterval,
                 Options.RetryInterval
             );
+        }
+
+        if (!_locks.IsCoordinated)
+        {
+            WarnUncoordinated();
         }
 
         return Task.CompletedTask;
@@ -268,23 +288,45 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
         {
             while (!stopping.IsCancellationRequested)
             {
-                var handle = await TryAcquireAsync(stopping).ConfigureAwait(false);
-                if (handle is null)
+                try
                 {
-                    await DelayAsync(RetryDelay(jitter: true), stopping).ConfigureAwait(false);
-                    continue;
-                }
+                    var handle = await TryAcquireAsync(stopping).ConfigureAwait(false);
+                    if (handle is null)
+                    {
+                        await DelayAsync(RetryDelay(jitter: true), stopping).ConfigureAwait(false);
+                        continue;
+                    }
 
-                var reason = await LeadAsync(handle, stopping).ConfigureAwait(false);
-                if (reason is LeadershipChangeReason.Resigned or LeadershipChangeReason.Lost)
+                    var reason = await LeadAsync(handle, stopping).ConfigureAwait(false);
+                    if (reason is LeadershipChangeReason.Resigned or LeadershipChangeReason.Lost)
+                    {
+                        // One retry interval before running again, so another instance gets the
+                        // first chance and a flapping backend does not turn renewals into a hot loop.
+                        await DelayAsync(
+                                RetryDelay(jitter: reason == LeadershipChangeReason.Lost),
+                                stopping
+                            )
+                            .ConfigureAwait(false);
+                    }
+                }
+                catch (OperationCanceledException) when (stopping.IsCancellationRequested)
                 {
-                    // One retry interval before running again, so another instance gets the
-                    // first chance and a flapping backend does not turn renewals into a hot loop.
-                    await DelayAsync(
-                            RetryDelay(jitter: reason == LeadershipChangeReason.Lost),
-                            stopping
-                        )
-                        .ConfigureAwait(false);
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    // Anything else is a defect or a misbehaving lock. Election must not end
+                    // silently on it: log, back off one retry interval, and try again.
+                    var backoff = RetryDelay(jitter: true);
+                    LeadershipDiagnostics.LoopFaults.Add(1, _roleTag);
+                    _logger.LogError(
+                        LeadershipEvents.LoopFaulted,
+                        exception,
+                        "The elector loop for role '{Role}' threw; it backs off {Backoff} and continues as a candidate.",
+                        Role,
+                        backoff
+                    );
+                    await DelayAsync(backoff, stopping).ConfigureAwait(false);
                 }
             }
         }
@@ -330,6 +372,18 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
                 }
             }
 
+            if (handle is not null && !handle.IsCoordinated)
+            {
+                // A placeholder lease: granted to every instance, so it proves nothing.
+                _uncoordinated = true;
+                WarnUncoordinated();
+                if (Options.WhenUncoordinated == UncoordinatedLeadership.Follow)
+                {
+                    await handle.DisposeAsync().ConfigureAwait(false);
+                    handle = null;
+                }
+            }
+
             activity?.SetTag("hostloom.leader.acquired", handle is not null);
             return handle;
         }
@@ -352,6 +406,32 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
         }
     }
 
+    private void WarnUncoordinated()
+    {
+        if (_uncoordinatedWarned)
+        {
+            return;
+        }
+
+        _uncoordinatedWarned = true;
+        if (Options.WhenUncoordinated == UncoordinatedLeadership.Lead)
+        {
+            _logger.LogWarning(
+                LeadershipEvents.Uncoordinated,
+                "The lock for role '{Role}' does not coordinate across instances (Locking:Enabled = false). Leadership:WhenUncoordinated = Lead: this instance leads without coordination, and so does every other instance configured this way.",
+                Role
+            );
+        }
+        else
+        {
+            _logger.LogWarning(
+                LeadershipEvents.Uncoordinated,
+                "The lock for role '{Role}' does not coordinate across instances (Locking:Enabled = false). Leadership:WhenUncoordinated = Follow: this instance never leads; set Lead for a single-instance deployment.",
+                Role
+            );
+        }
+    }
+
     private async Task<LeadershipChangeReason> LeadAsync(
         ILockHandle handle,
         CancellationToken stopping
@@ -366,6 +446,7 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
         );
 
         LeadershipChangeReason reason;
+        ExceptionDispatchInfo? fault = null;
         try
         {
             while (true)
@@ -390,8 +471,16 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
         {
             reason = LeadershipChangeReason.Lost;
         }
+        catch (Exception exception)
+        {
+            // Step down first so no work keeps running under a term the loop is about to report
+            // as faulted; the loop logs the exception and backs off.
+            reason = LeadershipChangeReason.Lost;
+            fault = ExceptionDispatchInfo.Capture(exception);
+        }
 
         await StepDownAsync(handle, reason).ConfigureAwait(false);
+        fault?.Throw();
         return reason;
     }
 
@@ -494,10 +583,19 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
             }
         }
 
-        // A refused release is reported by the lock as a lost lease, never thrown.
-        await handle.DisposeAsync().ConfigureAwait(false);
-        Record(reason, Term);
-        resigned?.TrySetResult();
+        // A refused release is reported by the lock as a lost lease, never thrown. Should a lock
+        // throw anyway, the transition is still recorded and a resign call still returns; the
+        // exception then reaches the loop, which logs it and backs off.
+        try
+        {
+            await handle.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            Record(reason, Term);
+            resigned?.TrySetResult();
+        }
+
         var term = Term;
         if (reason == LeadershipChangeReason.Lost)
         {

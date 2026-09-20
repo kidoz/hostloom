@@ -7,6 +7,14 @@ namespace HostLoom.Leadership;
 public sealed class LeadershipOptions
 {
     /// <summary>
+    /// The longest wait the elector can schedule on its clock: <c>uint.MaxValue - 1</c>
+    /// milliseconds, the bound <see cref="Task.Delay(TimeSpan, TimeProvider, CancellationToken)"/>
+    /// accepts. <see cref="Validate"/> keeps every cadence within it so the loop can never fail on
+    /// an out-of-range delay.
+    /// </summary>
+    public static readonly TimeSpan MaxDelay = TimeSpan.FromMilliseconds(uint.MaxValue - 1);
+
+    /// <summary>
     /// How long the lease lasts without a renewal, and so how long a crashed leader keeps the role.
     /// Keep it within <c>Locking:MaxLease</c>; the lock caps a longer lease silently.
     /// </summary>
@@ -21,6 +29,16 @@ public sealed class LeadershipOptions
     /// <summary>Uniform additive jitter on <see cref="RetryInterval"/>, so candidates do not attempt in lockstep.</summary>
     public TimeSpan RetryJitter { get; set; } = TimeSpan.FromSeconds(1);
 
+    /// <summary>
+    /// What the elector does when the lock does not coordinate across instances
+    /// (<c>Locking:Enabled = false</c>). <see cref="UncoordinatedLeadership.Follow"/>, the
+    /// default, never leads, so replicas over a disabled lock cannot all lead at once;
+    /// <see cref="UncoordinatedLeadership.Lead"/> leads without coordination for a single-instance
+    /// or development deployment. Either way the condition is logged once per role and reported by
+    /// <see cref="LeadershipProbe"/> and <see cref="ILeadership.IsCoordinated"/>.
+    /// </summary>
+    public UncoordinatedLeadership WhenUncoordinated { get; set; } = UncoordinatedLeadership.Follow;
+
     /// <summary>Every violation, each naming the option key at fault. Empty when the options are usable.</summary>
     public IReadOnlyList<string> Validate()
     {
@@ -33,6 +51,12 @@ public sealed class LeadershipOptions
         if (RenewInterval <= TimeSpan.Zero)
         {
             problems.Add("Leadership:RenewInterval must be positive.");
+        }
+        else if (RenewInterval > MaxDelay)
+        {
+            problems.Add(
+                $"Leadership:RenewInterval must be at most {MaxDelay}, the longest wait the elector can schedule."
+            );
         }
         else if (RenewInterval * 2 > Lease)
         {
@@ -49,6 +73,21 @@ public sealed class LeadershipOptions
         if (RetryJitter < TimeSpan.Zero)
         {
             problems.Add("Leadership:RetryJitter must not be negative.");
+        }
+        else if (
+            RetryInterval > TimeSpan.Zero
+            && (RetryInterval > MaxDelay || RetryJitter > MaxDelay - RetryInterval)
+        )
+        {
+            // Compared as a difference rather than a sum, so two large values cannot overflow.
+            problems.Add(
+                $"Leadership:RetryInterval plus Leadership:RetryJitter must be at most {MaxDelay}, the longest wait the elector can schedule."
+            );
+        }
+
+        if (!Enum.IsDefined(WhenUncoordinated))
+        {
+            problems.Add("Leadership:WhenUncoordinated must be Follow or Lead.");
         }
 
         return problems;

@@ -32,8 +32,12 @@ collection, and a repeat is refused at registration rather than at startup.
 
 Exactly one guard per service collection: an adapter such as `HostLoom.Scheduling.Locking` adds
 its own `Use*` extension over `UseGuard<TGuard>(name)`, and a second `Use*` throws naming the
-guard already chosen. A schedule registered with `Exclusive = true` and no guard fails startup
-validation with a message that names the builder method to call.
+guard already chosen. An `IScheduleGuard` registered before the `Use*` call is refused as well,
+naming it, since it would have taken precedence while the probe reported the chosen guard;
+register a test double after the builder to replace the guard deliberately, or register the guard
+type itself first and choose it with `UseGuard<TGuard>`. A schedule registered with
+`Exclusive = true` and no guard fails startup validation with a message that names the builder
+method to call.
 
 See the `HostLoom.Scheduling` package README for the triggers, the run contract, and the outcome
 and lifecycle semantics.

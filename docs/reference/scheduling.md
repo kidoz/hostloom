@@ -103,7 +103,12 @@ for the failure table and the verification steps.
 another instance holds the claim. A guard never waits, and a backend failure is
 thrown rather than swallowed, because a job that must not run twice cannot run
 when nothing can say whether another instance already does. The claim exposes
-`IsHeld` and `LostToken`; disposing releases it.
+`IsHeld` and `LostToken`; disposing releases it. The guard's `IsCoordinated`
+says whether a claim excludes other instances at all: a guard over a disabled
+lock (`Locking:Enabled = false`) reports `false`, the scheduler logs
+`ScheduleGuardUncoordinated` (3209) once at construction when it has exclusive
+schedules, and the probe reports the guard as uncoordinated with
+`GuardCoordinated = false`.
 
 `HostLoom.Scheduling.Locking` supplies `DistributedLockScheduleGuard` over
 `IDistributedLock`: one skip-if-busy acquisition of `schedule:{name}` for the
@@ -111,7 +116,8 @@ lease, extended automatically up to `Locking:MaxHold`, with the lock's lost
 token as the claim's. `UseDistributedLock()` chooses it on the builder; the
 application registers the lock with `AddHostLoomLocking` as usual.
 `HostLoom.Scheduling.Testing` supplies `ManualScheduleGuard`, which a test
-scripts with `Hold`, `Release`, `Lose`, and `FailNext`.
+scripts with `Hold`, `Release`, `Lose`, and `FailNext`, and whose
+`IsCoordinated` a test can set.
 
 ## Registration (`HostLoom.Scheduling.DependencyInjection`)
 
@@ -130,7 +136,11 @@ takes scoped dependencies through its constructor like a request handler. The
 delegate overload receives the root provider. Names are unique within a service
 collection and a repeat is refused at registration. Exactly one guard per
 service collection; an exclusive schedule with none fails startup validation
-naming the builder method to call. The hosted service starts the scheduler with
+naming the builder method to call. An `IScheduleGuard` registered before the
+builder's `Use*` call is refused naming both, because it would have taken
+precedence while the probe reported the chosen guard; register a double after
+the builder to replace the chosen guard deliberately, or register the guard
+type itself first and choose it with `UseGuard<TGuard>`. The hosted service starts the scheduler with
 the host and stops it with the host's shutdown token; a job that ignores its
 token is not waited for past that bound.
 

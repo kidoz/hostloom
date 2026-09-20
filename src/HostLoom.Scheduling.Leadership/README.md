@@ -26,3 +26,8 @@ Compared with `HostLoom.Scheduling.Locking`, which claims each occurrence throug
 spreads work across instances, this guard keeps every exclusive schedule on one instance and
 inherits the leadership guarantee: at most one leader while clocks and the lock backend behave,
 no fencing. Choose one guard per service collection; `UseGuard` refuses a second.
+
+Over a disabled lock (`Locking:Enabled = false`) the guard reports `IsCoordinated = false` and
+follows the role's `Leadership:WhenUncoordinated`: `Follow`, the default, skips every occurrence
+on every instance; `Lead` runs every occurrence on every instance. The scheduler warns once and
+its probe reports the guard as uncoordinated.

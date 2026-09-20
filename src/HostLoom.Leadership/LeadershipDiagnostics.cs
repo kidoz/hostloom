@@ -34,6 +34,9 @@ public static class LeadershipDiagnostics
     /// <summary><see cref="DropReasonTag"/> value: the channel was full and its full mode dropped an item.</summary>
     public const string FullDrop = "full";
 
+    /// <summary><see cref="DropReasonTag"/> value: the item was buffered when leadership ended and <see cref="LeaderChannelOptions.DrainOnLoss"/> discarded it.</summary>
+    public const string LossDrop = "loss";
+
     internal static readonly ActivitySource ActivitySource = new(ActivitySourceName);
 
     private static readonly Meter Meter = new(MeterName);
@@ -56,6 +59,12 @@ public static class LeadershipDiagnostics
         "hostloom.leader.channel.dropped",
         "{item}",
         "Items a leader channel discarded, by reason."
+    );
+
+    internal static readonly Counter<long> LoopFaults = Meter.CreateCounter<long>(
+        "hostloom.leader.loop.faults",
+        "{fault}",
+        "Unexpected exceptions the elector loop caught and backed off from."
     );
 
     // Declared after Meter and Electors on purpose: static initialisers run in textual order.

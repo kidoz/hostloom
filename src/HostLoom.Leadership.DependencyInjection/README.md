@@ -19,7 +19,10 @@ services
 `LeadershipOptions` named by the role and validated when the host starts. When exactly one role
 is registered the unkeyed `ILeadership` resolves it too; with several, inject
 `[FromKeyedServices("scheduler")] ILeadership leadership`. A repeated role is refused at
-registration. The hosted service starts every elector with the host and stops each with the host,
+registration, and so is an `ILeadership` registered before `AddHostLoomLeadership` or one keyed by
+a role before `AddRole`, because it would have taken precedence over the elector; register a test
+double after the builder to replace the electors deliberately, or register it keyed by a role you
+do not add. The hosted service starts every elector with the host and stops each with the host,
 releasing the leases they hold so a graceful restart hands over at once.
 
 A leader-only background loop is then:

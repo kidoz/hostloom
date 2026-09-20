@@ -7,7 +7,8 @@ backend. It references the kernel only.
 for a new term and releases `WaitForLeadershipAsync` waiters, `Lose()` ends leadership as an
 expired lease would, cancelling `LeadershipToken` and raising `Lost`, and `Resign()` ends it as a
 resignation. `Changes` lists every change raised, so a consumer's reaction to each transition is
-asserted in order.
+asserted in order. `IsCoordinated` is settable, `true` by default, to stand in for an elector over
+a disabled lock.
 
 ```csharp
 using var leadership = new ManualLeadership("scheduler");

@@ -34,4 +34,10 @@ public static class SchedulingEvents
 
     /// <summary>Error: the schedule's loop itself faulted, which is a defect; the schedule stopped.</summary>
     public static readonly EventId LoopFaulted = new(3208, "ScheduleLoopFaulted");
+
+    /// <summary>
+    /// Warning at construction: the guard does not coordinate across instances
+    /// (<c>Locking:Enabled = false</c>), so exclusive schedules are not exclusive across instances.
+    /// </summary>
+    public static readonly EventId GuardUncoordinated = new(3209, "ScheduleGuardUncoordinated");
 }

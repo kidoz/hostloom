@@ -14,6 +14,12 @@ public sealed class ManualScheduleGuard : IScheduleGuard
     private readonly List<ScheduleClaimRecord> _claims = [];
     private Exception? _nextFailure;
 
+    /// <summary>
+    /// What <see cref="IScheduleGuard.IsCoordinated"/> reports; <see langword="true"/> unless a
+    /// test sets it to stand in for a guard over a disabled lock.
+    /// </summary>
+    public bool IsCoordinated { get; set; } = true;
+
     /// <summary>Every claim attempt, in order, with whether it was granted.</summary>
     public IReadOnlyList<ScheduleClaimRecord> Claims
     {

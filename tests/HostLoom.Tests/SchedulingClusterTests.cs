@@ -99,8 +99,12 @@ public sealed class SchedulingClusterTests
 
         await Cluster.StartAsync(first, second);
         await cluster.WaitForRunsAsync(1, first, second);
+        // A run counts from its start, before the claim: the job's own record and the other
+        // instance's skipped outcome land a moment later.
+        await SchedulingTests.WaitUntilAsync(() => cluster.Executed.Count == 1);
         var runner = cluster.Executed.Single() == "first" ? first : second;
         var other = ReferenceEquals(runner, first) ? second : first;
+        await SchedulingTests.WaitUntilAsync(() => other.State.LastOutcome is not null);
         Assert.True(runner.State.Running);
         Assert.Equal(ScheduleRunOutcome.Skipped, other.State.LastOutcome);
 
@@ -136,6 +140,11 @@ public sealed class SchedulingClusterTests
 
         cluster.Clock.Advance(Period);
         await cluster.WaitForRunsAsync(2, first, second);
+        // A run counts from its start: wait for both instances to settle on an outcome before
+        // reading them, otherwise the winner may still be running.
+        await SchedulingTests.WaitUntilAsync(() =>
+            !first.State.Running && !second.State.Running && cluster.Executed.Count == 1
+        );
         Assert.Single(cluster.Executed);
         Assert.Equal(1, Cluster.Outcomes(ScheduleRunOutcome.Succeeded, first, second));
         Assert.Equal(1, Cluster.Outcomes(ScheduleRunOutcome.Skipped, first, second));

@@ -24,10 +24,10 @@ acquisitions and is not a token a storage layer can check. Asynchronous replicat
 Valkey can lose an acquisition on failover, as it can for any lease. This is the same tier as the
 Kubernetes Lease election and is not consensus.
 
-`ILeadership` is what consumers inject: `Role`, `IsLeader`, `Term`, `LeadershipToken`,
-`WaitForLeadershipAsync`, and `OnChange`. `LeaderElector` implements it and adds `StartAsync`,
-`StopAsync`, which releases the lease so a graceful restart hands over at once, and
-`ResignAsync`, which steps down and waits one retry interval before running again so another
+`ILeadership` is what consumers inject: `Role`, `IsLeader`, `IsCoordinated`, `Term`,
+`LeadershipToken`, `WaitForLeadershipAsync`, and `OnChange`. `LeaderElector` implements it and
+adds `StartAsync`, `StopAsync`, which releases the lease so a graceful restart hands over at once,
+and `ResignAsync`, which steps down and waits one retry interval before running again so another
 instance gets the first chance. A crashed process hands over when its lease expires.
 
 The elector owns renewal instead of the lock's automatic extension, which stops at
@@ -36,10 +36,18 @@ The elector owns renewal instead of the lock's automatic extension, which stops 
 the lease. An unreachable lock provider makes nobody leader, is logged once per outage, and is
 retried on the candidate cadence.
 
+Over a lock that does not coordinate (`Locking:Enabled = false`) the lease is a placeholder every
+instance is granted, so the elector follows `Leadership:WhenUncoordinated`: `Follow`, the default,
+never leads, so replicas cannot all lead by accident; `Lead` leads without coordination, for a
+single instance or local development. The condition is logged once per role and reported by
+`IsCoordinated` and the probe. An exception the loop did not expect is logged as
+`LeadershipLoopFaulted`, backed off one retry interval, and survived; the loop never ends on its
+own, and every cadence is validated against the longest wait it can schedule.
+
 `LeaderChannel<T>` is a bounded channel gated on a role: producers on every instance write to
 it, a leader's items reach the reader, and a follower's are accepted and discarded. That keeps a
 warm standby current without letting it act. Drops are counted on the meter by reason
-(`follower` or `full`) and summarised in the log at most once per
+(`follower`, `full`, or `loss`) and summarised in the log at most once per
 `LeaderChannel:DropReportInterval`, with the tail written when the instance becomes leader.
 
 ```csharp
@@ -52,6 +60,8 @@ With `FullMode=Wait`, losing leadership wakes producers waiting for capacity; fo
 readiness succeeds even while the old buffer is full. Asynchronous writes recheck the role
 after waiting. Already accepted buffered items remain readable: use the leadership token
 around leader-only side effects, because channel admission is not a fencing guarantee.
+`LeaderChannelOptions.DrainOnLoss` discards the buffer when leadership ends instead, counted and
+logged as `loss`; it narrows that window without closing it.
 
 `LeadershipProbe.Describe(elector)` reports the composition without executing anything. Metrics
 and activities live under the `HostLoom.Leadership` meter and activity source. Install

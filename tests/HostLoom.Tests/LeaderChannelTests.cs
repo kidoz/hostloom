@@ -221,10 +221,12 @@ public sealed class LeaderChannelTests
     [Fact]
     public void Drops_are_counted_on_the_leadership_meter_by_reason()
     {
-        using var recorder = new DropRecorder("inventory-changes");
+        // A name no other test class uses: the meter is static and the chaos tests run in
+        // parallel with this class, so a shared name would count their drops here.
+        using var recorder = new DropRecorder("inventory-changes-meter");
         using var leadership = new ManualLeadership("reconciler");
         using var channel = new LeaderChannel<int>(
-            "inventory-changes",
+            "inventory-changes-meter",
             leadership,
             new LeaderChannelOptions { Capacity = 1 }
         );

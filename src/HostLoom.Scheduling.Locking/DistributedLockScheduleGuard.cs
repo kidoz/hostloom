@@ -18,6 +18,13 @@ public sealed class DistributedLockScheduleGuard(IDistributedLock distributedLoc
     private readonly IDistributedLock _lock =
         distributedLock ?? throw new ArgumentNullException(nameof(distributedLock));
 
+    /// <summary>
+    /// Follows <see cref="IDistributedLock.IsCoordinated"/>. Over a disabled lock every claim is
+    /// granted on every instance, which is the lock's single-instance mode; the scheduler warns
+    /// once and the probe reports the guard as uncoordinated so that mode is never silent.
+    /// </summary>
+    public bool IsCoordinated => _lock.IsCoordinated;
+
     /// <summary>The lock key a schedule claims: <c>schedule:{name}</c>, before the lock's own namespace prefix.</summary>
     public static string KeyFor(string schedule)
     {

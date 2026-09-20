@@ -159,6 +159,10 @@ public sealed class LeadershipTests
         var changes = new List<LeadershipChange>();
         using var _ = first.Elector.OnChange(changes.Add);
 
+        // The follower must observe contention and arm its retry before the leader stops.
+        // Otherwise its initial acquisition can legally run after the release and take the lease.
+        await SchedulingTests.WaitUntilAsync(() => cluster.Clock.PendingTimers >= 4);
+
         await first.Elector.StopAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(LeadershipStatus.Stopped, first.Elector.Status);

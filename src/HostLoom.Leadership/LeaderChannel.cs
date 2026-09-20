@@ -14,6 +14,16 @@ namespace HostLoom.Leadership;
 /// a follower discarded goes unreported. Composes without a container:
 /// <c>new LeaderChannel&lt;T&gt;("priority-changes", leadership)</c>.
 /// </summary>
+/// <remarks>
+/// Admission is gated, delivery is not: an item the leader buffered stays readable after
+/// leadership ends, because the channel cannot know whether the reader has already acted on it.
+/// The reader owns that decision. A reader that must act only while leading checks
+/// <see cref="ILeadership.LeadershipToken"/> around each side effect, or runs its loop on a token
+/// linked to it, and treats an item read under a cancelled token as stale. Set
+/// <see cref="LeaderChannelOptions.DrainOnLoss"/> to have the channel discard the buffer when
+/// leadership ends; that narrows the window but does not close it, since a write and a loss can
+/// land in the same instant, so the token check on the reader remains the guarantee.
+/// </remarks>
 /// <typeparam name="T">The item type.</typeparam>
 public sealed class LeaderChannel<T> : Channel<T>, IDisposable
 {
@@ -23,12 +33,16 @@ public sealed class LeaderChannel<T> : Channel<T>, IDisposable
     private readonly ILogger _logger;
     private readonly TimeProvider _clock;
     private readonly IDisposable _subscription;
+    private readonly ChannelReader<T> _inner;
     private readonly KeyValuePair<string, object?>[] _followerTags;
     private readonly KeyValuePair<string, object?>[] _fullTags;
+    private readonly KeyValuePair<string, object?>[] _lossTags;
     private long _followerDrops;
     private long _capacityDrops;
+    private long _lossDrops;
     private long _pendingFollowerDrops;
     private long _pendingCapacityDrops;
+    private long _pendingLossDrops;
     private long _lastReport = Never;
     private volatile bool _completed;
 
@@ -66,6 +80,7 @@ public sealed class LeaderChannel<T> : Channel<T>, IDisposable
         _clock = clock ?? TimeProvider.System;
         _followerTags = Tags(LeadershipDiagnostics.FollowerDrop);
         _fullTags = Tags(LeadershipDiagnostics.FullDrop);
+        _lossTags = Tags(LeadershipDiagnostics.LossDrop);
 
         var inner = Channel.CreateBounded<T>(
             new BoundedChannelOptions(options.Capacity)
@@ -76,6 +91,7 @@ public sealed class LeaderChannel<T> : Channel<T>, IDisposable
             },
             _ => Dropped(follower: false)
         );
+        _inner = inner.Reader;
         Reader = inner.Reader;
         Writer = new GatedWriter(this, inner.Writer);
         _subscription = leadership.OnChange(change =>
@@ -83,6 +99,10 @@ public sealed class LeaderChannel<T> : Channel<T>, IDisposable
             if (change.IsLeader)
             {
                 Flush();
+            }
+            else if (Options.DrainOnLoss)
+            {
+                Drain();
             }
         });
     }
@@ -101,6 +121,9 @@ public sealed class LeaderChannel<T> : Channel<T>, IDisposable
 
     /// <summary>Items the full channel discarded under <see cref="LeaderChannelOptions.FullMode"/>.</summary>
     public long CapacityDrops => Interlocked.Read(ref _capacityDrops);
+
+    /// <summary>Items still buffered when leadership ended and discarded under <see cref="LeaderChannelOptions.DrainOnLoss"/>.</summary>
+    public long LossDrops => Interlocked.Read(ref _lossDrops);
 
     /// <summary>Stops following leadership changes and writes the pending drop summary. Leaves the channel itself as it is.</summary>
     public void Dispose()
@@ -144,6 +167,26 @@ public sealed class LeaderChannel<T> : Channel<T>, IDisposable
         }
     }
 
+    /// <summary>Discards what the leader left in the buffer; a loss is rare, so the summary is written at once.</summary>
+    private void Drain()
+    {
+        var drained = 0L;
+        while (_inner.TryRead(out _))
+        {
+            drained++;
+        }
+
+        if (drained == 0)
+        {
+            return;
+        }
+
+        Interlocked.Add(ref _lossDrops, drained);
+        Interlocked.Add(ref _pendingLossDrops, drained);
+        LeadershipDiagnostics.ChannelDropped.Add(drained, _lossTags);
+        Flush();
+    }
+
     private void Flush()
     {
         Interlocked.Exchange(ref _lastReport, _clock.GetTimestamp());
@@ -173,6 +216,18 @@ public sealed class LeaderChannel<T> : Channel<T>, IDisposable
                 Name,
                 Role,
                 full
+            );
+        }
+
+        var loss = Interlocked.Exchange(ref _pendingLossDrops, 0);
+        if (loss > 0 && _logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                LeadershipEvents.ChannelLossDrained,
+                "Channel '{Channel}' discarded {Count} items still buffered when this instance stopped leading role '{Role}' (LeaderChannel:DrainOnLoss).",
+                Name,
+                loss,
+                Role
             );
         }
     }

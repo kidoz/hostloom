@@ -15,6 +15,15 @@ public interface ILeadership
     bool IsLeader { get; }
 
     /// <summary>
+    /// <see langword="true"/> while leadership is decided by a lease on a shared backend, so at
+    /// most one instance leads. <see langword="false"/> when the lock does not coordinate
+    /// (<c>Locking:Enabled = false</c>): <see cref="IsLeader"/> then follows
+    /// <see cref="LeadershipOptions.WhenUncoordinated"/> on every instance alike, and nothing
+    /// excludes another instance from leading at the same time.
+    /// </summary>
+    bool IsCoordinated { get; }
+
+    /// <summary>
     /// Rises on every acquisition. It counts this instance's acquisitions and is not a fencing
     /// token: the lock provider does not issue one, so a storage layer cannot use it to reject a
     /// stale leader's writes.

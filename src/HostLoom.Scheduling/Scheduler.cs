@@ -83,6 +83,19 @@ public sealed class Scheduler : IAsyncDisposable
                 definitions.Length
             );
         }
+        else if (guard is { IsCoordinated: false })
+        {
+            var exclusive = definitions.Count(definition => definition.Options.Exclusive);
+            if (exclusive > 0)
+            {
+                Logger.LogWarning(
+                    SchedulingEvents.GuardUncoordinated,
+                    "The schedule guard {Guard} does not coordinate across instances (Locking:Enabled = false): the {Count} exclusive schedule(s) are not exclusive across instances, and whether they run here follows the guard's uncoordinated behaviour.",
+                    guard.GetType().Name,
+                    exclusive
+                );
+            }
+        }
     }
 
     /// <summary>The scheduler-wide options.</summary>

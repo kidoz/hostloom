@@ -112,7 +112,12 @@ public sealed class SchedulingBuilder
     /// <c>Use*</c> extension.
     /// </summary>
     /// <param name="name">How the choice is reported by the exactly-one rule and the probe.</param>
-    /// <exception cref="InvalidOperationException">A guard was already chosen; the message names it.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// A guard was already chosen, or <see cref="IScheduleGuard"/> was already registered by
+    /// something else, such as a test double left in the composition root; the message names
+    /// both. To stand in for the chosen guard deliberately, register the double after this call,
+    /// or register the guard type itself before it and choose that type here.
+    /// </exception>
     public SchedulingBuilder UseGuard<
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TGuard
     >(string name)
@@ -127,11 +132,46 @@ public sealed class SchedulingBuilder
             );
         }
 
+        // A TryAdd would keep an earlier registration and let it win silently while the probe
+        // reported the guard chosen here; refuse instead and name what is there.
+        if (FindForeignGuard(Services) is { } foreign)
+        {
+            throw new InvalidOperationException(
+                $"HostLoom scheduling cannot choose the '{name}' guard: IScheduleGuard is already "
+                    + $"registered as {Describe(foreign)}, which would have taken precedence. "
+                    + "Remove that registration, or register it after the builder to replace the "
+                    + "chosen guard deliberately."
+            );
+        }
+
         _registration.GuardName = name;
         Services.TryAddSingleton<TGuard>();
         Services.TryAddSingleton<IScheduleGuard>(static provider =>
             provider.GetRequiredService<TGuard>()
         );
         return this;
+    }
+
+    private static ServiceDescriptor? FindForeignGuard(IServiceCollection services)
+    {
+        for (var i = 0; i < services.Count; i++)
+        {
+            var descriptor = services[i];
+            if (descriptor.ServiceType == typeof(IScheduleGuard) && !descriptor.IsKeyedService)
+            {
+                return descriptor;
+            }
+        }
+
+        return null;
+    }
+
+    private static string Describe(ServiceDescriptor descriptor)
+    {
+        var type = descriptor.ImplementationType ?? descriptor.ImplementationInstance?.GetType();
+        return type is null
+            ? "a factory registration"
+            : (type.FullName ?? type.Name)
+                + (descriptor.ImplementationInstance is null ? "" : " (an instance)");
     }
 }

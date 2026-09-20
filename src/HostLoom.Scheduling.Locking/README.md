@@ -31,6 +31,11 @@ The guard composes without a container, `new DistributedLockScheduleGuard(distri
 a scheduler built with `new`. `UseDistributedLock()` registers it as the one guard for the
 service collection and resolves the lock registered by `AddHostLoomLocking`.
 
+Over a disabled lock (`Locking:Enabled = false`) every claim is granted on every instance, which
+is the lock's single-instance mode; the guard reports `IsCoordinated = false`, the scheduler warns
+once as `ScheduleGuardUncoordinated`, and its probe reports the guard as uncoordinated, so that
+mode is never silent.
+
 The lock is coordination, not correctness: two instances can still run the same job when a lease
 is lost and the job ignores its token. Design every scheduled job so that running it twice is
 safe.

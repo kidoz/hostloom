@@ -17,6 +17,13 @@ public sealed class LeaderScheduleGuard(ILeadership leadership) : IScheduleGuard
     /// <summary>The role the guard follows.</summary>
     public string Role => _leadership.Role;
 
+    /// <summary>
+    /// Follows <see cref="ILeadership.IsCoordinated"/>. Over a disabled lock, whether a claim is
+    /// granted follows <c>Leadership:WhenUncoordinated</c>: <c>Follow</c> refuses every claim on
+    /// every instance, <c>Lead</c> grants every claim on every instance.
+    /// </summary>
+    public bool IsCoordinated => _leadership.IsCoordinated;
+
     /// <inheritdoc />
     public ValueTask<IScheduleClaim?> TryClaimAsync(
         string schedule,

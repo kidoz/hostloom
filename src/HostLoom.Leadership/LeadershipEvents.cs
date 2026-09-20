@@ -43,4 +43,16 @@ public static class LeadershipEvents
 
     /// <summary>Warning, at most once per report interval: a leader channel was full and dropped items.</summary>
     public static readonly EventId ChannelFull = new(3410, "LeaderChannelFull");
+
+    /// <summary>
+    /// Warning, once per role: the lock does not coordinate across instances
+    /// (<c>Locking:Enabled = false</c>); the elector follows <c>Leadership:WhenUncoordinated</c>.
+    /// </summary>
+    public static readonly EventId Uncoordinated = new(3411, "LeadershipUncoordinated");
+
+    /// <summary>Error: the elector loop threw something other than a stop; it backed off one retry interval and continues.</summary>
+    public static readonly EventId LoopFaulted = new(3412, "LeadershipLoopFaulted");
+
+    /// <summary>Information: a leader channel with <c>DrainOnLoss</c> discarded the items buffered when leadership ended.</summary>
+    public static readonly EventId ChannelLossDrained = new(3413, "LeaderChannelLossDrained");
 }

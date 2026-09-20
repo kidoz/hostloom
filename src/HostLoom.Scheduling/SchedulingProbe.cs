@@ -18,12 +18,15 @@ public static class SchedulingProbe
         ArgumentNullException.ThrowIfNull(scheduler);
         var invariant = CultureInfo.InvariantCulture;
         var guard = scheduler.Guard is { } g ? g.GetType().Name : "(none)";
+        var guardCoordinated = scheduler.Guard?.IsCoordinated ?? true;
         List<string> lines =
         [
             scheduler.Enabled
                 ? "Scheduling:Enabled = true"
                 : "Scheduling:Enabled = false: (disabled), no schedule runs in this process",
-            $"Guard = {guard}",
+            guardCoordinated
+                ? $"Guard = {guard}"
+                : $"Guard = {guard}: uncoordinated (Locking:Enabled = false), exclusive schedules are not exclusive across instances",
             string.Create(invariant, $"Scheduling:DefaultLease = {scheduler.Options.DefaultLease}"),
         ];
 
@@ -59,18 +62,26 @@ public static class SchedulingProbe
             );
         }
 
-        return new SchedulingDescription(scheduler.Enabled, guard, schedules, lines);
+        return new SchedulingDescription(
+            scheduler.Enabled,
+            guard,
+            guardCoordinated,
+            schedules,
+            lines
+        );
     }
 }
 
 /// <summary>What <see cref="SchedulingProbe.Describe"/> reports.</summary>
 /// <param name="Enabled"><see cref="SchedulingOptions.Enabled"/>.</param>
 /// <param name="Guard">The guard type name, or <c>(none)</c>.</param>
+/// <param name="GuardCoordinated"><see cref="IScheduleGuard.IsCoordinated"/>, or <see langword="true"/> with no guard; <see langword="false"/> means exclusive schedules are not exclusive across instances.</param>
 /// <param name="Schedules">One entry per schedule, in registration order.</param>
 /// <param name="Lines">Human-readable lines, each naming the option that decided it.</param>
 public sealed record SchedulingDescription(
     bool Enabled,
     string Guard,
+    bool GuardCoordinated,
     IReadOnlyList<ScheduleDescription> Schedules,
     IReadOnlyList<string> Lines
 );

@@ -73,6 +73,7 @@ and, after a run, `claim held until` for the instance that holds it.
 | --- | --- | --- |
 | Another instance holds the claim | the job does not run here | `Skipped` |
 | The lock backend is unreachable | the job runs nowhere, because nobody can tell whether another instance already runs it | `GuardFailed` on every instance |
+| The lock is disabled (`Locking:Enabled = false`) | every instance is granted the claim, which is the lock's single-instance mode; the scheduler warns once and the probe reports the guard as uncoordinated | `Succeeded` on every instance |
 | The instance stops mid-run | the job's token is cancelled and the claim is released; the next occurrence goes to whichever instance claims it | `Canceled` |
 | The instance crashes mid-run | nothing releases the claim; it expires at the lease end because the automatic extension stopped with the process, and the next occurrence after that runs elsewhere | none recorded |
 | The lease is lost mid-run, for example past `Locking:MaxHold` | the job's token is cancelled; a job that ignores its token keeps running and can overlap the next claimant | `ClaimLost` |

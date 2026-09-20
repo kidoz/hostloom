@@ -126,6 +126,7 @@ needs no leadership check of its own. Discards are counted on
 | The leader crashes | nothing releases; the lease expires after `Leadership:Lease` and a candidate acquires then |
 | A renewal is refused or the backend is cut | the leader cancels `LeadershipToken`, releases, and waits one retry interval; a candidate acquires when the server-side lease expires |
 | The lock backend is unreachable | nobody becomes leader; the outage is logged once per elector |
+| The lock is disabled (`Locking:Enabled = false`) | the lease is a placeholder every instance is granted; with the default `Leadership:WhenUncoordinated = Follow` nobody leads, with `Lead` every instance leads; logged once per role, reported by `IsCoordinated` and the probe |
 | The leader resigns | same as a graceful stop, but it stays a candidate |
 
 Between a cut-off leader's last successful renewal and its local lease timer

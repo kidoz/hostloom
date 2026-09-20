@@ -31,6 +31,12 @@ public sealed class ManualLeadership(string role) : ILeadership, IDisposable
         }
     }
 
+    /// <summary>
+    /// What <see cref="ILeadership.IsCoordinated"/> reports; <see langword="true"/> unless a test
+    /// sets it to stand in for an elector over a disabled lock.
+    /// </summary>
+    public bool IsCoordinated { get; set; } = true;
+
     /// <inheritdoc />
     public long Term => Interlocked.Read(ref _term);
 

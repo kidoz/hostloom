@@ -8,7 +8,8 @@ the next claims as if another instance ran the schedule, `Release(name)` lets th
 `Lose(name)` cancels the lost token of an active claim as an expired lease would, and
 `FailNext(exception)` makes the next claim throw as an unreachable backend would. `Claims` lists
 every attempt with its lease and whether it was granted; `Active` lists the schedules claimed
-right now.
+right now. `IsCoordinated` is settable, `true` by default, to stand in for a guard over a disabled
+lock.
 
 ```csharp
 var guard = new ManualScheduleGuard();

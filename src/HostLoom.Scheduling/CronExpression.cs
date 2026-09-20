@@ -281,6 +281,9 @@ public sealed class CronExpression
             {
                 range = item[..slash];
                 var stepText = item[(slash + 1)..];
+                // A step wider than the field can only ever select its start; anything larger
+                // is a typo, and bounding it here keeps the walk below in range.
+                var maxStep = maximum - minimum;
                 if (
                     !int.TryParse(
                         stepText,
@@ -289,9 +292,14 @@ public sealed class CronExpression
                         out step
                     )
                     || step < 1
+                    || step > maxStep
                 )
                 {
-                    throw Invalid(field, text, $"the step '{stepText}'");
+                    throw Invalid(
+                        field,
+                        text,
+                        $"the step '{stepText}' (expected 1 to {maxStep.ToString(CultureInfo.InvariantCulture)})"
+                    );
                 }
             }
 
@@ -331,9 +339,11 @@ public sealed class CronExpression
                 }
             }
 
-            for (var value = low; value <= high; value += step)
+            // Widened so the increment past `high` cannot wrap; every value shifted is within
+            // the field's bounds and so within the 64-bit mask.
+            for (long value = low; value <= high; value += step)
             {
-                mask |= 1UL << value;
+                mask |= 1UL << (int)value;
             }
         }
 

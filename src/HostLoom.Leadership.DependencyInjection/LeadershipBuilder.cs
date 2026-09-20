@@ -26,7 +26,12 @@ public sealed class LeadershipBuilder
     /// starts. When exactly one role is registered, the unkeyed <see cref="ILeadership"/> resolves
     /// it as well.
     /// </summary>
-    /// <exception cref="InvalidOperationException">The role was already registered.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The role was already registered, or <see cref="ILeadership"/> keyed by the role was already
+    /// registered by something else, such as a test double; the message names it. A double for a
+    /// role that is not added here needs no elector: register it keyed by the role and skip
+    /// <c>AddRole</c>.
+    /// </exception>
     public LeadershipBuilder AddRole(string role, Action<LeadershipOptions>? configure = null)
     {
         LeadershipRole.Validate(role);
@@ -35,6 +40,22 @@ public sealed class LeadershipBuilder
             throw new InvalidOperationException(
                 $"A leadership role named '{role}' is already registered. Roles are unique within "
                     + "a service collection."
+            );
+        }
+
+        if (
+            LeadershipServiceCollectionExtensions.FindForeign(
+                Services,
+                typeof(ILeadership),
+                role
+            ) is
+            { } foreign
+        )
+        {
+            throw new InvalidOperationException(
+                $"Leadership role '{role}' cannot be added: ILeadership keyed by '{role}' is "
+                    + $"already registered as {LeadershipServiceCollectionExtensions.Describe(foreign)}. "
+                    + "Remove that registration, or keep it and skip AddRole for that role."
             );
         }
 

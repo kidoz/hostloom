@@ -25,6 +25,17 @@ public sealed class LeaderChannelOptions
     /// </summary>
     public TimeSpan DropReportInterval { get; set; } = TimeSpan.FromMinutes(1);
 
+    /// <summary>
+    /// Whether the items still buffered when leadership ends are discarded. Off by default: the
+    /// buffer is kept, and the reader decides what to do with leader-era items by checking
+    /// <see cref="ILeadership.LeadershipToken"/> around each side effect. On, a loss or
+    /// resignation drains the buffer at once; the discarded items are counted on the meter with
+    /// reason <c>loss</c>, reported on <see cref="LeaderChannel{T}.LossDrops"/>, and summarised in
+    /// the log. Items a leader wrote in the same instant the loss was observed can still reach
+    /// the reader, so the token check on the reader remains the guarantee.
+    /// </summary>
+    public bool DrainOnLoss { get; set; }
+
     /// <summary>Whether exactly one reader consumes the channel; lets the channel skip some synchronisation.</summary>
     public bool SingleReader { get; set; }
 
