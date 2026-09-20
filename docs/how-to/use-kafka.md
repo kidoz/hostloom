@@ -101,6 +101,11 @@ topic-name rules. `MaxRequestAge` additionally rejects a request record
 older than the given age, so a retained or replayed request stream cannot
 be pushed through the handlers again.
 
+The request timeout covers reply-consumer startup and partition assignment, producing the
+request, and waiting for its reply as one deadline. Caller cancellation remains cancellation;
+broker shutdown interrupts pending requests. A timeout or cancellation cannot retract a
+record already accepted by Kafka.
+
 ## 4. Verify
 
 Run the application and send a request — the reply arrives as before.
