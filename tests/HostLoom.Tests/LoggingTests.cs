@@ -369,6 +369,20 @@ public sealed class LoggingTests
                 new HostLoomLoggerOptions { MaxFieldsPerRecord = 0 }
             )
         );
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new HostLoomLoggerProvider(
+                formatter,
+                sink,
+                new HostLoomLoggerOptions { MaxMessageLength = 0 }
+            )
+        );
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new HostLoomLoggerProvider(
+                formatter,
+                sink,
+                new HostLoomLoggerOptions { MaxTextFieldLength = 0 }
+            )
+        );
     }
 
     [Fact]

@@ -190,6 +190,24 @@ internal sealed class LogPipeline : IAsyncDisposable
             );
         }
 
+        if (options.MaxMessageLength < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.MaxMessageLength,
+                "MaxMessageLength must be at least 1."
+            );
+        }
+
+        if (options.MaxTextFieldLength < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.MaxTextFieldLength,
+                "MaxTextFieldLength must be at least 1."
+            );
+        }
+
         var destructuring = options.Destructuring;
         if (
             destructuring.MaxDepth < 1

@@ -93,6 +93,8 @@ public sealed class LoggingBootstrapTests
                     ["HostLoom:Logging:ShutdownTimeout"] = "00:00:09",
                     ["HostLoom:Logging:ServiceName"] = "checkout",
                     ["HostLoom:Logging:AttachMachineName"] = "false",
+                    ["HostLoom:Logging:MaxMessageLength"] = "2048",
+                    ["HostLoom:Logging:MaxTextFieldLength"] = "512",
                     ["HostLoom:Logging:Destructuring:MaxDepth"] = "3",
                 }
             )
@@ -111,6 +113,8 @@ public sealed class LoggingBootstrapTests
         Assert.Equal(TimeSpan.FromSeconds(2), options.EnqueueTimeout);
         Assert.Equal(TimeSpan.FromSeconds(9), options.ShutdownTimeout);
         Assert.Equal("callback-wins", options.ServiceName);
+        Assert.Equal(2048, options.MaxMessageLength);
+        Assert.Equal(512, options.MaxTextFieldLength);
         Assert.False(options.AttachMachineName);
         Assert.Equal(3, options.Destructuring.MaxDepth);
     }

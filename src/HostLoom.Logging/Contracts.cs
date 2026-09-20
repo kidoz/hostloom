@@ -54,6 +54,10 @@ public enum QueueFullPolicy
 
 public sealed class HostLoomLoggerOptions
 {
+    internal const int DefaultMaxMessageLength = 16 * 1024;
+
+    internal const int DefaultMaxTextFieldLength = 8 * 1024;
+
     /// <summary>Bounded on purpose: an unbounded queue turns a logging burst into an OutOfMemoryException.</summary>
     public int QueueCapacity { get; set; } = 8192;
 
@@ -90,6 +94,22 @@ public sealed class HostLoomLoggerOptions
     /// counted; the record itself still ships.
     /// </summary>
     public int MaxFieldsPerRecord { get; set; } = 64;
+
+    /// <summary>
+    /// Longest rendered message one record may carry, in UTF-8 bytes. A longer message is cut on
+    /// a character boundary and closed with a trailing "…"; the fields of holes past the cut
+    /// still ship subject to their field caps. Oversized original templates are discarded after
+    /// safe rendering; template-aware formatters then receive only the capped message.
+    /// </summary>
+    public int MaxMessageLength { get; set; } = DefaultMaxMessageLength;
+
+    /// <summary>
+    /// Longest text one plain field, string hole, enricher value, or scope text may carry, in
+    /// UTF-8 bytes; longer text is cut on a character boundary and closed with a trailing "…".
+    /// Strings inside destructured objects are bounded separately by
+    /// <see cref="DestructuringOptions.MaxStringLength"/>.
+    /// </summary>
+    public int MaxTextFieldLength { get; set; } = DefaultMaxTextFieldLength;
 
     /// <summary>Caps and protection policy for <c>{@...}</c> object destructuring.</summary>
     public DestructuringOptions Destructuring { get; } = new();

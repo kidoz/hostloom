@@ -1,7 +1,9 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using System.Text.Unicode;
 using Microsoft.Extensions.Logging;
 
 namespace HostLoom.Logging;
@@ -53,6 +55,9 @@ internal sealed class LogEntry
     private int _namesLength;
     private int _valuesLength;
     private int _fieldCount;
+    private int _maxMessageLength = HostLoomLoggerOptions.DefaultMaxMessageLength;
+    private int _maxTextFieldLength = HostLoomLoggerOptions.DefaultMaxTextFieldLength;
+    private bool _messageTruncated;
 
     public LogLevel Level { get; set; }
 
@@ -79,7 +84,26 @@ internal sealed class LogEntry
 
     public ReadOnlySpan<byte> Message => _message.AsSpan(0, _messageLength);
 
+    /// <summary>Whether the message reached its cap and was closed with the "…" sentinel. Hole
+    /// values captured afterwards still ship as fields; only the text stops growing.</summary>
+    public bool MessageTruncated => _messageTruncated;
+
+    /// <summary>
+    /// Encoded destructured bytes this record may still spend, shared by its event holes and its
+    /// scope values so one record's destructured output stays bounded as a whole. Negative until
+    /// the first destructuring consumer initializes it from the options; spending clamps at zero.
+    /// </summary>
+    public int DestructuringBudget { get; set; } = -1;
+
     public int FieldCount => _fieldCount;
+
+    /// <summary>Applies the record-size caps of the provider this entry is captured for. An entry
+    /// rented for a foreign logger keeps the defaults.</summary>
+    public void ApplyCaps(HostLoomLoggerOptions options)
+    {
+        _maxMessageLength = options.MaxMessageLength;
+        _maxTextFieldLength = options.MaxTextFieldLength;
+    }
 
     public void GetField(
         int index,
@@ -108,15 +132,22 @@ internal sealed class LogEntry
         return true;
     }
 
-    public void AppendLiteral(string value)
-    {
-        if (value.Length == 0)
-        {
-            return;
-        }
+    public void AppendLiteral(string value) => AppendText(value, null);
 
-        EnsureMessage(Encoding.UTF8.GetMaxByteCount(value.Length));
-        _messageLength += Encoding.UTF8.GetBytes(value, _message.AsSpan(_messageLength));
+    /// <summary>Drop oversized template metadata only after safe rendering has used it. CLEF
+    /// then emits the capped rendered message without retaining or emitting the large template.</summary>
+    public void FinalizeTemplate()
+    {
+        if (
+            Template is { } template
+            && (
+                template.Length > _maxMessageLength
+                || Encoding.UTF8.GetByteCount(template) > _maxMessageLength
+            )
+        )
+        {
+            Template = null;
+        }
     }
 
     /// <summary>
@@ -136,6 +167,17 @@ internal sealed class LogEntry
     )
         where T : IUtf8SpanFormattable
     {
+        if (_messageTruncated)
+        {
+            // The message is closed; the value still ships as a field in its canonical form.
+            if (name is not null)
+            {
+                AddFieldFormattable(name, value, kind, canonicalFormat);
+            }
+
+            return;
+        }
+
         var renderingStart = _messageLength;
         var messageFormat = format ?? canonicalFormat;
         int written;
@@ -154,6 +196,7 @@ internal sealed class LogEntry
         _messageLength += written;
         if (name is null)
         {
+            CapMessage();
             return;
         }
 
@@ -168,6 +211,7 @@ internal sealed class LogEntry
                 0,
                 -1
             );
+            CapMessage();
             return;
         }
 
@@ -194,11 +238,22 @@ internal sealed class LogEntry
             renderingStart,
             _messageLength - renderingStart
         );
+        CapMessage();
     }
 
     /// <summary>Booleans get their own path: <see cref="bool"/> has no UTF-8 formatter to constrain to.</summary>
     public void AppendBoolean(bool value, string? name)
     {
+        if (_messageTruncated)
+        {
+            if (name is not null)
+            {
+                AddFieldBoolean(name, value);
+            }
+
+            return;
+        }
+
         var start = _messageLength;
         var text = value ? "true"u8 : "false"u8;
         EnsureMessage(text.Length);
@@ -213,21 +268,48 @@ internal sealed class LogEntry
             0,
             -1
         );
+        CapMessage();
     }
 
     public void AppendText(ReadOnlySpan<char> value, string? name)
     {
-        var start = _messageLength;
-        EnsureMessage(Encoding.UTF8.GetMaxByteCount(value.Length));
-        _messageLength += Encoding.UTF8.GetBytes(value, _message.AsSpan(_messageLength));
-        RecordField(
-            name,
-            LogFieldKind.Text,
-            valueInMessage: true,
-            start,
-            _messageLength - start,
-            0,
-            -1
+        if (name is not null)
+        {
+            // Keep the bounded field independent of the message budget, including when the
+            // message is already closed or only part of this hole fits in it.
+            var start = _valuesLength;
+            AddFieldText(name, value);
+            AppendUtf8ToMessage(_values.AsSpan(start, _valuesLength - start));
+            return;
+        }
+
+        if (_messageTruncated || value.IsEmpty)
+        {
+            return;
+        }
+
+        _messageLength += EncodeText(
+            ref _message,
+            _messageLength,
+            value,
+            _maxMessageLength - _messageLength,
+            out _messageTruncated
+        );
+    }
+
+    private void AppendUtf8ToMessage(ReadOnlySpan<byte> value)
+    {
+        if (_messageTruncated)
+        {
+            return;
+        }
+
+        _messageLength += CopyText(
+            ref _message,
+            _messageLength,
+            value,
+            _maxMessageLength - _messageLength,
+            out _messageTruncated
         );
     }
 
@@ -237,6 +319,10 @@ internal sealed class LogEntry
         _namesLength = 0;
         _valuesLength = 0;
         _fieldCount = 0;
+        _messageTruncated = false;
+        _maxMessageLength = HostLoomLoggerOptions.DefaultMaxMessageLength;
+        _maxTextFieldLength = HostLoomLoggerOptions.DefaultMaxTextFieldLength;
+        DestructuringBudget = -1;
         Exception = null;
         Category = string.Empty;
         Template = null;
@@ -257,18 +343,9 @@ internal sealed class LogEntry
     )
     {
         var start = _valuesLength;
-        EnsureValues(Encoding.UTF8.GetMaxByteCount(value.Length));
-        _valuesLength += Encoding.UTF8.GetBytes(value, _values.AsSpan(_valuesLength));
-        RecordField(
-            name,
-            LogFieldKind.Text,
-            valueInMessage: false,
-            start,
-            _valuesLength - start,
-            0,
-            -1,
-            source
-        );
+        var written = EncodeText(ref _values, start, value, _maxTextFieldLength, out _);
+        _valuesLength = start + written;
+        RecordField(name, LogFieldKind.Text, valueInMessage: false, start, written, 0, -1, source);
     }
 
     /// <summary>Copies an already-encoded UTF-8 value — the static-field path, where the value
@@ -276,19 +353,9 @@ internal sealed class LogEntry
     public void AddFieldUtf8Text(string name, ReadOnlySpan<byte> utf8Value, LogFieldSource source)
     {
         var start = _valuesLength;
-        EnsureValues(utf8Value.Length);
-        utf8Value.CopyTo(_values.AsSpan(_valuesLength));
-        _valuesLength += utf8Value.Length;
-        RecordField(
-            name,
-            LogFieldKind.Text,
-            valueInMessage: false,
-            start,
-            utf8Value.Length,
-            0,
-            -1,
-            source
-        );
+        var written = CopyText(ref _values, start, utf8Value, _maxTextFieldLength, out _);
+        _valuesLength = start + written;
+        RecordField(name, LogFieldKind.Text, valueInMessage: false, start, written, 0, -1, source);
     }
 
     public void AddFieldBoolean(
@@ -341,20 +408,53 @@ internal sealed class LogEntry
                 continue;
             }
 
-            if (field.Kind == LogFieldKind.Null)
+            if (_messageTruncated)
             {
-                EnsureMessage(4);
-                "null"u8.CopyTo(_message.AsSpan(_messageLength));
-                _messageLength += 4;
                 return true;
             }
 
-            EnsureMessage(field.ValueLength);
+            if (field.Kind == LogFieldKind.Null)
+            {
+                AppendUtf8ToMessage("null"u8);
+                return true;
+            }
+
             var source = field.ValueInMessage ? _message : _values;
-            source
-                .AsSpan(field.ValueStart, field.ValueLength)
-                .CopyTo(_message.AsSpan(_messageLength));
-            _messageLength += field.ValueLength;
+            AppendUtf8ToMessage(source.AsSpan(field.ValueStart, field.ValueLength));
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Appends the value of the first field named <paramref name="utf8Name"/> at or after
+    /// <paramref name="firstIndex"/> to <paramref name="target"/> — the scope-text renderer,
+    /// which must resolve a hole against the fields captured for that one scope rather than
+    /// against an event hole or an outer scope carrying the same name.
+    /// </summary>
+    public bool TryAppendFieldValue(
+        ReadOnlySpan<byte> utf8Name,
+        int firstIndex,
+        StringBuilder target
+    )
+    {
+        for (var i = firstIndex; i < _fieldCount; i++)
+        {
+            var field = _fields[i];
+            if (!_names.AsSpan(field.NameStart, field.NameLength).SequenceEqual(utf8Name))
+            {
+                continue;
+            }
+
+            if (field.Kind == LogFieldKind.Null)
+            {
+                target.Append("null");
+                return true;
+            }
+
+            var source = field.ValueInMessage ? _message : _values;
+            target.Append(Encoding.UTF8.GetString(source, field.ValueStart, field.ValueLength));
             return true;
         }
 
@@ -607,6 +707,125 @@ internal sealed class LogEntry
             LogFieldSource.Static => "static",
             _ => "hole",
         };
+
+    /// <summary>
+    /// Closes the message at <see cref="HostLoomLoggerOptions.MaxMessageLength"/>: the cut lands
+    /// on a UTF-8 character boundary and is marked with "…". A hole whose value lived in the cut
+    /// region is moved to the value buffer first, so the field survives the text cap intact.
+    /// </summary>
+    private void CapMessage()
+    {
+        if (_messageLength <= _maxMessageLength)
+        {
+            return;
+        }
+
+        var cut = BoundaryBefore(_message, _maxMessageLength);
+        for (var i = 0; i < _fieldCount; i++)
+        {
+            var field = _fields[i];
+            if (field.ValueInMessage && field.ValueStart + field.ValueLength > cut)
+            {
+                var start = _valuesLength;
+                EnsureValues(field.ValueLength);
+                _message.AsSpan(field.ValueStart, field.ValueLength).CopyTo(_values.AsSpan(start));
+                _valuesLength += field.ValueLength;
+                _fields[i] = field with
+                {
+                    ValueInMessage = false,
+                    ValueStart = start,
+                    RenderingStart = 0,
+                    RenderingLength = -1,
+                };
+            }
+            else if (
+                field.RenderingLength >= 0
+                && field.RenderingStart + field.RenderingLength > cut
+            )
+            {
+                _fields[i] = field with { RenderingStart = 0, RenderingLength = -1 };
+            }
+        }
+
+        _messageLength = cut;
+        EnsureMessage(Ellipsis.Length);
+        Ellipsis.CopyTo(_message.AsSpan(_messageLength));
+        _messageLength += Ellipsis.Length;
+        _messageTruncated = true;
+    }
+
+    private static ReadOnlySpan<byte> Ellipsis => "…"u8;
+
+    // Allocate against the remaining budget, never against an unbounded caller input.
+    private static int EncodeText(
+        ref byte[] buffer,
+        int start,
+        ReadOnlySpan<char> text,
+        int max,
+        out bool truncated
+    )
+    {
+        var capacity = (int)Math.Min((long)text.Length * 3, max);
+        EnsureTextBuffer(ref buffer, start + capacity + Ellipsis.Length);
+        var status = Utf8.FromUtf16(
+            text,
+            buffer.AsSpan(start, capacity),
+            out _,
+            out var written,
+            replaceInvalidSequences: true,
+            isFinalBlock: true
+        );
+        truncated = status != OperationStatus.Done;
+        if (truncated)
+        {
+            Ellipsis.CopyTo(buffer.AsSpan(start + written));
+            written += Ellipsis.Length;
+        }
+
+        return written;
+    }
+
+    private static int CopyText(
+        ref byte[] buffer,
+        int start,
+        ReadOnlySpan<byte> text,
+        int max,
+        out bool truncated
+    )
+    {
+        truncated = text.Length > max;
+        var length = truncated ? BoundaryBefore(text, max) : text.Length;
+        EnsureTextBuffer(ref buffer, start + length + (truncated ? Ellipsis.Length : 0));
+        text[..length].CopyTo(buffer.AsSpan(start));
+        if (truncated)
+        {
+            Ellipsis.CopyTo(buffer.AsSpan(start + length));
+            length += Ellipsis.Length;
+        }
+
+        return length;
+    }
+
+    private static void EnsureTextBuffer(ref byte[] buffer, int required)
+    {
+        if (required > buffer.Length)
+        {
+            Array.Resize(ref buffer, Math.Max(buffer.Length * 2, required));
+        }
+    }
+
+    /// <summary>The largest offset at most <paramref name="max"/> that does not split a UTF-8
+    /// sequence. The byte at <paramref name="max"/> must exist in <paramref name="text"/>.</summary>
+    private static int BoundaryBefore(ReadOnlySpan<byte> text, int max)
+    {
+        var cut = max;
+        while (cut > 0 && (text[cut] & 0xC0) == 0x80)
+        {
+            cut--;
+        }
+
+        return cut;
+    }
 
     private void EnsureMessage(int additional)
     {

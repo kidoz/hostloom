@@ -97,6 +97,126 @@ public sealed class LoggingScopeTests
     }
 
     [Fact]
+    public async Task A_destructured_scope_value_is_masked_in_its_field_and_its_text()
+    {
+        var sink = NewSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("Protected");
+        var user = new ScopedUser("ada", "hunter2");
+
+        using (logger.BeginScope("user {@User}", user))
+        {
+            logger.LogFast(LogLevel.Information, $"inside");
+        }
+
+        await provider.DisposeAsync();
+
+        var line = Assert.Single(sink.Lines());
+        var root = JsonDocument.Parse(line).RootElement;
+        var logged = root.GetProperty("User");
+        Assert.Equal(JsonValueKind.Object, logged.ValueKind);
+        Assert.Equal("ada", logged.GetProperty("Name").GetString());
+        Assert.Equal("***", logged.GetProperty("Token").GetString());
+        // The scope text is rendered from the captured representation, not from the record's
+        // generated ToString(), which would print the masked member.
+        var scope = root.GetProperty("Scope").EnumerateArray().Select(e => e.GetString()).ToArray();
+        Assert.Equal(["user {\"Name\":\"ada\",\"Token\":\"***\"}"], scope);
+        Assert.DoesNotContain("hunter2", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_plain_scope_hole_never_stringifies_a_protected_object()
+    {
+        var sink = NewSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("Protected");
+        var user = new ScopedUser("ada", "hunter2");
+
+        using (logger.BeginScope("user {User}", user))
+        {
+            logger.LogInformation("inside");
+        }
+
+        await provider.DisposeAsync();
+
+        var line = Assert.Single(sink.Lines());
+        var root = JsonDocument.Parse(line).RootElement;
+        // No caller formatter renders a scope, so a non-scalar scope value is destructured under
+        // the protection policy even without '@'; ToString() would leak the masked member.
+        var logged = root.GetProperty("User");
+        Assert.Equal(JsonValueKind.Object, logged.ValueKind);
+        Assert.Equal("***", logged.GetProperty("Token").GetString());
+        var scope = root.GetProperty("Scope").EnumerateArray().Select(e => e.GetString()).ToArray();
+        Assert.Equal(["user {\"Name\":\"ada\",\"Token\":\"***\"}"], scope);
+        Assert.DoesNotContain("hunter2", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Scope_values_share_the_record_destructuring_budget()
+    {
+        var sink = NewSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions { Destructuring = { MaxEncodedBytesPerRecord = 16 } }
+        );
+        var logger = provider.CreateLogger("Budgeted");
+
+        using (logger.BeginScope("first {@First}", new { Filler = new string('x', 64) }))
+        using (logger.BeginScope("second {@Second}", new { Value = 1 }))
+        {
+            logger.LogInformation("inside");
+        }
+
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        // The outer scope spent the record's budget; the inner one degrades to the sentinel in
+        // its field and in its text rather than growing the record without bound.
+        Assert.Equal(JsonValueKind.Object, root.GetProperty("First").ValueKind);
+        Assert.Equal("…", root.GetProperty("Second").GetString());
+        var scope = root.GetProperty("Scope").EnumerateArray().Select(e => e.GetString()).ToArray();
+        Assert.Equal("second …", scope[1]);
+    }
+
+    [Fact]
+    public async Task A_scope_template_hole_resolves_against_that_scope_only()
+    {
+        var sink = NewSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("Shadowed");
+        var orderId = "event";
+
+        using (logger.BeginScope("outer {OrderId}", "outer"))
+        using (logger.BeginScope("inner {OrderId} at {When}", "inner", null))
+        {
+            logger.LogFast(LogLevel.Information, $"order {orderId}");
+        }
+
+        await provider.DisposeAsync();
+
+        var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
+        var scope = root.GetProperty("Scope").EnumerateArray().Select(e => e.GetString()).ToArray();
+        // Each text renders its own scope's values even though the flattened OrderId field is
+        // won by the inner scope, and a null hole renders as the literal null token.
+        Assert.Equal(["outer outer", "inner inner at null"], scope);
+        Assert.Equal("inner", root.GetProperty("OrderId").GetString());
+        Assert.Equal("event", root.GetProperty("orderId").GetString());
+    }
+
+    [Fact]
     public async Task A_throwing_scope_is_counted_and_costs_nothing_else()
     {
         long failures = 0;
@@ -184,6 +304,9 @@ public sealed class LoggingScopeTests
 #pragma warning disable CA2000
     private static CollectingSink NewSink() => new();
 #pragma warning restore CA2000
+
+    /// <summary>A record: its generated ToString() prints every member, masked or not.</summary>
+    private sealed record ScopedUser(string Name, [property: LogMasked] string Token);
 
     /// <summary>A structured-looking scope whose enumeration explodes.</summary>
     private sealed class ThrowingScope : IEnumerable<KeyValuePair<string, object?>>

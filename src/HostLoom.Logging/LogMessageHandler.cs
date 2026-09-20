@@ -41,6 +41,11 @@ public ref struct LogMessageHandler
         }
 
         Entry = LogEntryPool.Rent();
+        if (logger is HostLoomLogger own)
+        {
+            Entry.ApplyCaps(own.Options);
+        }
+
         Entry.Level = level;
         shouldAppend = true;
     }

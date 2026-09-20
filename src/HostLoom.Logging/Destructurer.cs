@@ -468,7 +468,10 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         }
 
         MemberInfo member = property is not null ? property : field!;
-        foreach (var attribute in member.GetCustomAttributes(inherit: true))
+        // Attribute.GetCustomAttributes walks a virtual property's override chain. The instance
+        // MemberInfo.GetCustomAttributes(inherit) silently ignores the flag for properties, so an
+        // override of an annotated property would otherwise lose its protection.
+        foreach (var attribute in Attribute.GetCustomAttributes(member, inherit: true))
         {
             switch (attribute)
             {

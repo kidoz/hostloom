@@ -15,6 +15,9 @@ internal sealed class HostLoomLogger(
 
     public bool IsEnabled(LogLevel logLevel) => logLevel != LogLevel.None;
 
+    /// <summary>The provider's options, so the interpolated handler can size the entry it rents.</summary>
+    internal HostLoomLoggerOptions Options => options;
+
     /// <summary>
     /// The Microsoft.Extensions.Logging entry point, used by every library that is not calling the
     /// interpolated fast path. It boxes <paramref name="state"/> and builds a string, because the
@@ -37,6 +40,7 @@ internal sealed class HostLoomLogger(
 
         ArgumentNullException.ThrowIfNull(formatter);
         var entry = LogEntryPool.Rent();
+        entry.ApplyCaps(options);
         entry.Level = logLevel;
         var destructured = pipeline.Capture.CaptureState(entry, state);
         if (destructured && entry.Template is { } template)
@@ -53,6 +57,7 @@ internal sealed class HostLoomLogger(
             entry.AppendLiteral(formatter(state, exception));
         }
 
+        entry.FinalizeTemplate();
         Emit(entry, eventId, exception);
     }
 

@@ -58,6 +58,31 @@ namespace HostLoom.Tests
         }
 
         [Fact]
+        public async Task Protection_declared_on_a_virtual_member_survives_an_override()
+        {
+            var session = new DerivedSession
+            {
+                Owner = "ada",
+                Token = "override-token",
+                Password = "override-password",
+                ApiKey = "override-apikey",
+            };
+            var (root, line) = await LogAsync(logger =>
+                logger.LogInformation("session {@Session}", session)
+            );
+
+            var logged = root.GetProperty("Session");
+            Assert.Equal("ada", logged.GetProperty("Owner").GetString());
+            // The attributes live on the base declarations; the derived type overrides every
+            // protected property. Reflection on the override must still find them, for the
+            // native attributes and for the legacy one recognized by name alike.
+            Assert.Equal("***", logged.GetProperty("Token").GetString());
+            Assert.False(logged.TryGetProperty("Password", out _));
+            Assert.False(logged.TryGetProperty("ApiKey", out _));
+            Assert.DoesNotContain("override-", line, StringComparison.Ordinal);
+        }
+
+        [Fact]
         public async Task LogMasked_replaces_or_deterministically_reveals()
         {
             var card = new Payment { Token = "secret-token", Card = "1234567890123456" };
@@ -273,6 +298,41 @@ namespace HostLoom.Tests
         private sealed class Account : AccountBase
         {
             public Account? Nested { get; set; }
+        }
+
+        private class SessionBase
+        {
+            public string Owner { get; set; } = "";
+
+            [LogMasked]
+            public virtual string Token { get; set; } = "";
+
+            [NotLogged]
+            public virtual string Password { get; set; } = "";
+
+            [Destructurama.Attributed.NotLogged]
+            public virtual string ApiKey { get; set; } = "";
+        }
+
+        private sealed class DerivedSession : SessionBase
+        {
+            public override string Token
+            {
+                get => base.Token;
+                set => base.Token = value;
+            }
+
+            public override string Password
+            {
+                get => base.Password;
+                set => base.Password = value;
+            }
+
+            public override string ApiKey
+            {
+                get => base.ApiKey;
+                set => base.ApiKey = value;
+            }
         }
 
         private sealed class Payment

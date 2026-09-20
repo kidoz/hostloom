@@ -36,8 +36,10 @@ runs before the provider; HostLoom does no level filtering of its own.
 | `BatchSize` | `256` | Records per writer batch |
 | `EnqueueTimeout` | null (block without limit) | Cap on how long a log call may block under `Block` |
 | `ShutdownTimeout` | 5 s | Separate budgets for draining writes and disposing the sink |
-| `MaxFieldNameLength` | `128` | — |
-| `MaxFieldsPerRecord` | `64` | — |
+| `MaxFieldNameLength` | `128` | UTF-8 bytes; a longer name drops the field, never the record |
+| `MaxFieldsPerRecord` | `64` | Fields past the cap are dropped and counted; the record ships |
+| `MaxMessageLength` | `16384` (16 KiB) | UTF-8 bytes of rendered message; see [Record size caps](#record-size-caps) |
+| `MaxTextFieldLength` | `8192` (8 KiB) | UTF-8 bytes per plain text field, string hole, enricher value, or scope text |
 | `AttachMachineName` | `true` | Adds the machine name as a static field |
 | `ServiceName` | null | Adds a service name as a static field |
 | `CaptureActivity` | `true` | Attach trace/span ids from `Activity.Current` |
@@ -59,6 +61,25 @@ programmatic redaction for types you cannot annotate —
 `NotLogged<T>(params string[] members)` and
 `Mask<T>(string member, string text = "***", int showFirst = 0, int showLast = 0)`.
 
+### Record size caps
+
+Every cap is enforced on the producer thread, is measured in UTF-8 bytes, cuts on a character
+boundary, and marks the cut with a trailing `…` — the same sentinel destructured strings use.
+Every cap must be at least 1; the provider and the bootstrap logger reject other values at
+construction, and the configuration overload rejects them at host startup.
+
+- `MaxMessageLength` bounds the rendered message. Once the message is closed, the values of
+  holes past the cut still ship as fields, and a hole whose bytes straddled the cut keeps its
+  full value as a field, subject to the field cap. A template larger than this budget is
+  discarded after safe rendering; CLEF emits the capped `@m` instead of `@mt`.
+  Text buffers grow only for bytes within their remaining budgets, so large message and
+  field inputs do not leave input-sized arrays in queued records.
+- `MaxTextFieldLength` bounds each plain text field (`{Name}` and `{$Name}` holes, string
+  holes on the `LogFast` path, enricher values, the static `MachineName`/`ServiceName` fields)
+  and each entry of the `Scope` array. Strings inside a destructured object are bounded by
+  `Destructuring.MaxStringLength` instead, and the encoded size of all destructured values in a
+  record by `Destructuring.MaxEncodedBytesPerRecord`.
+
 ## Sinks and formatters
 
 | Type | Notes |
@@ -77,6 +98,58 @@ Fail-closed protection on destructured (`{@...}`) members:
 | --- | --- |
 | `[NotLogged]` | member never emitted; wins over `[LogMasked]` |
 | `[LogMasked]` | `Text = "***"`, `ShowFirst = 0`, `ShowLast = 0` |
+
+Both attributes are found through the inheritance chain: a member annotated on a base class
+stays protected on a derived instance, including when the derived class overrides the
+annotated virtual property. The same holds for the legacy attributes recognized by name under
+`MapLegacyAttributes`.
+
+The protection applies to members reached by destructuring. A plain `{Name}` hole in an
+*event* template stringifies the value through its `ToString()`, and the message the caller's
+formatter renders does the same, so a record type's generated `ToString()` prints every member
+there. Use `{@Name}` for any object carrying protected members.
+
+## Scopes
+
+`BeginScope` state is captured on the producer thread at log time. Structured pairs (a
+dictionary, or the template state produced by `BeginScope("order {OrderId}", id)`) flatten
+into fields ranked below event holes: an event hole beats a scope value, an inner scope beats
+an outer one. Scope values are captured as follows:
+
+| Scope hole | Scalar value | Non-scalar value |
+| --- | --- | --- |
+| `{Name}` or `{@Name}` | typed field | destructured JSON under the masking policy and the record's `MaxEncodedBytesPerRecord` budget |
+| `{$Name}` | text field | `ToString()` as a text field, bounded by `MaxTextFieldLength` |
+
+No caller-side formatter renders a scope, so a non-scalar scope value is destructured even
+without `@`; only `$` opts into `ToString()`. The destructuring budget is shared between the
+event's `{@...}` holes and its scope values, outermost scope first, and a value past the budget
+degrades to a `…` field.
+
+A templated scope also contributes its rendered text to the `Scope` array, outermost first.
+That text is rendered from the captured field representations of that scope — masked and
+destructured values appear as they do in the fields, and a null hole renders as `null` — never
+from the scope object's own `ToString()`. Format and alignment specifiers in the scope template
+are ignored on this path. A non-structured scope (`BeginScope("checkout")`, or any object that
+is not a sequence of key/value pairs) is rendered with its invariant `ToString()`, which the
+masking policy does not reach; each `Scope` entry is bounded by `MaxTextFieldLength`.
+
+## Security notes
+
+- `AttachMachineName` defaults to `true`, so every record carries the host name as a static
+  `MachineName` field. Turn it off where log output leaves a trust boundary and the host name
+  is itself sensitive, or when an orchestrator already attaches it.
+- An exception passed to a log call is captured on the record and rendered by the formatter
+  in full — message, type, and stack trace, up to the formatter's `maxExceptionLength`
+  (32 KiB by default). Exception text is not subject to `[NotLogged]`/`[LogMasked]`; an
+  exception whose message embeds a secret leaks it. Keep credentials out of exception messages
+  or wrap such exceptions before logging.
+- The default `QueueFullPolicy.DropBelowWarning` drops Information and Debug records while the
+  queue is full, and only Warning and above block. An audit trail logged at Information level
+  can therefore lose events under sustained overload, silently apart from the `Dropped` counter
+  and the `hostloom.logging.records.dropped` instrument. Log audit events at Warning or above, or use
+  `QueueFullPolicy.Block` with an `EnqueueTimeout` so a stalled sink bounds the caller's wait
+  instead of stalling the application.
 
 ## LogFast
 

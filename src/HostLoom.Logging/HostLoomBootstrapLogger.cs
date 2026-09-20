@@ -100,6 +100,7 @@ public sealed class HostLoomBootstrapLogger : ILogger, IDisposable
         var entry = LogEntryPool.Rent();
         try
         {
+            entry.ApplyCaps(_options);
             entry.Level = logLevel;
             var destructured = _capture.CaptureState(entry, state);
             if (destructured && entry.Template is { } template)
@@ -111,6 +112,7 @@ public sealed class HostLoomBootstrapLogger : ILogger, IDisposable
                 entry.AppendLiteral(formatter(state, exception));
             }
 
+            entry.FinalizeTemplate();
             entry.Category = _category;
             entry.EventId = eventId;
             entry.Exception = exception;

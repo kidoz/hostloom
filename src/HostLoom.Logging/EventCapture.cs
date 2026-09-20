@@ -19,15 +19,16 @@ internal sealed class EventCapture(
     /// destructured, which decides whether the message must be safe-rendered.</summary>
     public bool CaptureState<TState>(LogEntry entry, TState state)
     {
-        // One destructuring byte budget per record, shared across all its '@' holes.
-        var remaining = options.Destructuring.MaxEncodedBytesPerRecord;
+        // One destructuring byte budget per record, shared across all its '@' holes and, later,
+        // across the values of its scopes.
+        entry.DestructuringBudget = options.Destructuring.MaxEncodedBytesPerRecord;
         var destructured = false;
 
         if (state is IReadOnlyList<KeyValuePair<string, object?>> list)
         {
             for (var i = 0; i < list.Count; i++)
             {
-                destructured |= CapturePair(entry, list[i], ref remaining);
+                destructured |= CapturePair(entry, list[i]);
             }
 
             return destructured;
@@ -37,14 +38,14 @@ internal sealed class EventCapture(
         {
             foreach (var pair in pairs)
             {
-                destructured |= CapturePair(entry, pair, ref remaining);
+                destructured |= CapturePair(entry, pair);
             }
         }
 
         return destructured;
     }
 
-    private bool CapturePair(LogEntry entry, KeyValuePair<string, object?> pair, ref int remaining)
+    private bool CapturePair(LogEntry entry, KeyValuePair<string, object?> pair)
     {
         var name = pair.Key;
         if (name == "{OriginalFormat}")
@@ -66,7 +67,7 @@ internal sealed class EventCapture(
                 return false;
             }
 
-            CaptureDestructured(entry, stripped, pair.Value, ref remaining);
+            CaptureDestructured(entry, stripped, pair.Value);
             return true;
         }
 
@@ -74,24 +75,31 @@ internal sealed class EventCapture(
         return false;
     }
 
-    private void CaptureDestructured(LogEntry entry, string name, object? value, ref int remaining)
+    private void CaptureDestructured(
+        LogEntry entry,
+        string name,
+        object? value,
+        LogFieldSource source = LogFieldSource.Hole
+    )
     {
-        if (TryCaptureScalar(entry, name, value))
+        if (TryCaptureScalar(entry, name, value, source))
         {
             return;
         }
 
+        var remaining = entry.DestructuringBudget;
         if (remaining <= 0)
         {
             // The record's destructuring budget is spent: an explicit sentinel, never silence.
-            entry.AddFieldText(name, "…");
+            entry.AddFieldText(name, "…", source);
             return;
         }
 
         // The span points into thread-local scratch; AddFieldJson copies it out immediately.
         var json = destructurer.Destructure(value!, remaining);
-        remaining -= json.Length;
-        entry.AddFieldJson(name, json);
+        // Clamped at zero: a negative budget means "not yet initialized", never "overspent".
+        entry.DestructuringBudget = Math.Max(0, remaining - json.Length);
+        entry.AddFieldJson(name, json, source);
     }
 
     /// <summary>
@@ -99,6 +107,10 @@ internal sealed class EventCapture(
     /// inner scope's value beats an outer one and any event hole beats them both. A scope that
     /// carried a message template additionally contributes its rendered text to the
     /// <c>Scope</c> array, as does every non-structured scope — nothing is silently dropped.
+    /// No caller-side formatter renders a scope, so a non-scalar scope value is destructured
+    /// under the record's protection policy and budget whether or not its hole carries
+    /// <c>@</c>; only <c>$</c> forces <c>ToString()</c>. The templated text is rendered from
+    /// those captured representations, never from the scope object's own <c>ToString()</c>.
     /// </summary>
     public void CaptureScope(object? scope, LogEntry entry)
     {
@@ -106,39 +118,102 @@ internal sealed class EventCapture(
         {
             if (scope is IEnumerable<KeyValuePair<string, object?>> pairs)
             {
-                var templated = false;
+                if (entry.DestructuringBudget < 0)
+                {
+                    // The interpolated fast path captured no state, so the scope walk is this
+                    // record's first destructuring consumer.
+                    entry.DestructuringBudget = options.Destructuring.MaxEncodedBytesPerRecord;
+                }
+
+                string? template = null;
+                var firstField = entry.FieldCount;
                 foreach (var pair in pairs)
                 {
                     if (pair.Key == "{OriginalFormat}")
                     {
-                        templated = true;
+                        template = pair.Value as string;
                         continue;
                     }
 
-                    var name = pair.Key;
-                    if (name.Length > 0 && (name[0] == '@' || name[0] == '$'))
-                    {
-                        name = name[1..];
-                    }
-
-                    CaptureValue(entry, name, pair.Value, LogFieldSource.Scope);
+                    CaptureScopePair(entry, pair);
                 }
 
-                if (templated)
+                if (template is not null)
                 {
-                    entry.EnsureScopeTexts().Add(scope.ToString() ?? string.Empty);
+                    entry.EnsureScopeTexts().Add(RenderScopeText(entry, template, firstField));
                 }
 
                 return;
             }
 
-            entry.EnsureScopeTexts().Add(ToInvariantText(scope));
+            entry
+                .EnsureScopeTexts()
+                .Add(CapText(ToInvariantText(scope), options.MaxTextFieldLength));
         }
         catch (Exception)
         {
             // One unreadable scope must not cost the event or the scopes around it.
             metrics?.RecordFailure(LoggingMetrics.ComponentScope);
         }
+    }
+
+    private void CaptureScopePair(LogEntry entry, KeyValuePair<string, object?> pair)
+    {
+        var name = pair.Key;
+        if (name.Length > 0 && (name[0] == '@' || name[0] == '$'))
+        {
+            var stripped = name[1..];
+            if (name[0] == '$')
+            {
+                CaptureStringified(entry, stripped, pair.Value, LogFieldSource.Scope);
+                return;
+            }
+
+            CaptureDestructured(entry, stripped, pair.Value, LogFieldSource.Scope);
+            return;
+        }
+
+        // A plain hole too: stringifying here would print what the policy excluded.
+        CaptureDestructured(entry, name, pair.Value, LogFieldSource.Scope);
+    }
+
+    private string RenderScopeText(LogEntry entry, string template, int firstField)
+    {
+        var target = new ScopeTextTarget(
+            entry,
+            firstField,
+            new StringBuilder(Math.Min(template.Length + 64, 1024))
+        );
+        WalkTemplate(template, ref target);
+        return CapText(target.Builder.ToString(), options.MaxTextFieldLength);
+    }
+
+    /// <summary>
+    /// Bounds a producer-built text at <paramref name="maxBytes"/> of UTF-8 on a character
+    /// boundary, closing it with "…" — the same sentinel the entry buffers use.
+    /// </summary>
+    internal static string CapText(string text, int maxBytes)
+    {
+        // A UTF-16 unit never encodes to more than three bytes, so short text needs no count.
+        if (text.Length <= maxBytes / 3 || Encoding.UTF8.GetByteCount(text) <= maxBytes)
+        {
+            return text;
+        }
+
+        var bytes = 0;
+        var cut = 0;
+        foreach (var rune in text.EnumerateRunes())
+        {
+            if (bytes + rune.Utf8SequenceLength > maxBytes)
+            {
+                break;
+            }
+
+            bytes += rune.Utf8SequenceLength;
+            cut += rune.Utf16SequenceLength;
+        }
+
+        return string.Concat(text.AsSpan(0, cut), "…");
     }
 
     public static void AddScopeArray(LogEntry entry, List<string> scopeTexts)
@@ -166,30 +241,48 @@ internal sealed class EventCapture(
     /// </summary>
     public static void RenderTemplate(LogEntry entry, string template)
     {
-        var text = template.AsSpan();
+        var target = new MessageTarget(entry);
+        WalkTemplate(template, ref target);
+    }
+
+    /// <summary>Where a template walk lands: the record's message, or a scope's text.</summary>
+    private interface ITemplateTarget
+    {
+        void Text(ReadOnlySpan<char> text);
+
+        /// <summary>Renders the hole; false leaves the literal <c>{token}</c> in place.</summary>
+        bool Hole(ReadOnlySpan<char> name);
+    }
+
+    /// <summary>The one template grammar shared by message and scope rendering: <c>{{</c>
+    /// escapes, <c>@</c>/<c>$</c> operators stripped from the name, format and alignment
+    /// specifiers ignored, and an unresolvable hole kept verbatim.</summary>
+    private static void WalkTemplate<TTarget>(ReadOnlySpan<char> text, ref TTarget target)
+        where TTarget : struct, ITemplateTarget
+    {
         while (!text.IsEmpty)
         {
             var open = text.IndexOf('{');
             if (open < 0)
             {
-                entry.AppendText(text, null);
+                target.Text(text);
                 return;
             }
 
             if (open + 1 < text.Length && text[open + 1] == '{')
             {
-                entry.AppendText(text[..(open + 1)], null);
+                target.Text(text[..(open + 1)]);
                 text = text[(open + 2)..];
                 continue;
             }
 
-            entry.AppendText(text[..open], null);
+            target.Text(text[..open]);
             text = text[(open + 1)..];
             var close = text.IndexOf('}');
             if (close < 0)
             {
-                entry.AppendText("{", null);
-                entry.AppendText(text, null);
+                target.Text("{");
+                target.Text(text);
                 return;
             }
 
@@ -207,25 +300,44 @@ internal sealed class EventCapture(
                 name = name[1..];
             }
 
-            if (!AppendField(entry, name))
+            if (!target.Hole(name))
             {
-                entry.AppendText("{", null);
-                entry.AppendText(token, null);
-                entry.AppendText("}", null);
+                target.Text("{");
+                target.Text(token);
+                target.Text("}");
             }
         }
     }
 
-    private static bool AppendField(LogEntry entry, ReadOnlySpan<char> name)
-    {
-        if (name.Length is 0 or > 128)
-        {
-            return false;
-        }
+    /// <summary>Encodes a hole name for field lookup; -1 rejects names no field can carry.</summary>
+    private static int EncodeName(ReadOnlySpan<char> name, Span<byte> utf8) =>
+        name.Length is 0 or > 128 ? -1 : Encoding.UTF8.GetBytes(name, utf8);
 
-        Span<byte> utf8 = stackalloc byte[512];
-        var length = Encoding.UTF8.GetBytes(name, utf8);
-        return entry.AppendFieldValueToMessage(utf8[..length]);
+    private readonly struct MessageTarget(LogEntry entry) : ITemplateTarget
+    {
+        public void Text(ReadOnlySpan<char> text) => entry.AppendText(text, null);
+
+        public bool Hole(ReadOnlySpan<char> name)
+        {
+            Span<byte> utf8 = stackalloc byte[512];
+            var length = EncodeName(name, utf8);
+            return length >= 0 && entry.AppendFieldValueToMessage(utf8[..length]);
+        }
+    }
+
+    private readonly struct ScopeTextTarget(LogEntry entry, int firstField, StringBuilder builder)
+        : ITemplateTarget
+    {
+        public StringBuilder Builder => builder;
+
+        public void Text(ReadOnlySpan<char> text) => builder.Append(text);
+
+        public bool Hole(ReadOnlySpan<char> name)
+        {
+            Span<byte> utf8 = stackalloc byte[512];
+            var length = EncodeName(name, utf8);
+            return length >= 0 && entry.TryAppendFieldValue(utf8[..length], firstField, builder);
+        }
     }
 
     private static void CaptureValue(
