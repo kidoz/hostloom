@@ -119,14 +119,15 @@ public sealed class RedisCacheStore
                 return;
             }
 
-            // One round trip: the value, then for each tag the membership and an expiry that is
-            // set when the index is new (NX) and only ever extended afterwards (GT).
+            // One round trip: for each tag the membership and an expiry that is set when the
+            // index is new (NX) and only ever extended afterwards (GT), then the value. A batch
+            // is a pipeline, not a transaction, so a connection lost part-way can leave a prefix
+            // applied: memberships first means that prefix is an index entry for an absent key,
+            // which removal skips, and never a value that no tag removal can reach.
             var batch = db.CreateBatch();
-            var pending = new List<Task>(1 + (tagKeys.Count * 3))
-            {
-                batch.StringSetAsync(redisKey, ownedPayload, timeToLive),
-            };
+            var pending = new List<Task>(1 + (tagKeys.Count * 3));
             AppendTagIndexes(batch, pending, redisKey, tagKeys, timeToLive);
+            pending.Add(batch.StringSetAsync(redisKey, ownedPayload, timeToLive));
             batch.Execute();
             await Task.WhenAll(pending).WaitAsync(cancellationToken).ConfigureAwait(false);
         }

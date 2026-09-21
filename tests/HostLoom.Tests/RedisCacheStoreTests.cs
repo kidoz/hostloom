@@ -100,6 +100,74 @@ public sealed class RedisCacheStoreTests
     }
 
     [Fact]
+    public async Task TaggedWrite_IndexesTheTagsBeforeTheValue()
+    {
+        var db = Substitute.For<IDatabase>();
+        var batch = Substitute.For<IBatch>();
+        var mux = Substitute.For<IConnectionMultiplexer>();
+        mux.GetDatabase(Arg.Any<int>(), Arg.Any<object>()).Returns(db);
+        db.CreateBatch(Arg.Any<object>()).Returns(batch);
+        var order = new List<string>();
+        batch
+            .SetAddAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<CommandFlags>())
+            .Returns(_ =>
+            {
+                order.Add("sadd");
+                return Task.FromResult(true);
+            });
+        batch
+            .KeyExpireAsync(
+                Arg.Any<RedisKey>(),
+                Arg.Any<TimeSpan?>(),
+                Arg.Any<ExpireWhen>(),
+                Arg.Any<CommandFlags>()
+            )
+            .Returns(_ =>
+            {
+                order.Add("pexpire");
+                return Task.FromResult(true);
+            });
+        batch
+            .StringSetAsync(
+                Arg.Any<RedisKey>(),
+                Arg.Any<RedisValue>(),
+                Arg.Any<TimeSpan?>(),
+                Arg.Any<When>()
+            )
+            .Returns(_ =>
+            {
+                order.Add("set");
+                return Task.FromResult(true);
+            });
+        batch
+            .StringSetAsync(
+                Arg.Any<RedisKey>(),
+                Arg.Any<RedisValue>(),
+                Arg.Any<Expiration>(),
+                Arg.Any<ValueCondition>(),
+                Arg.Any<CommandFlags>()
+            )
+            .Returns(_ =>
+            {
+                order.Add("set");
+                return Task.FromResult(true);
+            });
+        await using var store = new RedisCacheStore(mux);
+
+        await store.SetAsync(
+            "svc:cache:data:catalog",
+            new byte[] { 1 },
+            TimeSpan.FromMinutes(1),
+            ["svc:cache:tag:catalog"],
+            TestContext.Current.CancellationToken
+        );
+
+        // A batch is a pipeline, not a transaction: a connection lost part-way must leave an
+        // index entry for an absent key, which removal skips, never a value no tag can reach.
+        Assert.Equal(["sadd", "pexpire", "pexpire", "set"], order);
+    }
+
+    [Fact]
     public async Task BulkRead_DoesNotResurrectAValueThatExpiredBeforeItsTtlWasRead()
     {
         var db = Substitute.For<IDatabase>();
