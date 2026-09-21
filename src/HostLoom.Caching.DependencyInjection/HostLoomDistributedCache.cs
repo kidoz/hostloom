@@ -21,6 +21,9 @@ namespace HostLoom.Caching.DependencyInjection;
 /// every request into a log line. Keys follow the kernel's rules: every asynchronous member
 /// rejects an empty key, one with whitespace or control characters, or one longer than
 /// <c>Caching:MaxKeyLength</c> with <see cref="ArgumentException"/> before touching the store.
+/// Payloads are the consumer's own bytes, stored as they are: <c>Caching:MaxPayloadBytes</c>
+/// bounds them, and a larger one is not written, logged at error level and counted as a
+/// <c>payload</c> error, while the kernel's envelope and compression do not apply.
 /// </remarks>
 internal sealed class HostLoomDistributedCache(
     IDistributedCacheStore store,
@@ -35,6 +38,7 @@ internal sealed class HostLoomDistributedCache(
 
     private readonly string _prefix = options.Namespace + ":cache:external:";
     private readonly int _maxKeyLength = options.MaxKeyLength;
+    private readonly long _maxPayloadBytes = options.MaxPayloadBytes;
     private readonly DegradedLogThrottle _throttle = new(
         time,
         options.Diagnostics.DegradedLogInterval
@@ -158,6 +162,12 @@ internal sealed class HostLoomDistributedCache(
     {
         CacheKey.Validate(key, _maxKeyLength, nameof(key));
         ArgumentNullException.ThrowIfNull(options);
+        if (payload.Length > _maxPayloadBytes)
+        {
+            TooLarge(key, payload.Length);
+            return;
+        }
+
         var timeToLive = TimeToLive(options);
         try
         {
@@ -192,6 +202,29 @@ internal sealed class HostLoomDistributedCache(
         // Sliding expiration cannot be honoured without a touch operation; the window becomes an
         // absolute time to live so the entry still expires.
         return options.SlidingExpiration ?? defaultExpiration;
+    }
+
+    private void TooLarge(string key, int bytes)
+    {
+        CachingDiagnostics.Errors.Add(
+            1,
+            new KeyValuePair<string, object?>(CachingDiagnostics.NamespaceTag, options.Namespace),
+            new KeyValuePair<string, object?>(CachingDiagnostics.KindTag, "payload")
+        );
+        if (!_throttle.ShouldLog(key))
+        {
+            return;
+        }
+
+        logger.LogError(
+            new EventId(1008, "DistributedCacheAdapterPayloadTooLarge"),
+            "Payload for '{Key}' in namespace '{Namespace}' is {Bytes} bytes, above Caching:MaxPayloadBytes ({MaxPayloadBytes}); it was not written. Further errors for this key are suppressed for {Interval}.",
+            key,
+            options.Namespace,
+            bytes,
+            _maxPayloadBytes,
+            options.Diagnostics.DegradedLogInterval
+        );
     }
 
     private void Degraded(Exception exception, string operation, string key)

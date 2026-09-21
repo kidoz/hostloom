@@ -203,6 +203,43 @@ public sealed class DistributedCacheAdapterTests
     }
 
     [Fact]
+    public async Task Write_AboveMaxPayloadBytes_IsNotStoredAndIsCounted()
+    {
+        var clock = new TestClock();
+        var store = new InMemoryDistributedCacheStore(clock);
+        using var logs = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddSingleton(store);
+        services.AddSingleton<TimeProvider>(clock);
+        services.AddLogging(logging => logging.AddProvider(logs));
+        services
+            .AddHostLoomCaching(caching =>
+            {
+                caching.Namespace = "adapter-bound";
+                caching.MaxPayloadBytes = 16;
+            })
+            .UseStore<InMemoryDistributedCacheStore>("InMemoryDistributed")
+            .UseSystemTextJson(Json())
+            .AddDistributedCacheAdapter();
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<IDistributedCache>();
+        using var errors = new ErrorRecorder("adapter-bound");
+
+        await cache.SetAsync("small", new byte[16], new DistributedCacheEntryOptions(), Token);
+        await cache.SetAsync("large", new byte[17], new DistributedCacheEntryOptions(), Token);
+        await cache.SetAsync("large", new byte[64], new DistributedCacheEntryOptions(), Token);
+
+        // The consumer's bytes are stored as they are, so the bound applies to them directly;
+        // one error line per key per interval, every rejection counted.
+        Assert.NotNull(await cache.GetAsync("small", Token));
+        Assert.Null(await cache.GetAsync("large", Token));
+        Assert.Null(await store.GetAsync("adapter-bound:cache:external:large", Token));
+        Assert.Equal(1, logs.Count(1008));
+        Assert.Equal(2, errors.Total);
+        Assert.Equal(["payload"], errors.Kinds);
+    }
+
+    [Fact]
     public void WithoutADistributedStore_ResolvingTheAdapterExplainsWhat()
     {
         var services = new ServiceCollection();
