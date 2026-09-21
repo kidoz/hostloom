@@ -52,15 +52,17 @@ public sealed class CacheFilter<TContext, TPayload> : IFilter<TContext>
         var lookup = await _cache
             .TryGetAsync<TPayload>(key, context.CancellationToken)
             .ConfigureAwait(false);
-        if (lookup.Found)
+        if (lookup is { Found: true, Value: { } cached })
         {
-            var cached = lookup.Value!;
             context.AddOrUpdatePayload(() => cached, _ => cached);
             var hit = new CacheFilterResult(key, true, lookup.Tier, lookup.Degraded);
             context.AddOrUpdatePayload(() => hit, _ => hit);
             return;
         }
 
+        // A remembered absence (a null result another consumer stored under
+        // CacheEntryOptions.NullExpiration) has no payload to hand to the rest of the pipe, so
+        // it runs as a miss; a payload it produces replaces the remembered null.
         var miss = new CacheFilterResult(key, false, CacheTier.None, lookup.Degraded);
         context.AddOrUpdatePayload(() => miss, _ => miss);
         await next.SendAsync(context).ConfigureAwait(false);

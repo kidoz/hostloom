@@ -91,6 +91,58 @@ public sealed class CachingPipelineTests
     }
 
     [Fact]
+    public async Task Cache_RememberedNull_RunsDownstreamAndReplacesIt()
+    {
+        await using var cache = new TieredCache(Options());
+        var token = TestContext.Current.CancellationToken;
+        var remembered = new CacheEntryOptions(TimeSpan.FromMinutes(5))
+        {
+            NullExpiration = TimeSpan.FromMinutes(1),
+        };
+        Assert.Null(
+            await cache.GetOrCreateAsync<Catalog?>(
+                "catalog:eu",
+                _ => ValueTask.FromResult<Catalog?>(null),
+                remembered,
+                token
+            )
+        );
+        Assert.True((await cache.TryGetAsync<Catalog?>("catalog:eu", token)).Found);
+        var runs = 0;
+        var pipe = Pipe.Create<CatalogContext>(builder =>
+        {
+            builder.UseCache<CatalogContext, Catalog>(
+                cache,
+                context => $"catalog:{context.Region}",
+                Entry
+            );
+            builder.UseExecute(context =>
+            {
+                runs++;
+                context.GetOrAddPayload(() => new Catalog(context.Region, 4));
+                return ValueTask.CompletedTask;
+            });
+        });
+
+        // A remembered absence has no payload to hand over: the rest of the pipe runs as on a
+        // miss instead of the filter failing on a null payload.
+        var first = new CatalogContext("eu");
+        await pipe.SendAsync(first);
+        Assert.Equal(1, runs);
+        Assert.True(first.TryGetPayload<CacheFilterResult>(out var result));
+        Assert.False(result!.Hit);
+        Assert.True(first.TryGetPayload<Catalog>(out var produced));
+        Assert.Equal(new Catalog("eu", 4), produced);
+
+        // What it produced replaced the remembered null.
+        var second = new CatalogContext("eu");
+        await pipe.SendAsync(second);
+        Assert.Equal(1, runs);
+        Assert.True(second.TryGetPayload<CacheFilterResult>(out var hit));
+        Assert.True(hit!.Hit);
+    }
+
+    [Fact]
     public async Task Cache_DownstreamWithoutPayload_CachesNothing()
     {
         await using var cache = new TieredCache(Options());

@@ -27,7 +27,9 @@ var pipeline = Pipe.Create<CatalogContext>(pipe =>
 the pipe runs, and whatever `TPayload` the context holds afterwards is written to the cache with
 the entry options. A `CacheFilterResult` payload records the key, whether it was a hit, the tier
 that answered, and whether the distributed tier was unavailable. The cache is fail-open, so a
-store failure never surfaces from this filter.
+store failure never surfaces from this filter. A remembered null, which another consumer may
+have stored under `CacheEntryOptions.NullExpiration`, has no payload to hand over and runs the
+rest of the pipe as a miss; a payload it produces replaces the remembered absence.
 
 The lookup and the write are two calls rather than one get-or-create, because the "factory" is
 the downstream pipe and has to run with the context. Two concurrent misses for one key therefore
