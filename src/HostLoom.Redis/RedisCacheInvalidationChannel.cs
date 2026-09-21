@@ -365,11 +365,15 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         Version? version = null;
         try
         {
-            var endpoints = multiplexer.GetEndPoints();
-            if (endpoints.Length > 0)
-            {
-                version = multiplexer.GetServer(endpoints[0]).Version;
-            }
+            // The SDK reports a placeholder version for an endpoint it has not connected to,
+            // so read it from a node that answered rather than from whichever came first.
+            var servers = multiplexer
+                .GetEndPoints()
+                .Select(endpoint => multiplexer.GetServer(endpoint))
+                .ToArray();
+            version = (
+                servers.FirstOrDefault(server => server.IsConnected) ?? servers.FirstOrDefault()
+            )?.Version;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -455,12 +459,23 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
                                     .ConfigureAwait(false);
                                 var subscriberId = RedisInvalidationDecoder.FindSubscriberClientId(
                                     (string?)list,
-                                    _connection.ClientName
+                                    _connection.ClientName,
+                                    out var matches
                                 );
                                 if (subscriberId is null)
                                 {
                                     throw new InvalidOperationException(
                                         $"No pub/sub client named '{_connection.ClientName}' on {server.EndPoint} yet."
+                                    );
+                                }
+
+                                if (matches > 1)
+                                {
+                                    // Redirecting to the wrong one would send this process's
+                                    // invalidations elsewhere while reporting tracking as
+                                    // enabled; the explicit channel is the honest fallback.
+                                    throw new InvalidOperationException(
+                                        $"{matches} pub/sub clients on {server.EndPoint} are named '{_connection.ClientName}'; tracking needs a client name unique to this process (Redis:ClientName, or the ClientName of an externally supplied multiplexer)."
                                     );
                                 }
 
@@ -595,6 +610,19 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     {
         try
         {
+            if (
+                !await KeyspaceNotificationsEnabledAsync(multiplexer, cancellationToken)
+                    .ConfigureAwait(false)
+            )
+            {
+                _logger.LogWarning(
+                    new EventId(1319, "RedisKeyspaceNotificationsOff"),
+                    "Keyspace notifications are not configured on the Redis server for namespace {Namespace}; the explicit invalidation channel is the only fan-out. The server needs notify-keyspace-events Kg$xe.",
+                    _options.Namespace
+                );
+                return false;
+            }
+
             var subscriber = multiplexer.GetSubscriber();
             foreach (var pattern in KeyspacePatterns())
             {
@@ -623,6 +651,54 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             );
             return false;
         }
+    }
+
+    /// <summary>
+    /// Whether the server's <c>notify-keyspace-events</c> covers what broadcast mode listens
+    /// for. A subscription alone proves nothing: the server accepts it and simply never
+    /// publishes. A server that refuses <c>CONFIG GET</c> (a managed offering, an ACL) cannot be
+    /// checked and is trusted, because the setting may well be applied out of band.
+    /// </summary>
+    private async Task<bool> KeyspaceNotificationsEnabledAsync(
+        IConnectionMultiplexer multiplexer,
+        CancellationToken cancellationToken
+    )
+    {
+        var server = multiplexer
+            .GetEndPoints()
+            .Select(endpoint => multiplexer.GetServer(endpoint))
+            .FirstOrDefault(candidate =>
+                candidate.IsConnected && candidate.ServerType != ServerType.Sentinel
+            );
+        if (server is null)
+        {
+            return true;
+        }
+
+        string? flags;
+        try
+        {
+            var result = await server
+                .ExecuteAsync("CONFIG", "GET", "notify-keyspace-events")
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+            flags = RedisInvalidationDecoder.ReadConfigValue(result);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    exception,
+                    "notify-keyspace-events could not be read for namespace {Namespace}; keyspace subscriptions proceed unverified.",
+                    _options.Namespace
+                );
+            }
+
+            return true;
+        }
+
+        return flags is null || RedisInvalidationDecoder.KeyspaceNotificationsCover(flags);
     }
 
     private async Task<ChannelMessageQueue> SubscribeOwnedAsync(

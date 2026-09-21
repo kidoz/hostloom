@@ -64,7 +64,11 @@ queued Redis command can still execute. The SDK owns the copied bytes until it f
 connection initialization likewise stops only that caller's wait: other callers share the attempt,
 and disposal waits for its result, releasing an owned multiplexer even if it arrives during shutdown.
 An external `ConnectionFactory` receives the connection's shutdown token and retains ownership of
-the multiplexer it returns.
+the multiplexer it returns. Its `ClientName` becomes the connection's, as it does for a wrapped
+multiplexer, because tracking finds the subscriber connection by that name on the server: give it
+a value unique to the process. The StackExchange.Redis default, the machine name, is shared by
+every process on a host, and tracking refuses a name that more than one pub/sub client carries
+rather than redirect this process's invalidations to whichever the server listed first.
 
 ## Fail-open
 
@@ -88,7 +92,7 @@ expires, leaves every in-process tier without anyone publishing:
 | Mode | What the package does | Needs |
 |---|---|---|
 | `Tracking` | `CLIENT TRACKING ON REDIRECT <subscriber> BCAST PREFIX <data-prefix> NOLOOP`: the server reports changes to every cache-data key in the namespace, including entries populated locally by writes or warmup | Redis 6.0 or later |
-| `Broadcast` | pattern subscriptions to `__keyspace@{db}__:{prefix}*` for `Caching:Invalidation:KeyPrefixFilters`, or the namespace's entries when the list is empty | `notify-keyspace-events Kg$xe` on the server |
+| `Broadcast` | pattern subscriptions to `__keyspace@{db}__:{prefix}*` for `Caching:Invalidation:KeyPrefixFilters`, or the namespace's entries when the list is empty; `notify-keyspace-events` is read first where `CONFIG GET` is permitted, and a value without keyspace messages for writes and deletes leaves the explicit channel as the only fan-out, logged | `notify-keyspace-events Kg$xe` on the server |
 | `Auto` (default) | `Tracking` on Redis 6.0 or later, read from the server version at connect, otherwise `Broadcast` | |
 
 For broadcast mode, `K` enables keyspace messages, `g` covers deletion, `$` covers string

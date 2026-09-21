@@ -1,6 +1,7 @@
 using HostLoom.Caching;
 using HostLoom.Redis;
 using HostLoom.Redis.Internal;
+using StackExchange.Redis;
 using Xunit;
 
 namespace HostLoom.Tests;
@@ -161,6 +162,50 @@ public sealed class RedisInvalidationTests
         Assert.Equal(5, RedisInvalidationDecoder.FindSubscriberClientId(list, "hostloom-a-2"));
         Assert.Null(RedisInvalidationDecoder.FindSubscriberClientId(list, "hostloom-b-1"));
         Assert.Null(RedisInvalidationDecoder.FindSubscriberClientId(null, "hostloom-a-1"));
+    }
+
+    [Fact]
+    public void FindSubscriberClientId_CountsClientsSharingTheName()
+    {
+        const string list =
+            "id=4 addr=127.0.0.1:2 name=shared flags=P db=0 cmd=subscribe\n"
+            + "id=7 addr=127.0.0.1:5 name=shared flags=P db=0 cmd=subscribe\n"
+            + "id=9 addr=127.0.0.1:6 name=shared flags=N db=0 cmd=client|list\n";
+
+        Assert.Equal(
+            4,
+            RedisInvalidationDecoder.FindSubscriberClientId(list, "shared", out var matches)
+        );
+        Assert.Equal(2, matches);
+        Assert.Null(RedisInvalidationDecoder.FindSubscriberClientId(list, "other", out matches));
+        Assert.Equal(0, matches);
+    }
+
+    [Theory]
+    [InlineData("Kg$xe", true)]
+    [InlineData("KA", true)]
+    [InlineData("Kg$", true)]
+    [InlineData("Eg$xe", false)]
+    [InlineData("K", false)]
+    [InlineData("Kxe", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void KeyspaceNotificationsCover_RequiresKeyspaceMessagesForWritesAndDeletes(
+        string? flags,
+        bool covered
+    ) => Assert.Equal(covered, RedisInvalidationDecoder.KeyspaceNotificationsCover(flags));
+
+    [Fact]
+    public void ReadConfigValue_ReadsTheNameValuePair()
+    {
+        var pair = RedisResult.Create([
+            RedisResult.Create((RedisValue)"notify-keyspace-events"),
+            RedisResult.Create((RedisValue)"Kg$xe"),
+        ]);
+
+        Assert.Equal("Kg$xe", RedisInvalidationDecoder.ReadConfigValue(pair));
+        Assert.Null(RedisInvalidationDecoder.ReadConfigValue(RedisResult.Create(RedisValue.Null)));
+        Assert.Null(RedisInvalidationDecoder.ReadConfigValue(null));
     }
 
     [Fact]

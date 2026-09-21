@@ -47,6 +47,81 @@ public sealed class RedisInvalidationModeTests
     }
 
     [Fact(Skip = RedisAvailability.Skip, SkipUnless = nameof(Available))]
+    public async Task Tracking_WorksThroughAConnectionFactory()
+    {
+        var ns = Namespace();
+        var clientName = "factory-" + Guid.NewGuid().ToString("N")[..8];
+        await using var connection = new RedisConnection(
+            new RedisOptions
+            {
+                ConnectionFactory = async _ =>
+                {
+                    var configuration = ConfigurationOptions.Parse(RedisAvailability.Configuration);
+                    configuration.AllowAdmin = true;
+                    configuration.Protocol = RedisProtocol.Resp2;
+                    configuration.ClientName = clientName;
+                    return await ConnectionMultiplexer.ConnectAsync(configuration);
+                },
+            }
+        );
+        await using var channel = new RedisCacheInvalidationChannel(
+            connection,
+            new CachingOptions { Namespace = ns }.WithMode(CacheInvalidationMode.Tracking)
+        );
+
+        using var subscription = channel.Subscribe(_ => { });
+        await CacheConformance.WaitUntilAsync(() =>
+            Task.FromResult(channel.Transport != RedisInvalidationTransport.Pending)
+        );
+
+        // The factory named the multiplexer, so that is the name the subscriber is found by.
+        Assert.Equal(clientName, connection.ClientName);
+        Assert.Equal(RedisInvalidationTransport.Tracking, channel.Transport);
+    }
+
+    [Fact(Skip = RedisAvailability.Skip, SkipUnless = nameof(Available))]
+    public async Task Tracking_RefusesAClientNameSharedWithAnotherConnection()
+    {
+        var clientName = "shared-" + Guid.NewGuid().ToString("N")[..8];
+        var configuration = ConfigurationOptions.Parse(RedisAvailability.Configuration);
+        configuration.AllowAdmin = true;
+        configuration.Protocol = RedisProtocol.Resp2;
+        configuration.ClientName = clientName;
+        await using var first = await ConnectionMultiplexer.ConnectAsync(configuration);
+        await using var second = await ConnectionMultiplexer.ConnectAsync(configuration);
+        // Both pub/sub connections exist before either registers tracking, as two processes
+        // sharing a name on one host would have.
+        var warm = RedisChannel.Literal("warm-" + clientName);
+        await first.GetSubscriber().SubscribeAsync(warm, (_, _) => { });
+        await second.GetSubscriber().SubscribeAsync(warm, (_, _) => { });
+        var options = new RedisOptions { Configuration = "external", MaxClientCommandRetries = 0 };
+        await using var firstConnection = new RedisConnection(first, options);
+        await using var secondConnection = new RedisConnection(second, options);
+        await using var firstChannel = new RedisCacheInvalidationChannel(
+            firstConnection,
+            new CachingOptions { Namespace = Namespace() }.WithMode(CacheInvalidationMode.Tracking)
+        );
+        await using var secondChannel = new RedisCacheInvalidationChannel(
+            secondConnection,
+            new CachingOptions { Namespace = Namespace() }.WithMode(CacheInvalidationMode.Tracking)
+        );
+
+        using var one = firstChannel.Subscribe(_ => { });
+        using var two = secondChannel.Subscribe(_ => { });
+        await CacheConformance.WaitUntilAsync(() =>
+            Task.FromResult(
+                firstChannel.Transport != RedisInvalidationTransport.Pending
+                    && secondChannel.Transport != RedisInvalidationTransport.Pending
+            )
+        );
+
+        // A redirect to whichever client the server listed first would hand one process's
+        // invalidations to the other while reporting tracking; both stay on the explicit channel.
+        Assert.Equal(RedisInvalidationTransport.ExplicitOnly, firstChannel.Transport);
+        Assert.Equal(RedisInvalidationTransport.ExplicitOnly, secondChannel.Transport);
+    }
+
+    [Fact(Skip = RedisAvailability.Skip, SkipUnless = nameof(Available))]
     public async Task Tracking_ReportsAnotherConnectionsWriteAndIgnoresItsOwn()
     {
         var ns = Namespace();

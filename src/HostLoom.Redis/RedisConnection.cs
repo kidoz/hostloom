@@ -65,9 +65,12 @@ public sealed class RedisConnection : IAsyncDisposable
 
     /// <summary>
     /// The name the server sees for this connection: <see cref="RedisOptions.ClientName"/> with a
-    /// per-connection suffix, so tracking can tell its own subscriber connection apart.
+    /// per-connection suffix, so tracking can tell its own subscriber connection apart. A
+    /// multiplexer supplied by <see cref="RedisOptions.ConnectionFactory"/> or wrapped directly
+    /// keeps the name it was configured with, which is then the name reported here once it is
+    /// known; tracking needs that name to be unique to the process.
     /// </summary>
-    public string ClientName { get; }
+    public string ClientName { get; private set; }
 
     /// <summary>Whether the multiplexer exists and reports itself connected.</summary>
     public bool IsConnected => Volatile.Read(ref _multiplexer)?.IsConnected ?? false;
@@ -114,6 +117,12 @@ public sealed class RedisConnection : IAsyncDisposable
         if (Options.ConnectionFactory is { } factory)
         {
             created = await factory(_shutdown.Token).ConfigureAwait(false);
+            // The factory configured the multiplexer, so the server knows it by the name the
+            // factory chose, not by the suffixed one; tracking looks the subscriber up by name.
+            if (!string.IsNullOrEmpty(created.ClientName))
+            {
+                ClientName = created.ClientName;
+            }
         }
         else
         {

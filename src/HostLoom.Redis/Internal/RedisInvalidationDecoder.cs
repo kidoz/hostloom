@@ -1,4 +1,5 @@
 using HostLoom.Caching;
+using StackExchange.Redis;
 
 namespace HostLoom.Redis.Internal;
 
@@ -102,8 +103,22 @@ internal static class RedisInvalidationDecoder
     /// Finds the id of this process's pub/sub connection in <c>CLIENT LIST</c> output by its
     /// client name; that is the connection tracking invalidations are redirected to.
     /// </summary>
-    public static long? FindSubscriberClientId(string? clientList, string clientName)
+    public static long? FindSubscriberClientId(string? clientList, string clientName) =>
+        FindSubscriberClientId(clientList, clientName, out _);
+
+    /// <summary>
+    /// As <see cref="FindSubscriberClientId(string?, string)"/>, also counting how many pub/sub
+    /// clients carry the name. More than one means the name is shared with another process (or
+    /// a connection the server has not reaped yet), and a redirect to the first would hand this
+    /// process's invalidations to whichever of them the server listed first.
+    /// </summary>
+    public static long? FindSubscriberClientId(
+        string? clientList,
+        string clientName,
+        out int matches
+    )
     {
+        matches = 0;
         if (clientList is null)
         {
             return null;
@@ -119,6 +134,7 @@ internal static class RedisInvalidationDecoder
             clientList = clientList[4..];
         }
 
+        long? found = null;
         foreach (var line in clientList.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             long? id = null;
@@ -150,10 +166,59 @@ internal static class RedisInvalidationDecoder
 
             if (id is not null && named && pubsub)
             {
-                return id;
+                matches++;
+                found ??= id;
             }
         }
 
-        return null;
+        return found;
+    }
+
+    /// <summary>
+    /// The value of a one-parameter <c>CONFIG GET</c> reply, which is a name/value array in
+    /// RESP2 and a map in RESP3, or null when the reply has neither shape.
+    /// </summary>
+    public static string? ReadConfigValue(RedisResult? result)
+    {
+        if (result is null || result.IsNull)
+        {
+            return null;
+        }
+
+        try
+        {
+            if (result.Resp3Type == ResultType.Map)
+            {
+                var map = result.ToDictionary();
+                return map.Count == 1 ? (string?)map.Values.First() : null;
+            }
+
+            var pairs = (RedisResult[]?)result;
+            return pairs is { Length: 2 } ? (string?)pairs[1] : null;
+        }
+        catch (InvalidCastException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether a <c>notify-keyspace-events</c> value delivers what broadcast mode listens for:
+    /// keyspace messages (<c>K</c>) for generic and string commands, or for every command
+    /// (<c>A</c>). Expiry and eviction (<c>x</c>, <c>e</c>) are covered by <c>A</c> too, and
+    /// otherwise only shorten staleness, so they are not required.
+    /// </summary>
+    public static bool KeyspaceNotificationsCover(string? flags)
+    {
+        if (string.IsNullOrEmpty(flags) || !flags.Contains('K', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return flags.Contains('A', StringComparison.Ordinal)
+            || (
+                flags.Contains('g', StringComparison.Ordinal)
+                && flags.Contains('$', StringComparison.Ordinal)
+            );
     }
 }
