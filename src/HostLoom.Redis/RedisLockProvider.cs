@@ -1,4 +1,3 @@
-using System.Globalization;
 using HostLoom.Locking;
 using HostLoom.Redis.Internal;
 using StackExchange.Redis;
@@ -134,27 +133,12 @@ public sealed class RedisLockProvider : ILockProvider, ILockProviderHealthProbe,
     /// </remarks>
     public async ValueTask<LockProviderHealth> CheckHealthAsync(CancellationToken cancellationToken)
     {
-        var timeout = _connection.Options.HealthTimeout;
-        try
-        {
-            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            bounded.CancelAfter(timeout);
-            var db = await _connection.GetDatabaseAsync(bounded.Token).ConfigureAwait(false);
-            var latency = await db.PingAsync().WaitAsync(bounded.Token).ConfigureAwait(false);
-            return LockProviderHealth.Healthy(
-                string.Create(
-                    CultureInfo.InvariantCulture,
-                    $"Redis reachable; PING answered in {latency.TotalMilliseconds:F1} ms on database {_connection.Options.DatabaseIndex}."
-                )
-            );
-        }
-        catch (Exception exception)
-            when (!RedisFailures.IsCallerCancellation(exception, cancellationToken))
-        {
-            return LockProviderHealth.Unhealthy(
-                $"Redis unreachable; PING did not answer within {timeout} ({exception.GetType().Name})."
-            );
-        }
+        var health = await RedisHealthProbe
+            .CheckAsync(_connection, cancellationToken)
+            .ConfigureAwait(false);
+        return health.Reachable
+            ? LockProviderHealth.Healthy(health.Description)
+            : LockProviderHealth.Unhealthy(health.Description);
     }
 
     private RedisKey Key(string key) => RedisKeys.ToRedisKey(key, _hashTags);

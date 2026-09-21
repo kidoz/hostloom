@@ -36,6 +36,8 @@ public sealed class RedisHealthDescriptionTests
 
         Assert.True(cache.IsHealthy);
         Assert.True(lockHealth.IsHealthy);
+        // Two public contracts, one probe: the wording cannot drift apart between them.
+        Assert.Equal(cache.Description, lockHealth.Description);
         foreach (var description in new[] { cache.Description, lockHealth.Description })
         {
             Assert.StartsWith("Redis reachable", description, StringComparison.Ordinal);
@@ -52,6 +54,7 @@ public sealed class RedisHealthDescriptionTests
 
         Assert.False(down.IsHealthy);
         Assert.False(lockDown.IsHealthy);
+        Assert.Equal(down.Description, lockDown.Description);
         foreach (var description in new[] { down.Description, lockDown.Description })
         {
             Assert.StartsWith("Redis unreachable", description, StringComparison.Ordinal);

@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text;
 using HostLoom.Caching;
 using HostLoom.Redis.Internal;
@@ -404,27 +403,12 @@ public sealed class RedisCacheStore
     /// </remarks>
     public async ValueTask<CacheStoreHealth> CheckHealthAsync(CancellationToken cancellationToken)
     {
-        var timeout = _connection.Options.HealthTimeout;
-        try
-        {
-            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            bounded.CancelAfter(timeout);
-            var db = await _connection.GetDatabaseAsync(bounded.Token).ConfigureAwait(false);
-            var latency = await db.PingAsync().WaitAsync(bounded.Token).ConfigureAwait(false);
-            return CacheStoreHealth.Healthy(
-                string.Create(
-                    CultureInfo.InvariantCulture,
-                    $"Redis reachable; PING answered in {latency.TotalMilliseconds:F1} ms on database {_connection.Options.DatabaseIndex}."
-                )
-            );
-        }
-        catch (Exception exception)
-            when (!RedisFailures.IsCallerCancellation(exception, cancellationToken))
-        {
-            return CacheStoreHealth.Unhealthy(
-                $"Redis unreachable; PING did not answer within {timeout} ({exception.GetType().Name})."
-            );
-        }
+        var health = await RedisHealthProbe
+            .CheckAsync(_connection, cancellationToken)
+            .ConfigureAwait(false);
+        return health.Reachable
+            ? CacheStoreHealth.Healthy(health.Description)
+            : CacheStoreHealth.Unhealthy(health.Description);
     }
 
     private void AppendTagIndexes(
