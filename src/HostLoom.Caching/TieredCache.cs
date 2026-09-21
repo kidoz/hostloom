@@ -46,12 +46,37 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     private readonly ITimer _maintenance;
     private int _disposed;
 
-    // One bounded generation conservatively rejects every fill overlapping an invalidation.
-    // The gate makes generation checks and L1 insertion atomic with local eviction.
+    // A generation per key stripe conservatively rejects every single-key fill overlapping an
+    // invalidation of that key; tag and flush invalidations move every stripe, and the whole
+    // generation guards bulk operations. The gate makes generation checks and L1 insertion
+    // atomic with local eviction.
+    private const int GenerationStripes = 1024;
     private readonly Lock _invalidationGate = new();
+    private readonly long[] _generations = new long[GenerationStripes];
     private long _invalidationGeneration;
 
+    // What this instance published and has not yet seen come back. The channel echoes every
+    // publish to its publisher; applying the echo as a fresh invalidation would suppress the
+    // very refill that follows a removal, so an echo is recognised and skipped.
+    private const int RememberedPublishes = 64;
+    private readonly Lock _publishedGate = new();
+    private readonly Queue<PublishedInvalidation> _published = new();
+
     private long FillGeneration => Interlocked.Read(ref _invalidationGeneration);
+
+    private long FillGenerationOf(string key) => Volatile.Read(ref _generations[Stripe(key)]);
+
+    private static int Stripe(string key) =>
+        (int)((uint)string.GetHashCode(key, StringComparison.Ordinal) % GenerationStripes);
+
+    /// <summary>The generation stripe of <paramref name="key"/>, for tests that need two keys apart.</summary>
+    internal static int StripeOf(string key) => Stripe(key);
+
+    private readonly record struct PublishedInvalidation(
+        int Hash,
+        CacheInvalidation Message,
+        long PublishedAt
+    );
 
     /// <summary>Composes a cache.</summary>
     /// <param name="options">Validated with <see cref="CachingOptions.Validate"/>.</param>
@@ -250,7 +275,13 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
         using var activity = StartActivity("cache.set", key);
         var start = Stopwatch.GetTimestamp();
-        var degraded = await WriteAsync(key, value, options, FillGeneration, cancellationToken)
+        var degraded = await WriteAsync(
+                key,
+                value,
+                options,
+                FillGenerationOf(key),
+                cancellationToken
+            )
             .ConfigureAwait(false);
         activity?.SetTag("hostloom.cache.degraded", degraded);
         RecordOperation("set", degraded ? "degraded" : "miss", start);
@@ -307,7 +338,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             return false;
         }
 
-        var generation = FillGeneration;
+        var generation = FillGenerationOf(key);
         bool written;
         try
         {
@@ -334,7 +365,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         {
             lock (_invalidationGate)
             {
-                if (generation == _invalidationGeneration)
+                if (generation == _generations[Stripe(key)])
                 {
                     _local?.Set(
                         key,
@@ -488,6 +519,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         if (_store is not null && missing is { Count: > 0 })
         {
             var generation = FillGeneration;
+            var readStart = _time.GetTimestamp();
             IReadOnlyDictionary<string, CacheStoreEntry> entries;
             try
             {
@@ -506,7 +538,8 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             {
                 if (
                     entries.TryGetValue(DataKey(key), out var entry)
-                    && Decode<T>(key, entry, null, generation) is { Found: true } lookup
+                    && Decode<T>(key, entry, null, generation, readStart, bulk: true)
+                        is { Found: true } lookup
                 )
                 {
                     found[key] = lookup.Value!;
@@ -779,7 +812,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
         try
         {
-            var generation = FillGeneration;
+            var generation = FillGenerationOf(key);
             var factoryStart = Stopwatch.GetTimestamp();
             T value;
             try
@@ -862,7 +895,8 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         CancellationToken cancellationToken
     )
     {
-        var generation = FillGeneration;
+        var generation = FillGenerationOf(key);
+        var readStart = _time.GetTimestamp();
         CacheStoreEntry? entry;
         try
         {
@@ -875,15 +909,25 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         }
 
         return entry is { } found
-            ? Decode<T>(key, found, options, generation)
+            ? Decode<T>(key, found, options, generation, readStart, bulk: false)
             : CacheLookup.Miss<T>();
     }
 
+    /// <param name="generation">
+    /// The key's stripe generation, or the whole generation when <paramref name="bulk"/>,
+    /// captured before the distributed read; an invalidation since then leaves L1 untouched.
+    /// </param>
+    /// <param name="readStart">
+    /// When the distributed read started: a value written to L1 after that is newer than what
+    /// the read returned and is kept.
+    /// </param>
     private CacheLookup<T> Decode<T>(
         string key,
         CacheStoreEntry entry,
         CacheEntryOptions? options,
-        long generation
+        long generation,
+        long readStart,
+        bool bulk
     )
     {
         var status = CachePayloadCodec.TryDecode<T>(
@@ -907,13 +951,14 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
                 lock (_invalidationGate)
                 {
-                    if (generation == _invalidationGeneration)
+                    if (generation == CurrentGeneration(key, bulk))
                     {
                         _local?.SetNull(
                             key,
                             LocalTimeToLive(entry, options),
                             tags,
-                            options?.EffectiveStaleGrace
+                            options?.EffectiveStaleGrace,
+                            notIfWrittenAfter: readStart
                         );
                     }
                 }
@@ -921,7 +966,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             case PayloadDecodeStatus.Ok when value is not null:
                 lock (_invalidationGate)
                 {
-                    if (generation == _invalidationGeneration)
+                    if (generation == CurrentGeneration(key, bulk))
                     {
                         _local?.Set(
                             key,
@@ -929,7 +974,8 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                             LocalTimeToLive(entry, options),
                             tags,
                             entry.Payload.Length,
-                            options?.EffectiveStaleGrace
+                            options?.EffectiveStaleGrace,
+                            notIfWrittenAfter: readStart
                         );
                     }
                 }
@@ -975,7 +1021,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         CancellationToken cancellationToken
     )
     {
-        if (generation != FillGeneration)
+        if (generation != FillGenerationOf(key))
         {
             return false;
         }
@@ -1010,7 +1056,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 : expiration;
         lock (_invalidationGate)
         {
-            if (generation == _invalidationGeneration)
+            if (generation == _generations[Stripe(key)])
             {
                 _local?.SetNull(key, local, options.Tags, options.EffectiveStaleGrace);
             }
@@ -1027,7 +1073,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         CancellationToken cancellationToken
     )
     {
-        if (generation != FillGeneration)
+        if (generation != FillGenerationOf(key))
         {
             return false;
         }
@@ -1066,7 +1112,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
         lock (_invalidationGate)
         {
-            if (generation == _invalidationGeneration)
+            if (generation == _generations[Stripe(key)])
             {
                 _local?.Set(
                     key,
@@ -1241,6 +1287,8 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             cancellationToken,
             timeout.Token
         );
+        // Before the call: the echo can arrive before the publish returns.
+        RememberPublished(invalidation);
         try
         {
             await _channel.PublishAsync(invalidation, linked.Token).ConfigureAwait(false);
@@ -1252,10 +1300,12 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            ForgetPublished(invalidation);
             throw;
         }
         catch (Exception exception)
         {
+            ForgetPublished(invalidation);
             CachingDiagnostics.Errors.Add(
                 1,
                 _namespaceTag,
@@ -1304,6 +1354,18 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 .ConfigureAwait(false)
         )
         {
+            if (IsOwnEcho(invalidation))
+            {
+                // Applied when it was published; applying it again would suppress the refill
+                // that follows a removal on this instance.
+                CachingDiagnostics.Invalidations.Add(
+                    1,
+                    _namespaceTag,
+                    new KeyValuePair<string, object?>(CachingDiagnostics.DirectionTag, "echoed")
+                );
+                continue;
+            }
+
             InvalidateLocal(invalidation);
             if (invalidation.FlushAll)
             {
@@ -1332,11 +1394,31 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         }
     }
 
+    /// <summary>Read under <see cref="_invalidationGate"/>: the generation a fill is checked against.</summary>
+    private long CurrentGeneration(string key, bool bulk) =>
+        bulk ? _invalidationGeneration : _generations[Stripe(key)];
+
     private void InvalidateLocal(CacheInvalidation invalidation)
     {
         lock (_invalidationGate)
         {
             Interlocked.Increment(ref _invalidationGeneration);
+            if (invalidation.FlushAll || invalidation.Tags.Count > 0)
+            {
+                // The keys a tag covers are not known here, and a flush covers every key.
+                for (var stripe = 0; stripe < GenerationStripes; stripe++)
+                {
+                    _generations[stripe]++;
+                }
+            }
+            else
+            {
+                foreach (var key in invalidation.Keys)
+                {
+                    _generations[Stripe(key)]++;
+                }
+            }
+
             if (invalidation.FlushAll)
             {
                 _local?.Clear();
@@ -1349,6 +1431,112 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             }
         }
     }
+
+    /// <summary>
+    /// Remembers a message about to be published, so its echo is recognised. Bounded by count
+    /// and by the publish timeout: an echo later than that is treated as someone else's.
+    /// </summary>
+    private void RememberPublished(CacheInvalidation invalidation)
+    {
+        var remembered = new PublishedInvalidation(
+            Fingerprint(invalidation),
+            invalidation,
+            _time.GetTimestamp()
+        );
+        lock (_publishedGate)
+        {
+            _published.Enqueue(remembered);
+            while (_published.Count > RememberedPublishes)
+            {
+                _published.Dequeue();
+            }
+        }
+    }
+
+    /// <summary>Forgets a message whose publish failed: no echo will come.</summary>
+    private void ForgetPublished(CacheInvalidation invalidation)
+    {
+        lock (_publishedGate)
+        {
+            if (_published.Count == 0)
+            {
+                return;
+            }
+
+            var kept = _published.Where(entry => !ReferenceEquals(entry.Message, invalidation));
+            var remaining = kept.ToArray();
+            _published.Clear();
+            foreach (var entry in remaining)
+            {
+                _published.Enqueue(entry);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="invalidation"/> is the echo of a message this instance published
+    /// within the publish timeout, consuming the remembered publish when it is.
+    /// </summary>
+    private bool IsOwnEcho(CacheInvalidation invalidation)
+    {
+        var hash = Fingerprint(invalidation);
+        lock (_publishedGate)
+        {
+            if (_published.Count == 0)
+            {
+                return false;
+            }
+
+            var matched = false;
+            var remaining = new List<PublishedInvalidation>(_published.Count);
+            while (_published.TryDequeue(out var entry))
+            {
+                if (_time.GetElapsedTime(entry.PublishedAt) > _options.Invalidation.Timeout)
+                {
+                    continue;
+                }
+
+                if (!matched && entry.Hash == hash && SameMessage(entry.Message, invalidation))
+                {
+                    matched = true;
+                    continue;
+                }
+
+                remaining.Add(entry);
+            }
+
+            foreach (var entry in remaining)
+            {
+                _published.Enqueue(entry);
+            }
+
+            return matched;
+        }
+    }
+
+    private static int Fingerprint(CacheInvalidation invalidation)
+    {
+        var hash = new HashCode();
+        hash.Add(invalidation.FlushAll);
+        hash.Add(invalidation.Keys.Count);
+        foreach (var key in invalidation.Keys)
+        {
+            hash.Add(key, StringComparer.Ordinal);
+        }
+
+        hash.Add(invalidation.Tags.Count);
+        foreach (var tag in invalidation.Tags)
+        {
+            hash.Add(tag, StringComparer.Ordinal);
+        }
+
+        return hash.ToHashCode();
+    }
+
+    private static bool SameMessage(CacheInvalidation left, CacheInvalidation right) =>
+        left.FlushAll == right.FlushAll
+        && left.Keys.SequenceEqual(right.Keys, StringComparer.Ordinal)
+        && left.Tags.SequenceEqual(right.Tags, StringComparer.Ordinal);
 
     private void Maintain()
     {

@@ -385,6 +385,197 @@ public sealed class CacheInvalidationRaceTests
         await store.Received(2).GetAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task An_invalidation_of_another_key_does_not_suppress_a_fill()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var options = new CachingOptions { Namespace = "stripes-" + Guid.NewGuid().ToString("N") };
+        var store = Substitute.For<IDistributedCacheStore>();
+        var channel = Substitute.For<ICacheInvalidationChannel>();
+        Action<CacheInvalidation>? invalidate = null;
+        channel
+            .Subscribe(Arg.Any<Action<CacheInvalidation>>())
+            .Returns(call =>
+            {
+                invalidate = call.Arg<Action<CacheInvalidation>>();
+                return Substitute.For<IDisposable>();
+            });
+        store
+            .SetAsync(
+                Arg.Any<string>(),
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<TimeSpan>(),
+                Arg.Any<IReadOnlyCollection<string>?>(),
+                Arg.Any<CancellationToken>()
+            )
+            .Returns(ValueTask.CompletedTask);
+        var entered = Signal();
+        var release = Signal();
+        using var listener = ReceivedListener(options.Namespace, out var applied);
+        await using var cache = new TieredCache(options, store, Serializer, channel);
+
+        // Pick a second key from another stripe: a shared stripe is the documented exception.
+        var other = Enumerable
+            .Range(0, 100_000)
+            .Select(i => "other:" + i)
+            .First(candidate =>
+                TieredCache.StripeOf(candidate) != TieredCache.StripeOf("catalog:eu")
+            );
+        var pending = cache
+            .GetOrCreateAsync(
+                "catalog:eu",
+                async _ =>
+                {
+                    entered.SetResult();
+                    await release.Task;
+                    return "fresh";
+                },
+                new CacheEntryOptions(Expiration),
+                token
+            )
+            .AsTask();
+        await entered.Task.WaitAsync(Bound, token);
+        invalidate!(new CacheInvalidation([other], []));
+        await applied.Task.WaitAsync(Bound, token);
+        release.SetResult();
+
+        Assert.Equal("fresh", await pending.WaitAsync(Bound, token));
+        // The unrelated invalidation left this fill alone: it reached both tiers.
+        Assert.Equal(1, cache.LocalEntryCount);
+        Assert.Equal(CacheTier.L1, (await cache.TryGetAsync<string>("catalog:eu", token)).Tier);
+        await store
+            .Received(1)
+            .SetAsync(
+                Arg.Any<string>(),
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<TimeSpan>(),
+                Arg.Any<IReadOnlyCollection<string>?>(),
+                Arg.Any<CancellationToken>()
+            );
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task The_echo_of_an_own_removal_does_not_suppress_the_refill()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var options = new CachingOptions { Namespace = "echo-" + Guid.NewGuid().ToString("N") };
+        var clock = new TestClock();
+        // The in-memory store's channel delivers every publish to its publisher too.
+        var store = new InMemoryDistributedCacheStore(clock);
+        using var listener = EchoListener(options.Namespace, out var echoed);
+        await using var cache = new TieredCache(options, store, Serializer, timeProvider: clock);
+        var entryOptions = new CacheEntryOptions(Expiration);
+        await cache.SetAsync("catalog:eu", "old", entryOptions, token);
+
+        await cache.RemoveAsync("catalog:eu", token);
+        var refill = await cache.GetOrCreateAsync(
+            "catalog:eu",
+            async _ =>
+            {
+                // The echo lands while the factory runs.
+                await echoed.Task.WaitAsync(Bound, token);
+                return "new";
+            },
+            entryOptions,
+            token
+        );
+
+        Assert.Equal("new", refill);
+        Assert.Equal(1, cache.LocalEntryCount);
+        var local = await cache.TryGetAsync<string>("catalog:eu", token);
+        Assert.Equal(CacheTier.L1, local.Tier);
+        Assert.Equal("new", local.Value);
+        Assert.NotNull(await store.GetAsync(options.Namespace + ":cache:data:catalog:eu", token));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task A_delayed_distributed_read_does_not_replace_a_newer_local_value()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var options = new CachingOptions { Namespace = "late-" + Guid.NewGuid().ToString("N") };
+        var clock = new TestClock();
+        var store = Substitute.For<IDistributedCacheStore>();
+        using var payload = new PooledBufferWriter();
+        CachePayloadCodec.Encode(Serializer, "v1", null, int.MaxValue, payload, out _);
+        var snapshot = new CacheStoreEntry(payload.WrittenMemory.ToArray(), Expiration);
+        var read = new TaskCompletionSource<CacheStoreEntry?>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        store
+            .GetAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(_ => new ValueTask<CacheStoreEntry?>(read.Task));
+        store
+            .SetAsync(
+                Arg.Any<string>(),
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<TimeSpan>(),
+                Arg.Any<IReadOnlyCollection<string>?>(),
+                Arg.Any<CancellationToken>()
+            )
+            .Returns(ValueTask.CompletedTask);
+        await using var cache = new TieredCache(options, store, Serializer, timeProvider: clock);
+
+        // The read of v1 is in flight when v2 is written to both tiers.
+        var slow = cache.TryGetAsync<string>("price", token).AsTask();
+        clock.Advance(TimeSpan.FromMilliseconds(1));
+        await cache.SetAsync("price", "v2", new CacheEntryOptions(Expiration), token);
+        read.SetResult(snapshot);
+        var late = await slow.WaitAsync(Bound, token);
+
+        // The caller gets what the distributed tier returned; the newer local entry stays.
+        Assert.Equal("v1", late.Value);
+        Assert.Equal(CacheTier.L2, late.Tier);
+        var local = await cache.TryGetAsync<string>("price", token);
+        Assert.Equal(CacheTier.L1, local.Tier);
+        Assert.Equal("v2", local.Value);
+    }
+
+    private static MeterListener ReceivedListener(
+        string @namespace,
+        out TaskCompletionSource applied
+    ) => DirectionListener(@namespace, "received", out applied);
+
+    private static MeterListener EchoListener(string @namespace, out TaskCompletionSource echoed) =>
+        DirectionListener(@namespace, "echoed", out echoed);
+
+    private static MeterListener DirectionListener(
+        string @namespace,
+        string direction,
+        out TaskCompletionSource signal
+    )
+    {
+        var reached = Signal();
+        signal = reached;
+        var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (instrument.Name == "hostloom.cache.invalidations")
+            {
+                l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>(
+            (_, _, tags, _) =>
+            {
+                var matchingNamespace = false;
+                var matchingDirection = false;
+                foreach (var tag in tags)
+                {
+                    matchingNamespace |=
+                        tag.Key == "hostloom.cache.namespace" && Equals(tag.Value, @namespace);
+                    matchingDirection |=
+                        tag.Key == "hostloom.cache.direction" && Equals(tag.Value, direction);
+                }
+                if (matchingNamespace && matchingDirection)
+                {
+                    reached.TrySetResult();
+                }
+            }
+        );
+        listener.Start();
+        return listener;
+    }
+
     private static TaskCompletionSource Signal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 }

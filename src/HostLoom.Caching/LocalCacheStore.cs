@@ -129,6 +129,11 @@ public sealed class LocalCacheStore : IDisposable
     /// <param name="staleGrace">
     /// How long past expiry the entry stays readable through <see cref="TryGetWithinGrace{T}"/>.
     /// </param>
+    /// <param name="notIfWrittenAfter">
+    /// A <see cref="TimeProvider.GetTimestamp"/> value: when the key already holds an entry
+    /// written after it, nothing is written. A value read from the distributed tier passes the
+    /// timestamp its read started at, so it cannot replace what a later write put here.
+    /// </param>
     /// <exception cref="ArgumentNullException"><paramref name="value"/> is null.</exception>
     public void Set<T>(
         string key,
@@ -136,12 +141,13 @@ public sealed class LocalCacheStore : IDisposable
         TimeSpan timeToLive,
         IReadOnlyCollection<string>? tags = null,
         long? size = null,
-        TimeSpan? staleGrace = null
+        TimeSpan? staleGrace = null,
+        long? notIfWrittenAfter = null
     )
     {
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(value);
-        Write(key, value, timeToLive, tags, size, staleGrace);
+        Write(key, value, timeToLive, tags, size, staleGrace, notIfWrittenAfter);
     }
 
     /// <summary>
@@ -152,11 +158,12 @@ public sealed class LocalCacheStore : IDisposable
         string key,
         TimeSpan timeToLive,
         IReadOnlyCollection<string>? tags = null,
-        TimeSpan? staleGrace = null
+        TimeSpan? staleGrace = null,
+        long? notIfWrittenAfter = null
     )
     {
         ArgumentNullException.ThrowIfNull(key);
-        Write(key, NullSentinel, timeToLive, tags, size: 0, staleGrace);
+        Write(key, NullSentinel, timeToLive, tags, size: 0, staleGrace, notIfWrittenAfter);
     }
 
     /// <summary>Writes <paramref name="value"/> only when <paramref name="key"/> is absent or expired.</summary>
@@ -178,7 +185,15 @@ public sealed class LocalCacheStore : IDisposable
 
         var now = _time.GetUtcNow().UtcTicks;
         var expiresAt = now + timeToLive.Ticks;
-        var entry = new Entry(value, expiresAt, expiresAt, now, size ?? 0, tags);
+        var entry = new Entry(
+            value,
+            expiresAt,
+            expiresAt,
+            now,
+            size ?? 0,
+            tags,
+            _time.GetTimestamp()
+        );
         lock (_mutation)
         {
             if (_entries.TryGetValue(key, out var existing) && existing.ExpiresAt > now)
@@ -267,7 +282,8 @@ public sealed class LocalCacheStore : IDisposable
         TimeSpan timeToLive,
         IReadOnlyCollection<string>? tags,
         long? size,
-        TimeSpan? staleGrace
+        TimeSpan? staleGrace,
+        long? notIfWrittenAfter = null
     )
     {
         timeToLive = ApplyJitter(timeToLive);
@@ -280,10 +296,29 @@ public sealed class LocalCacheStore : IDisposable
         var expiresAt = now + timeToLive.Ticks;
         var staleUntil =
             staleGrace is { } grace && grace > TimeSpan.Zero ? expiresAt + grace.Ticks : expiresAt;
-        var entry = new Entry(value, expiresAt, staleUntil, now, size ?? 0, tags);
+        var entry = new Entry(
+            value,
+            expiresAt,
+            staleUntil,
+            now,
+            size ?? 0,
+            tags,
+            _time.GetTimestamp()
+        );
         lock (_mutation)
         {
             _entries.TryGetValue(key, out var previous);
+            if (
+                notIfWrittenAfter is { } since
+                && previous is not null
+                && previous.WrittenAt > since
+            )
+            {
+                // The distributed read that produced this value started before the entry was
+                // written here, so the entry is the newer of the two.
+                return;
+            }
+
             _entries[key] = entry;
             if (previous is null)
                 Interlocked.Increment(ref _count);
@@ -433,13 +468,15 @@ public sealed class LocalCacheStore : IDisposable
         long staleUntil,
         long lastAccess,
         long size,
-        IReadOnlyCollection<string>? tags
+        IReadOnlyCollection<string>? tags,
+        long writtenAt
     )
     {
         public readonly object Value = value;
         public readonly long ExpiresAt = expiresAt;
         public readonly long StaleUntil = staleUntil;
         public readonly long Size = size;
+        public readonly long WrittenAt = writtenAt;
         public long LastAccess = lastAccess;
         private readonly string[]? _tags = tags is { Count: > 0 } ? [.. tags] : null;
 
