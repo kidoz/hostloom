@@ -6,7 +6,7 @@ public enum LockFailureKind
     /// <summary>The backend could not be reached or refused the connection.</summary>
     Unavailable,
 
-    /// <summary>The backend did not answer within its command timeout.</summary>
+    /// <summary>The backend did not answer within its command timeout or usable acquisition lease.</summary>
     Timeout,
 
     /// <summary>Any other backend failure.</summary>

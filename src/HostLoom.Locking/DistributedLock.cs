@@ -264,35 +264,58 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
             // MaxWait bounds the provider call too, or a backend that never answers turns the
             // documented bound into an unbounded wait. An attempt cancelled this way may have
             // taken the lock in the backend; that orphan expires with its lease.
-            using var bounded = Budget.ForAttempt(maxWait, start, Clock, cancellationToken);
-            var requestedAt = Clock.GetTimestamp();
-            try
+            long requestedAt;
+            using (var bounded = Budget.ForAttempt(maxWait, start, Clock, cancellationToken))
             {
-                acquired = await Provider
-                    .TryAcquireAsync(prefixed, owner, lease, bounded?.Token ?? cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-                when (!cancellationToken.IsCancellationRequested && bounded is { Expired: true })
-            {
-                break;
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (LockProviderException exception)
-            {
-                throw Unavailable(exception.Kind, exception);
-            }
-            catch (Exception exception)
-            {
-                throw Unavailable(LockFailureKind.Other, exception);
+                requestedAt = Clock.GetTimestamp();
+                try
+                {
+                    acquired = await Provider
+                        .TryAcquireAsync(
+                            prefixed,
+                            owner,
+                            lease,
+                            bounded?.Token ?? cancellationToken
+                        )
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                    when (!cancellationToken.IsCancellationRequested && bounded is { Expired: true }
+                    )
+                {
+                    break;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (LockProviderException exception)
+                {
+                    throw Unavailable(exception.Kind, exception);
+                }
+                catch (Exception exception)
+                {
+                    throw Unavailable(LockFailureKind.Other, exception);
+                }
             }
 
             var waited = Clock.GetElapsedTime(start);
             if (acquired)
             {
+                // A successful but late reply is not a usable grant. Do not create a handle
+                // or start an action while its expiry callback is merely queued. As with a
+                // cancelled acquisition, any remaining backend lease expires on its own.
+                if (Clock.GetElapsedTime(requestedAt) >= lease)
+                {
+                    throw Unavailable(
+                        LockFailureKind.Timeout,
+                        new LockProviderException(
+                            LockFailureKind.Timeout,
+                            "The acquisition reply arrived after the usable lease expired."
+                        )
+                    );
+                }
+
                 LockingDiagnostics.AcquireDuration.Record(
                     waited.TotalSeconds,
                     _namespaceTag,

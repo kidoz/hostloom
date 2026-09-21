@@ -26,7 +26,10 @@ public interface IDistributedLock
     /// <exception cref="LockNotAcquiredException">
     /// The key stayed held by another owner past the retry policy or <see cref="LockOptions.MaxWait"/>.
     /// </exception>
-    /// <exception cref="LockProviderUnavailableException">The provider failed while acquiring.</exception>
+    /// <exception cref="LockProviderUnavailableException">
+    /// The provider failed while acquiring, or its successful reply arrived after the usable
+    /// lease expired (reported as <see cref="LockFailureKind.Timeout"/>).
+    /// </exception>
     /// <exception cref="LockReentrancyException">
     /// The key is already held by the current asynchronous flow and
     /// <see cref="LockingOptions.DetectReentrancy"/> is on.
@@ -55,7 +58,10 @@ public interface IDistributedLock
     /// one attempt and never waits (skip-if-busy); pass <see cref="LockOptions.MaxWait"/> or a
     /// <see cref="LockOptions.Retry"/> policy to wait. Dispose the handle to release.
     /// </summary>
-    /// <exception cref="LockProviderUnavailableException">The provider failed while acquiring.</exception>
+    /// <exception cref="LockProviderUnavailableException">
+    /// The provider failed while acquiring, or its successful reply arrived after the usable
+    /// lease expired (reported as <see cref="LockFailureKind.Timeout"/>).
+    /// </exception>
     /// <exception cref="LockReentrancyException">The key is already held by the current flow.</exception>
     ValueTask<ILockHandle?> TryAcquireAsync(
         string key,
