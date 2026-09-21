@@ -140,6 +140,39 @@ are derived from release tags at publish time.
 - Scheduled jobs retain stop, timeout and claim-loss outcomes after cooperative normal returns.
 - Logging shutdown bounds synchronous sink disposal and cancellation callbacks as well as
   asynchronous stalls.
+- A lock heartbeat that fails re-arms itself halfway to the lease end and keeps retrying until
+  an extension succeeds or the lease runs out. Previously one transient backend failure ended
+  automatic extension for good and the lease expired under a healthy action.
+- A release that throws is logged as `LockReleaseFailed` only: the backend keeps the owner's
+  lease until it expires, so it is no longer reported as a loss, counted on `hostloom.lock.lost`,
+  or allowed to cancel `LostToken`. `LostToken` also stays readable after the handle is disposed.
+- `RedisConnection` reports the client name of a multiplexer supplied by `Redis:ConnectionFactory`,
+  so tracking finds that connection's subscriber. Previously the channel looked for the
+  suffixed name it would have configured itself, never found it, and fell back to the explicit
+  channel. Tracking now refuses a client name shared by more than one pub/sub connection on a
+  server instead of redirecting to whichever the server listed first, and broadcast mode checks
+  `notify-keyspace-events` where `CONFIG GET` is permitted instead of reporting itself enabled
+  on the strength of a subscription alone.
+- A tagged Redis write pipelines the tag memberships before the value, so a connection lost
+  part-way leaves an index entry for an absent key rather than a value no tag removal reaches.
+- `CacheFilter` runs the rest of the pipe when the lookup finds a remembered null instead of
+  failing on a null payload, and the produced payload replaces the remembered absence.
+- The `IDistributedCache` adapter applies `Caching:MaxPayloadBytes` to the consumer's bytes; a
+  larger payload is not written, logged at error level once per key per interval, and counted
+  as a `payload` error.
+- The Valkey invalidation channel flushes the in-process tier when its first subscription lands
+  after failed attempts, not only after a lost one, and publishes a probe to itself every
+  `InvalidationProbeInterval` (30 seconds by default) so a subscriber socket that dies without a
+  close is replaced within one `CommandTimeout` instead of looking subscribed indefinitely.
+- `RecordingCacheStore` wraps a store whose channel is a separate class, as `FaultingCacheStore`
+  already did, instead of failing when the cache subscribes.
+- The cache tracks invalidation generations in 1024 key stripes, so an invalidation of one key
+  no longer suppresses every in-flight fill on the instance; tag and flush invalidations still
+  suppress all of them, and bulk reads and warmup stay on the whole generation. The echo of this
+  instance's own publish is recognised within `Caching:Invalidation:Timeout` and counted as
+  `echoed` on `hostloom.cache.invalidations` instead of being applied again, so the refill that
+  follows a removal is cached rather than dropped. A distributed read that completes after a
+  later write to the same key no longer replaces that write's in-process entry.
 
 ### Security
 
