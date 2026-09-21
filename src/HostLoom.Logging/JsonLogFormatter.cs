@@ -49,34 +49,11 @@ public sealed class JsonLogFormatter : ILogFormatter
 
         if (record.HasActivity)
         {
-            Span<char> id = stackalloc char[32];
-            record.TraceId.ToHexString().CopyTo(id);
-            _writer.WriteString("trace.id"u8, id);
+            _writer.WriteString("trace.id"u8, record.TraceId.ToHexString());
             _writer.WriteString("span.id"u8, record.SpanId.ToHexString());
         }
 
-        for (var i = 0; i < record.FieldCount; i++)
-        {
-            record.GetField(i, out var name, out var value, out var kind);
-            switch (kind)
-            {
-                case LogFieldKind.Number:
-                case LogFieldKind.Json:
-                    // Tokens the library itself produced; re-validating them would be pure cost.
-                    _writer.WritePropertyName(name);
-                    _writer.WriteRawValue(value, skipInputValidation: true);
-                    break;
-                case LogFieldKind.Boolean:
-                    _writer.WriteBoolean(name, value[0] == (byte)'t');
-                    break;
-                case LogFieldKind.Null:
-                    _writer.WriteNull(name);
-                    break;
-                default:
-                    _writer.WriteString(name, value);
-                    break;
-            }
-        }
+        _writer.WriteFields(record);
 
         if (record.Exception is { } exception)
         {

@@ -74,27 +74,7 @@ public sealed class ClefLogFormatter : ILogFormatter
         _writer.WriteNumber("ThreadId"u8, record.ThreadId);
         WriteEventId(record.EventId);
 
-        for (var i = 0; i < record.FieldCount; i++)
-        {
-            record.GetField(i, out var name, out var value, out var kind);
-            switch (kind)
-            {
-                case LogFieldKind.Number:
-                case LogFieldKind.Json:
-                    _writer.WritePropertyName(name);
-                    _writer.WriteRawValue(value, skipInputValidation: true);
-                    break;
-                case LogFieldKind.Boolean:
-                    _writer.WriteBoolean(name, value[0] == (byte)'t');
-                    break;
-                case LogFieldKind.Null:
-                    _writer.WriteNull(name);
-                    break;
-                default:
-                    _writer.WriteString(name, value);
-                    break;
-            }
-        }
+        _writer.WriteFields(record);
 
         _writer.WriteEndObject();
         _writer.Flush();
