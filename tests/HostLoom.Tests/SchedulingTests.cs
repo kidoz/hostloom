@@ -252,6 +252,51 @@ public sealed class SchedulingTests
         Assert.Equal(ScheduleRunOutcome.TimedOut, scheduler.GetState("slow").LastOutcome);
     }
 
+    /// <summary>
+    /// The timeout is armed through <see cref="TimeProvider.CreateTimer"/> rather than
+    /// <c>new CancellationTokenSource(delay, clock)</c>, so what a duration may be is the injected
+    /// clock's decision. On a virtual clock fifty days is not fifty days of waiting, and the
+    /// scheduler must not refuse it because a physical timer could not have represented it.
+    /// </summary>
+    [Fact]
+    public async Task A_timeout_past_the_physical_timer_limit_still_cancels_on_a_virtual_clock()
+    {
+        var clock = new TestClock();
+        var probe = new JobProbe();
+        var beyondTheLimit = TimeSpan.FromDays(50);
+        await using var scheduler = new Scheduler(
+            new SchedulingOptions(),
+            [
+                new ScheduleDefinition(
+                    "sweep",
+                    ScheduleTrigger.FixedRate(TimeSpan.FromDays(100)),
+                    async (run, token) =>
+                    {
+                        await probe.Run(run, token);
+                        await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                    },
+                    new ScheduleOptions { Timeout = beyondTheLimit }
+                ),
+            ],
+            timeProvider: clock
+        );
+
+        await scheduler.StartAsync(TestContext.Current.CancellationToken);
+        _ = await probe.NextRunAsync();
+        await WaitUntilAsync(() => clock.PendingTimers == 1);
+
+        clock.Advance(beyondTheLimit);
+        await WaitUntilAsync(() => !scheduler.GetState("sweep").Running);
+
+        Assert.Equal(ScheduleRunOutcome.TimedOut, scheduler.GetState("sweep").LastOutcome);
+        // The same duration handed to the framework's own timed source, on the same clock: it is
+        // range-checked before the provider ever sees it. That check is why the scheduler arms
+        // its own timer instead.
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new CancellationTokenSource(beyondTheLimit, clock).Dispose()
+        );
+    }
+
     [Fact]
     public async Task An_exclusive_schedule_is_skipped_while_another_instance_holds_the_claim()
     {

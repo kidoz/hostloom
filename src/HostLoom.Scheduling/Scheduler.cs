@@ -582,6 +582,15 @@ public sealed class Scheduler : IAsyncDisposable
         }
 
         /// <summary>Cancels <paramref name="source"/> after <paramref name="limit"/> on the scheduler's clock.</summary>
+        /// <summary>
+        /// Arms the run's timeout on the schedule's own clock. Deliberately not
+        /// <c>new CancellationTokenSource(delay, clock)</c>, which would remove this helper: that
+        /// constructor range-checks the delay against the physical timer limit of about 49.7 days
+        /// before it reaches the provider, so a duration a custom <see cref="TimeProvider"/> can
+        /// represent — virtual time runs as fast as its owner wants — would throw at run time
+        /// instead of being scheduled. <see cref="TimeProvider.CreateTimer"/> is virtual and
+        /// leaves that judgement to the clock that was injected.
+        /// </summary>
         private static ITimer? StartTimeout(
             TimeProvider clock,
             TimeSpan? limit,
