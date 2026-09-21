@@ -8,7 +8,9 @@ public readonly record struct RecordedCacheCall(string Operation, string Key);
 /// <summary>
 /// Decorates a store and records every call, so a test asserts what the cache asked the
 /// distributed tier for: one lease per stampede, one batched read for a bulk lookup, no write
-/// after a null factory result. Forwards the inner store's invalidation channel when it has one.
+/// after a null factory result. Forwards the inner store's invalidation channel when it has one;
+/// over a store with neither, such as <c>RedisCacheStore</c> whose channel is a separate class,
+/// it fans out nothing and the cache runs TTL-only, as <see cref="FaultingCacheStore"/> does.
 /// </summary>
 public sealed class RecordingCacheStore(
     IDistributedCacheStore inner,
@@ -138,16 +140,26 @@ public sealed class RecordingCacheStore(
             "publish",
             invalidation.Keys.FirstOrDefault() ?? invalidation.Tags.FirstOrDefault() ?? ""
         );
-        return Channel.PublishAsync(invalidation, cancellationToken);
+        return Channel?.PublishAsync(invalidation, cancellationToken) ?? ValueTask.CompletedTask;
     }
 
     /// <inheritdoc />
-    public IDisposable Subscribe(Action<CacheInvalidation> handler) => Channel.Subscribe(handler);
+    public IDisposable Subscribe(Action<CacheInvalidation> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return Channel?.Subscribe(handler) ?? NoSubscription.Instance;
+    }
 
-    private ICacheInvalidationChannel Channel =>
-        channel
-        ?? Inner as ICacheInvalidationChannel
-        ?? throw new InvalidOperationException("The inner store offers no invalidation channel.");
+    /// <summary>The channel invalidations travel on, or null when the wrapped store has none.</summary>
+    public ICacheInvalidationChannel? Channel { get; } =
+        channel ?? inner as ICacheInvalidationChannel;
+
+    private sealed class NoSubscription : IDisposable
+    {
+        public static readonly NoSubscription Instance = new();
+
+        public void Dispose() { }
+    }
 
     private void Record(string operation, string key)
     {

@@ -25,7 +25,9 @@ does not also need a live channel that would evict the copies the outage is mean
 `CacheFailureKind`, which is how a test proves a consumer behaves when the distributed tier is
 down: the cache serves from the in-process tier and the factory, and nothing throws.
 `RecordingCacheStore` wraps any store and records every call, so a test asserts that a stampede
-took one lease, a bulk lookup made one batched read, or a null factory result wrote nothing.
+took one lease, a bulk lookup made one batched read, or a null factory result wrote nothing. It
+forwards the inner store's channel, or the one it is given, and over a store with neither it
+fans out nothing, as `FaultingCacheStore` does.
 
 Substituting `ICache` is the other option and a worse one. A substitute returns what the test told
 it to, so the test passes whether or not the consumer would have been served by a real cache.
