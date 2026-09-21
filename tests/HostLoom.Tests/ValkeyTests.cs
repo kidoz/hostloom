@@ -81,6 +81,11 @@ public sealed class ValkeyTests
         );
         Assert.Throws<ArgumentOutOfRangeException>(() =>
             new ValkeyConnection(
+                new ValkeyOptions { InvalidationProbeInterval = TimeSpan.FromSeconds(-1) }
+            )
+        );
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new ValkeyConnection(
                 new ValkeyOptions { Connection = new ValkeyClientOptions { Port = 0 } }
             )
         );
@@ -88,6 +93,7 @@ public sealed class ValkeyTests
         await using var connection = new ValkeyConnection(options);
         options.CommandTimeout = TimeSpan.Zero;
         Assert.Equal(TimeSpan.FromSeconds(5), connection.Settings.CommandTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(30), connection.Settings.InvalidationProbeInterval);
     }
 
     [Fact]

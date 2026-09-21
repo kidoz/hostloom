@@ -20,6 +20,16 @@ public sealed class ValkeyOptions
     /// <summary>Messages buffered by the dedicated subscriber before incoming messages are dropped.</summary>
     public int InvalidationQueueCapacity { get; set; } = 1000;
 
+    /// <summary>
+    /// How often the invalidation channel publishes a probe to itself to prove its subscriber
+    /// socket still delivers. A probe that does not arrive within <see cref="CommandTimeout"/>
+    /// replaces the subscriber and, with <c>Caching:Invalidation:FlushLocalOnReconnect</c>,
+    /// flushes the in-process tier; without it a connection that dies without a close, such as
+    /// one dropped by an idle firewall, would look subscribed for as long as the OS keeps the
+    /// socket. <see cref="TimeSpan.Zero"/> disables the probe.
+    /// </summary>
+    public TimeSpan InvalidationProbeInterval { get; set; } = TimeSpan.FromSeconds(30);
+
     /// <summary>Enables ValkeyDotNet's payload-free connection-owner telemetry.</summary>
     public bool EnableTelemetry { get; set; }
 
@@ -30,6 +40,11 @@ public sealed class ValkeyOptions
         ValidateTimeout(HealthTimeout, nameof(HealthTimeout));
         ArgumentOutOfRangeException.ThrowIfLessThan(InvalidationQueueCapacity, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(InvalidationQueueCapacity, 1_048_576);
+        if (InvalidationProbeInterval != TimeSpan.Zero)
+        {
+            ValidateTimeout(InvalidationProbeInterval, nameof(InvalidationProbeInterval));
+        }
+
         return new ValkeyOptions
         {
             Connection = Connection,
@@ -37,6 +52,7 @@ public sealed class ValkeyOptions
             HealthTimeout = HealthTimeout,
             FailFast = FailFast,
             InvalidationQueueCapacity = InvalidationQueueCapacity,
+            InvalidationProbeInterval = InvalidationProbeInterval,
             EnableTelemetry = EnableTelemetry,
         };
     }

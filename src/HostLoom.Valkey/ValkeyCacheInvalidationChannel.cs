@@ -9,17 +9,21 @@ namespace HostLoom.Valkey;
 
 /// <summary>
 /// Explicit cache invalidation over a dedicated standalone Pub/Sub connection. Subscription failure
-/// restarts with bounded backoff; a re-established subscription delivers
-/// <see cref="CacheInvalidation.Flush"/> to its subscribers when
+/// restarts with bounded backoff; a subscription established after a failed attempt or a lost
+/// one delivers <see cref="CacheInvalidation.Flush"/> to its subscribers when
 /// <see cref="CacheInvalidationOptions.FlushLocalOnReconnect"/> is set, and otherwise missing or
-/// dropped messages leave staleness bounded by L1 expiry. Tracking and keyspace-notification
-/// modes are not supported by this adapter.
+/// dropped messages leave staleness bounded by L1 expiry. A periodic probe published to the
+/// channel itself proves the subscriber socket still delivers; one that dies without a close is
+/// replaced when its probe does not arrive. Tracking and keyspace-notification modes are not
+/// supported by this adapter.
 /// </summary>
 public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, IAsyncDisposable
 {
     private readonly ValkeyConnection _connection;
     private readonly string _namespace;
     private readonly bool _flushOnReconnect;
+    private readonly TimeSpan _probeInterval;
+    private readonly TimeSpan _probeTimeout;
     private readonly int _maxKeyLength;
     private readonly ILogger _logger;
     private readonly Lock _gate = new();
@@ -33,7 +37,15 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
     private bool _disposed;
     private int _subscribed;
     private long _dropped;
+    private long _probesReceived;
+    private long _subscriberResets;
+    private TaskCompletionSource? _probeWaiter;
     private long _lastWarning;
+
+    /// <summary>An invalidation naming nothing: what the channel publishes to itself as a probe.</summary>
+    private static readonly byte[] ProbePayload = ValkeyInvalidationCodec.Encode(
+        new CacheInvalidation([], [])
+    );
 
     /// <summary>Borrows the command connection; owns only its subscriber socket and worker.</summary>
     public ValkeyCacheInvalidationChannel(
@@ -52,6 +64,8 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
         _connection = connection;
         _namespace = options.Namespace;
         _flushOnReconnect = options.Invalidation.FlushLocalOnReconnect;
+        _probeInterval = connection.Settings.InvalidationProbeInterval;
+        _probeTimeout = connection.Settings.CommandTimeout;
         _maxKeyLength = options.MaxKeyLength;
         // Pub/Sub ignores SELECT; isolate namespaces that happen to use different logical databases.
         ChannelName =
@@ -70,6 +84,12 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
 
     /// <summary>Incoming messages dropped due to local subscriber queue overflow.</summary>
     public long DroppedMessages => Interlocked.Read(ref _dropped);
+
+    /// <summary>Probes this channel published to itself and received back.</summary>
+    public long ProbesReceived => Interlocked.Read(ref _probesReceived);
+
+    /// <summary>Subscribers replaced because a probe did not arrive in time.</summary>
+    public long SubscriberResets => Interlocked.Read(ref _subscriberResets);
 
     /// <summary>Starts recovery and waits for the first acknowledged subscription. Caller cancellation only ends its wait.</summary>
     public Task StartAsync(CancellationToken cancellationToken = default)
@@ -126,6 +146,7 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
         var token = _shutdown.Token;
         var delay = TimeSpan.FromMilliseconds(100);
         var established = false;
+        var failedBefore = false;
         while (!token.IsCancellationRequested)
         {
             try
@@ -150,19 +171,25 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
                     .SubscribeAsync(ChannelName, token)
                     .ConfigureAwait(false);
                 await using var subscriptionLifetime = subscription.ConfigureAwait(false);
-                Volatile.Write(ref _subscribed, 1);
                 if (established)
-                {
                     CachingDiagnostics.InvalidationResubscribed(_namespace);
-                    // Messages published while the subscriber was down were never queued for
-                    // it; every in-process entry could be stale, so the subscribers drop them all.
-                    if (_flushOnReconnect)
-                        Dispatch(CacheInvalidation.Flush);
-                }
+                // Messages published while no subscriber was acknowledged were never queued
+                // for it: after a lost subscription, and just as much while a first one was
+                // still failing and the command connection had already begun filling the
+                // in-process tier. Every entry could be stale, so the subscribers drop them all,
+                // before the channel reports itself subscribed.
+                if ((established || failedBefore) && _flushOnReconnect)
+                    Dispatch(CacheInvalidation.Flush);
+                Volatile.Write(ref _subscribed, 1);
                 established = true;
                 _ready.TrySetResult();
                 delay = TimeSpan.FromMilliseconds(100);
                 long drops = 0;
+                using var probeStop = CancellationTokenSource.CreateLinkedTokenSource(token);
+                var probe =
+                    _probeInterval > TimeSpan.Zero
+                        ? ProbeAsync(subscriber, probeStop.Token)
+                        : Task.CompletedTask;
                 try
                 {
                     await foreach (
@@ -170,18 +197,26 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
                     )
                     {
                         RecordDrops(subscription, ref drops);
-                        if (
-                            ValkeyInvalidationCodec.Decode(message.Payload, _maxKeyLength) is
-                            { } invalidation
-                        )
-                            Dispatch(invalidation);
-                        else
+                        var invalidation = ValkeyInvalidationCodec.Decode(
+                            message.Payload,
+                            _maxKeyLength
+                        );
+                        if (invalidation is null)
                             ValkeyDiagnostics.Malformed.Add(1);
+                        else if (IsProbe(invalidation))
+                        {
+                            Interlocked.Increment(ref _probesReceived);
+                            Volatile.Read(ref _probeWaiter)?.TrySetResult();
+                        }
+                        else
+                            Dispatch(invalidation);
                     }
                 }
                 finally
                 {
                     RecordDrops(subscription, ref drops);
+                    await probeStop.CancelAsync().ConfigureAwait(false);
+                    await probe.ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -190,6 +225,7 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
             }
             catch (Exception exception)
             {
+                failedBefore = true;
                 ValkeyDiagnostics.Failures.Add(1);
                 Warn(
                     $"Subscription failed ({exception.GetType().Name}); retrying. Missed invalidations rely on L1 expiry."
@@ -209,6 +245,68 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
                 break;
             }
             delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 2, 30_000));
+        }
+    }
+
+    /// <summary>A message naming no key, no tag, and no flush: a probe, from this or another instance.</summary>
+    private static bool IsProbe(CacheInvalidation invalidation) =>
+        !invalidation.FlushAll && invalidation.Keys.Count == 0 && invalidation.Tags.Count == 0;
+
+    /// <summary>
+    /// Publishes a probe every <see cref="ValkeyOptions.InvalidationProbeInterval"/> over the
+    /// command connection and waits for the subscriber to hand it back. A publish that fails
+    /// proves nothing about the subscriber and is skipped; a published probe that does not
+    /// arrive within <see cref="ValkeyOptions.CommandTimeout"/> means the subscriber socket is
+    /// dead without having been closed, so the subscriber is disposed, which ends the read loop
+    /// and starts recovery with its flush.
+    /// </summary>
+    private async Task ProbeAsync(ValkeySubscriber subscriber, CancellationToken token)
+    {
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(_probeInterval, token).ConfigureAwait(false);
+                var waiter = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously
+                );
+                Volatile.Write(ref _probeWaiter, waiter);
+                try
+                {
+                    await _connection
+                        .ExecuteAsync(
+                            new ValkeyCommand("PUBLISH", ChannelName, ProbePayload),
+                            token
+                        )
+                        .ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    continue;
+                }
+
+                var arrived = await Task.WhenAny(waiter.Task, Task.Delay(_probeTimeout, token))
+                    .ConfigureAwait(false);
+                if (arrived == waiter.Task)
+                    continue;
+
+                token.ThrowIfCancellationRequested();
+                Interlocked.Increment(ref _subscriberResets);
+                ValkeyDiagnostics.Failures.Add(1);
+                Warn(
+                    "A subscriber probe was not delivered in time; replacing the subscriber. Missed invalidations rely on L1 expiry."
+                );
+                await subscriber.DisposeAsync().ConfigureAwait(false);
+                return;
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // The read loop ended or the channel is shutting down.
+        }
+        finally
+        {
+            Volatile.Write(ref _probeWaiter, null);
         }
     }
 

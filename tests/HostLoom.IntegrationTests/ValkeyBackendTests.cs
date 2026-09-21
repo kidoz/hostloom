@@ -3,6 +3,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using HostLoom.Caching;
 using HostLoom.Caching.DependencyInjection;
+using HostLoom.Conformance;
+using HostLoom.IntegrationTests.Infrastructure;
 using HostLoom.Locking;
 using HostLoom.Locking.DependencyInjection;
 using HostLoom.Valkey;
@@ -161,6 +163,100 @@ public sealed class ValkeyBackendTests
         Assert.NotNull(handle);
         Assert.True(handle.IsHeld);
         await cache.RemoveAsync("catalog:eu", Token);
+    }
+
+    [Fact(Skip = ValkeyAvailability.Skip, SkipUnless = nameof(Available))]
+    public async Task Invalidation_FlushesWhenTheFirstSubscriptionFollowsAFailedAttempt()
+    {
+        await using var proxy = new RedisFaultProxy("localhost", ValkeyAvailability.Port);
+        var options = ValkeyAvailability.Options();
+        options.Connection = new ValkeyClientOptions
+        {
+            Host = RedisFaultProxy.Host,
+            Port = proxy.Port,
+            ClientName = options.Connection.ClientName,
+        };
+        await using var connection = new ValkeyConnection(options);
+        await using var channel = new ValkeyCacheInvalidationChannel(
+            connection,
+            new CachingOptions { Namespace = "valkey-first-" + Guid.NewGuid().ToString("N") }
+        );
+        var flushed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var subscription = channel.Subscribe(message =>
+        {
+            if (message.FlushAll)
+                flushed.TrySetResult();
+        });
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
+
+        // The first attempts fail while the server is unreachable; the command connection may
+        // already be filling the in-process tier by then, and nothing published reached anyone.
+        proxy.SetEnabled(false);
+        var started = channel.StartAsync(timeout.Token);
+        await Task.Delay(TimeSpan.FromMilliseconds(400), timeout.Token);
+        Assert.False(started.IsCompleted);
+        proxy.SetEnabled(true);
+        await started;
+
+        await flushed.Task.WaitAsync(timeout.Token);
+        Assert.True(channel.IsSubscribed);
+    }
+
+    [Fact(Skip = ValkeyAvailability.Skip, SkipUnless = nameof(Available))]
+    public async Task Invalidation_ReplacesASubscriberWhoseSocketStoppedDelivering()
+    {
+        await using var proxy = new RedisFaultProxy("localhost", ValkeyAvailability.Port);
+        var options = ValkeyAvailability.Options();
+        options.Connection = new ValkeyClientOptions
+        {
+            Host = RedisFaultProxy.Host,
+            Port = proxy.Port,
+            ClientName = options.Connection.ClientName,
+        };
+        options.InvalidationProbeInterval = TimeSpan.FromMilliseconds(200);
+        options.CommandTimeout = TimeSpan.FromSeconds(1);
+        await using var connection = new ValkeyConnection(options);
+        await using var channel = new ValkeyCacheInvalidationChannel(
+            connection,
+            new CachingOptions { Namespace = "valkey-probe-" + Guid.NewGuid().ToString("N") }
+        );
+        var flushes = 0;
+        var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var subscription = channel.Subscribe(message =>
+        {
+            if (message.FlushAll)
+                Interlocked.Increment(ref flushes);
+            else if (message.Keys.Contains("after-reset"))
+                received.TrySetResult();
+        });
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        await channel.StartAsync(timeout.Token);
+        await CacheConformance.WaitUntilAsync(() => Task.FromResult(channel.ProbesReceived >= 1));
+        Assert.Equal(0, channel.SubscriberResets);
+
+        // The subscriber socket stays open but delivers nothing more: the SDK cannot tell, the
+        // probe can. The command connection is untouched, so the probe is still published.
+        proxy.StallSubscribers();
+        await CacheConformance.WaitUntilAsync(
+            () => Task.FromResult(channel.SubscriberResets >= 1),
+            15
+        );
+        await CacheConformance.WaitUntilAsync(() => Task.FromResult(channel.IsSubscribed), 15);
+        // The replacement subscription flushed the in-process tier before reporting itself.
+        Assert.True(Volatile.Read(ref flushes) >= 1);
+
+        while (!received.Task.IsCompleted)
+        {
+            await channel.PublishAsync(new CacheInvalidation(["after-reset"], []), timeout.Token);
+            await Task.WhenAny(
+                received.Task,
+                Task.Delay(TimeSpan.FromMilliseconds(20), timeout.Token)
+            );
+            timeout.Token.ThrowIfCancellationRequested();
+        }
+        await received.Task;
     }
 
     [Fact(Skip = ValkeyAvailability.Skip, SkipUnless = nameof(Available))]

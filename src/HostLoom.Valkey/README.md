@@ -81,7 +81,13 @@ format; mixed Redis/Valkey adapters do not share invalidation messages.
 Recovery uses exponential backoff from 100 ms to 30 seconds. Pub/Sub cannot replay messages lost
 during a disconnection, so a re-established subscription hands `CacheInvalidation.Flush` to its
 subscribers when `Caching:Invalidation:FlushLocalOnReconnect` is set (the default) and the cache
-clears its in-process tier. Queue overflow drops incoming messages, and with the flush disabled a
+clears its in-process tier; so does a first subscription that lands after failed attempts, since
+the command connection may have filled the tier meanwhile. A subscriber socket that dies without
+a close, as an idle firewall or NAT drop produces, is not reported by the SDK, so the channel
+publishes a probe to itself every `InvalidationProbeInterval` and replaces the subscriber, with
+the same flush, when the probe does not arrive within `CommandTimeout`; `TimeSpan.Zero` disables
+the probe. Probes are messages naming no key, tag, or flush and are never handed to subscribers.
+`ProbesReceived` and `SubscriberResets` on the channel count them. Queue overflow drops incoming messages, and with the flush disabled a
 disconnection loses them too; in either case **L1 expiry bounds staleness**; choose a suitable
 `CacheEntryOptions.LocalExpiration`. No stronger consistency is promised. A published flush is a
 fourth array element on the wire; an instance on an earlier package version counts it as
@@ -124,6 +130,7 @@ this adapter's current scope.
 | `HealthTimeout` | 2 seconds per PING |
 | `FailFast` | true; startup PING failure prevents host startup |
 | `InvalidationQueueCapacity` | 1,000 messages |
+| `InvalidationProbeInterval` | 30 seconds between subscriber probes; zero disables |
 | `EnableTelemetry` | false |
 
 `FailFast=false` permits startup while unavailable; later independent operations reconnect and
