@@ -46,6 +46,12 @@ increments when the lease expires on the local clock or the provider refuses an 
 release. The local clock starts at the request, not at the answer: a provider begins the lease
 when it accepts the call, so the round trip is subtracted from the lease the handle reports. With `LockOptions.OnLost = LostLeaseBehavior.Cancel` the token handed to the action is
 cancelled too; the default, `Observe`, keeps the action running and only reports the loss.
+A provider call that throws is not a refusal: an extension that throws returns `false` and
+keeps the previous lease end, and a release that throws is logged as `LockReleaseFailed` while
+the backend keeps the lease until it expires, so neither is reported as a loss. With `AutoExtend`
+a heartbeat that fails is retried halfway to the lease end, then halfway again down to a
+twentieth of the lease, until an extension succeeds or the lease runs out; a single backend
+hiccup does not end automatic extension.
 
 `LockRetryPolicy` shapes the wait between attempts and never depends on `HostLoom.Pipelines`. The
 default reproduces the platform's historical behaviour: ten retries at a linear 50 ms step with up

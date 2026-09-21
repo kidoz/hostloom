@@ -237,6 +237,49 @@ public sealed class RedisOutageTests
         );
     }
 
+    [Fact(Timeout = 60_000, Skip = Skip, SkipUnless = nameof(Enabled))]
+    public async Task AutoExtend_ResumesAfterAHeartbeatFailedDuringAnOutage()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var ns = "outage-" + Guid.NewGuid().ToString("N");
+        await using var proxy = new RedisFaultProxy();
+        await using var connection = Connection(proxy);
+        await using var provider = new RedisLockProvider(connection);
+        await using var mutex = new DistributedLock(
+            new LockingOptions { Namespace = ns },
+            provider
+        );
+        var lease = TimeSpan.FromSeconds(12);
+        await using var held = await mutex.TryAcquireAsync(
+            "inventory",
+            new LockOptions { Lease = lease, AutoExtend = true },
+            token
+        );
+        Assert.NotNull(held);
+        var leaseEnd = held.LeaseEnd;
+
+        // The first heartbeat is due halfway through the lease; cut the connection across it.
+        await Task.Delay(TimeSpan.FromSeconds(5), token);
+        proxy.SetEnabled(false);
+        await Task.Delay(TimeSpan.FromSeconds(2), token);
+        Assert.Equal(leaseEnd, held.LeaseEnd);
+        Assert.True(held.IsHeld);
+        proxy.SetEnabled(true);
+
+        // One failed heartbeat must not end automatic extension: a retry lands once the
+        // connection is back, before the original lease end.
+        await CacheConformance.WaitUntilAsync(() => Task.FromResult(held.LeaseEnd > leaseEnd), 10);
+        Assert.True(held.IsHeld);
+        Assert.False(held.LostToken.IsCancellationRequested);
+        var pastTheOriginalEnd = leaseEnd + TimeSpan.FromSeconds(1) - DateTimeOffset.UtcNow;
+        if (pastTheOriginalEnd > TimeSpan.Zero)
+        {
+            await Task.Delay(pastTheOriginalEnd, token);
+        }
+
+        Assert.True(held.IsHeld);
+    }
+
     private static RedisConnection Connection(RedisFaultProxy proxy) =>
         new(
             new RedisOptions

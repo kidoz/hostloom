@@ -23,6 +23,7 @@ internal sealed class LockHandle : ILockHandle
     private readonly string _token;
     private readonly bool _autoExtend;
     private readonly CancellationTokenSource _lost = new();
+    private readonly CancellationToken _lostToken;
     private readonly Lock _gate = new();
     private readonly long _acquiredAt;
     private readonly ITimer _leaseTimer;
@@ -54,6 +55,8 @@ internal sealed class LockHandle : ILockHandle
         _lease = lease;
         _autoExtend = autoExtend;
         _acquiredAt = requestedAt;
+        // Read once: the source is disposed with the handle, and the token stays readable after.
+        _lostToken = _lost.Token;
         var remaining = lease - owner.Clock.GetElapsedTime(requestedAt);
         _leaseEnd = owner.Clock.GetUtcNow() + remaining;
 
@@ -101,7 +104,7 @@ internal sealed class LockHandle : ILockHandle
         }
     }
 
-    public CancellationToken LostToken => _lost.Token;
+    public CancellationToken LostToken => _lostToken;
 
     public TimeSpan HoldDuration => _owner.Clock.GetElapsedTime(_acquiredAt);
 
@@ -190,12 +193,15 @@ internal sealed class LockHandle : ILockHandle
             _state = ReleasedState;
         }
 
+        // The state moved under the gate first, so a heartbeat or extension that checks it
+        // under the same gate can no longer re-arm a timer disposed here.
         _leaseTimer.Dispose();
         _warnTimer.Dispose();
         _extendTimer?.Dispose();
 
         // The caller's token is deliberately not used: a cancelled action must still release.
         var released = false;
+        var failed = false;
         try
         {
             released = await _owner
@@ -204,6 +210,9 @@ internal sealed class LockHandle : ILockHandle
         }
         catch (Exception exception)
         {
+            // Not a loss: the backend still holds this owner's lease until it expires, so
+            // exclusivity was kept for as long as the handle promised it.
+            failed = true;
             _owner.Logger.LogWarning(
                 LockingEvents.ReleaseFailed,
                 exception,
@@ -213,7 +222,7 @@ internal sealed class LockHandle : ILockHandle
             );
         }
 
-        if (wasHeld && !released)
+        if (wasHeld && !released && !failed)
         {
             ReportLost("the provider reported an owner mismatch on release");
         }
@@ -270,18 +279,57 @@ internal sealed class LockHandle : ILockHandle
 
     private async Task HeartbeatAsync()
     {
+        bool extended;
         try
         {
-            await ExtendAsync(_lease, CancellationToken.None).ConfigureAwait(false);
+            extended = await ExtendAsync(_lease, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
+            extended = false;
             _owner.Logger.LogWarning(
                 LockingEvents.ExtendFailed,
                 exception,
                 "The heartbeat for lock '{Key}' failed.",
                 Key
             );
+        }
+
+        if (!extended)
+        {
+            RetryHeartbeat();
+        }
+    }
+
+    /// <summary>
+    /// A failed heartbeat keeps the previous lease end, and a successful one re-arms the timer
+    /// itself; without this the first backend hiccup would end automatic extension for good.
+    /// The next attempt is due halfway to the lease end, then halfway again, down to a floor of
+    /// one twentieth of the lease, until an extension succeeds or the lease runs out.
+    /// </summary>
+    private void RetryHeartbeat()
+    {
+        lock (_gate)
+        {
+            if (_state != HeldState || _extendTimer is null)
+            {
+                return;
+            }
+
+            var remaining = _leaseEnd - _owner.Clock.GetUtcNow();
+            if (remaining <= TimeSpan.Zero)
+            {
+                return;
+            }
+
+            var due = remaining / 2;
+            var floor = _lease / 20;
+            if (due < floor)
+            {
+                due = floor < remaining ? floor : remaining;
+            }
+
+            _extendTimer.Change(due, Timeout.InfiniteTimeSpan);
         }
     }
 

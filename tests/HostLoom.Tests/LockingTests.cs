@@ -510,6 +510,83 @@ public sealed class LockingTests
     }
 
     [Fact]
+    public async Task AutoExtend_retries_after_a_failed_heartbeat()
+    {
+        var clock = new TestClock();
+        var logger = new RecordingLogger<DistributedLock>();
+        var faults = new FaultingLockProvider(
+            new InMemoryLockProvider(clock),
+            LockOperation.Extend,
+            LockFailureKind.Timeout,
+            count: 1
+        );
+        await using var locks = Compose(clock, faults, logger);
+
+        await using var handle = await locks.TryAcquireAsync(
+            "k",
+            new LockOptions { Lease = OneSecond, AutoExtend = true },
+            TestContext.Current.CancellationToken
+        );
+        Assert.NotNull(handle);
+
+        // The heartbeat at 0.5 s fails: the lease end stays at 1.0 s and nothing is lost.
+        clock.Advance(TimeSpan.FromMilliseconds(500));
+        Assert.Equal(1, faults.Faulted);
+        Assert.True(logger.Has(LockingEvents.ExtendFailed));
+        Assert.Equal(DateTimeOffset.UnixEpoch + OneSecond, handle.LeaseEnd);
+        Assert.True(handle.IsHeld);
+
+        // The retry is due halfway to the lease end, at 0.75 s, and succeeds.
+        clock.Advance(TimeSpan.FromMilliseconds(250));
+        Assert.Equal(DateTimeOffset.UnixEpoch + TimeSpan.FromMilliseconds(1750), handle.LeaseEnd);
+
+        // Without the retry the lease would have run out at 1.0 s.
+        clock.Advance(TimeSpan.FromMilliseconds(500));
+        Assert.True(handle.IsHeld);
+        Assert.False(handle.LostToken.IsCancellationRequested);
+        Assert.False(logger.Has(LockingEvents.LeaseLost));
+    }
+
+    [Fact]
+    public async Task A_release_failure_is_logged_without_reporting_a_loss()
+    {
+        var clock = new TestClock();
+        var logger = new RecordingLogger<DistributedLock>();
+        var ns = "release-" + Guid.NewGuid().ToString("N");
+        using var metrics = new MetricRecorder(ns);
+        var faults = new FaultingLockProvider(
+            new InMemoryLockProvider(clock),
+            LockOperation.Release,
+            LockFailureKind.Unavailable,
+            count: 1
+        );
+        await using var locks = Compose(
+            clock,
+            faults,
+            logger,
+            new LockingOptions { Namespace = ns }
+        );
+        var handle = await locks.TryAcquireAsync(
+            "k",
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        Assert.NotNull(handle);
+        var lost = handle.LostToken;
+
+        await handle.DisposeAsync();
+
+        // The backend keeps this owner's lease until it expires, so exclusivity was never
+        // broken: a failed release is not a loss and must not cancel what a loss would.
+        Assert.True(logger.Has(LockingEvents.ReleaseFailed));
+        Assert.False(logger.Has(LockingEvents.LeaseLost));
+        Assert.False(lost.IsCancellationRequested);
+        Assert.Empty(metrics.Measurements("hostloom.lock.lost"));
+        Assert.False(handle.IsHeld);
+        // The token stays readable after disposal.
+        Assert.False(handle.LostToken.IsCancellationRequested);
+    }
+
+    [Fact]
     public async Task OnLost_Cancel_cancels_the_token_handed_to_the_action()
     {
         var clock = new TestClock();
