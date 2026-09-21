@@ -38,6 +38,9 @@ public interface ILockHandle : IAsyncDisposable
     /// <see cref="LockingOptions.MaxLease"/>. Returns <see langword="false"/> when the lease was
     /// already lost or the provider refused; a provider failure is logged and reported as
     /// <see langword="false"/> rather than thrown.
+    /// Concurrent renewals, including automatic heartbeats, are serialized with their local
+    /// deadline updates. Waiting for another renewal honours <paramref name="cancellationToken"/>;
+    /// a caller that loses ownership while waiting does not issue another backend command.
     /// </summary>
     ValueTask<bool> ExtendAsync(TimeSpan lease, CancellationToken cancellationToken = default);
 }

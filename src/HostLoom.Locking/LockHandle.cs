@@ -25,6 +25,8 @@ internal sealed class LockHandle : ILockHandle
     private readonly CancellationTokenSource _lost = new();
     private readonly CancellationToken _lostToken;
     private readonly Lock _gate = new();
+    private readonly SemaphoreSlim _renewalGate = new(1, 1);
+    private int _renewalUsers;
     private readonly long _acquiredAt;
     private readonly ITimer _leaseTimer;
     private readonly ITimer _warnTimer;
@@ -114,6 +116,49 @@ internal sealed class LockHandle : ILockHandle
     )
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(lease, TimeSpan.Zero);
+        lock (_gate)
+        {
+            if (_state != HeldState)
+            {
+                return false;
+            }
+
+            // Include queued callers so disposal never destroys a semaphore still in use.
+            _renewalUsers++;
+        }
+
+        try
+        {
+            await _renewalGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                // Serialize the backend command AND its local deadline update. An older
+                // reply must not overwrite a later, shorter lease, including heartbeats.
+                return await ExtendCoreAsync(lease, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _renewalGate.Release();
+            }
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                if (--_renewalUsers == 0 && _state == ReleasedState)
+                {
+                    _renewalGate.Dispose();
+                }
+            }
+        }
+    }
+
+    private async ValueTask<bool> ExtendCoreAsync(
+        TimeSpan lease,
+        CancellationToken cancellationToken
+    )
+    {
+        // Ownership can be lost or disposed while this caller waits for another renewal.
         if (!IsHeld)
         {
             return false;
@@ -191,6 +236,10 @@ internal sealed class LockHandle : ILockHandle
 
             wasHeld = _state == HeldState;
             _state = ReleasedState;
+            if (_renewalUsers == 0)
+            {
+                _renewalGate.Dispose();
+            }
         }
 
         // The state moved under the gate first, so a heartbeat or extension that checks it
