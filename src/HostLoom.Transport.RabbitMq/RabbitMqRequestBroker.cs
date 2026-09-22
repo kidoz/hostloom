@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -10,6 +11,20 @@ using RabbitMQ.Client.Exceptions;
 
 namespace HostLoom.Transport.RabbitMq;
 
+/// <summary>
+/// RabbitMQ transport: a durable queue per request address answered through each client's
+/// server-named reply queue, and a fanout exchange per event topic with a queue per
+/// subscription. Every publication waits for the broker's confirmation.
+/// </summary>
+/// <remarks>
+/// <see cref="RequestAsync"/> and <see cref="PublishAsync"/> report a client-library or network
+/// failure, such as a nacked publication, a closed connection, or an unreachable broker, as
+/// <see cref="MessagingTransportException"/> with the library's exception inside. A request the
+/// broker returns as unroutable waits for its timeout like one to an address without a
+/// listener. <see cref="PublishAsync"/> throws <see cref="TimeoutException"/> when
+/// <see cref="RabbitMqOptions.PublishTimeout"/> elapses before the confirmation. This transport
+/// does not implement <see cref="IBrokerHealthProbe"/>.
+/// </remarks>
 public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 {
     private const string ContentType = "application/vnd.hostloom.envelope+json";
@@ -458,20 +473,44 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                 )
                 .ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
-            when (_disposed && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Rethrown with the caller's token rather than the linked one this call waited on.
+            cancellationToken.ThrowIfCancellationRequested();
+            throw;
+        }
+        catch (Exception exception) when (_disposed && IsCancellationOrTransportFailure(exception))
         {
             throw new ObjectDisposedException(nameof(RabbitMqRequestBroker));
         }
-        catch (OperationCanceledException exception)
-            when (deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException exception) when (deadline.IsCancellationRequested)
         {
             throw new TimeoutException(
                 "The RabbitMQ event publication deadline elapsed.",
                 exception
             );
         }
+        catch (Exception exception) when (IsTransportFailure(exception))
+        {
+            throw new MessagingTransportException(
+                topic,
+                $"RabbitMQ could not publish the event to '{topic}'; whether the broker accepted it is unknown.",
+                exception
+            );
+        }
     }
+
+    /// <summary>
+    /// Client-library and network failures, which callers receive as
+    /// <see cref="MessagingTransportException"/>: a nacked publication, a closed connection or
+    /// channel, an unreachable broker, a refused login, a protocol error, or the client
+    /// library's own operation timeout. Argument and state errors a caller caused are not.
+    /// </summary>
+    private static bool IsTransportFailure(Exception exception) =>
+        exception is RabbitMQClientException or IOException or SocketException or TimeoutException;
+
+    private static bool IsCancellationOrTransportFailure(Exception exception) =>
+        exception is OperationCanceledException || IsTransportFailure(exception);
 
     /// <summary>
     /// Publishes one frame and records the outcome the broker gave it. A caller that walked away
@@ -635,15 +674,27 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 
             return await completion.Task.WaitAsync(operation.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
-            when (_disposed && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Rethrown with the caller's token rather than the linked one this call waited on.
+            cancellationToken.ThrowIfCancellationRequested();
+            throw;
+        }
+        catch (Exception exception) when (_disposed && IsCancellationOrTransportFailure(exception))
         {
             throw new ObjectDisposedException(nameof(RabbitMqRequestBroker));
         }
-        catch (OperationCanceledException exception)
-            when (deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException exception) when (deadline.IsCancellationRequested)
         {
             throw new RequestTimeoutException(address, timeout, exception);
+        }
+        catch (Exception exception) when (IsTransportFailure(exception))
+        {
+            throw new MessagingTransportException(
+                address,
+                $"RabbitMQ could not send the request to '{address}'; whether the broker accepted it is unknown.",
+                exception
+            );
         }
         finally
         {

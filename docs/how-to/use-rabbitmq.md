@@ -125,7 +125,18 @@ Events without any subscriptions retain ordinary fan-out discard behavior.
   queue: the handler application is not running, or client and handler
   disagree on the address string or queue naming mode.
 - **Connection refused at startup** — broker not reachable at
-  `Uri`; check `docker compose ps` and the port (5672).
+  `Uri`; check `docker compose ps` and the port (5672). Starting a listener
+  fails the host with the client library's `BrokerUnreachableException`; a
+  request or publication reports it as `MessagingTransportException`.
+- **`MessagingTransportException`** — the transport could not carry the
+  message: the broker was unreachable, closed the connection or channel, or
+  nacked the publication. The client library's exception is
+  `InnerException`. Whether the broker accepted the message is unknown, so a
+  retry can deliver it twice.
+- **`TimeoutException` from publishing** — `PublishTimeout` elapsed before
+  the broker confirmed the event; the broker may still have accepted it. A
+  rising `hostloom.rabbitmq.channels.closing` alongside it means the broker
+  is not answering at all.
 - **`RemoteRequestException`** — the request arrived and the handler
   threw; `ErrorType` is `HandlerFault` unless the handler threw a
   `RemoteFaultException` or `HostLoomOptions.IncludeFaultDetails` is on.

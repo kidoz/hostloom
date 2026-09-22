@@ -585,8 +585,8 @@ public sealed partial class RabbitMqBrokerTests
         // than to succeed against a replacement.
         rabbit.Drop(ShutdownInitiator.Peer);
 
-        await Assert
-            .ThrowsAnyAsync<Exception>(async () =>
+        var failure = await Assert
+            .ThrowsAsync<MessagingTransportException>(async () =>
                 await broker.PublishAsync(
                     "orders",
                     Encoding.UTF8.GetBytes("during-outage"),
@@ -594,6 +594,8 @@ public sealed partial class RabbitMqBrokerTests
                 )
             )
             .ConfigureAwait(true);
+        Assert.IsType<AlreadyClosedException>(failure.InnerException);
+        Assert.Equal("orders", failure.Address.Value);
         Assert.Equal(1, connections);
     }
 
@@ -1386,10 +1388,13 @@ public sealed partial class RabbitMqBrokerTests
                 }
             }
 
+            // What the client library throws for an operation on a closed connection.
             Connection
                 .CreateChannelAsync(Arg.Any<CreateChannelOptions?>(), Arg.Any<CancellationToken>())
                 .Returns<Task<IChannel>>(_ =>
-                    throw new InvalidOperationException("the connection is closed")
+                    throw new AlreadyClosedException(
+                        new ShutdownEventArgs(initiator, 320, "connection dropped")
+                    )
                 );
         }
 

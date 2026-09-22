@@ -19,11 +19,27 @@ internal delegate IConsumer<string, byte[]> KafkaConsumerFactory(
     PartitionsAssignedHandler? partitionsAssigned
 );
 
+/// <summary>
+/// Kafka transport: requests and events are records on topics, and each client reads its
+/// replies from <see cref="KafkaOptions.ResponseTopic"/> in a consumer group of its own.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <see cref="RequestAsync"/> reports a reply consumer that could not start, or a request the
+/// producer could not deliver, as <see cref="MessagingTransportException"/> with the client
+/// library's exception inside; a failed start is retried by the next request.
+/// <see cref="PublishAsync"/> reports a failed delivery the same way. Publication has no
+/// deadline of its own beyond the producer's <c>message.timeout.ms</c>.
+/// </para>
+/// <para>
+/// The health probe answers from the reply consumer's local state and never contacts the
+/// broker: unhealthy while a start awaits its assignment or after one failed, healthy otherwise.
+/// </para>
+/// </remarks>
 public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHealthProbe
 {
     private const string CorrelationHeader = "hostloom-correlation-id";
     private const string ReplyToHeader = "hostloom-reply-to";
-    private static readonly TimeSpan WatermarkQueryTimeout = TimeSpan.FromSeconds(5);
     private readonly KafkaOptions _options;
     private readonly IProducer<string, byte[]> _producer;
     private readonly ConcurrentDictionary<
@@ -31,25 +47,19 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
         TaskCompletionSource<ReadOnlyMemory<byte>>
     > _pending = new();
     private readonly ConcurrentBag<ConsumerSubscription> _subscriptions = [];
-    private readonly ConcurrentDictionary<TopicPartition, Offset> _replyOffsets = new();
     // No wait handle is used; pending callers must be able to observe disposal safely.
 #pragma warning disable CA2213
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
 #pragma warning restore CA2213
-    private TaskCompletionSource _replyConsumerReady = new(
-        TaskCreationOptions.RunContinuationsAsynchronously
-    );
     private readonly ILogger<KafkaRequestBroker> _logger;
     private readonly KafkaConsumerFactory _consumerFactory;
     private readonly TimeProvider _clock;
-    private ConsumerSubscription? _replySubscription;
+    private readonly KafkaReplyConsumer _replies;
     private volatile bool _disposed;
     private readonly Lock _disposalGate = new();
     private readonly CancellationTokenSource _shutdown = new();
     private readonly CancellationToken _shutdownToken;
     private Task? _disposing;
-    private Task? _replyStarting;
-    private volatile bool _replyFailed;
     private readonly KeyValuePair<string, object?> _clientTag;
 
     public KafkaRequestBroker(
@@ -85,6 +95,14 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
         _producer =
             producer ?? new ProducerBuilder<string, byte[]>(CreateProducerConfig(_options)).Build();
         _clientTag = new(KafkaDiagnostics.ClientTag, _options.ClientId);
+        _replies = new KafkaReplyConsumer(
+            _options,
+            _consumerFactory,
+            CompleteRequest,
+            _logger,
+            _clientTag,
+            this
+        );
         KafkaDiagnostics.Register(this);
     }
 
@@ -117,7 +135,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                 ),
                 partitionsAssigned: null
             );
-            SubscribeOwned(consumer, address.Value);
+            SubscribeOwned(consumer, address.Value, () => _disposed, this, _logger);
 
             var subscription = ConsumerSubscription.Start(
                 consumer,
@@ -217,7 +235,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                 ),
                 partitionsAssigned: null
             );
-            SubscribeOwned(consumer, topic.Value);
+            SubscribeOwned(consumer, topic.Value, () => _disposed, this, _logger);
 
             var handled = ConsumerSubscription.Start(
                 consumer,
@@ -247,15 +265,38 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        // No key, so records round-robin across partitions. Ordering therefore holds within a
-        // partition only; key-based partitioning is a contract-level concern the broker cannot infer.
-        await _producer
-            .ProduceAsync(
-                topic.Value,
-                new Message<string, byte[]> { Value = frame.ToArray() },
-                cancellationToken
-            )
-            .ConfigureAwait(false);
+        try
+        {
+            // No key, so records round-robin across partitions. Ordering therefore holds within
+            // a partition only; key-based partitioning is a contract-level concern the broker
+            // cannot infer.
+            await _producer
+                .ProduceAsync(
+                    topic.Value,
+                    new Message<string, byte[]> { Value = frame.ToArray() },
+                    cancellationToken
+                )
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The client library may cancel its task without the caller's token; this carries it.
+            cancellationToken.ThrowIfCancellationRequested();
+            throw;
+        }
+        catch (Exception exception)
+            when (_disposed && exception is KafkaException or ObjectDisposedException)
+        {
+            throw new ObjectDisposedException(nameof(KafkaRequestBroker));
+        }
+        catch (KafkaException exception)
+        {
+            throw new MessagingTransportException(
+                topic,
+                $"Kafka could not deliver the event to '{topic}': {exception.Error.Reason}",
+                exception
+            );
+        }
         RecordProduced("event");
     }
 
@@ -290,7 +331,19 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
         var replyReady = false;
         try
         {
-            await EnsureReplyConsumerAsync(token).ConfigureAwait(false);
+            try
+            {
+                await _replies.EnsureStartedAsync(token).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+                when (exception is not (OperationCanceledException or ObjectDisposedException))
+            {
+                throw new MessagingTransportException(
+                    address,
+                    $"The Kafka reply consumer for response topic '{_options.ResponseTopic}' could not start, so the request was not sent; the next request retries it.",
+                    exception
+                );
+            }
             replyReady = true;
             token.ThrowIfCancellationRequested();
             var completion = new TaskCompletionSource<ReadOnlyMemory<byte>>(
@@ -304,23 +357,34 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
             }
             registered = true;
             var id = requestId.ToString("N");
-            await _producer
-                .ProduceAsync(
-                    address.Value,
-                    new Message<string, byte[]>
-                    {
-                        Key = id,
-                        Value = request.ToArray(),
-                        Headers = new Headers
+            try
+            {
+                await _producer
+                    .ProduceAsync(
+                        address.Value,
+                        new Message<string, byte[]>
                         {
-                            { CorrelationHeader, Encoding.UTF8.GetBytes(id) },
-                            { ReplyToHeader, Encoding.UTF8.GetBytes(_options.ResponseTopic) },
+                            Key = id,
+                            Value = request.ToArray(),
+                            Headers = new Headers
+                            {
+                                { CorrelationHeader, Encoding.UTF8.GetBytes(id) },
+                                { ReplyToHeader, Encoding.UTF8.GetBytes(_options.ResponseTopic) },
+                            },
                         },
-                    },
-                    token
-                )
-                .WaitAsync(token)
-                .ConfigureAwait(false);
+                        token
+                    )
+                    .WaitAsync(token)
+                    .ConfigureAwait(false);
+            }
+            catch (KafkaException exception)
+            {
+                throw new MessagingTransportException(
+                    address,
+                    $"Kafka could not deliver the request to '{address}': {exception.Error.Reason}",
+                    exception
+                );
+            }
             RecordProduced("request");
             return await completion.Task.WaitAsync(token).ConfigureAwait(false);
         }
@@ -329,7 +393,10 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
             cancellationToken.ThrowIfCancellationRequested();
             throw;
         }
-        catch (OperationCanceledException) when (_disposed)
+        catch (Exception exception)
+            when (_disposed
+                && exception is OperationCanceledException or MessagingTransportException
+            )
         {
             throw new ObjectDisposedException(nameof(KafkaRequestBroker));
         }
@@ -353,6 +420,19 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
         }
     }
 
+    /// <summary>Completes the pending request a reply record is correlated to, if it is still waiting.</summary>
+    private void CompleteRequest(ConsumeResult<string, byte[]> record)
+    {
+        var value = GetRequiredHeader(record.Message.Headers, CorrelationHeader);
+        if (
+            Guid.TryParseExact(value, "N", out var id)
+            && _pending.TryGetValue(id, out var completion)
+        )
+        {
+            completion.TrySetResult(record.Message.Value);
+        }
+    }
+
     public ValueTask DisposeAsync()
     {
         lock (_disposalGate)
@@ -364,16 +444,18 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
 
     private async Task DisposeCoreAsync()
     {
+        // Started before anything yields, so the reply consumer is marked disposed at once and a
+        // consumer its start is still building is released instead of subscribed.
+        var replies = _replies.DisposeAsync().AsTask();
         await _shutdown.CancelAsync().ConfigureAwait(false);
-        if (_replyStarting is { } starting)
+        List<Exception> failures = [];
+        try
         {
-            try
-            {
-                await starting.ConfigureAwait(false);
-            }
-            catch (Exception)
-            { /* Initialization failure is reported to its callers. */
-            }
+            await replies.ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            failures.Add(exception);
         }
         await _lifecycleGate.WaitAsync().ConfigureAwait(false);
         try
@@ -381,21 +463,6 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
             foreach (var completion in _pending.Values)
             {
                 completion.TrySetException(new ObjectDisposedException(nameof(KafkaRequestBroker)));
-            }
-            _replyConsumerReady.TrySetException(
-                new ObjectDisposedException(nameof(KafkaRequestBroker))
-            );
-            List<Exception> failures = [];
-            if (_replySubscription is not null)
-            {
-                try
-                {
-                    await _replySubscription.DisposeAsync().ConfigureAwait(false);
-                }
-                catch (Exception exception)
-                {
-                    failures.Add(exception);
-                }
             }
             while (_subscriptions.TryTake(out var subscription))
             {
@@ -438,99 +505,37 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
         }
     }
 
-    private async ValueTask EnsureReplyConsumerAsync(CancellationToken cancellationToken)
-    {
-        Task starting;
-        lock (_disposalGate)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            // SDK construction is synchronous. A broker-owned task lets each request bound
-            // its wait without cancelling shared initialization or blocking on construction.
-            // A previous caller may have timed out before shared startup failed.
-            if (_replyStarting is { IsFaulted: true } or { IsCanceled: true })
-                _replyStarting = null;
-            starting = _replyStarting ??= Task.Run(
-                InitializeReplyConsumerAsync,
-                CancellationToken.None
-            );
-        }
-        try
-        {
-            await starting.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch when (starting.IsFaulted)
-        {
-            lock (_disposalGate)
-            {
-                if (ReferenceEquals(_replyStarting, starting))
-                {
-                    _replyStarting = null;
-                }
-            }
-            throw;
-        }
-    }
-
+    /// <summary>
+    /// Reports the reply consumer's local state and never contacts the broker, so an outage that
+    /// begins after the consumer started does not make it unhealthy.
+    /// </summary>
     public ValueTask<BrokerHealth> CheckHealthAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         return ValueTask.FromResult(
-            _disposed || _replyFailed
+            _disposed
                 ? BrokerHealth.Unhealthy(
                     "Kafka reply consumer is unavailable; the next request retries initialization."
                 )
-            : _replyStarting is { IsCompleted: false }
-                ? BrokerHealth.Unhealthy("Kafka reply consumer is awaiting assignment.")
-            : BrokerHealth.Healthy(
-                "Kafka local consumer state has no reported startup failure; broker reachability is not probed."
-            )
+                : _replies.Health
         );
     }
 
-    private async Task InitializeReplyConsumerAsync()
+    /// <summary>
+    /// Subscribes a consumer the caller has just built, disposing it if that fails or its owner
+    /// was disposed meanwhile, so a failed start never leaks a group member.
+    /// </summary>
+    internal static void SubscribeOwned(
+        IConsumer<string, byte[]> consumer,
+        string topic,
+        Func<bool> disposed,
+        object owner,
+        ILogger logger
+    )
     {
         try
         {
-            await StartReplyConsumerAsync(_shutdownToken).ConfigureAwait(false);
-            await _replyConsumerReady.Task.WaitAsync(_shutdownToken).ConfigureAwait(false);
-            _replyFailed = false;
-            RecordReplyConsumerInitialization("succeeded");
-        }
-        catch
-        {
-            _replyFailed = true;
-            RecordReplyConsumerInitialization("failed");
-            await _lifecycleGate.WaitAsync().ConfigureAwait(false);
-            try
-            {
-                if (_replySubscription is not null)
-                {
-                    await _replySubscription.DisposeAsync().ConfigureAwait(false);
-                    _replySubscription = null;
-                }
-                _replyOffsets.Clear();
-                _replyConsumerReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            }
-            finally
-            {
-                _lifecycleGate.Release();
-            }
-            throw;
-        }
-    }
-
-    private void RecordReplyConsumerInitialization(string outcome) =>
-        KafkaDiagnostics.ReplyConsumerInitializations.Add(
-            1,
-            _clientTag,
-            new(KafkaDiagnostics.OutcomeTag, outcome)
-        );
-
-    private void SubscribeOwned(IConsumer<string, byte[]> consumer, string topic)
-    {
-        try
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
+            ObjectDisposedException.ThrowIf(disposed(), owner);
             consumer.Subscribe(topic);
         }
         catch
@@ -542,116 +547,10 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
             }
             catch (Exception exception)
             {
-                _logger.LogDebug(exception, "Consumer cleanup failed during startup.");
+                logger.LogDebug(exception, "Consumer cleanup failed during startup.");
             }
             throw;
         }
-    }
-
-    private async ValueTask StartReplyConsumerAsync(CancellationToken cancellationToken)
-    {
-        await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            // A successfully registered consumer remains owned until broker shutdown.
-            if (_replySubscription is not null)
-            {
-                return;
-            }
-
-            var consumer = _consumerFactory(
-                CreateConsumerConfig(
-                    _options,
-                    clientId: $"{_options.ClientId}-replies",
-                    groupId: $"{_options.ConsumerGroup}.replies.{_options.ClientId}",
-                    enableAutoCommit: true,
-                    // The group is unique to this process, so there is never a committed offset
-                    // to resume from. Earliest would replay every retained reply on the topic on
-                    // each restart; Latest starts at the end, and RequestAsync waits for the
-                    // assignment below before producing, so no reply can precede the start.
-                    autoOffsetReset: AutoOffsetReset.Latest
-                ),
-                partitionsAssigned: OnReplyPartitionsAssigned
-            );
-            SubscribeOwned(consumer, _options.ResponseTopic);
-            _replySubscription = ConsumerSubscription.Start(
-                consumer,
-                _options.ResponseTopic,
-                (record, _) =>
-                {
-                    // This loop and assignment callbacks own reply progress. Even an unrelated
-                    // or malformed reply is consumed, so resume at the next record on reassignment.
-                    _replyOffsets[record.TopicPartition] = record.Offset + 1;
-                    var value = GetRequiredHeader(record.Message.Headers, CorrelationHeader);
-                    if (
-                        Guid.TryParseExact(value, "N", out var id)
-                        && _pending.TryGetValue(id, out var completion)
-                    )
-                    {
-                        completion.TrySetResult(record.Message.Value);
-                    }
-
-                    return ValueTask.CompletedTask;
-                },
-                _logger
-            );
-        }
-        finally
-        {
-            _lifecycleGate.Release();
-        }
-    }
-
-    /// <summary>
-    /// Resolves initial offsets before permitting requests. Reassignments retain local progress;
-    /// a partition added after startup is read from the beginning so pending replies survive.
-    /// </summary>
-    private IEnumerable<TopicPartitionOffset> OnReplyPartitionsAssigned(
-        IConsumer<string, byte[]> consumer,
-        List<TopicPartition> partitions
-    )
-    {
-        var offsets = new List<TopicPartitionOffset>(partitions.Count);
-        try
-        {
-            foreach (var partition in partitions)
-            {
-                if (!_replyOffsets.TryGetValue(partition, out var offset))
-                {
-                    offset = _replyConsumerReady.Task.IsCompletedSuccessfully
-                        ? Offset.Beginning
-                        : consumer.QueryWatermarkOffsets(partition, WatermarkQueryTimeout).High;
-                    if (!_replyConsumerReady.Task.IsCompletedSuccessfully && offset.Value < 0)
-                    {
-                        throw new InvalidOperationException(
-                            "The reply partition has no resolved high watermark."
-                        );
-                    }
-                }
-
-                offsets.Add(new TopicPartitionOffset(partition, offset));
-            }
-        }
-        catch (Exception exception)
-        {
-            // Never fall back to a deferred End offset: a reply could arrive before it resolves.
-            // Initialization fails for callers; the next request starts a fresh consumer.
-            _replyConsumerReady.TrySetException(exception);
-            throw;
-        }
-
-        foreach (var offset in offsets)
-        {
-            _replyOffsets[offset.TopicPartition] = offset.Offset;
-        }
-
-        if (partitions.Count > 0)
-        {
-            _replyConsumerReady.TrySetResult();
-        }
-
-        return offsets;
     }
 
     private IConsumer<string, byte[]> BuildConsumer(

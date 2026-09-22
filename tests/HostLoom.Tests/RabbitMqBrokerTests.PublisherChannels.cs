@@ -212,9 +212,10 @@ public sealed partial class RabbitMqBrokerTests
         var (closeStarted, finishClose) = nacked.HoldClose();
         finishClose.SetResult();
 
-        await Assert.ThrowsAsync<PublishException>(() =>
+        var failure = await Assert.ThrowsAsync<MessagingTransportException>(() =>
             broker.PublishAsync("catalog", new byte[] { 2 }, token).AsTask()
         );
+        Assert.IsType<PublishException>(failure.InnerException);
         await closeStarted.WaitAsync(Bound, token);
         await broker.PublishAsync("catalog", new byte[] { 3 }, token);
 

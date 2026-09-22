@@ -67,7 +67,7 @@ Rationale for the differences: [transport semantics](../explanation/transports.m
 | --- | --- | --- | --- | --- |
 | Request/response | `IRequestBroker` | yes | yes | yes |
 | Publish/subscribe | `IEventBroker` | yes | yes | yes |
-| Broker health probe | `IBrokerHealthProbe` | yes | not yet | local startup state |
+| Broker health probe | `IBrokerHealthProbe` | local state | not yet | local startup state |
 
 A transport without `IEventBroker` rejects publishing (throws) and fails
 subscription registration at startup. A transport without
@@ -76,12 +76,69 @@ RabbitMQ therefore cannot currently report a broker outage through this contract
 reports reply-consumer initialization failure and pending assignment; its probe does not
 perform a broker connectivity check.
 
+## Errors
+
+Every transport reports the same outcomes with the same exception types, so a caller of
+`IRequestClient`, `IPublishEndpoint`, `IRequestBroker.RequestAsync`, or
+`IEventBroker.PublishAsync` handles them once. A handler failure reaches a request caller as
+`RemoteRequestException`, and a reply that fails validation as `MalformedEnvelopeException`;
+those come from the runtime on either side, not from the transport.
+
+| Outcome | Request | Publish |
+| --- | --- | --- |
+| No reply within the timeout, which covers setup, publication, and waiting; also an address with no listener or one the transport cannot route to | `RequestTimeoutException` | — |
+| The caller's token was cancelled; only the wait ends, the message may still be delivered and handled | `OperationCanceledException` carrying that token | same |
+| The transport was disposed before or during the call | `ObjectDisposedException` | same |
+| Any other transport failure; whether the broker accepted the message is unknown | `MessagingTransportException` with the client library's exception as `InnerException` and the address or topic as `Address` | same |
+
+A completed publication means the transport accepted the event, not that a subscriber handled
+it. A listener's handler token is cancelled only by stopping the listener or by the transport,
+never by a caller that stopped waiting. Starting a listener or subscription is not covered by
+this table: it fails host startup with the client library's own exception.
+
+### In-memory
+
+| Situation | Caller sees |
+| --- | --- |
+| Request to an address with no listener | `RequestTimeoutException` once the whole timeout has passed on the registered `TimeProvider` |
+| The listener stops while its handler is running | `RequestTimeoutException` once the whole timeout has passed; the handler's token is cancelled and no reply comes |
+| The listener's frame handler throws, which the HostLoom dispatcher does only for a malformed frame | That exception, unchanged: nothing sits between the two |
+| The transport is disposed while a request waits, bound or not | `ObjectDisposedException` at once |
+| A subscriber fails | Nothing: the failure is logged and the publication stays accepted |
+
+### RabbitMQ
+
+| Situation | Caller sees |
+| --- | --- |
+| No reply before the request timeout, which covers connecting, declaring the reply queue, waiting for a publisher channel, the confirmation, and the reply | `RequestTimeoutException` |
+| The broker returns a request as unroutable (no queue for the address) | `RequestTimeoutException` at the deadline, as for an unbound address |
+| `PublishTimeout` elapses before an event's confirmation | `TimeoutException` with the cancellation inside |
+| The broker nacks a publication | `MessagingTransportException` around `PublishException` |
+| The connection or channel is closed, including while automatic recovery is still restoring a dropped connection | `MessagingTransportException` around `AlreadyClosedException` or another `OperationInterruptedException` |
+| The broker cannot be reached when connecting | `MessagingTransportException` around `BrokerUnreachableException` |
+| Any other client-library, socket, or I/O failure | `MessagingTransportException` around it |
+
+A publication that was not confirmed never returns its channel to the pool; the channel is
+closed in the background, so each of these returns at its deadline or failure, not after the
+close.
+
+### Kafka
+
+| Situation | Caller sees |
+| --- | --- |
+| The reply consumer is not assigned a partition of `ResponseTopic` within the request timeout | `RequestTimeoutException` whose inner `TimeoutException` names the response topic; nothing is produced |
+| The deadline passes while producing the request or waiting for its reply | `RequestTimeoutException` |
+| The reply consumer fails to start, for example its high-watermark query times out | `MessagingTransportException` around the client library's `KafkaException`; nothing is produced, the health probe reports it, and the next request retries the start |
+| The producer cannot deliver a request | `MessagingTransportException` around `ProduceException` |
+| The producer cannot deliver an event | `MessagingTransportException` around `ProduceException`. Publication has no deadline of its own: a produce that cannot be delivered fails when the producer's `message.timeout.ms` (five minutes by default, set through `ConfigureClient`) runs out |
+
 ## Behavioral differences worth knowing
 
 - **In-memory publishing** awaits local deliveries for deterministic tests, but logs
   subscriber failures without propagating them to the publisher or triggering outbox retries.
   Caller cancellation ends its wait; accepted handler work uses the listener lifetime token.
-  Unbound requests wait for their timeout. This transport remains process-local and non-durable.
+  Unbound requests wait for their timeout, and so does a request whose listener stops while
+  its handler runs. This transport remains process-local and non-durable.
 - **RabbitMQ events** publish with no routing key and without
   `mandatory`: an event with no subscribers is dropped, not an error.
   Publishing awaits broker confirmation; durable event messages are persistent.

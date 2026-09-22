@@ -83,8 +83,8 @@ Give each calling service its own response topic, named for the service.
 The reply consumer resolves the end of each initially assigned partition before any request
 is sent. Reassignments resume local progress; newly added partitions are read from the
 beginning to avoid skipping pending replies. If the initial watermark query fails, requests
-fail without publishing; the failed consumer is released and the next request retries
-initialization. Readiness reports the failed or pending initialization. The ACL model stays legible: a handler service needs `Write` on the
+fail with `MessagingTransportException` without publishing; the failed consumer is released
+and the next request retries initialization. Readiness reports the failed or pending initialization. The ACL model stays legible: a handler service needs `Write` on the
 response topics of the services that call it and `Read` on its request
 topics; a calling service needs `Write` on the request topics it calls
 and `Read` on its own response topic. A handler service can pin that
@@ -103,8 +103,11 @@ be pushed through the handlers again.
 
 The request timeout covers reply-consumer startup and partition assignment, producing the
 request, and waiting for its reply as one deadline. Caller cancellation remains cancellation;
-broker shutdown interrupts pending requests. A timeout or cancellation cannot retract a
-record already accepted by Kafka.
+disposing the transport ends pending requests with `ObjectDisposedException`. A timeout or
+cancellation cannot retract a record already accepted by Kafka. Publishing an event has no
+deadline of its own: a record the producer cannot deliver fails with
+`MessagingTransportException` once the producer's `message.timeout.ms` runs out, five minutes
+unless `ConfigureClient` sets it.
 
 ## 4. Verify
 
@@ -137,6 +140,11 @@ HOSTLOOM_KAFKA_CHAOS=1 dotnet test tests/HostLoom.IntegrationTests/HostLoom.Inte
   the reply could not be written to the caller's response topic (missing
   topic, no `Write` ACL); the request is committed and not re-run, and the
   caller times out.
+- **`MessagingTransportException`** — the producer could not deliver the
+  request or event, or the reply consumer could not start; the client
+  library's `KafkaException` or `ProduceException` is `InnerException`. A
+  failed reply-consumer start is retried by the next request, and readiness
+  reports it until then.
 - **Replies lost after long processing** — response-topic retention is
   shorter than the request timeout; re-provision it.
 - **Events arrive on only one instance** — instances share a consumer

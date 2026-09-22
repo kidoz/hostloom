@@ -8,7 +8,9 @@ namespace HostLoom;
 public interface IBrokerHealthProbe
 {
     /// <summary>
-    /// Reports whether the broker is currently usable. Must not throw for an unreachable broker;
+    /// Reports whether this instance believes it can serve traffic now. An implementation answers
+    /// either from local state it already holds or from an active check against the broker, and
+    /// documents which; either way it returns promptly. Must not throw for an unreachable broker;
     /// return a failed result instead.
     /// </summary>
     ValueTask<BrokerHealth> CheckHealthAsync(CancellationToken cancellationToken);

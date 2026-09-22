@@ -4,9 +4,32 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HostLoom.Transport.InMemory;
 
+/// <summary>
+/// Process-local transport for tests and single-process applications: a request runs its
+/// listener's handler directly, and a publication runs every matching subscription's handler.
+/// </summary>
+/// <remarks>
+/// <para>
+/// A request to an address with no listener waits out its timeout and throws
+/// <see cref="RequestTimeoutException"/>, as it would against a broker with no consumer. So does
+/// a request whose listener stops while its handler is running: the handler's token is
+/// cancelled, no reply will come, and the requester waits for its own timeout rather than
+/// seeing the listener's cancellation. An exception the listener's frame handler throws, which
+/// the HostLoom dispatcher does only for a malformed frame, reaches the requester unchanged.
+/// Disposing the transport ends every waiting request with <see cref="ObjectDisposedException"/>.
+/// </para>
+/// <para>
+/// The health probe answers from local state only: <see cref="IsReachable"/> and whether the
+/// transport has been disposed.
+/// </para>
+/// </remarks>
 public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBrokerHealthProbe
 {
     private readonly ConcurrentDictionary<RequestAddress, RequestSubscription> _handlers = new();
+    private readonly ConcurrentDictionary<
+        TaskCompletionSource<ReadOnlyMemory<byte>>,
+        byte
+    > _waiting = new(ReferenceEqualityComparer.Instance);
     private readonly ConcurrentDictionary<
         (RequestAddress Topic, string Name),
         EventSubscription
@@ -150,31 +173,68 @@ public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBroke
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
-        if (!_handlers.TryGetValue(address, out var subscription))
+        var reply = new TaskCompletionSource<ReadOnlyMemory<byte>>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        // Registered under the gate disposal takes, so disposal either sees this wait and ends
+        // it or has already made this call throw.
+        lock (_lifecycleGate)
         {
-            await Task.Delay(timeout, _clock, cancellationToken).ConfigureAwait(false);
-            throw new RequestTimeoutException(address, timeout);
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _waiting.TryAdd(reply, 0);
         }
-        var owned = request.ToArray();
-        var delivery = Task.Run(async () =>
-            await subscription.Handler(owned, subscription.Token).ConfigureAwait(false)
-        );
-        // Observe a receiver failure even when the caller has already stopped waiting.
-        _ = delivery.ContinueWith(
-            task => _ = task.Exception,
-            CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default
-        );
+
         try
         {
-            return await delivery
-                .WaitAsync(timeout, _clock, cancellationToken)
+            // Without a listener nothing ever completes the reply, so the wait below runs out
+            // the whole budget on the clock, the same timeout a broker gives an unbound address.
+            if (_handlers.TryGetValue(address, out var subscription))
+            {
+                _ = DeliverRequestAsync(subscription, request.ToArray(), reply);
+            }
+
+            return await reply
+                .Task.WaitAsync(timeout, _clock, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (TimeoutException exception)
         {
             throw new RequestTimeoutException(address, timeout, exception);
+        }
+        finally
+        {
+            _waiting.TryRemove(reply, out _);
+        }
+    }
+
+    /// <summary>
+    /// Runs the listener's handler and completes <paramref name="reply"/> with its answer or its
+    /// failure. A handler cancelled because its listener stopped produces no reply, so the
+    /// requester keeps waiting for its own timeout, as it would for a broker whose consumer went
+    /// away mid-request, instead of receiving a cancellation that belongs to the listener.
+    /// </summary>
+    private static async Task DeliverRequestAsync(
+        RequestSubscription subscription,
+        byte[] request,
+        TaskCompletionSource<ReadOnlyMemory<byte>> reply
+    )
+    {
+        try
+        {
+            var response = await Task.Run(async () =>
+                    await subscription.Handler(request, subscription.Token).ConfigureAwait(false)
+                )
+                .ConfigureAwait(false);
+            reply.TrySetResult(response);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception exception)
+        {
+            // Observed here as well, because a requester that stopped waiting never reads it.
+            if (reply.TrySetException(exception))
+            {
+                _ = reply.Task.Exception;
+            }
         }
     }
 
@@ -182,6 +242,13 @@ public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBroke
     {
         lock (_lifecycleGate)
             _disposed = true;
+        foreach (var reply in _waiting.Keys)
+        {
+            if (reply.TrySetException(new ObjectDisposedException(nameof(InMemoryRequestBroker))))
+            {
+                _ = reply.Task.Exception;
+            }
+        }
         foreach (var subscription in _handlers.Values)
             await subscription.DisposeAsync().ConfigureAwait(false);
         foreach (var subscription in _topics.Values)

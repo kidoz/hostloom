@@ -216,19 +216,20 @@ public sealed class MessagingChaosTests
     }
 
     [Fact]
-    public async Task Stopping_the_listener_cancels_receiver_work()
+    public async Task Stopping_the_listener_cancels_receiver_work_and_the_caller_waits_for_its_timeout()
     {
         var gate = new Gate();
         var clock = new TestClock();
         using var host = BuildInMemory(gate, clock);
         await host.StartAsync(TestContext.Current.CancellationToken);
         var client = host.Services.GetRequiredService<IRequestClient<Reserve, Reserved>>();
+        var budget = TimeSpan.FromMinutes(5);
 
         var pending = client
             .GetResponseAsync(
                 "inventory",
                 new Reserve("R-4"),
-                Bounded,
+                budget,
                 TestContext.Current.CancellationToken
             )
             .AsTask();
@@ -236,7 +237,15 @@ public sealed class MessagingChaosTests
         await host.StopAsync(TestContext.Current.CancellationToken);
         gate.Release.SetResult();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        // The stop cancelled the handler, so no reply will come. That cancellation belongs to the
+        // listener, not the caller, which waits out its own budget as it would against a broker
+        // whose consumer went away mid-request.
+        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 1);
+        clock.Advance(budget - TimeSpan.FromSeconds(1));
+        Assert.False(pending.IsCompleted);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        var timeout = await Assert.ThrowsAsync<RequestTimeoutException>(() => pending);
+        Assert.Equal(budget, timeout.Timeout);
         Assert.Equal(0, gate.Completed);
 
         // The stop still took the endpoint away for anything that had not been accepted.
@@ -244,13 +253,14 @@ public sealed class MessagingChaosTests
             .GetResponseAsync(
                 "inventory",
                 new Reserve("R-5"),
-                TimeSpan.FromMinutes(5),
+                budget,
                 TestContext.Current.CancellationToken
             )
             .AsTask();
         await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 1);
-        clock.Advance(TimeSpan.FromMinutes(5));
+        clock.Advance(budget);
         await Assert.ThrowsAsync<RequestTimeoutException>(() => unbound);
+        Assert.Equal(1, gate.Started);
     }
 
     [Fact]

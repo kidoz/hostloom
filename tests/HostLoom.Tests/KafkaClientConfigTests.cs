@@ -288,7 +288,13 @@ public sealed class KafkaClientConfigTests
                 new TopicPartition("billing.replies", 1)
             )
         );
-        await Assert.ThrowsAsync<KafkaException>(() => pending);
+        // The watermark query's own failure travels inside the transport exception.
+        var failure = await Assert.ThrowsAsync<MessagingTransportException>(() => pending);
+        Assert.Equal(
+            ErrorCode.Local_TimedOut,
+            Assert.IsType<KafkaException>(failure.InnerException).Error.Code
+        );
+        Assert.Equal("orders", failure.Address.Value);
         Assert.Empty(kafka.Produced);
     }
 
@@ -316,7 +322,9 @@ public sealed class KafkaClientConfigTests
             TestContext.Current.CancellationToken
         );
         Assert.Throws<KafkaException>(() => kafka.Assign(new TopicPartition("billing.replies", 0)));
-        await Assert.ThrowsAsync<KafkaException>(() => first);
+        Assert.IsType<KafkaException>(
+            (await Assert.ThrowsAsync<MessagingTransportException>(() => first)).InnerException
+        );
         Assert.False(
             (await broker.CheckHealthAsync(TestContext.Current.CancellationToken)).IsHealthy
         );
@@ -342,6 +350,74 @@ public sealed class KafkaClientConfigTests
         Assert.True(
             (await broker.CheckHealthAsync(TestContext.Current.CancellationToken)).IsHealthy
         );
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task A_request_the_producer_cannot_deliver_fails_as_a_transport_exception()
+    {
+        var kafka = new FakeReplyKafka();
+        await using var broker = new KafkaRequestBroker(
+            Options.Create(new KafkaOptions { ResponseTopic = "billing.replies" }),
+            null,
+            kafka.Producer,
+            kafka.CreateConsumer
+        );
+        var cause = new ProduceException<string, byte[]>(
+            new Error(ErrorCode.TopicAuthorizationFailed),
+            new DeliveryResult<string, byte[]>()
+        );
+        kafka.ProduceFailure = cause;
+        var pending = broker
+            .RequestAsync(
+                "orders",
+                "ask"u8.ToArray(),
+                Guid.NewGuid(),
+                TimeSpan.FromSeconds(30),
+                TestContext.Current.CancellationToken
+            )
+            .AsTask();
+        await kafka.ConsumerCreated.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken
+        );
+        kafka.Assign(new TopicPartition("billing.replies", 0));
+
+        var failure = await Assert.ThrowsAsync<MessagingTransportException>(() =>
+            pending.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken)
+        );
+
+        Assert.Same(cause, failure.InnerException);
+        Assert.Equal("orders", failure.Address.Value);
+        // The reply consumer started fine, so readiness is not blamed for a produce failure.
+        Assert.True(
+            (await broker.CheckHealthAsync(TestContext.Current.CancellationToken)).IsHealthy
+        );
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task An_event_the_producer_cannot_deliver_fails_as_a_transport_exception()
+    {
+        var kafka = new FakeReplyKafka();
+        await using var broker = new KafkaRequestBroker(
+            Options.Create(new KafkaOptions()),
+            null,
+            kafka.Producer,
+            kafka.CreateConsumer
+        );
+        var cause = new ProduceException<string, byte[]>(
+            new Error(ErrorCode.Local_MsgTimedOut),
+            new DeliveryResult<string, byte[]>()
+        );
+        kafka.ProduceFailure = cause;
+
+        var failure = await Assert.ThrowsAsync<MessagingTransportException>(() =>
+            broker
+                .PublishAsync("orders", "placed"u8.ToArray(), TestContext.Current.CancellationToken)
+                .AsTask()
+        );
+
+        Assert.Same(cause, failure.InnerException);
+        Assert.Equal("orders", failure.Address.Value);
     }
 
     [Fact]
@@ -428,7 +504,7 @@ public sealed class KafkaClientConfigTests
                 new TopicPartition("billing.replies", 1)
             )
         );
-        await Assert.ThrowsAsync<KafkaException>(() => pending);
+        await Assert.ThrowsAsync<MessagingTransportException>(() => pending);
 
         Assert.Equal(
             1,
@@ -548,6 +624,11 @@ public sealed class KafkaClientConfigTests
                 {
                     var topic = call.ArgAt<string>(0);
                     var message = call.ArgAt<Message<string, byte[]>>(1);
+                    if (ProduceFailure is { } failure)
+                    {
+                        return Task.FromException<DeliveryResult<string, byte[]>>(failure);
+                    }
+
                     lock (_gate)
                     {
                         Produced.Add(new ProducedRecord(topic, message.Key, message.Value));
@@ -559,6 +640,9 @@ public sealed class KafkaClientConfigTests
         }
 
         public long HighWatermark { get; set; } = 42;
+
+        /// <summary>When set, every produce fails with it, as a delivery the broker refused.</summary>
+        public Exception? ProduceFailure { get; set; }
 
         public int? FailedPartition { get; set; }
 

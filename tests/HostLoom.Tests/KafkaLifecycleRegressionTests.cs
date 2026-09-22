@@ -241,13 +241,17 @@ public sealed class KafkaLifecycleRegressionTests
             Substitute.For<IProducer<string, byte[]>>(),
             (_, _) => consumer
         );
-        Assert.Same(
-            failure,
-            await Assert.ThrowsAsync<KafkaException>(() =>
-                StartAsync(broker, operation)
-                    .WaitAsync(Bound, TestContext.Current.CancellationToken)
-            )
-        );
+        var starting = StartAsync(broker, operation)
+            .WaitAsync(Bound, TestContext.Current.CancellationToken);
+        // A request reports the failed reply-consumer start as a transport failure around the
+        // original error; starting a listener or subscription fails with the error itself.
+        var thrown =
+            operation == "request"
+                ? (
+                    await Assert.ThrowsAsync<MessagingTransportException>(() => starting)
+                ).InnerException
+                : await Assert.ThrowsAsync<KafkaException>(() => starting);
+        Assert.Same(failure, thrown);
         await broker.DisposeAsync();
         consumer.Received(1).Dispose();
     }

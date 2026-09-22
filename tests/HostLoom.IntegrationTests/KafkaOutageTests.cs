@@ -219,17 +219,20 @@ public sealed class KafkaOutageTests
             await replyLoop.WaitForAsync(LoopFaults, 1, outage.Token, (StageTag, "consume"));
 
             // Still paused. Releasing the failed consumer waits out its leave-group request, then
-            // the caller receives the client library's timeout long before its own deadline: the
-            // request fails during the outage instead of hanging, and nothing was published.
-            var watermark = await Assert.ThrowsAsync<KafkaException>(() =>
+            // the caller receives the client library's timeout, inside a transport exception,
+            // long before its own deadline: the request fails during the outage instead of
+            // hanging, and nothing was published.
+            var failed = await Assert.ThrowsAsync<MessagingTransportException>(() =>
                 first.WaitAsync(outage.Token)
             );
+            var watermark = Assert.IsType<KafkaException>(failed.InnerException);
             Assert.Equal(ErrorCode.Local_TimedOut, watermark.Error.Code);
+            Assert.Equal(address, failed.Address.Value);
             Log($"The first request failed after {Stopwatch.GetElapsedTime(started)}.");
             Assert.Equal(0, client.Sum(Produced, (KindTag, "request")));
-            var failed = await probe.CheckHealthAsync(token);
-            Assert.False(failed.IsHealthy);
-            Assert.Contains("unavailable", failed.Description, StringComparison.Ordinal);
+            var unavailable = await probe.CheckHealthAsync(token);
+            Assert.False(unavailable.IsHealthy);
+            Assert.Contains("unavailable", unavailable.Description, StringComparison.Ordinal);
             Assert.Equal(0, client.Sum(Initializations, (OutcomeTag, "succeeded")));
         }
         finally

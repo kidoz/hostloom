@@ -188,16 +188,18 @@ public sealed class RabbitMqOutageTests
         try
         {
             // The socket is closed and reconnects are refused, so the request fails on the
-            // closed connection or at its own short deadline instead of hanging, and it leaves
-            // nothing pending behind.
+            // closed connection, as a transport failure around the client library's exception,
+            // or at its own short deadline instead of hanging, and it leaves nothing pending.
             var lost = await Assert.ThrowsAnyAsync<Exception>(() =>
                 RequestAsync(broker, address, "invoice-2", TimeSpan.FromSeconds(3), token)
             );
             TestContext.Current.TestOutputHelper?.WriteLine(
-                $"The request during the outage failed with {lost.GetType().Name}."
+                $"The request during the outage failed with {lost.GetType().Name} ({lost.InnerException?.GetType().Name})."
             );
             Assert.True(
-                lost is OperationInterruptedException or RequestTimeoutException,
+                lost
+                    is MessagingTransportException { InnerException: OperationInterruptedException }
+                        or RequestTimeoutException,
                 lost.ToString()
             );
             Assert.Equal(0d, meters.Observe(PendingRequests));
