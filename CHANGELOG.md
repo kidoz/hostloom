@@ -281,8 +281,10 @@ subscriptions unless explicitly enabled. The browser client has its own version 
   as a `payload` error.
 - The Valkey invalidation channel flushes the in-process tier when its first subscription lands
   after failed attempts, not only after a lost one, and publishes a probe to itself every
-  `InvalidationProbeInterval` (30 seconds by default) so a subscriber socket that dies without a
-  close is replaced within one `CommandTimeout` instead of looking subscribed indefinitely.
+  `InvalidationProbeInterval` (30 seconds by default) and waits `CommandTimeout` for it, so a
+  subscriber socket that dies without a close is replaced within
+  `InvalidationProbeInterval + CommandTimeout` (35 seconds by default) instead of looking
+  subscribed indefinitely.
 - `RecordingCacheStore` wraps a store whose channel is a separate class, as `FaultingCacheStore`
   already did, instead of failing when the cache subscribes.
 - The cache tracks invalidation generations in 1024 key stripes, so an invalidation of one key

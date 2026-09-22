@@ -24,9 +24,11 @@ public sealed class ValkeyOptions
     /// How often the invalidation channel publishes a probe to itself to prove its subscriber
     /// socket still delivers. A probe that does not arrive within <see cref="CommandTimeout"/>
     /// replaces the subscriber and, with <c>Caching:Invalidation:FlushLocalOnReconnect</c>,
-    /// flushes the in-process tier; without it a connection that dies without a close, such as
-    /// one dropped by an idle firewall, would look subscribed for as long as the OS keeps the
-    /// socket. <see cref="TimeSpan.Zero"/> disables the probe.
+    /// flushes the in-process tier, so a silent socket death is noticed within
+    /// <see cref="InvalidationProbeInterval"/> plus <see cref="CommandTimeout"/>; without the
+    /// probe a connection that dies without a close, such as one dropped by an idle firewall,
+    /// would look subscribed for as long as the OS keeps the socket. <see cref="TimeSpan.Zero"/>
+    /// disables the probe.
     /// </summary>
     public TimeSpan InvalidationProbeInterval { get; set; } = TimeSpan.FromSeconds(30);
 
