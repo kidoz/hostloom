@@ -80,7 +80,7 @@ public sealed class RedisLeadershipTests
         var token = TestContext.Current.CancellationToken;
         var ns = "leader-outage-" + Guid.NewGuid().ToString("N");
         var journal = new Journal();
-        await using var proxy = new RedisFaultProxy();
+        await using var proxy = new TcpFaultProxy(RedisAvailability.Host, RedisAvailability.Port);
         // The leader-to-be goes through the proxy; the follower talks to Redis directly.
         await using var first = await Instance.StartAsync(
             "first",

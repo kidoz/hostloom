@@ -5,10 +5,11 @@ using System.Net.Sockets;
 namespace HostLoom.IntegrationTests.Infrastructure;
 
 /// <summary>
-/// A loopback-only fault boundary in front of the Redis from the compose file, or of any other
-/// upstream. Disconnects or stalls its own clients, never the server.
+/// A loopback-only TCP fault boundary in front of one upstream server, such as the Redis,
+/// Valkey, or RabbitMQ from the compose file. It forwards bytes without parsing the protocol
+/// and disconnects or stalls only the clients connected through it, never the server.
 /// </summary>
-internal sealed class RedisFaultProxy : IAsyncDisposable
+internal sealed class TcpFaultProxy : IAsyncDisposable
 {
     private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
     private readonly CancellationTokenSource _shutdown = new();
@@ -21,10 +22,8 @@ internal sealed class RedisFaultProxy : IAsyncDisposable
     private bool _enabled = true;
     private TaskCompletionSource? _hold;
 
-    public RedisFaultProxy()
-        : this(RedisAvailability.Host, RedisAvailability.Port) { }
-
-    public RedisFaultProxy(string upstreamHost, int upstreamPort)
+    /// <summary>Listens on a free loopback port and forwards every session it accepts upstream.</summary>
+    public TcpFaultProxy(string upstreamHost, int upstreamPort)
     {
         _upstreamHost = upstreamHost;
         _upstreamPort = upstreamPort;
@@ -34,6 +33,7 @@ internal sealed class RedisFaultProxy : IAsyncDisposable
         _accept = AcceptAsync();
     }
 
+    /// <summary>The proxy endpoint as <c>host:port</c>, the form a Redis configuration string takes.</summary>
     public string Configuration { get; }
 
     public static string Host => "127.0.0.1";
@@ -44,7 +44,8 @@ internal sealed class RedisFaultProxy : IAsyncDisposable
     /// Stops forwarding server replies on every current session that has carried a
     /// subscription acknowledgement, without closing anything: the fault of a pub/sub socket
     /// that dies silently, as an idle firewall or NAT drop produces. Sessions opened afterwards
-    /// are not affected, so a replacement subscriber recovers.
+    /// are not affected, so a replacement subscriber recovers. Applies to pub/sub protocols such
+    /// as Redis and Valkey, whose subscription replies carry the bytes <c>subscribe</c>.
     /// </summary>
     public void StallSubscribers()
     {
@@ -74,6 +75,10 @@ internal sealed class RedisFaultProxy : IAsyncDisposable
 
     public void ReleaseReplies() => Interlocked.Exchange(ref _hold, null)?.TrySetResult();
 
+    /// <summary>
+    /// Disabling closes every current session and refuses new ones, which a client sees as its
+    /// server going away; enabling accepts and forwards sessions again.
+    /// </summary>
     public void SetEnabled(bool enabled)
     {
         lock (_sync)
@@ -151,7 +156,10 @@ internal sealed class RedisFaultProxy : IAsyncDisposable
         }
     }
 
-    /// <summary>Server-to-client copy that notices subscription acknowledgements and can be stalled.</summary>
+    /// <summary>
+    /// Server-to-client copy that notices pub/sub subscription acknowledgements and can be held
+    /// or stalled.
+    /// </summary>
     private async Task PumpRepliesAsync(
         NetworkStream source,
         NetworkStream target,

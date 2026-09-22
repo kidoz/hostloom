@@ -28,7 +28,7 @@ public sealed class RedisOutageTests
     {
         var token = TestContext.Current.CancellationToken;
         var ns = "outage-" + Guid.NewGuid().ToString("N");
-        await using var proxy = new RedisFaultProxy();
+        await using var proxy = new TcpFaultProxy(RedisAvailability.Host, RedisAvailability.Port);
         await using var connection = Connection(proxy);
         await using var store = new RedisCacheStore(connection);
         await using var cache = new TieredCache(
@@ -150,7 +150,7 @@ public sealed class RedisOutageTests
     {
         var token = TestContext.Current.CancellationToken;
         var ns = "outage-" + Guid.NewGuid().ToString("N");
-        await using var proxy = new RedisFaultProxy();
+        await using var proxy = new TcpFaultProxy(RedisAvailability.Host, RedisAvailability.Port);
         await using var connection = Connection(proxy);
         await using var provider = new RedisLockProvider(connection);
         await using var mutex = new DistributedLock(
@@ -242,7 +242,7 @@ public sealed class RedisOutageTests
     {
         var token = TestContext.Current.CancellationToken;
         var ns = "outage-" + Guid.NewGuid().ToString("N");
-        await using var proxy = new RedisFaultProxy();
+        await using var proxy = new TcpFaultProxy(RedisAvailability.Host, RedisAvailability.Port);
         await using var connection = Connection(proxy);
         await using var provider = new RedisLockProvider(connection);
         await using var mutex = new DistributedLock(
@@ -285,7 +285,7 @@ public sealed class RedisOutageTests
     {
         var token = TestContext.Current.CancellationToken;
         var ns = "outage-" + Guid.NewGuid().ToString("N");
-        await using var proxy = new RedisFaultProxy();
+        await using var proxy = new TcpFaultProxy(RedisAvailability.Host, RedisAvailability.Port);
         await using var connection = Connection(proxy);
         await using var provider = new RedisLockProvider(connection);
         await using var mutex = new DistributedLock(
@@ -343,7 +343,7 @@ public sealed class RedisOutageTests
         Assert.NotNull(successor);
     }
 
-    private static RedisConnection Connection(RedisFaultProxy proxy) =>
+    private static RedisConnection Connection(TcpFaultProxy proxy) =>
         new(
             new RedisOptions
             {

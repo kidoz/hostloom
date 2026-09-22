@@ -168,11 +168,11 @@ public sealed class ValkeyBackendTests
     [Fact(Skip = ValkeyAvailability.Skip, SkipUnless = nameof(Available))]
     public async Task CancelledAcquire_ReleasesTheGrantThatLandsAfterTheCallerGaveUp()
     {
-        await using var proxy = new RedisFaultProxy("localhost", ValkeyAvailability.Port);
+        await using var proxy = new TcpFaultProxy("localhost", ValkeyAvailability.Port);
         var options = ValkeyAvailability.Options();
         options.Connection = new ValkeyClientOptions
         {
-            Host = RedisFaultProxy.Host,
+            Host = TcpFaultProxy.Host,
             Port = proxy.Port,
             ClientName = options.Connection.ClientName,
         };
@@ -228,11 +228,11 @@ public sealed class ValkeyBackendTests
     [Fact(Skip = ValkeyAvailability.Skip, SkipUnless = nameof(Available))]
     public async Task Invalidation_FlushesWhenTheFirstSubscriptionFollowsAFailedAttempt()
     {
-        await using var proxy = new RedisFaultProxy("localhost", ValkeyAvailability.Port);
+        await using var proxy = new TcpFaultProxy("localhost", ValkeyAvailability.Port);
         var options = ValkeyAvailability.Options();
         options.Connection = new ValkeyClientOptions
         {
-            Host = RedisFaultProxy.Host,
+            Host = TcpFaultProxy.Host,
             Port = proxy.Port,
             ClientName = options.Connection.ClientName,
         };
@@ -320,11 +320,11 @@ public sealed class ValkeyBackendTests
     [Fact(Skip = ValkeyAvailability.Skip, SkipUnless = nameof(Available))]
     public async Task Invalidation_ReplacesASubscriberWhoseSocketStoppedDelivering()
     {
-        await using var proxy = new RedisFaultProxy("localhost", ValkeyAvailability.Port);
+        await using var proxy = new TcpFaultProxy("localhost", ValkeyAvailability.Port);
         var options = ValkeyAvailability.Options();
         options.Connection = new ValkeyClientOptions
         {
-            Host = RedisFaultProxy.Host,
+            Host = TcpFaultProxy.Host,
             Port = proxy.Port,
             ClientName = options.Connection.ClientName,
         };

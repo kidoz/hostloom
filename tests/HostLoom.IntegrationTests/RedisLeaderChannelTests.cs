@@ -83,7 +83,7 @@ public sealed class RedisLeaderChannelTests
     {
         var token = TestContext.Current.CancellationToken;
         var ns = "leader-channel-outage-" + Guid.NewGuid().ToString("N");
-        await using var proxy = new RedisFaultProxy();
+        await using var proxy = new TcpFaultProxy(RedisAvailability.Host, RedisAvailability.Port);
         // The leader-to-be goes through the proxy; the follower talks to Redis directly.
         await using var first = await Instance.StartAsync("first", ns, proxy.Configuration, token);
         await CacheConformance.WaitUntilAsync(() => Task.FromResult(first.Elector.IsLeader), 20);

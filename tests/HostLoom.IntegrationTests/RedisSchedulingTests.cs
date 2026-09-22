@@ -81,7 +81,7 @@ public sealed class RedisSchedulingTests
         var token = TestContext.Current.CancellationToken;
         var ns = "schedule-outage-" + Guid.NewGuid().ToString("N");
         var ledger = new Ledger();
-        await using var proxy = new RedisFaultProxy();
+        await using var proxy = new TcpFaultProxy(RedisAvailability.Host, RedisAvailability.Port);
         await using var first = await Instance.StartAsync(
             "first",
             ns,
