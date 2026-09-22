@@ -125,8 +125,10 @@ Acquisition is `SET key owner NX PX lease`. Lua release and extension compare th
 return false; backend failures become `LockProviderException`; caller cancellation propagates.
 
 Command, pipeline, and script transport failures are never automatically replayed. A lost reply
-may mean the operation executed; an unconfirmed acquisition is reported as failure and its lease
-expires. The next independent operation can reconnect. Script-cache recovery retries only a
+may mean the operation executed, so an unconfirmed acquisition is reported as a failure. When
+that failure is a command timeout, the lock issues one owner-checked release for the abandoned
+owner, so a lease the server did grant is freed instead of waiting out its expiry; a connection
+failure reported as unavailable releases nothing, and its lease expires. The next independent operation can reconnect. Script-cache recovery retries only a
 received `NOSCRIPT` response.
 
 These are coordination leases on one primary, without fencing or consensus guarantees. A primary
