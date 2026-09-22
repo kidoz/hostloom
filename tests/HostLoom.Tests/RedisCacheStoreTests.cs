@@ -99,6 +99,44 @@ public sealed class RedisCacheStoreTests
         }
     }
 
+    [Theory]
+    [InlineData(0L)]
+    [InlineData(1L)]
+    public async Task Tagged_conditional_write_is_one_atomic_invocation(long written)
+    {
+        var db = Substitute.For<IDatabase>();
+        var mux = Substitute.For<IConnectionMultiplexer>();
+        mux.GetDatabase(Arg.Any<int>(), Arg.Any<object>()).Returns(db);
+        db.ScriptEvaluateAsync(
+                Arg.Any<string>(),
+                Arg.Any<RedisKey[]>(),
+                Arg.Any<RedisValue[]>(),
+                Arg.Any<CommandFlags>()
+            )
+            .Returns(call =>
+            {
+                Assert.Equal(
+                    new RedisKey[] { "svc:cache:data:catalog", "svc:cache:tag:catalog" },
+                    call.ArgAt<RedisKey[]>(1)
+                );
+                var arguments = call.ArgAt<RedisValue[]>(2);
+                Assert.Equal(60_000L, (long)arguments[1]);
+                return Task.FromResult(RedisResult.Create(written));
+            });
+        await using var store = new RedisCacheStore(mux);
+        Assert.Equal(
+            written == 1,
+            await store.SetIfAbsentAsync(
+                "svc:cache:data:catalog",
+                new byte[] { 1 },
+                TimeSpan.FromMinutes(1),
+                ["svc:cache:tag:catalog"],
+                TestContext.Current.CancellationToken
+            )
+        );
+        Assert.Single(db.ReceivedCalls());
+    }
+
     [Fact]
     public async Task TaggedWrite_IndexesTheTagsBeforeTheValue()
     {

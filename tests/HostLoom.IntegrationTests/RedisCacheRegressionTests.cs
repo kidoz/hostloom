@@ -18,6 +18,41 @@ public sealed class RedisCacheRegressionTests
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     [Theory(Skip = RedisAvailability.Skip, SkipUnless = nameof(Available))]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Tagged_conditional_write_preserves_winner_tags_and_is_removable(bool hashTags)
+    {
+        await using var connection = Connection(hashTags);
+        await using var store = new RedisCacheStore(connection);
+        var ns = "conditional-" + Guid.NewGuid().ToString("N");
+        var key = ns + ":cache:data:catalog";
+        var winnerTag = ns + ":cache:tag:winner";
+        var loserTag = ns + ":cache:tag:loser";
+        Assert.True(
+            await store.SetIfAbsentAsync(
+                key,
+                new byte[] { 1 },
+                TimeSpan.FromMinutes(1),
+                [winnerTag],
+                Token
+            )
+        );
+        Assert.False(
+            await store.SetIfAbsentAsync(
+                key,
+                new byte[] { 2 },
+                TimeSpan.FromMinutes(1),
+                [loserTag],
+                Token
+            )
+        );
+        await store.RemoveByTagAsync(loserTag, Token);
+        Assert.NotNull(await store.GetAsync(key, Token));
+        await store.RemoveByTagAsync(winnerTag, Token);
+        Assert.Null(await store.GetAsync(key, Token));
+    }
+
+    [Theory(Skip = RedisAvailability.Skip, SkipUnless = nameof(Available))]
     [InlineData("set", false)]
     [InlineData("factory", false)]
     [InlineData("absent", false)]

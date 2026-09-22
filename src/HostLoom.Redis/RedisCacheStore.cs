@@ -30,6 +30,23 @@ public sealed class RedisCacheStore
         return {value, redis.call('PTTL', KEYS[1])}
         """;
 
+    private const string TaggedSetIfAbsentScript = """
+        if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
+        for i = 2, #KEYS do
+            local kind = redis.call('TYPE', KEYS[i]).ok
+            if kind ~= 'none' and kind ~= 'set' then
+                return redis.error_reply('WRONGTYPE tag index must be a set')
+            end
+        end
+        for i = 2, #KEYS do
+            redis.call('SADD', KEYS[i], KEYS[1])
+            local ttl = redis.call('PTTL', KEYS[i])
+            if ttl < tonumber(ARGV[2]) then redis.call('PEXPIRE', KEYS[i], ARGV[2]) end
+        end
+        redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+        return 1
+        """;
+
     private const string RemoveTagMembersScript = """
         for i = 2, #KEYS do
             redis.call('UNLINK', KEYS[i])
@@ -152,27 +169,31 @@ public sealed class RedisCacheStore
         {
             var db = await _connection.GetDatabaseAsync(cancellationToken).ConfigureAwait(false);
             var redisKey = Key(key);
-            var written = await db.StringSetAsync(
-                    redisKey,
-                    payload.ToArray(),
-                    timeToLive,
-                    When.NotExists
+            if (tagKeys is not { Count: > 0 })
+            {
+                return await db.StringSetAsync(
+                        redisKey,
+                        payload.ToArray(),
+                        timeToLive,
+                        When.NotExists
+                    )
+                    .WaitAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            var milliseconds = checked((long)Math.Ceiling(timeToLive.TotalMilliseconds));
+            ArgumentOutOfRangeException.ThrowIfLessThan(milliseconds, 1);
+            RedisKey[] keys = [redisKey, .. tagKeys.Select(Key)];
+            // One atomic invocation preserves losing-writer semantics and cannot be interrupted
+            // between the value and its indexes by a disconnect or caller cancellation.
+            var result = await db.ScriptEvaluateAsync(
+                    TaggedSetIfAbsentScript,
+                    keys,
+                    [payload.ToArray(), milliseconds]
                 )
                 .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
-            if (!written || tagKeys is not { Count: > 0 })
-            {
-                return written;
-            }
-
-            // A second round trip on purpose: the memberships must not appear when the atomic
-            // write lost the race and the value belongs to another writer.
-            var batch = db.CreateBatch();
-            var pending = new List<Task>(tagKeys.Count * 3);
-            AppendTagIndexes(batch, pending, redisKey, tagKeys, timeToLive);
-            batch.Execute();
-            await Task.WhenAll(pending).WaitAsync(cancellationToken).ConfigureAwait(false);
-            return true;
+            return (long)result == 1;
         }
         catch (Exception exception)
             when (!RedisFailures.IsCallerCancellation(exception, cancellationToken))
