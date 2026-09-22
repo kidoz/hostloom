@@ -42,6 +42,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
     private readonly Task _loop;
     private readonly bool _commitOnSuccess;
     private readonly bool _retryIndefinitely;
+    private readonly KeyValuePair<string, object?> _destinationTag;
 
     private ConsumerSubscription(
         IConsumer<string, byte[]> consumer,
@@ -59,6 +60,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
         _backoff = backoff;
         _commitOnSuccess = commitOnSuccess;
         _retryIndefinitely = retryIndefinitely;
+        _destinationTag = new(KafkaDiagnostics.DestinationTag, topic);
         _loop = Task
             .Factory.StartNew(
                 () => RunAsync(handler),
@@ -103,6 +105,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
         catch (OperationCanceledException) { }
         catch (Exception exception)
         {
+            RecordFault("loop");
             _logger.LogError(
                 exception,
                 "HostLoom Kafka consumer loop for '{Topic}' faulted before shutdown.",
@@ -119,6 +122,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
             }
             catch (Exception exception)
             {
+                RecordFault("close");
                 _logger.LogError(
                     exception,
                     "HostLoom Kafka consumer for '{Topic}' failed to close cleanly.",
@@ -152,6 +156,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
             }
             catch (Exception exception)
             {
+                RecordFault("consume");
                 _logger.LogError(
                     exception,
                     "HostLoom Kafka consume failed on '{Topic}'; retrying.",
@@ -170,6 +175,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                 continue;
             }
 
+            KafkaDiagnostics.Consumed.Add(1, _destinationTag);
             try
             {
                 await handler(record, _stopping.Token).ConfigureAwait(false);
@@ -193,6 +199,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                     record.TopicPartitionOffset,
                     _topic
                 );
+                RecordSkipped("malformed");
                 TryCommit(record);
                 retries.Remove(record.TopicPartition);
             }
@@ -209,6 +216,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                     exception.ReplyTopic,
                     exception.InnerException?.GetType().FullName
                 );
+                RecordSkipped("unroutable_reply");
                 TryCommit(record);
                 retries.Remove(record.TopicPartition);
             }
@@ -235,6 +243,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                         _topic,
                         attempts
                     );
+                    RecordSkipped("attempts_exhausted");
                     TryCommit(record);
                     retries.Remove(record.TopicPartition);
                     continue;
@@ -272,10 +281,12 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
         try
         {
             _consumer.Seek(record.TopicPartitionOffset);
+            KafkaDiagnostics.RecordsRewound.Add(1, _destinationTag);
             return true;
         }
         catch (Exception exception)
         {
+            RecordFault("seek");
             _logger.LogError(
                 exception,
                 "HostLoom Kafka consumer could not rewind to {Offset} on '{Topic}'.",
@@ -291,9 +302,11 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
         try
         {
             _consumer.Commit(record);
+            KafkaDiagnostics.Committed.Add(1, _destinationTag);
         }
         catch (Exception exception)
         {
+            RecordFault("commit");
             _logger.LogError(
                 exception,
                 "HostLoom Kafka commit failed at {Offset} on '{Topic}'.",
@@ -302,6 +315,16 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
             );
         }
     }
+
+    private void RecordSkipped(string reason) =>
+        KafkaDiagnostics.RecordsSkipped.Add(
+            1,
+            _destinationTag,
+            new(KafkaDiagnostics.ReasonTag, reason)
+        );
+
+    private void RecordFault(string stage) =>
+        KafkaDiagnostics.LoopFaults.Add(1, _destinationTag, new(KafkaDiagnostics.StageTag, stage));
 
     private async Task<bool> DelayAsync()
     {

@@ -50,6 +50,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
     private Task? _disposing;
     private Task? _replyStarting;
     private volatile bool _replyFailed;
+    private readonly KeyValuePair<string, object?> _clientTag;
 
     public KafkaRequestBroker(
         IOptions<KafkaOptions> options,
@@ -83,7 +84,15 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
         _consumerFactory = consumerFactory ?? BuildConsumer;
         _producer =
             producer ?? new ProducerBuilder<string, byte[]>(CreateProducerConfig(_options)).Build();
+        _clientTag = new(KafkaDiagnostics.ClientTag, _options.ClientId);
+        KafkaDiagnostics.Register(this);
     }
+
+    /// <summary>Requests produced and still awaiting a reply; read by the pending-requests gauge.</summary>
+    internal int PendingRequestCount => _pending.Count;
+
+    /// <summary>The configured client id every producer-side measurement is tagged with.</summary>
+    internal string ClientId => _options.ClientId;
 
     public async ValueTask<IAsyncDisposable> ListenAsync(
         RequestAddress address,
@@ -153,6 +162,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                                 token
                             )
                             .ConfigureAwait(false);
+                        RecordProduced("reply");
                     }
                     catch (OperationCanceledException) when (token.IsCancellationRequested)
                     {
@@ -246,7 +256,11 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                 cancellationToken
             )
             .ConfigureAwait(false);
+        RecordProduced("event");
     }
+
+    private void RecordProduced(string kind) =>
+        KafkaDiagnostics.Produced.Add(1, _clientTag, new(KafkaDiagnostics.KindTag, kind));
 
     /// <summary>Consumer group backing one subscription, scoped by the service's group prefix.</summary>
     internal static string SubscriptionGroup(
@@ -307,6 +321,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                 )
                 .WaitAsync(token)
                 .ConfigureAwait(false);
+            RecordProduced("request");
             return await completion.Task.WaitAsync(token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -417,6 +432,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
         finally
         {
             // Waiters may still enter and observe disposal; do not dispose their semaphore.
+            KafkaDiagnostics.Unregister(this);
             _lifecycleGate.Release();
             _shutdown.Dispose();
         }
@@ -478,10 +494,12 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
             await StartReplyConsumerAsync(_shutdownToken).ConfigureAwait(false);
             await _replyConsumerReady.Task.WaitAsync(_shutdownToken).ConfigureAwait(false);
             _replyFailed = false;
+            RecordReplyConsumerInitialization("succeeded");
         }
         catch
         {
             _replyFailed = true;
+            RecordReplyConsumerInitialization("failed");
             await _lifecycleGate.WaitAsync().ConfigureAwait(false);
             try
             {
@@ -500,6 +518,13 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
             throw;
         }
     }
+
+    private void RecordReplyConsumerInitialization(string outcome) =>
+        KafkaDiagnostics.ReplyConsumerInitializations.Add(
+            1,
+            _clientTag,
+            new(KafkaDiagnostics.OutcomeTag, outcome)
+        );
 
     private void SubscribeOwned(IConsumer<string, byte[]> consumer, string topic)
     {

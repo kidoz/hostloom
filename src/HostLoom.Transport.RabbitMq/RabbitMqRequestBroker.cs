@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -29,6 +30,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     private readonly ConcurrentQueue<IChannel> _publishers = new();
     private readonly Lock _publisherGate = new();
     private readonly ILogger<RabbitMqRequestBroker> _logger;
+    private readonly KeyValuePair<string, object?> _clientTag;
     private readonly ConcurrentDictionary<
         Guid,
         TaskCompletionSource<ReadOnlyMemory<byte>>
@@ -88,7 +90,15 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             );
         _queueNaming = _options.QueueNaming;
         _connectionFactory = connectionFactory ?? ConnectAsync;
+        _clientTag = new(RabbitMqDiagnostics.ClientTag, _options.ClientProvidedName);
+        RabbitMqDiagnostics.Register(this);
     }
+
+    /// <summary>Requests published and still awaiting a reply; read by the pending-requests gauge.</summary>
+    internal int PendingRequestCount => _pending.Count;
+
+    /// <summary>The configured client name every measurement of this broker is tagged with.</summary>
+    internal string ClientName => _options.ClientProvidedName;
 
     /// <summary>
     /// A consumer channel dispatches at most this many deliveries at once, so a value above the
@@ -194,6 +204,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                 }
                 catch (Exception exception)
                 {
+                    RecordRejection(exception);
                     _logger.LogError(
                         new EventId(1401, "RabbitMqDeliveryRejected"),
                         exception,
@@ -263,8 +274,9 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     /// may fail on a closing channel, in which case the broker requeues the unacknowledged
     /// delivery when the channel goes, so the outcome is the same.
     /// </summary>
-    private static async ValueTask RequeueAsync(IChannel channel, ulong deliveryTag)
+    private async ValueTask RequeueAsync(IChannel channel, ulong deliveryTag)
     {
+        RabbitMqDiagnostics.DeliveriesRequeued.Add(1, _clientTag);
         try
         {
             await channel
@@ -276,6 +288,21 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             // Closing channel: the broker requeues the unacknowledged delivery itself.
         }
     }
+
+    /// <summary>
+    /// Counts a delivery rejected without requeue. A malformed frame or an unacceptable reply
+    /// queue is the message's fault; anything else, including a reply or acknowledgement the
+    /// channel refused, is counted against the handler side.
+    /// </summary>
+    private void RecordRejection(Exception exception) =>
+        RabbitMqDiagnostics.DeliveriesRejected.Add(
+            1,
+            _clientTag,
+            new(
+                RabbitMqDiagnostics.ReasonTag,
+                exception is MalformedEnvelopeException ? "malformed" : "handler_failed"
+            )
+        );
 
     /// <summary>Queue arguments shared by request and subscription queues; <see langword="null"/> when none apply.</summary>
     private Dictionary<string, object?>? QueueArguments() =>
@@ -358,6 +385,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                 }
                 catch (Exception exception)
                 {
+                    RecordRejection(exception);
                     _logger.LogError(
                         new EventId(1401, "RabbitMqDeliveryRejected"),
                         exception,
@@ -412,7 +440,8 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                     },
                     frame,
                     isEvent: true,
-                    operation.Token
+                    operation.Token,
+                    deadline.Token
                 )
                 .ConfigureAwait(false);
         }
@@ -431,7 +460,58 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         }
     }
 
+    /// <summary>
+    /// Publishes one frame and records the outcome the broker gave it. A caller that walked away
+    /// or a broker being disposed is neither an outcome nor a failure, so neither is counted; the
+    /// deadline elapsing is, because that is what an operator watching the broker needs to see.
+    /// </summary>
     private async ValueTask PublishFrameAsync(
+        RequestAddress address,
+        BasicProperties properties,
+        ReadOnlyMemory<byte> frame,
+        bool isEvent,
+        CancellationToken cancellationToken,
+        CancellationToken deadline
+    )
+    {
+        var started = Stopwatch.GetTimestamp();
+        string? outcome = "failed";
+        try
+        {
+            await PublishFrameCoreAsync(address, properties, frame, isEvent, cancellationToken)
+                .ConfigureAwait(false);
+            outcome = "confirmed";
+        }
+        catch (PublishException exception) when (exception.IsReturn)
+        {
+            outcome = "returned";
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            outcome = deadline.IsCancellationRequested ? "timed_out" : null;
+            throw;
+        }
+        catch (ObjectDisposedException)
+        {
+            outcome = null;
+            throw;
+        }
+        finally
+        {
+            if (outcome is not null)
+            {
+                var tags = new TagList { _clientTag, new(RabbitMqDiagnostics.OutcomeTag, outcome) };
+                RabbitMqDiagnostics.Publishes.Add(1, tags);
+                RabbitMqDiagnostics.PublishDuration.Record(
+                    Stopwatch.GetElapsedTime(started).TotalSeconds,
+                    tags
+                );
+            }
+        }
+    }
+
+    private async ValueTask PublishFrameCoreAsync(
         RequestAddress address,
         BasicProperties properties,
         ReadOnlyMemory<byte> frame,
@@ -555,7 +635,8 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                         properties,
                         request,
                         isEvent: false,
-                        operation.Token
+                        operation.Token,
+                        deadline.Token
                     )
                     .ConfigureAwait(false);
             }
@@ -642,6 +723,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         }
         finally
         {
+            RabbitMqDiagnostics.Unregister(this);
             _initializationGate.Release();
             _publishGate.Release(_maxPublishers);
             _shutdown.Dispose();
@@ -683,6 +765,12 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 
             _connection = await _connectionFactory(cancellationToken).ConfigureAwait(false);
             _connection.QueueNameChangedAfterRecoveryAsync += OnQueueNameChangedAfterRecoveryAsync;
+            _connection.RecoverySucceededAsync += OnRecoverySucceededAsync;
+            RabbitMqDiagnostics.Connections.Add(
+                1,
+                _clientTag,
+                new(RabbitMqDiagnostics.EventTag, "opened")
+            );
             return _connection;
         }
         finally
@@ -711,6 +799,20 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             _replyQueue = eventArgs.NameAfter;
         }
 
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Counts a recovery the client library completed on the connection it owns, which is the
+    /// only evidence in this process that a drop happened and was survived.
+    /// </summary>
+    private Task OnRecoverySucceededAsync(object? sender, AsyncEventArgs eventArgs)
+    {
+        RabbitMqDiagnostics.Connections.Add(
+            1,
+            _clientTag,
+            new(RabbitMqDiagnostics.EventTag, "recovered")
+        );
         return Task.CompletedTask;
     }
 

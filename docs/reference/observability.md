@@ -15,13 +15,15 @@ configuration needs.
 | `HostLoom.Scheduling` | `ActivitySource` and `Meter` | every `Scheduler` |
 | `HostLoom.Leadership` | `ActivitySource` and `Meter` | every `LeaderElector` |
 | `HostLoom.Redis` | `ActivitySource` and `Meter` | the Redis connection |
+| `HostLoom.Transport.RabbitMq` | `Meter` | the RabbitMQ transport |
+| `HostLoom.Transport.Kafka` | `Meter` | the Kafka transport |
 | `HostLoom.AspNetCore.WebSockets` | `ActivitySource` and `Meter` | raw WebSocket gateway |
 
 ```csharp
 builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics => metrics.AddMeter(
         "HostLoom", "HostLoom.Pipelines", "HostLoom.Logging", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Scheduling", "HostLoom.Leadership", "HostLoom.Redis",
-        "HostLoom.AspNetCore.WebSockets"))
+        "HostLoom.Transport.RabbitMq", "HostLoom.Transport.Kafka", "HostLoom.AspNetCore.WebSockets"))
     .WithTracing(tracing => tracing.AddSource(
         "HostLoom", "HostLoom.Pipelines", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Scheduling", "HostLoom.Leadership",
         "HostLoom.AspNetCore.WebSockets"));
@@ -156,6 +158,39 @@ Tagged `hostloom.redis.client` with the configured client name.
 
 A reconnect also increments `hostloom.cache.invalidation.resubscribed` on the
 caching meter, because the invalidation subscription is re-established with it.
+
+## RabbitMQ transport instruments (`HostLoom.Transport.RabbitMq`)
+
+Tagged `hostloom.rabbitmq.client` with the configured `RabbitMqOptions.ClientProvidedName`.
+These count what the adapter does on the wire; how a handler fared is already on the
+`HostLoom` meter as `hostloom.request.*`, so it is not repeated here.
+
+| Instrument | Type | Meaning |
+| --- | --- | --- |
+| `hostloom.rabbitmq.publishes` | counter | Request and event publications, tagged `hostloom.rabbitmq.outcome` (`confirmed`, `returned`, `failed`, `timed_out`); `returned` is a mandatory request the broker could not route, which still waits out its timeout; `timed_out` is the request timeout or `PublishTimeout` elapsing. A publication the caller cancelled, or that a disposing broker refused, is not counted |
+| `hostloom.rabbitmq.publish.duration` | histogram (s) | One publication, from waiting for a publisher channel to the broker's confirmation, tagged with the same outcome |
+| `hostloom.rabbitmq.deliveries.rejected` | counter | Deliveries rejected without requeue, tagged `hostloom.rabbitmq.reason` (`malformed`, `handler_failed`); `malformed` is an undecodable frame or an unacceptable `ReplyTo`, `handler_failed` is everything else, including a reply or acknowledgement the channel refused |
+| `hostloom.rabbitmq.deliveries.requeued` | counter | Deliveries nacked with requeue because the listener was stopping or the delivery was cancelled |
+| `hostloom.rabbitmq.connections` | counter | Tagged `hostloom.rabbitmq.event` (`opened`, `recovered`); a recovery is the client library restoring the same connection after a drop |
+| `hostloom.rabbitmq.requests.pending` | observable gauge | Requests published and still awaiting a reply |
+
+## Kafka transport instruments (`HostLoom.Transport.Kafka`)
+
+Producer-side instruments are tagged `hostloom.kafka.client` with the configured
+`KafkaOptions.ClientId`; consumer-loop instruments are tagged
+`messaging.destination.name` with the topic the loop consumes. Handler outcomes
+are on the `HostLoom` meter, not here.
+
+| Instrument | Type | Meaning |
+| --- | --- | --- |
+| `hostloom.kafka.produced` | counter | Records the producer delivered, tagged `hostloom.kafka.kind` (`request`, `reply`, `event`); a produce that failed is not counted, it reaches the caller, the outbox, or the `unroutable_reply` skip below |
+| `hostloom.kafka.consumed` | counter | Records a consumer loop received and handed to its handler, including a redelivery after a rewind |
+| `hostloom.kafka.committed` | counter | Offsets a consumer loop committed |
+| `hostloom.kafka.records.skipped` | counter | Records committed past without being handled to completion, tagged `hostloom.kafka.reason` (`malformed`, `unroutable_reply`, `attempts_exhausted`) |
+| `hostloom.kafka.records.rewound` | counter | Records a consumer loop rewound to after a transient failure, so the next consume redelivers them |
+| `hostloom.kafka.loop.faults` | counter | Client-library failures a consumer loop survived or reported, tagged `hostloom.kafka.stage` (`consume`, `commit`, `seek`, `close`, `loop`) |
+| `hostloom.kafka.reply_consumer.initializations` | counter | Attempts to start the reply consumer and wait for its assignment, tagged `hostloom.kafka.outcome` (`succeeded`, `failed`); more than one per process means the reply consumer had to be re-initialized |
+| `hostloom.kafka.requests.pending` | observable gauge | Requests produced and still awaiting a reply |
 
 ## Health checks
 

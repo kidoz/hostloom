@@ -1,3 +1,4 @@
+using System.Diagnostics.Metrics;
 using System.Text;
 using Confluent.Kafka;
 using HostLoom.Transport.Kafka;
@@ -341,6 +342,186 @@ public sealed class KafkaClientConfigTests
         Assert.True(
             (await broker.CheckHealthAsync(TestContext.Current.CancellationToken)).IsHealthy
         );
+    }
+
+    [Fact]
+    public async Task A_reply_consumer_initialization_the_request_and_its_pending_wait_are_metered()
+    {
+        var kafka = new FakeReplyKafka();
+        var clientId = $"metrics-{Guid.NewGuid():N}";
+        using var metrics = new MetricRecorder(clientId);
+        await using var broker = new KafkaRequestBroker(
+            Options.Create(
+                new KafkaOptions { ResponseTopic = "billing.replies", ClientId = clientId }
+            ),
+            logger: null,
+            kafka.Producer,
+            kafka.CreateConsumer
+        );
+        var requestId = Guid.NewGuid();
+
+        var pending = broker
+            .RequestAsync(
+                "orders",
+                "ask"u8.ToArray(),
+                requestId,
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken
+            )
+            .AsTask();
+        await kafka.ConsumerCreated.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken
+        );
+        kafka.Assign(new TopicPartition("billing.replies", 0));
+        await kafka.WaitForProducedAsync(1);
+
+        // The request left only after the reply consumer was assigned, so by now the
+        // initialization has been counted once, as has the produced request.
+        Assert.Equal(
+            1,
+            metrics.Sum(
+                "hostloom.kafka.reply_consumer.initializations",
+                ("hostloom.kafka.outcome", "succeeded")
+            )
+        );
+        Assert.Equal(1, metrics.Sum("hostloom.kafka.produced", ("hostloom.kafka.kind", "request")));
+        metrics.Observe();
+        Assert.Equal(1, metrics.Last("hostloom.kafka.requests.pending"));
+
+        kafka.DeliverReply(requestId, "answer");
+        await pending;
+        metrics.Observe();
+
+        Assert.Equal(0, metrics.Last("hostloom.kafka.requests.pending"));
+    }
+
+    [Fact]
+    public async Task A_failed_reply_consumer_initialization_is_metered_as_failed()
+    {
+        var kafka = new FakeReplyKafka { FailedPartition = 1 };
+        var clientId = $"metrics-{Guid.NewGuid():N}";
+        using var metrics = new MetricRecorder(clientId);
+        await using var broker = new KafkaRequestBroker(
+            Options.Create(new KafkaOptions { ClientId = clientId }),
+            null,
+            kafka.Producer,
+            kafka.CreateConsumer
+        );
+        var pending = broker
+            .RequestAsync(
+                "orders",
+                "ask"u8.ToArray(),
+                Guid.NewGuid(),
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken
+            )
+            .AsTask();
+        await kafka.ConsumerCreated.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Throws<KafkaException>(() =>
+            kafka.Assign(
+                new TopicPartition("billing.replies", 0),
+                new TopicPartition("billing.replies", 1)
+            )
+        );
+        await Assert.ThrowsAsync<KafkaException>(() => pending);
+
+        Assert.Equal(
+            1,
+            metrics.Sum(
+                "hostloom.kafka.reply_consumer.initializations",
+                ("hostloom.kafka.outcome", "failed")
+            )
+        );
+        Assert.Equal(
+            0,
+            metrics.Sum(
+                "hostloom.kafka.reply_consumer.initializations",
+                ("hostloom.kafka.outcome", "succeeded")
+            )
+        );
+        Assert.Equal(0, metrics.Sum("hostloom.kafka.produced"));
+    }
+
+    /// <summary>
+    /// Collects Kafka producer-side measurements for one client id. The meter is process-wide
+    /// and static, so filtering by the client tag keeps concurrently running tests apart.
+    /// </summary>
+    private sealed class MetricRecorder : IDisposable
+    {
+        private readonly string _clientId;
+        private readonly MeterListener _listener = new();
+        private readonly List<(
+            string Name,
+            double Value,
+            KeyValuePair<string, object?>[] Tags
+        )> _measurements = [];
+        private readonly Lock _gate = new();
+
+        public MetricRecorder(string clientId)
+        {
+            _clientId = clientId;
+            _listener.InstrumentPublished = (instrument, listener) =>
+            {
+                if (instrument.Meter.Name == KafkaDiagnostics.MeterName)
+                {
+                    listener.EnableMeasurementEvents(instrument);
+                }
+            };
+            _listener.SetMeasurementEventCallback<long>(
+                (instrument, value, tags, _) => Record(instrument, value, tags)
+            );
+            _listener.Start();
+        }
+
+        public void Observe() => _listener.RecordObservableInstruments();
+
+        public double Sum(string instrument, params (string Key, string Value)[] tags)
+        {
+            lock (_gate)
+            {
+                return _measurements
+                    .Where(m => m.Name == instrument && tags.All(tag => Has(m.Tags, tag)))
+                    .Sum(m => m.Value);
+            }
+        }
+
+        public double Last(string instrument)
+        {
+            lock (_gate)
+            {
+                return _measurements.Last(m => m.Name == instrument).Value;
+            }
+        }
+
+        public void Dispose() => _listener.Dispose();
+
+        private static bool Has(
+            KeyValuePair<string, object?>[] tags,
+            (string Key, string Value) expected
+        ) => tags.Any(tag => tag.Key == expected.Key && (tag.Value as string) == expected.Value);
+
+        private void Record(
+            Instrument instrument,
+            long value,
+            ReadOnlySpan<KeyValuePair<string, object?>> tags
+        )
+        {
+            var copy = tags.ToArray();
+            if (!Has(copy, ("hostloom.kafka.client", _clientId)))
+            {
+                return;
+            }
+
+            lock (_gate)
+            {
+                _measurements.Add((instrument.Name, value, copy));
+            }
+        }
     }
 
     private sealed record ProducedRecord(string Topic, string? Key, byte[] Value);

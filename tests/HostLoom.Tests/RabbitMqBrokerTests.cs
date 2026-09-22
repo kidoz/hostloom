@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Text;
 using HostLoom.Transport.RabbitMq;
 using Microsoft.Extensions.Options;
@@ -935,8 +936,305 @@ public sealed class RabbitMqBrokerTests
         );
     }
 
+    [Fact]
+    public async Task A_confirmed_publish_and_the_connection_it_opened_are_metered()
+    {
+        var rabbit = new FakeRabbit();
+        var client = UniqueClient();
+        using var metrics = new MetricRecorder(client);
+        await using var broker = Create(rabbit, client);
+
+        await broker.PublishAsync(
+            "catalog",
+            "ready"u8.ToArray(),
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(
+            1,
+            metrics.Sum("hostloom.rabbitmq.publishes", ("hostloom.rabbitmq.outcome", "confirmed"))
+        );
+        Assert.Single(metrics.Values("hostloom.rabbitmq.publish.duration"));
+        Assert.Equal(
+            1,
+            metrics.Sum("hostloom.rabbitmq.connections", ("hostloom.rabbitmq.event", "opened"))
+        );
+        Assert.Equal(
+            0,
+            metrics.Sum("hostloom.rabbitmq.connections", ("hostloom.rabbitmq.event", "recovered"))
+        );
+
+        // The client library's recovery is the only evidence in this process that a drop was
+        // survived, so it is counted from the event the connection raises.
+        rabbit.RaiseRecoverySucceeded();
+
+        Assert.Equal(
+            1,
+            metrics.Sum("hostloom.rabbitmq.connections", ("hostloom.rabbitmq.event", "recovered"))
+        );
+    }
+
+    [Fact]
+    public async Task A_returned_request_is_metered_as_returned_and_still_answered()
+    {
+        var rabbit = new FakeRabbit();
+        var client = UniqueClient();
+        using var metrics = new MetricRecorder(client);
+        await using var broker = Create(rabbit, client);
+        await broker.PublishAsync(
+            "catalog",
+            "ready"u8.ToArray(),
+            TestContext.Current.CancellationToken
+        );
+        rabbit
+            .Channels[0]
+            .Channel.BasicPublishAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<BasicProperties>(),
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<CancellationToken>()
+            )
+            .Returns(_ => ValueTask.FromException(new PublishException(2, isReturn: true)));
+        var requestId = Guid.NewGuid();
+
+        var pending = broker
+            .RequestAsync(
+                "orders",
+                "ask"u8.ToArray(),
+                requestId,
+                TimeSpan.FromSeconds(30),
+                TestContext.Current.CancellationToken
+            )
+            .AsTask();
+        await WaitForChannelAsync(rabbit, channel => channel.Publishes.Count == 2);
+        // A return follows the request/response contract rather than failing the call, so the
+        // correlation is still live and a late reply completes it.
+        await rabbit
+            .Channels.Single(channel => channel.Consumer is not null)
+            .DeliverAsync(requestId.ToString("N"), replyTo: null, body: "late"u8.ToArray());
+        await pending;
+
+        Assert.Equal(
+            1,
+            metrics.Sum("hostloom.rabbitmq.publishes", ("hostloom.rabbitmq.outcome", "returned"))
+        );
+        Assert.Equal(
+            1,
+            metrics.Sum("hostloom.rabbitmq.publishes", ("hostloom.rabbitmq.outcome", "confirmed"))
+        );
+        Assert.Equal(
+            0,
+            metrics.Sum("hostloom.rabbitmq.publishes", ("hostloom.rabbitmq.outcome", "failed"))
+        );
+        Assert.Equal(
+            0,
+            metrics.Sum("hostloom.rabbitmq.publishes", ("hostloom.rabbitmq.outcome", "timed_out"))
+        );
+    }
+
+    [Theory]
+    [InlineData("reply-to", "malformed")]
+    [InlineData("envelope", "malformed")]
+    [InlineData("handler", "handler_failed")]
+    public async Task A_rejected_delivery_is_metered_by_reason(string failure, string reason)
+    {
+        var rabbit = new FakeRabbit();
+        var client = UniqueClient();
+        using var metrics = new MetricRecorder(client);
+        await using var broker = Create(rabbit, client);
+        await using var listener = await broker.ListenAsync(
+            "orders",
+            (_, _) =>
+                failure switch
+                {
+                    "envelope" => throw new MalformedEnvelopeException("invalid frame"),
+                    "handler" => throw new InvalidOperationException("handler failed"),
+                    _ => ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 1 }),
+                },
+            TestContext.Current.CancellationToken
+        );
+
+        await rabbit
+            .Channels[0]
+            .DeliverAsync("correlation", failure == "reply-to" ? null : "amq.gen-reply", [2]);
+
+        Assert.Single(rabbit.Channels[0].Rejects);
+        Assert.Equal(
+            1,
+            metrics.Sum(
+                "hostloom.rabbitmq.deliveries.rejected",
+                ("hostloom.rabbitmq.reason", reason)
+            )
+        );
+        Assert.Equal(1, metrics.Sum("hostloom.rabbitmq.deliveries.rejected"));
+        Assert.Equal(0, metrics.Sum("hostloom.rabbitmq.deliveries.requeued"));
+    }
+
+    [Fact]
+    public async Task A_delivery_requeued_by_disposal_is_metered_as_requeued_not_rejected()
+    {
+        var rabbit = new FakeRabbit();
+        var client = UniqueClient();
+        using var metrics = new MetricRecorder(client);
+        await using var broker = Create(rabbit, client);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listener = await broker.ListenAsync(
+            "orders",
+            async (_, token) =>
+            {
+                entered.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return new byte[] { 1 };
+            },
+            TestContext.Current.CancellationToken
+        );
+
+        var delivery = rabbit.Channels[0].DeliverAsync("correlation", "amq.gen-reply", [2]);
+        await entered.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken
+        );
+        // Stopping the listener cancels the handler; the delivery goes back to the queue rather
+        // than to the dead-letter exchange, and the meter must tell those apart.
+        await listener.DisposeAsync();
+        await delivery;
+
+        Assert.Equal(1, metrics.Sum("hostloom.rabbitmq.deliveries.requeued"));
+        Assert.Equal(0, metrics.Sum("hostloom.rabbitmq.deliveries.rejected"));
+        Assert.Empty(rabbit.Channels[0].Rejects);
+    }
+
+    [Fact]
+    public async Task Pending_requests_are_observed_while_a_reply_is_outstanding()
+    {
+        var rabbit = new FakeRabbit();
+        var client = UniqueClient();
+        using var metrics = new MetricRecorder(client);
+        await using var broker = Create(rabbit, client);
+        var requestId = Guid.NewGuid();
+
+        var pending = broker
+            .RequestAsync(
+                "orders",
+                "ask"u8.ToArray(),
+                requestId,
+                TimeSpan.FromSeconds(30),
+                TestContext.Current.CancellationToken
+            )
+            .AsTask();
+        await WaitForChannelAsync(rabbit, channel => channel.Publishes.Count == 1);
+        metrics.Observe();
+        Assert.Equal(1, metrics.Last("hostloom.rabbitmq.requests.pending"));
+
+        await rabbit
+            .Channels.Single(channel => channel.Consumer is not null)
+            .DeliverAsync(requestId.ToString("N"), replyTo: null, body: "answer"u8.ToArray());
+        await pending;
+        metrics.Observe();
+
+        Assert.Equal(0, metrics.Last("hostloom.rabbitmq.requests.pending"));
+    }
+
+    private static string UniqueClient() => $"metrics-{Guid.NewGuid():N}";
+
     private static RabbitMqRequestBroker Create(FakeRabbit rabbit) =>
         new(Options.Create(new RabbitMqOptions()), _ => ValueTask.FromResult(rabbit.Connection));
+
+    private static RabbitMqRequestBroker Create(FakeRabbit rabbit, string clientProvidedName) =>
+        new(
+            Options.Create(new RabbitMqOptions { ClientProvidedName = clientProvidedName }),
+            _ => ValueTask.FromResult(rabbit.Connection)
+        );
+
+    /// <summary>
+    /// Collects RabbitMQ transport measurements for one client name. The meter is process-wide
+    /// and static, so filtering by the client tag keeps concurrently running tests apart.
+    /// </summary>
+    private sealed class MetricRecorder : IDisposable
+    {
+        private readonly string _client;
+        private readonly MeterListener _listener = new();
+        private readonly List<(
+            string Name,
+            double Value,
+            KeyValuePair<string, object?>[] Tags
+        )> _measurements = [];
+        private readonly Lock _gate = new();
+
+        public MetricRecorder(string client)
+        {
+            _client = client;
+            _listener.InstrumentPublished = (instrument, listener) =>
+            {
+                if (instrument.Meter.Name == RabbitMqDiagnostics.MeterName)
+                {
+                    listener.EnableMeasurementEvents(instrument);
+                }
+            };
+            _listener.SetMeasurementEventCallback<double>(
+                (instrument, value, tags, _) => Record(instrument, value, tags)
+            );
+            _listener.SetMeasurementEventCallback<long>(
+                (instrument, value, tags, _) => Record(instrument, value, tags)
+            );
+            _listener.Start();
+        }
+
+        public void Observe() => _listener.RecordObservableInstruments();
+
+        public double Sum(string instrument, params (string Key, string Value)[] tags)
+        {
+            lock (_gate)
+            {
+                return _measurements
+                    .Where(m => m.Name == instrument && tags.All(tag => Has(m.Tags, tag)))
+                    .Sum(m => m.Value);
+            }
+        }
+
+        public double Last(string instrument)
+        {
+            lock (_gate)
+            {
+                return _measurements.Last(m => m.Name == instrument).Value;
+            }
+        }
+
+        public List<double> Values(string instrument)
+        {
+            lock (_gate)
+            {
+                return [.. _measurements.Where(m => m.Name == instrument).Select(m => m.Value)];
+            }
+        }
+
+        public void Dispose() => _listener.Dispose();
+
+        private static bool Has(
+            KeyValuePair<string, object?>[] tags,
+            (string Key, string Value) expected
+        ) => tags.Any(tag => tag.Key == expected.Key && (tag.Value as string) == expected.Value);
+
+        private void Record(
+            Instrument instrument,
+            double value,
+            ReadOnlySpan<KeyValuePair<string, object?>> tags
+        )
+        {
+            var copy = tags.ToArray();
+            if (!Has(copy, (RabbitMqDiagnostics.ClientTag, _client)))
+            {
+                return;
+            }
+
+            lock (_gate)
+            {
+                _measurements.Add((instrument.Name, value, copy));
+            }
+        }
+    }
 
     private static async Task<FakeChannel> WaitForChannelAsync(
         FakeRabbit rabbit,
@@ -1024,6 +1322,13 @@ public sealed class RabbitMqBrokerTests
                     throw new InvalidOperationException("the connection is closed")
                 );
         }
+
+        /// <summary>Raises the event the client library raises once a recovery completes.</summary>
+        public void RaiseRecoverySucceeded() =>
+            Connection.RecoverySucceededAsync += Raise.Event<AsyncEventHandler<AsyncEventArgs>>(
+                Connection,
+                new AsyncEventArgs()
+            );
 
         /// <summary>Raises the rename topology recovery performs on a server-named queue.</summary>
         public void RenameReplyQueue(string name) =>

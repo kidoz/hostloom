@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using Confluent.Kafka;
 using HostLoom.Transport.Kafka;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -256,6 +257,191 @@ public sealed class KafkaConsumerLoopTests
         }
         Assert.Equal(7, handled);
         Assert.Equal(6, log.Seeks.Count);
+    }
+
+    [Fact]
+    public async Task A_poison_record_is_metered_as_consumed_committed_and_skipped_as_malformed()
+    {
+        var log = new PartitionLog(UniqueTopic(), 2);
+        using var metrics = new MetricRecorder(log.Topic);
+
+        await using (
+            Start(
+                log,
+                (record, _) =>
+                    record.Offset.Value == 0
+                        ? throw new MalformedEnvelopeException("undecodable")
+                        : ValueTask.CompletedTask
+            )
+        )
+        {
+            await WaitUntilAsync(() => log.Commits.Count == 2, "both records commit");
+        }
+
+        // Asserted after disposal, which joins the loop, so every measurement has landed.
+        Assert.Equal(2, metrics.Sum("hostloom.kafka.consumed"));
+        Assert.Equal(2, metrics.Sum("hostloom.kafka.committed"));
+        Assert.Equal(
+            1,
+            metrics.Sum("hostloom.kafka.records.skipped", ("hostloom.kafka.reason", "malformed"))
+        );
+        Assert.Equal(1, metrics.Sum("hostloom.kafka.records.skipped"));
+        Assert.Equal(0, metrics.Sum("hostloom.kafka.records.rewound"));
+        Assert.Equal(0, metrics.Sum("hostloom.kafka.loop.faults"));
+    }
+
+    [Fact]
+    public async Task A_transient_failure_is_metered_as_a_rewind_and_the_redelivery_as_consumed()
+    {
+        var log = new PartitionLog(UniqueTopic(), 2);
+        using var metrics = new MetricRecorder(log.Topic);
+        var failed = false;
+
+        await using (
+            Start(
+                log,
+                (record, _) =>
+                {
+                    if (record.Offset.Value == 0 && !failed)
+                    {
+                        failed = true;
+                        throw new InvalidOperationException("transient");
+                    }
+
+                    return ValueTask.CompletedTask;
+                }
+            )
+        )
+        {
+            await WaitUntilAsync(() => log.Commits.Count == 2, "both records commit");
+        }
+
+        Assert.Equal(3, metrics.Sum("hostloom.kafka.consumed"));
+        Assert.Equal(2, metrics.Sum("hostloom.kafka.committed"));
+        Assert.Equal(1, metrics.Sum("hostloom.kafka.records.rewound"));
+        Assert.Equal(0, metrics.Sum("hostloom.kafka.records.skipped"));
+    }
+
+    [Fact]
+    public async Task A_record_that_exhausts_its_attempts_is_metered_as_skipped()
+    {
+        var log = new PartitionLog(UniqueTopic(), 1);
+        using var metrics = new MetricRecorder(log.Topic);
+
+        await using (Start(log, (_, _) => throw new InvalidOperationException("always")))
+        {
+            await WaitUntilAsync(() => log.Commits.Count == 1, "the record is skipped");
+        }
+
+        Assert.Equal(
+            ConsumerSubscription.MaxRedeliveryAttempts,
+            metrics.Sum("hostloom.kafka.consumed")
+        );
+        Assert.Equal(
+            ConsumerSubscription.MaxRedeliveryAttempts - 1,
+            metrics.Sum("hostloom.kafka.records.rewound")
+        );
+        Assert.Equal(
+            1,
+            metrics.Sum(
+                "hostloom.kafka.records.skipped",
+                ("hostloom.kafka.reason", "attempts_exhausted")
+            )
+        );
+        Assert.Equal(1, metrics.Sum("hostloom.kafka.committed"));
+    }
+
+    [Fact]
+    public async Task A_commit_failure_is_metered_as_a_commit_fault_without_a_rewind()
+    {
+        var log = new PartitionLog(UniqueTopic(), 2) { CommitFailuresRemaining = 1 };
+        using var metrics = new MetricRecorder(log.Topic);
+
+        await using (Start(log, (_, _) => ValueTask.CompletedTask))
+        {
+            await WaitUntilAsync(
+                () => log.Commits.Count == 1,
+                "the later completed record commits"
+            );
+        }
+
+        Assert.Equal(2, metrics.Sum("hostloom.kafka.consumed"));
+        Assert.Equal(1, metrics.Sum("hostloom.kafka.committed"));
+        Assert.Equal(
+            1,
+            metrics.Sum("hostloom.kafka.loop.faults", ("hostloom.kafka.stage", "commit"))
+        );
+        Assert.Equal(1, metrics.Sum("hostloom.kafka.loop.faults"));
+        Assert.Equal(0, metrics.Sum("hostloom.kafka.records.rewound"));
+    }
+
+    private static string UniqueTopic() => $"metrics-{Guid.NewGuid():N}";
+
+    /// <summary>
+    /// Collects Kafka consumer-loop measurements for one topic. The meter is process-wide and
+    /// static, so filtering by the destination tag keeps concurrently running tests apart.
+    /// </summary>
+    private sealed class MetricRecorder : IDisposable
+    {
+        private readonly string _topic;
+        private readonly MeterListener _listener = new();
+        private readonly List<(
+            string Name,
+            double Value,
+            KeyValuePair<string, object?>[] Tags
+        )> _measurements = [];
+        private readonly Lock _gate = new();
+
+        public MetricRecorder(string topic)
+        {
+            _topic = topic;
+            _listener.InstrumentPublished = (instrument, listener) =>
+            {
+                if (instrument.Meter.Name == KafkaDiagnostics.MeterName)
+                {
+                    listener.EnableMeasurementEvents(instrument);
+                }
+            };
+            _listener.SetMeasurementEventCallback<long>(
+                (instrument, value, tags, _) => Record(instrument, value, tags)
+            );
+            _listener.Start();
+        }
+
+        public double Sum(string instrument, params (string Key, string Value)[] tags)
+        {
+            lock (_gate)
+            {
+                return _measurements
+                    .Where(m => m.Name == instrument && tags.All(tag => Has(m.Tags, tag)))
+                    .Sum(m => m.Value);
+            }
+        }
+
+        public void Dispose() => _listener.Dispose();
+
+        private static bool Has(
+            KeyValuePair<string, object?>[] tags,
+            (string Key, string Value) expected
+        ) => tags.Any(tag => tag.Key == expected.Key && (tag.Value as string) == expected.Value);
+
+        private void Record(
+            Instrument instrument,
+            long value,
+            ReadOnlySpan<KeyValuePair<string, object?>> tags
+        )
+        {
+            var copy = tags.ToArray();
+            if (!Has(copy, ("messaging.destination.name", _topic)))
+            {
+                return;
+            }
+
+            lock (_gate)
+            {
+                _measurements.Add((instrument.Name, value, copy));
+            }
+        }
     }
 
     private static ConsumerSubscription Start(
