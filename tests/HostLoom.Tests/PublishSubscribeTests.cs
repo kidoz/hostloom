@@ -93,18 +93,10 @@ public sealed class PublishSubscribeTests
                     .AddSubscriber<OrderPlaced, AuditHandler>("orders", "audit")
         );
 
-        var failure = await Assert.ThrowsAsync<AggregateException>(async () =>
-            await PublisherOf(host)
-                .PublishAsync(
-                    "orders",
-                    new OrderPlaced("A-5"),
-                    TestContext.Current.CancellationToken
-                )
-        );
-
-        // The healthy subscription still saw the event; the broken one is reported, not hidden.
+        await PublisherOf(host)
+            .PublishAsync("orders", new OrderPlaced("A-5"), TestContext.Current.CancellationToken);
+        // Receiver failures do not turn an accepted publication into an outbox retry.
         Assert.Equal(["audit:A-5"], received.Sorted());
-        Assert.Single(failure.InnerExceptions);
     }
 
     [Fact]

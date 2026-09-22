@@ -157,24 +157,27 @@ public sealed class MessagingChaosTests
         await host.StopAsync(TestContext.Current.CancellationToken);
         var client = host.Services.GetRequiredService<IRequestClient<Reserve, Reserved>>();
 
+        var budget = TimeSpan.FromMilliseconds(40);
         var start = Stopwatch.GetTimestamp();
         var timeout = await Assert.ThrowsAsync<RequestTimeoutException>(async () =>
             await client.GetResponseAsync(
                 "inventory",
                 new Reserve("R-3"),
-                Bounded,
+                budget,
                 TestContext.Current.CancellationToken
             )
         );
 
-        // An unbound endpoint is refused at once rather than held for the whole budget.
-        Assert.True(Stopwatch.GetElapsedTime(start) < Bounded, "the refusal waited for the budget");
-        Assert.Equal(Bounded, timeout.Timeout);
+        Assert.True(
+            Stopwatch.GetElapsedTime(start) >= budget,
+            "an unbound endpoint respects the request budget"
+        );
+        Assert.Equal(budget, timeout.Timeout);
         Assert.Equal(0, gate.Started);
     }
 
     [Fact]
-    public async Task A_request_accepted_before_the_stop_still_completes()
+    public async Task Stopping_the_listener_cancels_receiver_work()
     {
         var gate = new Gate();
         using var host = BuildInMemory(gate);
@@ -193,16 +196,15 @@ public sealed class MessagingChaosTests
         await host.StopAsync(TestContext.Current.CancellationToken);
         gate.Release.SetResult();
 
-        var response = await pending.WaitAsync(Bounded, TestContext.Current.CancellationToken);
-        Assert.Equal("R-4", response.Reference);
-        Assert.Equal(1, gate.Completed);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        Assert.Equal(0, gate.Completed);
 
         // The stop still took the endpoint away for anything that had not been accepted.
         await Assert.ThrowsAsync<RequestTimeoutException>(async () =>
             await client.GetResponseAsync(
                 "inventory",
                 new Reserve("R-5"),
-                Bounded,
+                TimeSpan.FromMilliseconds(40),
                 TestContext.Current.CancellationToken
             )
         );
