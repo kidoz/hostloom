@@ -1,10 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Backend-neutral conformance scenarios for HostLoom caching and locking, run by the unit suite on the in-process backends and by the integration suite on real backends.</Description>
+    <Description>Backend-neutral conformance scenarios for HostLoom caching, locking, and transports, run by the unit suite on the in-process backends and by the integration suite on real backends.</Description>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="xunit.v3.assert" />
+    <ProjectReference Include="../../src/HostLoom/HostLoom.csproj" />
     <ProjectReference Include="../../src/HostLoom.Caching/HostLoom.Caching.csproj" />
     <ProjectReference Include="../../src/HostLoom.Caching.Testing/HostLoom.Caching.Testing.csproj" />
     <ProjectReference Include="../../src/HostLoom.Locking/HostLoom.Locking.csproj" />
