@@ -20,7 +20,10 @@ extra verbs, `Hold` and `Release`, for the key another instance would own; lease
 the supplied clock, so a lost lease is a clock advance away. `FaultingLockProvider` fails the next
 `n` calls, or every call, with a chosen `LockFailureKind`, which is how a test proves a consumer
 sees `LockProviderUnavailableException` rather than a backend exception, and that a release
-failure is logged rather than thrown. `RecordingLockProvider` records every call with its
+failure is logged rather than thrown. Its `HoldReplies` lets acquisitions reach the inner
+provider and withholds their answers until `DeliverReplies` or `Heal`, with
+`WaitForHeldReplyAsync` signalling that a grant was decided, which is how a test models a reply
+that arrives after the caller stopped waiting. `RecordingLockProvider` records every call with its
 outcome, so a test asserts the retry count, the owner token on release, or an extension before
 the lease ended.
 

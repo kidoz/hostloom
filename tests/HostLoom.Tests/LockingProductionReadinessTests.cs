@@ -100,11 +100,13 @@ public sealed class LockingProductionReadinessTests
         });
         Assert.Equal(LockFailureKind.Timeout, failure.Kind);
         Assert.Equal(1, failure.Attempts);
-        Assert.Equal(0, clock.PendingTimers);
 
         // The grant was rejected, not forgotten: whatever the backend still holds for this owner
-        // is given back once, with the owner token of the rejected attempt. Here the backend's
-        // own lease ran out with the reply, so the owner-checked release finds nothing.
+        // is given back once, with the owner token of the rejected attempt, on the thread pool
+        // after the caller already has its exception. Here the backend's own lease ran out with
+        // the reply, so the owner-checked release finds nothing.
+        await SchedulingTests.WaitUntilAsync(() => logger.Has(LockingEvents.OrphanRelease));
+        Assert.Equal(0, clock.PendingTimers);
         var acquire = Assert.Single(provider.Acquires);
         var release = Assert.Single(provider.Releases);
         Assert.Equal(acquire.Key, release.Key);

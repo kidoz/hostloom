@@ -8,7 +8,7 @@ namespace HostLoom.Tests;
 public sealed class RedisLockProviderTests
 {
     [Fact(Timeout = 10_000)]
-    public async Task Acquire_lets_a_sent_command_finish_after_the_caller_cancels()
+    public async Task Acquire_honours_the_callers_token_while_the_reply_is_outstanding()
     {
         var db = Substitute.For<IDatabase>();
         var mux = Substitute.For<IConnectionMultiplexer>();
@@ -52,11 +52,12 @@ public sealed class RedisLockProviderTests
                 caller.Token
             )
             .AsTask();
+        Assert.False(acquire.IsCompleted);
         await caller.CancelAsync();
 
-        // The command was sent, so the reply is awaited regardless of the caller's token.
-        Assert.False(acquire.IsCompleted);
+        // Standard cancellation: the caller's token ends the wait for a reply that never came,
+        // and a cancellation is not reported as a backend failure.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => acquire);
         reply.SetResult(true);
-        Assert.True(await acquire);
     }
 }

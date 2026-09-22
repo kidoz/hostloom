@@ -59,7 +59,7 @@ public static class LockingDiagnostics
     internal static readonly Counter<long> OrphanReleases = Meter.CreateCounter<long>(
         "hostloom.lock.orphan_releases",
         "{release}",
-        "Best-effort releases of leases granted after their caller gave up, by outcome."
+        "Best-effort releases of leases an abandoned acquisition may hold, by outcome."
     );
 
     // Declared after Meter and Instances on purpose: static initialisers run in textual order.

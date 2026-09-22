@@ -65,10 +65,8 @@ public sealed class RedisLockProvider : ILockProvider, ILockProviderHealthProbe,
         try
         {
             var db = await _connection.GetDatabaseAsync(cancellationToken).ConfigureAwait(false);
-            // Once the command is sent the caller's token is not honoured on purpose: the lock
-            // kernel stops waiting on its own, and it needs this reply to release a grant that
-            // lands after the caller gave up. The command timeout still bounds the wait.
             return await db.StringSetAsync(Key(key), owner, lease, When.NotExists)
+                .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception exception)

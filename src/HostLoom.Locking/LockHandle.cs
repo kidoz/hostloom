@@ -36,17 +36,16 @@ internal sealed class LockHandle : ILockHandle
     private int _state;
     private bool _counted = true;
 
-    /// <param name="requestedAt">
-    /// The timestamp taken before the acquiring provider call, which is the earliest instant the
-    /// backend can have started the lease.
+    /// <param name="deadline">
+    /// The lease the acquiring provider call asked for and the timestamp taken before it, which is
+    /// the earliest instant the backend can have started the lease.
     /// </param>
     public LockHandle(
         DistributedLock owner,
         string key,
         string prefixedKey,
         string token,
-        TimeSpan lease,
-        long requestedAt,
+        LeaseDeadline deadline,
         bool autoExtend
     )
     {
@@ -54,12 +53,12 @@ internal sealed class LockHandle : ILockHandle
         Key = key;
         _prefixedKey = prefixedKey;
         _token = token;
-        _lease = lease;
+        _lease = deadline.Lease;
         _autoExtend = autoExtend;
-        _acquiredAt = requestedAt;
+        _acquiredAt = deadline.RequestedAt;
         // Read once: the source is disposed with the handle, and the token stays readable after.
         _lostToken = _lost.Token;
-        var remaining = lease - owner.Clock.GetElapsedTime(requestedAt);
+        var remaining = deadline.Remaining(owner.Clock);
         _leaseEnd = owner.Clock.GetUtcNow() + remaining;
 
         // Timers last, so a lease short enough to fire immediately still finds a complete handle.
@@ -170,7 +169,7 @@ internal sealed class LockHandle : ILockHandle
         }
 
         bool extended;
-        var requestedAt = _owner.Clock.GetTimestamp();
+        var deadline = LeaseDeadline.StartingNow(_owner.Clock, lease);
         try
         {
             extended = await _owner
@@ -200,7 +199,7 @@ internal sealed class LockHandle : ILockHandle
 
         // The extended lease also started when the request was accepted, so a round trip longer
         // than the lease itself leaves nothing extended.
-        var remaining = lease - _owner.Clock.GetElapsedTime(requestedAt);
+        var remaining = deadline.Remaining(_owner.Clock);
         if (remaining <= TimeSpan.Zero)
         {
             MarkLost("the extended lease was already spent when the provider answered");

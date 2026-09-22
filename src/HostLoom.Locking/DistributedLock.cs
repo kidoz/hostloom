@@ -15,12 +15,12 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
     private static readonly LockOptions ExecuteDefaults = new();
     private static readonly LockOptions SkipIfBusy = new() { MaxWait = TimeSpan.Zero };
 
-    /// <summary>Upper bound on releasing a lease granted to an abandoned attempt.</summary>
-    private static readonly TimeSpan OrphanReleaseBound = TimeSpan.FromSeconds(5);
-
     private readonly ILockProvider? _provider;
     private readonly string _prefix;
     private readonly KeyValuePair<string, object?> _namespaceTag;
+    private readonly CancellationTokenSource _disposing = new();
+    private readonly CancellationToken _disposed;
+    private int _disposeCalled;
 
     /// <summary>
     /// Composes the lock. <paramref name="provider"/> may be <see langword="null"/> only when
@@ -54,6 +54,8 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
 
         Options = options;
         _provider = provider;
+        // Read once: the source is disposed with the lock, and the token stays readable after.
+        _disposed = _disposing.Token;
         Clock = timeProvider ?? TimeProvider.System;
         Logger = logger ?? NullLogger<DistributedLock>.Instance;
         _prefix = options.Namespace + ":lock:";
@@ -113,6 +115,7 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(action);
         LockKey.Validate(key, Options.MaxKeyLength);
+        ObjectDisposedException.ThrowIf(_disposed.IsCancellationRequested, this);
         options ??= ExecuteDefaults;
 
         using var activity = LockingDiagnostics.ActivitySource.StartActivity("lock.execute");
@@ -176,6 +179,7 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
     )
     {
         LockKey.Validate(key, Options.MaxKeyLength);
+        ObjectDisposedException.ThrowIf(_disposed.IsCancellationRequested, this);
         if (!Enabled)
         {
             return new DisabledLockHandle(key);
@@ -218,11 +222,23 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
         );
     }
 
-    /// <summary>Removes the instance from the metrics registry. Held handles stay valid.</summary>
-    public ValueTask DisposeAsync()
+    /// <summary>
+    /// Removes the instance from the metrics registry and stops the provider calls of
+    /// acquisitions still in flight; their callers get <see cref="ObjectDisposedException"/>.
+    /// Held handles stay valid and still release. Later acquisitions throw
+    /// <see cref="ObjectDisposedException"/>.
+    /// </summary>
+    public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposeCalled, 1) != 0)
+        {
+            return;
+        }
+
         LockingDiagnostics.Unregister(this);
-        return ValueTask.CompletedTask;
+        // The callbacks are the in-flight attempts' own, which never throw.
+        await _disposing.CancelAsync().ConfigureAwait(false);
+        _disposing.Dispose();
     }
 
     private async ValueTask<LockHandle?> AcquireAsync(
@@ -261,43 +277,47 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
         var attempts = 0;
         while (true)
         {
-            attempts++;
             bool acquired;
+            AcquisitionAttempt attempt;
 
-            // MaxWait bounds the provider call too, or a backend that never answers turns the
-            // documented bound into an unbounded wait. An attempt abandoned this way may still
-            // take the lock in the backend; the continuation below gives such an orphan back
-            // as soon as the late confirmation arrives instead of leaving it to expire.
-            long requestedAt;
-            Task<bool>? attempt = null;
+            // The caller's token and MaxWait bound the lock's wait for a reply, never the provider
+            // call: an abandoned call runs on under its own lease-bound token, so a grant it still
+            // delivers is seen and released rather than hidden by a provider that was cancelled.
             using (var bounded = Budget.ForAttempt(maxWait, start, Clock, cancellationToken))
             {
-                var token = bounded?.Token ?? cancellationToken;
-                requestedAt = Clock.GetTimestamp();
-                try
+                var wait = bounded?.Token ?? cancellationToken;
+                cancellationToken.ThrowIfCancellationRequested();
+                if (bounded is { Expired: true })
                 {
-                    attempt = Provider.TryAcquireAsync(prefixed, owner, lease, token).AsTask();
-                    acquired = await attempt.WaitAsync(token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                    when (!cancellationToken.IsCancellationRequested && bounded is { Expired: true }
-                    )
-                {
-                    ReleaseWhenAcquiredLate(attempt, key, prefixed, owner, lease);
+                    // Nothing was sent: the bound ran out before the attempt could start.
                     break;
                 }
-                catch (OperationCanceledException)
+
+                ObjectDisposedException.ThrowIf(_disposed.IsCancellationRequested, this);
+                attempts++;
+                attempt = new AcquisitionAttempt(this, key, prefixed, owner, lease, _disposed);
+                try
                 {
-                    ReleaseWhenAcquiredLate(attempt, key, prefixed, owner, lease);
-                    throw;
+                    acquired = await attempt.Reply.WaitAsync(wait).ConfigureAwait(false);
                 }
-                catch (LockProviderException exception)
+                catch (OperationCanceledException) when (wait.IsCancellationRequested)
                 {
-                    throw Unavailable(exception.Kind, exception);
+                    attempt.Abandon();
+                    if (!cancellationToken.IsCancellationRequested)
+                    {
+                        // MaxWait, not the caller, ended the wait. A backend that stops answering
+                        // is reported the same way as contention.
+                        break;
+                    }
+
+                    throw;
                 }
                 catch (Exception exception)
                 {
-                    throw Unavailable(LockFailureKind.Other, exception);
+                    // The caller gets the provider's failure at once. A Timeout or Other failure
+                    // may still have taken the key, and the attempt releases it on its own.
+                    attempt.Abandon();
+                    throw Failed(exception);
                 }
             }
 
@@ -308,9 +328,9 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
                 // or start an action while its expiry callback is merely queued. Whatever the
                 // backend still holds for this owner is given back best-effort, as after a
                 // cancelled acquisition.
-                if (Clock.GetElapsedTime(requestedAt) >= lease)
+                if (attempt.Deadline.IsSpent(Clock))
                 {
-                    _ = ReleaseOrphanAsync(key, prefixed, owner, lease);
+                    attempt.Abandon();
                     throw Unavailable(
                         LockFailureKind.Timeout,
                         new LockProviderException(
@@ -328,7 +348,7 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
                 LockingDiagnostics.Active.Add(1, _namespaceTag);
                 activity?.SetTag("hostloom.lock.acquired", true);
                 activity?.SetTag("hostloom.lock.wait_ms", waited.TotalMilliseconds);
-                return new LockHandle(this, key, prefixed, owner, lease, requestedAt, autoExtend);
+                return new LockHandle(this, key, prefixed, owner, attempt.Deadline, autoExtend);
             }
 
             if (attempts > retry.RetryLimit)
@@ -360,6 +380,26 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
         activity?.SetTag("hostloom.lock.wait_ms", total.TotalMilliseconds);
         return throwWhenBusy ? throw new LockNotAcquiredException(key, total, attempts) : null;
 
+        Exception Failed(Exception exception) =>
+            exception switch
+            {
+                LockProviderException provider => Unavailable(provider.Kind, provider),
+                OperationCanceledException when _disposed.IsCancellationRequested =>
+                    new ObjectDisposedException(
+                        nameof(DistributedLock),
+                        "The lock was disposed while the acquisition was in flight."
+                    ),
+                OperationCanceledException cancelled => Unavailable(
+                    LockFailureKind.Timeout,
+                    new LockProviderException(
+                        LockFailureKind.Timeout,
+                        "The provider did not answer within the usable lease.",
+                        cancelled
+                    )
+                ),
+                _ => Unavailable(LockFailureKind.Other, exception),
+            };
+
         LockProviderUnavailableException Unavailable(LockFailureKind kind, Exception cause)
         {
             var waited = Clock.GetElapsedTime(start);
@@ -374,95 +414,10 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
     }
 
     /// <summary>
-    /// Follows an acquisition attempt its caller no longer waits for. A provider that still
-    /// confirms the grant later has taken the lock for an owner nobody will release, so that
-    /// confirmation triggers one best-effort release. A provider that throws, reports
-    /// cancellation, or never answers confirmed nothing, and nothing is done: the continuation
-    /// simply never runs, or runs and finds no grant.
-    /// </summary>
-    private void ReleaseWhenAcquiredLate(
-        Task<bool>? attempt,
-        string key,
-        string prefixed,
-        string owner,
-        TimeSpan lease
-    )
-    {
-        if (attempt is null)
-        {
-            return;
-        }
-
-        _ = FollowAsync(attempt);
-
-        async Task FollowAsync(Task<bool> pending)
-        {
-            bool acquired;
-            try
-            {
-                acquired = await pending.ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // Observed here so a provider fault after the caller left is not an unobserved
-                // task exception. Without a confirmation there is nothing to release.
-                return;
-            }
-
-            if (acquired)
-            {
-                await ReleaseOrphanAsync(key, prefixed, owner, lease).ConfigureAwait(false);
-            }
-        }
-    }
-
-    /// <summary>
-    /// One owner-checked release for a lease the backend granted to an attempt nobody uses,
-    /// bounded by the shorter of the lease and <see cref="OrphanReleaseBound"/> so it can never
-    /// outlive what it releases. The release script only touches this owner's lease, so a
-    /// successor that took the key after expiry is never affected. Never throws.
-    /// </summary>
-    private async Task ReleaseOrphanAsync(string key, string prefixed, string owner, TimeSpan lease)
-    {
-        var bound = lease < OrphanReleaseBound ? lease : OrphanReleaseBound;
-        string outcome;
-        Exception? failure = null;
-        try
-        {
-            using var timeout = new CancellationTokenSource(bound, Clock);
-            var released = await Provider
-                .ReleaseAsync(prefixed, owner, timeout.Token)
-                .ConfigureAwait(false);
-            outcome = released ? "released" : "absent";
-        }
-        catch (Exception exception)
-        {
-            outcome = "failed";
-            failure = exception;
-        }
-
-        if (Logger.IsEnabled(LogLevel.Debug))
-        {
-            Logger.LogDebug(
-                LockingEvents.OrphanRelease,
-                failure,
-                "Lock '{Key}' was granted after its caller gave up; the best-effort release reported {Outcome}.",
-                key,
-                outcome
-            );
-        }
-
-        LockingDiagnostics.OrphanReleases.Add(
-            1,
-            _namespaceTag,
-            new KeyValuePair<string, object?>(LockingDiagnostics.OutcomeTag, outcome)
-        );
-    }
-
-    /// <summary>
-    /// What is left of <see cref="LockOptions.MaxWait"/> for one attempt, as a token the provider
-    /// call runs under. Null when the caller set no bound, or set a zero one: skip-if-busy makes
-    /// exactly one attempt and bounds it by the caller's token alone.
+    /// What is left of <see cref="LockOptions.MaxWait"/> for one attempt, as the token the lock's
+    /// wait for the reply runs under; the provider call never sees it. Null when the caller set no
+    /// bound, or set a zero one: skip-if-busy makes exactly one attempt and bounds the wait by the
+    /// caller's token alone.
     /// </summary>
     private sealed class Budget : IDisposable
     {

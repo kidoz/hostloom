@@ -44,46 +44,62 @@ that is already lost, on acquisition and on extension alike.
 
 | Type | When |
 | --- | --- |
-| `LockNotAcquiredException` | contention past `MaxWait` or the retry policy; carries `Key`, `Waited`, `Attempts` |
+| `LockNotAcquiredException` | contention past `MaxWait` or the retry policy; carries `Key`, `Waited`, `Attempts`. A `MaxWait` that expires while the provider has not answered is reported the same way, so a backend that stops answering looks like contention here |
 | `LockProviderUnavailableException` | the provider failed; carries `Key`, `Waited`, `Attempts`, and a `LockFailureKind` (`Unavailable`, `Timeout`, `Other`) |
 | `LockReentrancyException` | the same asynchronous flow already holds the key and `Locking:DetectReentrancy` is on |
-| `OperationCanceledException` | the caller's token; what the backend still holds depends on whether the server had applied the write, see below |
+| `OperationCanceledException` | the caller's token; the lock stops waiting, and a grant the backend still delivers is released, see below |
+| `ObjectDisposedException` | the `DistributedLock` was disposed before or during the acquisition |
 
 `TimeoutException` is never thrown.
 
 ### What an abandoned acquisition leaves behind
 
-The owner token is generated locally before the provider is called, so an
-attempt the caller stops waiting for, through its token or because `MaxWait`
-cancelled a provider call still in flight, ends in one of three states:
+The owner token is generated locally before the provider is called, and the
+provider call runs under a token the lock owns. That token is cancelled only
+when the lease has run out since the request, which leaves no usable grant, or
+when the `DistributedLock` is disposed. The caller's token and `MaxWait` end
+the lock's wait for the reply, never the call. An attempt the lock does not
+turn into a handle ends in one of these cases:
 
-- Cancelled or timed out before the server applied the write: nothing is held.
-- Cancelled or timed out after the server applied it: the key stays held for
-  the abandoned owner until its lease expires, and retries see the
-  not-acquired outcome meanwhile. When the provider still delivers the late
-  confirmation, the lock issues one best-effort, owner-checked release for
-  that owner, bounded by the lease and at most five seconds; the outcome is
-  counted on `hostloom.lock.orphan_releases` (`released`, `absent`, or
-  `failed`) and logged at Debug as `LockOrphanRelease` with the key only. The
-  same release follows a confirmation that arrives once the usable lease has
-  already run out, which is rejected as `LockProviderUnavailableException`
-  with kind `Timeout`. A release can only remove this owner's lease, never a
-  successor's.
-- The provider threw (`LockProviderUnavailableException` with kind
-  `Unavailable` or `Timeout`): the state is unknown, the key is held for at
-  most one lease, and nothing is released because nothing was confirmed.
+- Nothing was sent: the caller's token was already cancelled, or `MaxWait` had
+  run out, before the attempt started. Nothing is held.
+- Sent and granted, but abandoned: the caller cancelled or `MaxWait` expired
+  while the reply was outstanding, or the confirmation arrived once the usable
+  lease had already run out, which is rejected as
+  `LockProviderUnavailableException` with kind `Timeout`. The key is held for
+  the abandoned owner until the reply arrives, and retries see the
+  not-acquired outcome meanwhile; once the reply confirms the grant, the lock
+  releases it.
+- The provider threw `LockProviderException` with kind `Timeout` or `Other`,
+  or stopped on its token at the lease end or on disposal: the command may
+  have been applied, so the grant is uncertain. The caller gets its
+  `LockProviderUnavailableException` at once, and the lock releases
+  immediately without making the caller wait.
+- The provider threw with kind `Unavailable`: it could not reach the backend,
+  so there is nothing to release. The Redis provider also reports a connection
+  that fails while a command is in flight as `Unavailable`; such a key is held
+  for at most one lease.
 
-The Redis and Valkey providers honour the token until the command is sent and
-then let it run to its reply within their command timeout, so a grant that
-lands after the caller gave up reaches the lock and is released. A provider
-whose command times out confirms nothing and falls under the third case.
+Each release is one best-effort, owner-checked call for the abandoned owner,
+bounded by the lease and at most five seconds, and nobody waits for it. The
+outcome is counted on `hostloom.lock.orphan_releases` (`released`, `absent`,
+or `failed`) and logged at Debug as `LockOrphanRelease` with the key only. A
+release can only remove this owner's lease, never a successor's. A reply that
+never arrives releases nothing; its attempt keeps one timer, which stops the
+call at the lease end.
+
+The cost: cancelling no longer stops a command the lock has already issued. A
+provider call can outlive its caller by up to one lease, and an abandoned
+attempt can cost one extra `SET` plus one release on the backend. The Redis
+and Valkey providers honour their token in the standard .NET way, as any
+provider may, because the lock never cancels an acquisition early.
 
 ## Per-call options (`LockOptions`)
 
 | Property | Meaning |
 | --- | --- |
 | `Lease` | time the provider holds the key for this owner; defaults to `Locking:DefaultLease`, capped by `Locking:MaxLease` |
-| `MaxWait` | hard wall-clock bound on acquisition: no attempt starts on or after it, no delay reaches it, and a provider call still running at it is cancelled; `TimeSpan.Zero` is one attempt bounded only by the caller's token; null is bounded by the retry policy alone |
+| `MaxWait` | hard wall-clock bound on acquisition: no attempt starts on or after it, no delay reaches it, and a provider call still running at it is abandoned, not cancelled, and released should it still grant; `TimeSpan.Zero` is one attempt bounded only by the caller's token; null is bounded by the retry policy alone |
 | `Retry` | a `LockRetryPolicy`; defaults to `Locking:Retry` |
 | `AutoExtend` | heartbeat at half the lease, bounded by `Locking:MaxHold` |
 | `OnLost` | `Observe` (default; the action keeps running while `IsHeld` and `LostToken` report the loss) or `Cancel` (the action's token is cancelled) |
@@ -124,9 +140,13 @@ will not contend for the same lock.
 `TryAcquireAsync(key, owner, lease, ct)`, `ReleaseAsync(key, owner, ct)`, and
 `ExtendAsync(key, owner, lease, ct)`, all returning `bool`: `false` means
 contention on acquire and owner mismatch on release or extend. A backend
-failure is `LockProviderException` with a `LockFailureKind`. The composed
-lock passes the fully prefixed key, generates a random owner token per
-acquisition, and maps the provider exception for consumers.
+failure is `LockProviderException` with a `LockFailureKind`; report
+`Unavailable` only when the command cannot have reached the backend, since
+the lock releases after `Timeout` or `Other`. Every call honours its
+cancellation token as any .NET API does. The composed lock passes the fully
+prefixed key, generates a random owner token per acquisition, passes
+`TryAcquireAsync` a token of its own that it cancels only at the lease end or
+on disposal, and maps the provider exception for consumers.
 `ILockProviderHealthProbe` is the optional readiness capability.
 `InMemoryLockProvider` implements the whole contract, including lease expiry
 on a `TimeProvider`, so the same state machine runs in tests as on a backend.
@@ -159,6 +179,7 @@ maximum wait.
 
 `HostLoom.Locking.Testing` composes a `DistributedLock` without a container
 (`TestLock.Create()`), scripts contention (`ManualLockProvider.Hold` and
-`Release`), injects failures (`FaultingLockProvider`), and records calls
-(`RecordingLockProvider`). Leases expire on the supplied `TimeProvider`, so a
+`Release`), injects failures and late replies (`FaultingLockProvider`, whose
+`HoldReplies` lets acquisitions reach the backend and withholds their answers
+until `DeliverReplies`), and records calls (`RecordingLockProvider`). Leases expire on the supplied `TimeProvider`, so a
 lost lease is a clock advance away.

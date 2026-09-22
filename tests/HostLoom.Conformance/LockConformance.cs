@@ -20,7 +20,7 @@ public sealed class LockConformanceFixture
 
 /// <summary>
 /// Backend-neutral lock scenarios. The unit suite runs them on the in-process provider, with and
-/// without a container; the integration suite runs the same methods on Redis.
+/// without a container; the integration suite runs the same methods on Redis and Valkey.
 /// </summary>
 public static class LockConformance
 {
@@ -42,6 +42,7 @@ public static class LockConformance
             [nameof(ActionException_PropagatesAndReleases)] = ActionException_PropagatesAndReleases,
             [nameof(Extend_MovesTheLeaseEnd)] = Extend_MovesTheLeaseEnd,
             [nameof(OnLostCancel_CancelsTheActionToken)] = OnLostCancel_CancelsTheActionToken,
+            [nameof(AbandonedAcquisition_LeavesTheKeyFree)] = AbandonedAcquisition_LeavesTheKeyFree,
         };
 
     public static async Task Exclusivity_AcrossTwoInstances(LockConformanceFixture fixture)
@@ -240,6 +241,54 @@ public static class LockConformance
         await fixture.Clock.AdvanceAsync(TimeSpan.FromSeconds(1));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => execution);
+    }
+
+    /// <summary>
+    /// The backend applies an acquisition whose reply arrives only after the caller gave up. The
+    /// lock must not have cancelled the provider call on the caller's behalf: the late grant is
+    /// released for the owner that abandoned it, so another instance takes the key long before
+    /// the abandoned lease would have expired.
+    /// </summary>
+    public static async Task AbandonedAcquisition_LeavesTheKeyFree(LockConformanceFixture fixture)
+    {
+        var a = fixture.CreateLock();
+        var b = fixture.CreateLock();
+        using var caller = new CancellationTokenSource();
+        fixture.Faults.HoldReplies();
+        try
+        {
+            var abandoned = a.TryAcquireAsync(
+                    "abandoned",
+                    new LockOptions { Lease = TimeSpan.FromSeconds(30) },
+                    caller.Token
+                )
+                .AsTask();
+            // The grant is decided; only its reply is outstanding when the caller gives up.
+            await fixture.Faults.WaitForHeldReplyAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.False(abandoned.IsCompleted);
+            await caller.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => abandoned);
+        }
+        finally
+        {
+            fixture.Faults.DeliverReplies();
+        }
+
+        // Skip-if-busy attempts until the release lands; the bound is a third of the lease.
+        var start = Stopwatch.GetTimestamp();
+        ILockHandle? successor;
+        while ((successor = await b.TryAcquireAsync("abandoned")) is null)
+        {
+            if (Stopwatch.GetElapsedTime(start) > TimeSpan.FromSeconds(10))
+            {
+                Assert.Fail("The abandoned grant was not released; the key stayed held.");
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(20));
+        }
+
+        Assert.True(successor.IsHeld);
+        await successor.DisposeAsync();
     }
 
     /// <summary>

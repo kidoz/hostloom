@@ -813,6 +813,47 @@ public sealed class LockingTests
     }
 
     [Fact(Timeout = 10_000)]
+    public async Task A_provider_that_honours_its_token_still_has_its_late_grant_released()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var ns = "orders-" + Guid.NewGuid().ToString("N");
+        var clock = new TestClock();
+        var provider = new GatedLockProvider();
+        using var recorder = new MetricRecorder(ns);
+        await using var locks = Compose(
+            clock,
+            provider,
+            options: new LockingOptions { Namespace = ns }
+        );
+        using var cancellation = new CancellationTokenSource();
+
+        var pending = locks
+            .TryAcquireAsync(
+                "k",
+                new LockOptions { MaxWait = TimeSpan.Zero, Lease = TimeSpan.FromSeconds(30) },
+                cancellation.Token
+            )
+            .AsTask();
+        Assert.False(pending.IsCompleted);
+        await cancellation.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+
+        // The backend applies the write after the caller left. The provider would have turned a
+        // cancelled token into an exception and hidden the grant; the lock never cancelled it,
+        // so the grant is confirmed and released for the owner that acquired.
+        provider.Open();
+        var released = await provider.Released.WaitAsync(token);
+        Assert.True(provider.Granted);
+        Assert.Equal(ns + ":lock:k", released.Key);
+        Assert.Equal(provider.AcquireOwner, released.Owner);
+        var measured = await recorder.WaitForAsync("hostloom.lock.orphan_releases", token);
+        Assert.Equal("released", measured.Tags[LockingDiagnostics.OutcomeTag]);
+        Assert.Equal(1, provider.Releases);
+        Assert.False(provider.AcquireToken.IsCancellationRequested);
+        Assert.Equal(0, clock.PendingTimers);
+    }
+
+    [Fact(Timeout = 10_000)]
     public async Task A_lease_granted_after_MaxWait_expired_is_released_for_that_owner()
     {
         var token = TestContext.Current.CancellationToken;
@@ -885,12 +926,174 @@ public sealed class LockingTests
             await faulting.TryAcquireAsync("k", "probe", TimeSpan.FromSeconds(1), token)
         );
 
-        // A provider that never answers leaves a continuation that never runs: no release, no
-        // measurement, and no timer armed on its behalf.
+        // The faulted attempt drops its lease timer. A provider that never answers leaves a
+        // continuation that never runs: no release, no measurement, and nothing armed on its
+        // behalf beyond the one timer that ends its call at the lease end.
+        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 2);
         Assert.Equal(0, silent.Releases);
         Assert.Equal(0, faulting.Releases);
         Assert.Empty(recorder.Measurements("hostloom.lock.orphan_releases"));
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task A_provider_that_never_answers_releases_nothing_and_arms_only_its_lease_timer()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var ns = "orders-" + Guid.NewGuid().ToString("N");
+        var clock = new TestClock();
+        var silent = new DeferredLockProvider();
+        using var recorder = new MetricRecorder(ns);
+        await using var locks = Compose(
+            clock,
+            silent,
+            options: new LockingOptions { Namespace = ns }
+        );
+        using var cancellation = new CancellationTokenSource();
+        var lease = TimeSpan.FromSeconds(10);
+
+        var pending = locks
+            .TryAcquireAsync(
+                "k",
+                new LockOptions { MaxWait = TimeSpan.Zero, Lease = lease },
+                cancellation.Token
+            )
+            .AsTask();
+        Assert.Equal(1, clock.PendingTimers);
+        await cancellation.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+
+        // The caller left, and the provider call runs on under the lock's own token: not
+        // cancelled by the caller, and bounded by the one lease timer and nothing else.
+        Assert.False(silent.AcquireToken.IsCancellationRequested);
+        Assert.Equal(1, clock.PendingTimers);
+        clock.Advance(lease - TimeSpan.FromTicks(1));
+        Assert.False(silent.AcquireToken.IsCancellationRequested);
+
+        // At the lease end no grant it could still deliver is usable, so its token is cancelled.
+        // This provider ignores it and never answers: nothing is released or measured.
+        clock.Advance(TimeSpan.FromTicks(1));
+        Assert.True(silent.AcquireToken.IsCancellationRequested);
         Assert.Equal(0, clock.PendingTimers);
+        Assert.Equal(0, silent.Releases);
+        Assert.Empty(recorder.Measurements("hostloom.lock.orphan_releases"));
+    }
+
+    [Theory(Timeout = 10_000)]
+    [InlineData(LockFailureKind.Timeout)]
+    [InlineData(LockFailureKind.Other)]
+    public async Task A_provider_failure_that_leaves_the_grant_uncertain_releases_it_once(
+        LockFailureKind kind
+    )
+    {
+        var token = TestContext.Current.CancellationToken;
+        var ns = "orders-" + Guid.NewGuid().ToString("N");
+        var clock = new TestClock();
+        var backend = new InMemoryLockProvider(clock);
+        var releases = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failing = new ApplyThenFailLockProvider(backend, releases.Task) { FailWith = kind };
+        var provider = new RecordingLockProvider(failing);
+        using var recorder = new MetricRecorder(ns);
+        await using var locks = Compose(
+            clock,
+            provider,
+            options: new LockingOptions { Namespace = ns }
+        );
+
+        // The write was applied and then the reply failed. The caller gets the provider's own
+        // failure at once, while the release it triggered is still held up at the backend.
+        var failure = await Assert.ThrowsAsync<LockProviderUnavailableException>(async () =>
+            await locks.TryAcquireAsync(
+                "k",
+                new LockOptions { Lease = TimeSpan.FromSeconds(30) },
+                token
+            )
+        );
+        Assert.Equal(kind, failure.Kind);
+        Assert.Equal(1, failure.Attempts);
+        var cause = Assert.IsType<LockProviderException>(failure.InnerException);
+        Assert.Equal(kind, cause.Kind);
+        Assert.Equal(1, backend.Count);
+
+        // Once the backend answers, exactly one owner-checked release has freed the key.
+        releases.SetResult();
+        var measured = await recorder.WaitForAsync("hostloom.lock.orphan_releases", token);
+        Assert.Equal("released", measured.Tags[LockingDiagnostics.OutcomeTag]);
+        var acquire = Assert.Single(provider.Acquires);
+        var release = Assert.Single(provider.Releases);
+        Assert.Equal(acquire, (release.Key, release.Owner));
+        Assert.True(release.Released);
+        Assert.Equal(0, backend.Count);
+        Assert.Single(recorder.Measurements("hostloom.lock.orphan_releases"));
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task An_unavailable_provider_reached_nothing_so_nothing_is_released()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var ns = "orders-" + Guid.NewGuid().ToString("N");
+        var clock = new TestClock();
+        var backend = new InMemoryLockProvider(clock);
+        var failing = new ApplyThenFailLockProvider(backend)
+        {
+            FailWith = LockFailureKind.Unavailable,
+        };
+        var provider = new RecordingLockProvider(failing);
+        using var recorder = new MetricRecorder(ns);
+        await using var locks = Compose(
+            clock,
+            provider,
+            options: new LockingOptions { Namespace = ns }
+        );
+
+        var unavailable = await Assert.ThrowsAsync<LockProviderUnavailableException>(async () =>
+            await locks.TryAcquireAsync("k", cancellationToken: token)
+        );
+        Assert.Equal(LockFailureKind.Unavailable, unavailable.Kind);
+
+        // A later Timeout on another key is released; its release is the only one. The double
+        // applied the Unavailable write anyway, to show the lock does not act on it: that key
+        // stays with its owner until the lease ends.
+        failing.FailWith = LockFailureKind.Timeout;
+        await Assert.ThrowsAsync<LockProviderUnavailableException>(async () =>
+            await locks.TryAcquireAsync("other", cancellationToken: token)
+        );
+        await recorder.WaitForAsync("hostloom.lock.orphan_releases", token);
+        var release = Assert.Single(provider.Releases);
+        Assert.Equal(ns + ":lock:other", release.Key);
+        Assert.Equal(provider.Acquires[1].Owner, release.Owner);
+        Assert.Equal(1, backend.Count);
+        Assert.Single(recorder.Measurements("hostloom.lock.orphan_releases"));
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task Disposing_the_lock_stops_an_acquisition_in_flight_and_refuses_later_ones()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var ns = "orders-" + Guid.NewGuid().ToString("N");
+        var clock = new TestClock();
+        var hanging = new HangingLockProvider();
+        using var recorder = new MetricRecorder(ns);
+        await using var locks = Compose(
+            clock,
+            hanging,
+            options: new LockingOptions { Namespace = ns }
+        );
+
+        var pending = locks
+            .TryAcquireAsync("k", new LockOptions { Lease = TimeSpan.FromSeconds(30) }, token)
+            .AsTask();
+        Assert.False(pending.IsCompleted);
+        await locks.DisposeAsync();
+
+        // The provider call is stopped rather than left to run to its lease end. Its outcome is
+        // unknown, so the owner-checked release runs once; this backend holds nothing.
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => pending);
+        var measured = await recorder.WaitForAsync("hostloom.lock.orphan_releases", token);
+        Assert.Equal("absent", measured.Tags[LockingDiagnostics.OutcomeTag]);
+        Assert.Equal(0, clock.PendingTimers);
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await locks.TryAcquireAsync("k", cancellationToken: token)
+        );
     }
 
     [Fact(Timeout = 10_000)]

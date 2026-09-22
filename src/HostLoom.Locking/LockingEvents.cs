@@ -29,12 +29,18 @@ public static class LockingEvents
     /// <summary>Information: automatic extension stopped at <c>Locking:MaxHold</c>.</summary>
     public static readonly EventId AutoExtendStopped = new(3106, "LockAutoExtendStopped");
 
-    /// <summary>Warning: a lost-token callback threw; loss notification and cleanup continue.</summary>
+    /// <summary>
+    /// Warning: a lost-token callback threw, or a provider's own callback threw when the lock
+    /// stopped an acquisition at its lease end or on disposal; notification and cleanup continue.
+    /// </summary>
     public static readonly EventId CancellationCallbackFailed = new(
         3107,
         "LockCancellationCallbackFailed"
     );
 
-    /// <summary>Debug: a lease granted after its caller gave up was released best-effort, or could not be.</summary>
+    /// <summary>
+    /// Debug: a lease an abandoned acquisition may hold, granted after its caller gave up or left
+    /// uncertain by a provider timeout or failure, was released best-effort, or could not be.
+    /// </summary>
     public static readonly EventId OrphanRelease = new(3108, "LockOrphanRelease");
 }

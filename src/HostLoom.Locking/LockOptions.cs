@@ -10,10 +10,11 @@ public sealed class LockOptions
 
     /// <summary>
     /// Hard wall-clock bound on acquisition: no attempt starts on or after it, no delay reaches it,
-    /// and a provider call still running at it is cancelled, so a backend that never answers cannot
-    /// stretch the wait. <see cref="TimeSpan.Zero"/> makes exactly one attempt (skip-if-busy),
-    /// bounded only by the caller's token. <see langword="null"/> bounds acquisition by the retry
-    /// policy alone.
+    /// and a provider call still running at it is abandoned, so a backend that never answers cannot
+    /// stretch the wait. An abandoned call is not cancelled: it runs on, bounded by the lease, and a
+    /// grant it still delivers is released. <see cref="TimeSpan.Zero"/> makes exactly one attempt
+    /// (skip-if-busy), bounded only by the caller's token. <see langword="null"/> bounds
+    /// acquisition by the retry policy alone.
     /// </summary>
     public TimeSpan? MaxWait { get; set; }
 

@@ -122,6 +122,9 @@ internal sealed class DeferredLockProvider : ILockProvider
     /// <summary>The owner token of the acquire call, once it was issued.</summary>
     public string? AcquireOwner { get; private set; }
 
+    /// <summary>The token the acquire call was given.</summary>
+    public CancellationToken AcquireToken { get; private set; }
+
     /// <summary>Completes with the key and owner of the first release call.</summary>
     public Task<(string Key, string Owner)> Released => _released.Task;
 
@@ -142,6 +145,7 @@ internal sealed class DeferredLockProvider : ILockProvider
     )
     {
         AcquireOwner = owner;
+        AcquireToken = cancellationToken;
         return await _answer.Task.ConfigureAwait(false);
     }
 
@@ -167,6 +171,120 @@ internal sealed class DeferredLockProvider : ILockProvider
         TimeSpan lease,
         CancellationToken cancellationToken = default
     ) => ValueTask.FromResult(false);
+}
+
+/// <summary>
+/// A provider that honours its token the standard .NET way, as a third-party provider may: the
+/// acquire call applies the grant when the test opens the gate, and a token cancelled by then
+/// turns the reply into <see cref="OperationCanceledException"/> although the backend took the
+/// key. Release records the owner it was asked for; nothing is ever really held.
+/// </summary>
+internal sealed class GatedLockProvider : ILockProvider
+{
+    private readonly TaskCompletionSource _gate = new(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    );
+    private readonly TaskCompletionSource<(string Key, string Owner)> _released = new(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    );
+    private int _releases;
+
+    /// <summary>The owner token of the acquire call, once it was issued.</summary>
+    public string? AcquireOwner { get; private set; }
+
+    /// <summary>The token the acquire call was given.</summary>
+    public CancellationToken AcquireToken { get; private set; }
+
+    /// <summary>Whether the backend applied the grant, whatever the reply said.</summary>
+    public bool Granted { get; private set; }
+
+    /// <summary>Completes with the key and owner of the first release call.</summary>
+    public Task<(string Key, string Owner)> Released => _released.Task;
+
+    public int Releases => Volatile.Read(ref _releases);
+
+    public void Open() => _gate.TrySetResult();
+
+    public async ValueTask<bool> TryAcquireAsync(
+        string key,
+        string owner,
+        TimeSpan lease,
+        CancellationToken cancellationToken = default
+    )
+    {
+        AcquireOwner = owner;
+        AcquireToken = cancellationToken;
+        await _gate.Task.ConfigureAwait(false);
+        Granted = true;
+        cancellationToken.ThrowIfCancellationRequested();
+        return true;
+    }
+
+    public ValueTask<bool> ReleaseAsync(
+        string key,
+        string owner,
+        CancellationToken cancellationToken = default
+    )
+    {
+        Interlocked.Increment(ref _releases);
+        _released.TrySetResult((key, owner));
+        return ValueTask.FromResult(true);
+    }
+
+    public ValueTask<bool> ExtendAsync(
+        string key,
+        string owner,
+        TimeSpan lease,
+        CancellationToken cancellationToken = default
+    ) => ValueTask.FromResult(false);
+}
+
+/// <summary>
+/// Applies every acquisition to the inner provider and then, while <see cref="FailWith"/> is set,
+/// throws a <see cref="LockProviderException"/> of that kind instead of answering: a backend that
+/// took the key but whose reply timed out or failed. Releases wait for the optional gate before
+/// they reach the inner provider, so a test can show nobody waits for them.
+/// </summary>
+internal sealed class ApplyThenFailLockProvider(ILockProvider inner, Task? releaseGate = null)
+    : ILockProvider
+{
+    public LockFailureKind? FailWith { get; set; }
+
+    public async ValueTask<bool> TryAcquireAsync(
+        string key,
+        string owner,
+        TimeSpan lease,
+        CancellationToken cancellationToken = default
+    )
+    {
+        var acquired = await inner
+            .TryAcquireAsync(key, owner, lease, cancellationToken)
+            .ConfigureAwait(false);
+        return FailWith is { } kind
+            ? throw new LockProviderException(kind, $"Injected {kind} after the write was applied.")
+            : acquired;
+    }
+
+    public async ValueTask<bool> ReleaseAsync(
+        string key,
+        string owner,
+        CancellationToken cancellationToken = default
+    )
+    {
+        if (releaseGate is not null)
+        {
+            await releaseGate.ConfigureAwait(false);
+        }
+
+        return await inner.ReleaseAsync(key, owner, cancellationToken).ConfigureAwait(false);
+    }
+
+    public ValueTask<bool> ExtendAsync(
+        string key,
+        string owner,
+        TimeSpan lease,
+        CancellationToken cancellationToken = default
+    ) => inner.ExtendAsync(key, owner, lease, cancellationToken);
 }
 
 /// <summary>

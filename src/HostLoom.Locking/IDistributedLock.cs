@@ -25,6 +25,8 @@ public interface IDistributedLock
     /// </summary>
     /// <exception cref="LockNotAcquiredException">
     /// The key stayed held by another owner past the retry policy or <see cref="LockOptions.MaxWait"/>.
+    /// A <see cref="LockOptions.MaxWait"/> that expires while the provider has not answered is
+    /// reported the same way, so a backend that stops answering looks like contention here.
     /// </exception>
     /// <exception cref="LockProviderUnavailableException">
     /// The provider failed while acquiring, or its successful reply arrived after the usable
@@ -54,7 +56,8 @@ public interface IDistributedLock
 
     /// <summary>
     /// Tries to acquire <paramref name="key"/> and returns a handle, or <see langword="null"/> when
-    /// the key stayed held by another owner. With <paramref name="options"/> omitted the call makes
+    /// the key stayed held by another owner, or when <see cref="LockOptions.MaxWait"/> expired
+    /// while the provider had not answered. With <paramref name="options"/> omitted the call makes
     /// one attempt and never waits (skip-if-busy); pass <see cref="LockOptions.MaxWait"/> or a
     /// <see cref="LockOptions.Retry"/> policy to wait. Dispose the handle to release.
     /// </summary>

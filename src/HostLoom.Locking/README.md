@@ -53,23 +53,30 @@ a heartbeat that fails is retried halfway to the lease end, then halfway again d
 twentieth of the lease, until an extension succeeds or the lease runs out; a single backend
 hiccup does not end automatic extension.
 
-An acquisition the caller stops waiting for, through its token or because `MaxWait` cancelled a
-provider call still in flight, leaves one of three states behind. Cancelled or timed out before
-the server applied the write: nothing is held. After the server applied it: the key stays held
-for the abandoned owner until the lease expires and retries see the not-acquired outcome
-meanwhile; when the provider still delivers the late confirmation, the lock issues one
-best-effort owner-checked release, bounded by the lease and at most five seconds, counted on
+The provider call of an acquisition runs under a token the lock owns, cancelled only when the
+lease has run out since the request or when the lock is disposed; the caller's token and
+`MaxWait` end the lock's wait for the reply, never the call. An acquisition the lock does not turn
+into a handle leaves one of these behind. Nothing sent, because the caller's token or `MaxWait`
+had already run out: nothing is held. Sent and granted but abandoned, because the caller
+cancelled or `MaxWait` expired while the reply was outstanding, or the confirmation arrived after
+the usable lease and was rejected with `LockFailureKind.Timeout`: the key is held for the
+abandoned owner until the reply arrives, and then released. A provider that threw `Timeout` or
+`Other`, or stopped on its token at the lease end: the grant is uncertain, so the caller gets
+its exception at once and the lock releases immediately. A provider that threw `Unavailable`
+reached nothing, and nothing is released. Each release is one best-effort owner-checked call
+that nobody waits for, bounded by the lease and at most five seconds, counted on
 `hostloom.lock.orphan_releases` (`released`, `absent`, `failed`) and logged at Debug as
-`LockOrphanRelease` with the key only. The same release follows a confirmation that arrives once
-the usable lease has already run out, which is rejected with `LockFailureKind.Timeout`. A
-provider that threw (`Unavailable` or `Timeout`) confirmed nothing: the state is unknown, the key
-is held for at most one lease, and nothing is released.
+`LockOrphanRelease` with the key only. The cost is that cancelling no longer stops a command
+already issued: a provider call can outlive its caller by up to one lease, and an abandoned
+attempt can cost one extra `SET` plus one release. Providers therefore honour their tokens in the
+standard .NET way.
 
 `LockRetryPolicy` shapes the wait between attempts and never depends on `HostLoom.Pipelines`. The
 default reproduces the platform's historical behaviour: ten retries at a linear 50 ms step with up
 to 50 ms of additive jitter, about 3 s in total; `LockOptions.MaxWait` is a hard wall-clock bound
-on top of it, cancelling the provider call it would otherwise outlive, and `TimeSpan.Zero` makes
-exactly one attempt. `LockingOptions.Enabled = false` is
+on top of it, abandoning, not cancelling, the provider call it would otherwise outlive, and
+`TimeSpan.Zero` makes exactly one attempt. A `MaxWait` that expires while the backend is not
+answering is reported the same way as contention. `LockingOptions.Enabled = false` is
 single-instance mode: a startup warning, `hostloom.lock.enabled = 0`, and every action running
 immediately; `IDistributedLock.IsCoordinated` and every handle's `IsCoordinated` report `false`
 there, so a consumer that gates exclusive work on a lease can tell the placeholder from a real
