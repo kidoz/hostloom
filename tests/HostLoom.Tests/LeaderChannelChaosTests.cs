@@ -24,7 +24,7 @@ public sealed class LeaderChannelChaosTests
     [Fact]
     public async Task A_refused_renewal_moves_the_feed_to_the_new_leader_and_no_item_lands_on_both()
     {
-        var cluster = new Cluster(extendFailures: 1);
+        var cluster = new Cluster(extendRefusals: 1);
         await using var first = cluster.Instance("first", retry: TimeSpan.FromSeconds(4));
         await using var second = cluster.Instance("second", retry: TimeSpan.FromSeconds(3));
         await first.Elector.StartAsync(TestContext.Current.CancellationToken);
@@ -249,10 +249,17 @@ public sealed class LeaderChannelChaosTests
     {
         private readonly ILockProvider _provider;
 
-        public Cluster(int acquireFailures = 0, int extendFailures = 0)
+        public Cluster(int acquireFailures = 0, int extendRefusals = 0)
         {
             Backend = new InMemoryLockProvider(Clock);
             ILockProvider provider = Backend;
+            if (extendRefusals > 0)
+            {
+                // A refusal, not a provider failure: a failed renewal keeps leadership until
+                // the lease ends, while a refused one ends it at once.
+                provider = new RefusingLockProvider(provider, extendRefusals);
+            }
+
             if (acquireFailures > 0)
             {
                 AcquireFaults = new FaultingLockProvider(
@@ -262,16 +269,6 @@ public sealed class LeaderChannelChaosTests
                     acquireFailures
                 );
                 provider = AcquireFaults;
-            }
-
-            if (extendFailures > 0)
-            {
-                provider = new FaultingLockProvider(
-                    provider,
-                    LockOperation.Extend,
-                    LockFailureKind.Timeout,
-                    extendFailures
-                );
             }
 
             _provider = provider;

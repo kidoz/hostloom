@@ -9,10 +9,12 @@ namespace HostLoom.Leadership;
 /// <summary>
 /// Elects one leader for a role by holding the lock <c>leader:{role}</c>: a candidate tries a
 /// skip-if-busy acquisition on a jittered cadence, a leader renews the lease itself every
-/// <see cref="LeadershipOptions.RenewInterval"/>, and a renewal that fails or a lease that
-/// expires steps the instance back to candidate at once, where it waits one retry interval
-/// before its next attempt. Composes without a container:
-/// <c>new LeaderElector("scheduler", locks, options)</c>, then <see cref="StartAsync"/>.
+/// <see cref="LeadershipOptions.RenewInterval"/>, and a renewal the backend refuses or a lease
+/// that runs out steps the instance back to candidate at once, where it waits one retry interval
+/// before its next attempt. A renewal that fails at the provider while the lease still runs does
+/// not end leadership: the leader retries, at the renewal cadence or at half the remaining lease
+/// when that is sooner, until an extension succeeds or the lease ends. Composes without a
+/// container: <c>new LeaderElector("scheduler", locks, options)</c>, then <see cref="StartAsync"/>.
 /// </summary>
 /// <remarks>
 /// The elector owns renewal instead of the lock's automatic extension, which stops at
@@ -449,14 +451,26 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
         ExceptionDispatchInfo? fault = null;
         try
         {
+            var delay = Options.RenewInterval;
             while (true)
             {
-                await Task.Delay(Options.RenewInterval, _clock, linked.Token).ConfigureAwait(false);
-                if (!await RenewAsync(handle, linked.Token).ConfigureAwait(false))
+                await Task.Delay(delay, _clock, linked.Token).ConfigureAwait(false);
+                if (await RenewAsync(handle, linked.Token).ConfigureAwait(false))
+                {
+                    delay = Options.RenewInterval;
+                    continue;
+                }
+
+                // A refusal marks the handle lost. A renewal that failed at the provider leaves
+                // the lease intact until its end, as the lock's own heartbeat assumes, so the
+                // leader keeps leading and retries until an extension lands or the lease is over.
+                if (!handle.IsHeld || RenewalRetryDelay(handle) is not { } retry)
                 {
                     reason = LeadershipChangeReason.Lost;
                     break;
                 }
+
+                delay = retry;
             }
         }
         catch (OperationCanceledException) when (stopping.IsCancellationRequested)
@@ -491,11 +505,15 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
         bool renewed;
         try
         {
-            // A provider failure is logged by the lock and reported as false, never thrown.
+            // A provider failure is logged by the lock and reported as false, never thrown, and
+            // leaves the handle held; a refusal or a spent lease marks it lost.
             renewed = await handle
                 .ExtendAsync(Options.Lease, cancellationToken)
                 .ConfigureAwait(false);
-            outcome = renewed ? "renewed" : "refused";
+            outcome =
+                renewed ? "renewed"
+                : handle.IsHeld ? "failed"
+                : "refused";
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -513,6 +531,35 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
             new KeyValuePair<string, object?>(LeadershipDiagnostics.OutcomeTag, outcome)
         );
         return renewed;
+    }
+
+    /// <summary>
+    /// When to retry a renewal that failed while the lease still runs: after
+    /// <see cref="LeadershipOptions.RenewInterval"/>, or half of what is left of the lease when
+    /// that is sooner, but never sooner than a twentieth of the lease so the last moments do not
+    /// become a hot loop. <see langword="null"/> once the lease is over.
+    /// </summary>
+    private TimeSpan? RenewalRetryDelay(ILockHandle handle)
+    {
+        var remaining = handle.LeaseEnd - _clock.GetUtcNow();
+        if (remaining <= TimeSpan.Zero)
+        {
+            return null;
+        }
+
+        var due = remaining / 2;
+        if (due > Options.RenewInterval)
+        {
+            due = Options.RenewInterval;
+        }
+
+        var floor = Options.Lease / 20;
+        if (due < floor)
+        {
+            due = floor < remaining ? floor : remaining;
+        }
+
+        return due;
     }
 
     private void BecomeLeader(ILockHandle handle, CancellationTokenSource resign)

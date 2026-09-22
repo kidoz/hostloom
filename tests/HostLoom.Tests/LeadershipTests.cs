@@ -83,7 +83,7 @@ public sealed class LeadershipTests
     }
 
     [Fact]
-    public async Task A_refused_renewal_steps_the_leader_down_and_the_other_instance_takes_over()
+    public async Task A_transient_renewal_failure_keeps_leadership_and_the_next_success_keeps_the_term()
     {
         var cluster = new Cluster(extendFailures: 1);
         await using var first = cluster.Elector("first", retry: TimeSpan.FromSeconds(4));
@@ -97,8 +97,97 @@ public sealed class LeadershipTests
         // Lease and warning timers of the handle, the leader's renewal, and the follower's retry.
         await SchedulingTests.WaitUntilAsync(() => cluster.Clock.PendingTimers >= 4);
 
-        // The next renewal fails at the provider: the lock reports false, the elector steps down
-        // at once and releases, and the follower acquires on its next attempt.
+        // The renewal at five seconds times out at the provider. The lease it renews still runs
+        // until fifteen seconds, so the leader keeps leading and retries at the renewal cadence,
+        // which is sooner than half the ten seconds left.
+        cluster.Clock.Advance(Renew);
+        await SchedulingTests.WaitUntilAsync(() =>
+            cluster.ExtendFaults!.Faulted == 1 && cluster.Clock.PendingTimers >= 4
+        );
+        Assert.True(first.Elector.IsLeader);
+        Assert.False(token.IsCancellationRequested);
+
+        // The retry at ten seconds succeeds, so the lease outlives its original end at fifteen,
+        // and the renewal due then succeeds as well: one term, and the follower never leads.
+        cluster.Clock.Advance(Renew);
+        await SchedulingTests.WaitUntilAsync(() => cluster.Clock.PendingTimers >= 4);
+        cluster.Clock.Advance(Renew);
+        await SchedulingTests.WaitUntilAsync(() => cluster.Clock.PendingTimers >= 4);
+
+        Assert.True(first.Elector.IsLeader);
+        Assert.False(second.Elector.IsLeader);
+        Assert.False(token.IsCancellationRequested);
+        Assert.Equal(1, first.Elector.Term);
+        Assert.Equal(1, cluster.ExtendFaults!.Faulted);
+        Assert.Equal(1, cluster.Backend.Count);
+        Assert.Empty(changes);
+    }
+
+    [Fact]
+    public async Task Persistent_renewal_failures_step_the_leader_down_at_the_lease_end_and_not_before()
+    {
+        var cluster = new Cluster(extendFailures: int.MaxValue);
+        await using var leader = cluster.Elector("first");
+        await leader.Elector.StartAsync(TestContext.Current.CancellationToken);
+        await SchedulingTests.WaitUntilAsync(() => leader.Elector.IsLeader);
+        var changes = new List<LeadershipChange>();
+        using var _ = leader.Elector.OnChange(changes.Add);
+        var token = leader.Elector.LeadershipToken;
+        // The handle's lease (fifteen seconds) and warning (twelve) timers and the renewal.
+        await SchedulingTests.WaitUntilAsync(() => cluster.Clock.PendingTimers >= 3);
+
+        // Every renewal fails: at 5, 10, 12.5, 13.75, and 14.5 seconds. A retry comes at the
+        // renewal cadence or at half of what is left, whichever is sooner, but never sooner than
+        // a twentieth of the lease (0.75 s) unless that would pass the lease end at fifteen.
+        (TimeSpan Step, int Timers)[] schedule =
+        [
+            (TimeSpan.FromSeconds(5), 3),
+            (TimeSpan.FromSeconds(5), 3),
+            (TimeSpan.FromSeconds(2.5), 2),
+            (TimeSpan.FromSeconds(1.25), 2),
+            (TimeSpan.FromSeconds(0.75), 2),
+        ];
+        var failures = 0;
+        foreach (var (step, timers) in schedule)
+        {
+            cluster.Clock.Advance(step);
+            failures++;
+            await SchedulingTests.WaitUntilAsync(() =>
+                cluster.ExtendFaults!.Faulted == failures && cluster.Clock.PendingTimers >= timers
+            );
+            Assert.True(leader.Elector.IsLeader);
+            Assert.False(token.IsCancellationRequested);
+        }
+
+        // Half a second before the lease end the leader still leads; at the end it steps down.
+        Assert.Empty(changes);
+        cluster.Clock.Advance(TimeSpan.FromSeconds(0.5));
+        await SchedulingTests.WaitUntilAsync(() => changes.Count == 1);
+
+        Assert.False(leader.Elector.IsLeader);
+        Assert.True(token.IsCancellationRequested);
+        Assert.Equal(LeadershipChangeReason.Lost, Assert.Single(changes).Reason);
+        Assert.Equal(1, leader.Elector.Term);
+        Assert.Equal(LeadershipStatus.Candidate, leader.Elector.Status);
+    }
+
+    [Fact]
+    public async Task A_refused_renewal_steps_the_leader_down_and_the_other_instance_takes_over()
+    {
+        var cluster = new Cluster(extendRefusals: 1);
+        await using var first = cluster.Elector("first", retry: TimeSpan.FromSeconds(4));
+        await using var second = cluster.Elector("second", retry: TimeSpan.FromSeconds(3));
+        await first.Elector.StartAsync(TestContext.Current.CancellationToken);
+        await SchedulingTests.WaitUntilAsync(() => first.Elector.IsLeader);
+        await second.Elector.StartAsync(TestContext.Current.CancellationToken);
+        var changes = new List<LeadershipChange>();
+        using var _ = first.Elector.OnChange(changes.Add);
+        var token = first.Elector.LeadershipToken;
+        // Lease and warning timers of the handle, the leader's renewal, and the follower's retry.
+        await SchedulingTests.WaitUntilAsync(() => cluster.Clock.PendingTimers >= 4);
+
+        // The backend refuses the next renewal as an owner mismatch: the lease is gone, so the
+        // elector steps down at once and releases, and the follower acquires on its next attempt.
         cluster.Clock.Advance(Renew);
         await SchedulingTests.WaitUntilAsync(() => !first.Elector.IsLeader);
         // Status changes first, the release follows, and the change is recorded last.
@@ -287,11 +376,21 @@ public sealed class LeadershipTests
         private readonly TimeSpan _maxHold;
         private readonly CountingProvider? _counting;
 
-        public Cluster(TimeSpan? maxHold = null, int acquireFailures = 0, int extendFailures = 0)
+        public Cluster(
+            TimeSpan? maxHold = null,
+            int acquireFailures = 0,
+            int extendFailures = 0,
+            int extendRefusals = 0
+        )
         {
             _maxHold = maxHold ?? TimeSpan.FromMinutes(10);
             Backend = new InMemoryLockProvider(Clock);
             ILockProvider provider = Backend;
+            if (extendRefusals > 0)
+            {
+                provider = new RefusingLockProvider(provider, extendRefusals);
+            }
+
             if (acquireFailures > 0)
             {
                 _counting = new CountingProvider(
@@ -307,12 +406,13 @@ public sealed class LeadershipTests
 
             if (extendFailures > 0)
             {
-                provider = new FaultingLockProvider(
+                ExtendFaults = new FaultingLockProvider(
                     provider,
                     LockOperation.Extend,
                     LockFailureKind.Timeout,
                     extendFailures
                 );
+                provider = ExtendFaults;
             }
 
             _provider = provider;
@@ -323,6 +423,9 @@ public sealed class LeadershipTests
         public InMemoryLockProvider Backend { get; }
 
         public int Faults => _counting?.Faults ?? 0;
+
+        /// <summary>The decorator failing extensions with a provider Timeout, when one was asked for.</summary>
+        public FaultingLockProvider? ExtendFaults { get; }
 
         public Instance Elector(string name, TimeSpan? retry = null)
         {

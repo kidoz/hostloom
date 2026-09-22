@@ -3,8 +3,11 @@
 `HostLoom.Leadership` elects one leader for a role among the instances of a service, over the
 HostLoom distributed lock. It is the lease-based election that Kubernetes controllers, Spring
 Integration's leader initiator, and most cloud services use: a candidate tries to take the lease
-`leader:{role}`, the leader renews it on its own cadence, and a renewal that fails or a lease that
-expires steps the instance back to candidate at once. The package references `HostLoom.Locking`
+`leader:{role}`, the leader renews it on its own cadence, and a renewal the backend refuses or a
+lease that runs out steps the instance back to candidate at once. A renewal that fails at the
+provider while the lease still runs keeps leadership and the term: the leader retries, at the
+renewal cadence or at half the remaining lease when that is sooner, until an extension succeeds
+or the lease ends. The package references `HostLoom.Locking`
 and `Microsoft.Extensions.Logging.Abstractions`; every type has a public constructor, so an
 elector composes without a container.
 
@@ -32,8 +35,8 @@ instance gets the first chance. A crashed process hands over when its lease expi
 
 The elector owns renewal instead of the lock's automatic extension, which stops at
 `Locking:MaxHold`; a leader renews for as long as it lives. Keep `Leadership:Lease` within
-`Locking:MaxLease`, which the lock enforces silently, and `Leadership:RenewInterval` at most half
-the lease. An unreachable lock provider makes nobody leader, is logged once per outage, and is
+`Locking:MaxLease`: a hosted elector fails at startup naming the role and both values, while a
+container-free one is capped by the lock. Keep `Leadership:RenewInterval` at most half the lease. An unreachable lock provider makes nobody leader, is logged once per outage, and is
 retried on the candidate cadence.
 
 Over a lock that does not coordinate (`Locking:Enabled = false`) the lease is a placeholder every

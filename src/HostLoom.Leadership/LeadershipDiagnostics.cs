@@ -19,7 +19,11 @@ public static class LeadershipDiagnostics
     /// <summary>Tag on <c>hostloom.leader.changes</c>: the lower-case <see cref="LeadershipChangeReason"/>.</summary>
     public const string ReasonTag = "hostloom.leader.reason";
 
-    /// <summary>Tag on <c>hostloom.leader.renew.duration</c>: <c>renewed</c>, <c>refused</c>, or <c>failed</c>.</summary>
+    /// <summary>
+    /// Tag on <c>hostloom.leader.renew.duration</c>: <c>renewed</c>; <c>refused</c> when the
+    /// lease is gone, which ends leadership; or <c>failed</c> when the renewal failed while the
+    /// lease still runs, which is retried.
+    /// </summary>
     public const string OutcomeTag = "hostloom.leader.outcome";
 
     /// <summary>Tag on <c>hostloom.leader.channel.dropped</c>: the <see cref="LeaderChannel{T}"/> name.</summary>

@@ -16,7 +16,8 @@ public sealed class LeadershipOptions
 
     /// <summary>
     /// How long the lease lasts without a renewal, and so how long a crashed leader keeps the role.
-    /// Keep it within <c>Locking:MaxLease</c>; the lock caps a longer lease silently.
+    /// Must be at most <c>Locking:MaxLease</c>: a hosted elector fails at startup otherwise, while a
+    /// container-free one is handed the lock's cap as its lease.
     /// </summary>
     public TimeSpan Lease { get; set; } = TimeSpan.FromSeconds(15);
 

@@ -56,11 +56,18 @@ once, `ResignAsync` steps down and stays a candidate. The loop:
   provider is logged once per outage and makes nobody leader.
 - A **leader** renews through the lock's `ExtendAsync` every
   `Leadership:RenewInterval`, on its own timer, so the lock's automatic
-  extension cap `Locking:MaxHold` does not apply. A renewal that is refused or
-  fails, or a lease the lock reports lost, cancels the token, releases, raises
+  extension cap `Locking:MaxHold` does not apply. A renewal the backend
+  refuses, or a lease that runs out, cancels the token, releases, raises
   `Lost`, and waits one retry interval before the next attempt so another
   instance gets the first chance and a flapping backend cannot turn renewals
   into a hot loop.
+- A renewal that **fails** at the provider, such as a timeout, leaves the lease
+  the lock holds intact until its end. The leader keeps leading and the same
+  term, and retries after `Leadership:RenewInterval` or half of what is left of
+  the lease, whichever is sooner, but not sooner than a twentieth of the lease.
+  It steps down when a retry is refused or when the lease ends, never later.
+  Each failed attempt is recorded on `hostloom.leader.renew.duration` with
+  outcome `failed` and logged by the lock as `LockExtendFailed` (3105).
 - A **resigned** leader waits one retry interval as well. A **stopped**
   elector releases and does not run again.
 - Over a lock that does not coordinate (`Locking:Enabled = false`) a lease is a
@@ -82,7 +89,7 @@ lease, and cadence without executing anything.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `Leadership:Lease` | 15 seconds | how long the lease lasts without a renewal; a crashed leader keeps the role this long; keep it within `Locking:MaxLease` |
+| `Leadership:Lease` | 15 seconds | how long the lease lasts without a renewal; a crashed leader keeps the role this long; at most `Locking:MaxLease`, checked when the host starts |
 | `Leadership:RenewInterval` | 5 seconds | renewal cadence; at most half the lease |
 | `Leadership:RetryInterval` | 2 seconds | candidate cadence, and the pause after a loss or a resignation |
 | `Leadership:RetryJitter` | 1 second | additive jitter on the candidate cadence |
@@ -90,7 +97,11 @@ lease, and cadence without executing anything.
 
 `Validate()` returns every violation naming the key; the elector's constructor
 throws with the same text, and the `DependencyInjection` package validates each
-role's named options when the host starts. It also keeps every cadence within
+role's named options when the host starts. There it also checks
+`Leadership:Lease` against `Locking:MaxLease` of the registered lock and fails
+naming the role and both values, since the lock would otherwise cap the lease
+silently; a container-free elector gets the capped lease. Single-instance mode
+takes no lease and is not checked. `Validate()` also keeps every cadence within
 the longest wait the elector can schedule (`LeadershipOptions.MaxDelay`, about
 49 days), so the loop can never fail on an out-of-range delay.
 
@@ -198,8 +209,12 @@ elections.
 ## Evidence
 
 Deterministic tests run two electors over one in-process lock and a fake clock
-(`LeadershipTests`): one leader, renewal past the lock's extension cap, a refused
-renewal handing over, resignation, stop, a provider outage, and listener order.
+(`LeadershipTests`): one leader, renewal past the lock's extension cap, a
+transient renewal failure keeping the term, persistent renewal failures
+stepping down exactly at the lease end, a refused renewal handing over,
+resignation, stop, a provider outage, and listener order.
+`LeadershipRegistrationTests` cover the lease check against `Locking:MaxLease`
+at resolution and at host start.
 `UncoordinatedLeadershipTests` run two electors over one disabled lock: nobody
 leads under the default `Follow`, both lead under `Lead`, the warning is written
 once per role, the probe and the guards report the posture, and a host with a

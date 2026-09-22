@@ -11,7 +11,7 @@ public static class LeadershipEvents
     /// <summary>Information: this instance became leader.</summary>
     public static readonly EventId Acquired = new(3401, "LeadershipAcquired");
 
-    /// <summary>Warning: a renewal failed or the lease expired; this instance stepped back to candidate.</summary>
+    /// <summary>Warning: a renewal was refused or the lease ran out; this instance stepped back to candidate.</summary>
     public static readonly EventId Lost = new(3402, "LeadershipLost");
 
     /// <summary>Information: this instance resigned on request.</summary>

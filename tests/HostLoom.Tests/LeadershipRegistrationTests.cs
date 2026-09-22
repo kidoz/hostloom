@@ -79,6 +79,78 @@ public sealed class LeadershipRegistrationTests
     }
 
     [Fact]
+    public async Task A_role_lease_beyond_the_locks_MaxLease_fails_naming_the_role_and_both_values()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomLocking(locking =>
+            {
+                locking.Namespace = "billing";
+                locking.MaxLease = TimeSpan.FromMinutes(1);
+            })
+            .UseInMemory();
+        services
+            .AddHostLoomLeadership()
+            .AddRole("scheduler", leadership => leadership.Lease = TimeSpan.FromMinutes(2))
+            .AddRole("reconciler", leadership => leadership.Lease = TimeSpan.FromMinutes(1));
+        await using var provider = services.BuildServiceProvider();
+        var monitor = provider.GetRequiredService<IOptionsMonitor<LeadershipOptions>>();
+
+        var failure = Assert.Throws<OptionsValidationException>(() => monitor.Get("scheduler"));
+
+        Assert.Contains("Role 'scheduler'", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("Leadership:Lease (00:02:00)", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("Locking:MaxLease (00:01:00)", failure.Message, StringComparison.Ordinal);
+        // A lease equal to the cap is what the lock grants, so it passes.
+        Assert.Equal(TimeSpan.FromMinutes(1), monitor.Get("reconciler").Lease);
+    }
+
+    [Fact]
+    public async Task The_lease_check_fails_the_host_at_startup_and_skips_a_disabled_lock()
+    {
+        using var host = new HostBuilder()
+            .ConfigureServices(services =>
+            {
+                services
+                    .AddHostLoomLocking(locking =>
+                    {
+                        locking.Namespace = "billing";
+                        locking.MaxLease = TimeSpan.FromSeconds(30);
+                    })
+                    .UseInMemory();
+                services
+                    .AddHostLoomLeadership()
+                    .AddRole("scheduler", leadership => leadership.Lease = TimeSpan.FromMinutes(1));
+            })
+            .Build();
+
+        var failure = await Assert.ThrowsAsync<OptionsValidationException>(() =>
+            host.StartAsync(TestContext.Current.CancellationToken)
+        );
+        Assert.Contains("Role 'scheduler'", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("Locking:MaxLease (00:00:30)", failure.Message, StringComparison.Ordinal);
+
+        // Single-instance mode takes no lease, so there is nothing for the lease to exceed.
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomLocking(locking =>
+            {
+                locking.Namespace = "billing";
+                locking.Enabled = false;
+                locking.MaxLease = TimeSpan.FromSeconds(30);
+            })
+            .UseInMemory();
+        services
+            .AddHostLoomLeadership()
+            .AddRole("scheduler", leadership => leadership.Lease = TimeSpan.FromMinutes(1));
+        await using var disabled = services.BuildServiceProvider();
+        Assert.Equal(
+            TimeSpan.FromMinutes(1),
+            disabled.GetRequiredService<IOptionsMonitor<LeadershipOptions>>().Get("scheduler").Lease
+        );
+    }
+
+    [Fact]
     public async Task The_hosted_service_starts_electors_with_the_host_and_releases_on_stop()
     {
         var clock = new TestClock();

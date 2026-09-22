@@ -104,8 +104,9 @@ public sealed class RedisLeadershipTests
         proxy.SetEnabled(false);
         try
         {
-            // Renewals fail at the proxy; the leader steps down within a renewal plus a timeout,
-            // and the follower acquires once the server-side lease expires.
+            // Renewals fail at the proxy; the leader keeps retrying while its lease runs and
+            // steps down when its local lease timer fires, and the follower acquires once the
+            // server-side lease expires.
             await CacheConformance.WaitUntilAsync(
                 () => Task.FromResult(!first.Elector.IsLeader),
                 20

@@ -73,6 +73,48 @@ internal sealed class FaultingLockProvider(
 }
 
 /// <summary>
+/// Refuses the next <c>count</c> extensions as an owner mismatch, the answer a backend gives once
+/// the key has expired or been taken, without asking the inner provider. Every other call passes
+/// through.
+/// </summary>
+internal sealed class RefusingLockProvider(ILockProvider inner, int count) : ILockProvider
+{
+    private int _remaining = count;
+    private int _refused;
+
+    public int Refused => Volatile.Read(ref _refused);
+
+    public ValueTask<bool> TryAcquireAsync(
+        string key,
+        string owner,
+        TimeSpan lease,
+        CancellationToken cancellationToken = default
+    ) => inner.TryAcquireAsync(key, owner, lease, cancellationToken);
+
+    public ValueTask<bool> ReleaseAsync(
+        string key,
+        string owner,
+        CancellationToken cancellationToken = default
+    ) => inner.ReleaseAsync(key, owner, cancellationToken);
+
+    public ValueTask<bool> ExtendAsync(
+        string key,
+        string owner,
+        TimeSpan lease,
+        CancellationToken cancellationToken = default
+    )
+    {
+        if (Interlocked.Decrement(ref _remaining) >= 0)
+        {
+            Interlocked.Increment(ref _refused);
+            return ValueTask.FromResult(false);
+        }
+
+        return inner.ExtendAsync(key, owner, lease, cancellationToken);
+    }
+}
+
+/// <summary>
 /// A provider whose acquire never answers, so a test can show what bounds the wait. Release and
 /// extend answer normally: nothing is ever held.
 /// </summary>

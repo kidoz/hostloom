@@ -16,7 +16,8 @@ services
 
 `AddRole` registers one `LeaderElector` per role over the `IDistributedLock` registered by
 `AddHostLoomLocking`, resolved as `ILeadership` and `LeaderElector` keyed by the role, with
-`LeadershipOptions` named by the role and validated when the host starts. When exactly one role
+`LeadershipOptions` named by the role and validated when the host starts, including
+`Leadership:Lease` against the lock's `Locking:MaxLease`. When exactly one role
 is registered the unkeyed `ILeadership` resolves it too; with several, inject
 `[FromKeyedServices("scheduler")] ILeadership leadership`. A repeated role is refused at
 registration, and so is an `ILeadership` registered before `AddHostLoomLeadership` or one keyed by

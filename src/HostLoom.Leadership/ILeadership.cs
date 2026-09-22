@@ -61,7 +61,7 @@ public enum LeadershipChangeReason
     /// <summary>The lease was taken; this instance now leads.</summary>
     Acquired,
 
-    /// <summary>A renewal failed or the lease expired; this instance no longer leads.</summary>
+    /// <summary>A renewal was refused or the lease ran out; this instance no longer leads.</summary>
     Lost,
 
     /// <summary>This instance stepped down on request and stays a candidate.</summary>

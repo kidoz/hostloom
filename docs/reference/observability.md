@@ -140,7 +140,7 @@ Identity is the `hostloom.leader.role` tag. The `leader.acquire` activity carrie
 | --- | --- | --- |
 | `hostloom.leader.is_leader` | observable gauge | 1 while this instance leads the role, 0 otherwise |
 | `hostloom.leader.changes` | counter | Transitions, tagged `hostloom.leader.reason` (`acquired`, `lost`, `resigned`, `stopped`) |
-| `hostloom.leader.renew.duration` | histogram (s) | Lease renewals, tagged `hostloom.leader.outcome` (`renewed`, `refused`, `failed`) |
+| `hostloom.leader.renew.duration` | histogram (s) | Lease renewals, tagged `hostloom.leader.outcome`: `renewed`; `refused`, which ends leadership; or `failed`, a provider failure while the lease still runs, which is retried |
 
 Activities: `lock.acquire` and `lock.execute`, tagged `hostloom.lock.key`,
 `hostloom.lock.acquired`, `hostloom.lock.wait_ms`, and `hostloom.lock.hold_ms`.
