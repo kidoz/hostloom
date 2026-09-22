@@ -47,13 +47,20 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     private int _disposed;
 
     // A generation per key stripe conservatively rejects every single-key fill overlapping an
-    // invalidation of that key; tag and flush invalidations move every stripe, and the whole
-    // generation guards bulk operations. The gate makes generation checks and L1 insertion
-    // atomic with local eviction.
+    // invalidation of that key, and a generation per tag stripe rejects every fill declaring a
+    // tag invalidated meanwhile: a fill is checked against its key stripe and one stripe per
+    // tag it declares, so an untagged fill ignores tag-only invalidations and a fill on another
+    // tag or key stripe proceeds. That relies on every writer of a key declaring the same tags.
+    // A flush moves every stripe of both kinds, and the whole generation guards bulk
+    // operations. A distributed read learns its tags from the payload only after the read, so
+    // it is checked against the single tag generation that any tag message moves. The gate
+    // makes generation checks and L1 insertion atomic with local eviction.
     private const int GenerationStripes = 1024;
     private readonly Lock _invalidationGate = new();
     private readonly long[] _generations = new long[GenerationStripes];
+    private readonly long[] _tagGenerations = new long[GenerationStripes];
     private long _invalidationGeneration;
+    private long _tagGeneration;
 
     // What this instance published and has not yet seen come back. The channel echoes every
     // publish to its publisher; applying the echo as a fresh invalidation would suppress the
@@ -64,13 +71,80 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
     private long FillGeneration => Interlocked.Read(ref _invalidationGeneration);
 
-    private long FillGenerationOf(string key) => Volatile.Read(ref _generations[Stripe(key)]);
+    private long TagFillGeneration => Interlocked.Read(ref _tagGeneration);
 
     private static int Stripe(string key) =>
         (int)((uint)string.GetHashCode(key, StringComparison.Ordinal) % GenerationStripes);
 
+    private static int TagStripe(string tag) =>
+        (int)((uint)string.GetHashCode(tag, StringComparison.Ordinal) % GenerationStripes);
+
     /// <summary>The generation stripe of <paramref name="key"/>, for tests that need two keys apart.</summary>
     internal static int StripeOf(string key) => Stripe(key);
+
+    /// <summary>The tag generation stripe of <paramref name="tag"/>, for tests that need two tags apart.</summary>
+    internal static int TagStripeOf(string tag) => TagStripe(tag);
+
+    /// <summary>
+    /// The generations a single-key fill started against: its key stripe and one tag stripe per
+    /// tag it declares. Any of them moving means an invalidation overlapped the fill.
+    /// </summary>
+    private readonly struct FillGenerations(int keyStripe, long key, TagGeneration[]? tags)
+    {
+        public int KeyStripe { get; } = keyStripe;
+        public long Key { get; } = key;
+        public TagGeneration[]? Tags { get; } = tags;
+    }
+
+    private readonly record struct TagGeneration(int Stripe, long Generation);
+
+    /// <summary>Captures the generations a fill of <paramref name="key"/> declaring <paramref name="tags"/> is checked against.</summary>
+    private FillGenerations FillGenerationsOf(string key, IReadOnlyCollection<string>? tags)
+    {
+        var keyStripe = Stripe(key);
+        var keyGeneration = Volatile.Read(ref _generations[keyStripe]);
+        if (tags is not { Count: > 0 })
+        {
+            return new FillGenerations(keyStripe, keyGeneration, null);
+        }
+
+        var tagGenerations = new TagGeneration[tags.Count];
+        var index = 0;
+        foreach (var tag in tags)
+        {
+            var stripe = TagStripe(tag);
+            tagGenerations[index++] = new TagGeneration(
+                stripe,
+                Volatile.Read(ref _tagGenerations[stripe])
+            );
+        }
+
+        return new FillGenerations(keyStripe, keyGeneration, tagGenerations);
+    }
+
+    /// <summary>Whether no invalidation has moved a generation the fill captured.</summary>
+    private bool Unchanged(in FillGenerations captured)
+    {
+        if (captured.Key != Volatile.Read(ref _generations[captured.KeyStripe]))
+        {
+            return false;
+        }
+
+        if (captured.Tags is null)
+        {
+            return true;
+        }
+
+        foreach (var (stripe, generation) in captured.Tags)
+        {
+            if (generation != Volatile.Read(ref _tagGenerations[stripe]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private readonly record struct PublishedInvalidation(
         int Hash,
@@ -279,7 +353,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 key,
                 value,
                 options,
-                FillGenerationOf(key),
+                FillGenerationsOf(key, options.Tags),
                 cancellationToken
             )
             .ConfigureAwait(false);
@@ -338,7 +412,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             return false;
         }
 
-        var generation = FillGenerationOf(key);
+        var generation = FillGenerationsOf(key, options.Tags);
         bool written;
         try
         {
@@ -365,7 +439,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         {
             lock (_invalidationGate)
             {
-                if (generation == _generations[Stripe(key)])
+                if (Unchanged(generation))
                 {
                     _local?.Set(
                         key,
@@ -538,7 +612,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             {
                 if (
                     entries.TryGetValue(DataKey(key), out var entry)
-                    && Decode<T>(key, entry, null, generation, readStart, bulk: true)
+                    && Decode<T>(key, entry, null, generation, 0, readStart, bulk: true)
                         is { Found: true } lookup
                 )
                 {
@@ -812,7 +886,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
         try
         {
-            var generation = FillGenerationOf(key);
+            var generation = FillGenerationsOf(key, options.Tags);
             var factoryStart = Stopwatch.GetTimestamp();
             T value;
             try
@@ -895,7 +969,8 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         CancellationToken cancellationToken
     )
     {
-        var generation = FillGenerationOf(key);
+        var generation = Volatile.Read(ref _generations[Stripe(key)]);
+        var tagGeneration = TagFillGeneration;
         var readStart = _time.GetTimestamp();
         CacheStoreEntry? entry;
         try
@@ -909,13 +984,17 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         }
 
         return entry is { } found
-            ? Decode<T>(key, found, options, generation, readStart, bulk: false)
+            ? Decode<T>(key, found, options, generation, tagGeneration, readStart, bulk: false)
             : CacheLookup.Miss<T>();
     }
 
     /// <param name="generation">
     /// The key's stripe generation, or the whole generation when <paramref name="bulk"/>,
     /// captured before the distributed read; an invalidation since then leaves L1 untouched.
+    /// </param>
+    /// <param name="tagGeneration">
+    /// The tag generation captured before a single-key read; a tag invalidation since then keeps
+    /// a tagged payload out of L1. Ignored when <paramref name="bulk"/>.
     /// </param>
     /// <param name="readStart">
     /// When the distributed read started: a value written to L1 after that is newer than what
@@ -926,6 +1005,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         CacheStoreEntry entry,
         CacheEntryOptions? options,
         long generation,
+        long tagGeneration,
         long readStart,
         bool bulk
     )
@@ -951,7 +1031,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
                 lock (_invalidationGate)
                 {
-                    if (generation == CurrentGeneration(key, bulk))
+                    if (MayPromote(key, tags, generation, tagGeneration, bulk))
                     {
                         _local?.SetNull(
                             key,
@@ -966,7 +1046,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             case PayloadDecodeStatus.Ok when value is not null:
                 lock (_invalidationGate)
                 {
-                    if (generation == CurrentGeneration(key, bulk))
+                    if (MayPromote(key, tags, generation, tagGeneration, bulk))
                     {
                         _local?.Set(
                             key,
@@ -1017,11 +1097,11 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     private async ValueTask<bool> WriteNullAsync(
         string key,
         CacheEntryOptions options,
-        long generation,
+        FillGenerations generation,
         CancellationToken cancellationToken
     )
     {
-        if (generation != FillGenerationOf(key))
+        if (!Unchanged(generation))
         {
             return false;
         }
@@ -1056,7 +1136,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 : expiration;
         lock (_invalidationGate)
         {
-            if (generation == _generations[Stripe(key)])
+            if (Unchanged(generation))
             {
                 _local?.SetNull(key, local, options.Tags, options.EffectiveStaleGrace);
             }
@@ -1069,11 +1149,11 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         string key,
         T value,
         CacheEntryOptions options,
-        long generation,
+        FillGenerations generation,
         CancellationToken cancellationToken
     )
     {
-        if (generation != FillGenerationOf(key))
+        if (!Unchanged(generation))
         {
             return false;
         }
@@ -1112,7 +1192,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
         lock (_invalidationGate)
         {
-            if (generation == _generations[Stripe(key)])
+            if (Unchanged(generation))
             {
                 _local?.Set(
                     key,
@@ -1394,36 +1474,58 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         }
     }
 
-    /// <summary>Read under <see cref="_invalidationGate"/>: the generation a fill is checked against.</summary>
-    private long CurrentGeneration(string key, bool bulk) =>
-        bulk ? _invalidationGeneration : _generations[Stripe(key)];
+    /// <summary>
+    /// Read under <see cref="_invalidationGate"/>: whether a distributed read that captured
+    /// <paramref name="generation"/> and <paramref name="tagGeneration"/> may still fill L1 with
+    /// a payload carrying <paramref name="tags"/>.
+    /// </summary>
+    private bool MayPromote(
+        string key,
+        string[]? tags,
+        long generation,
+        long tagGeneration,
+        bool bulk
+    ) =>
+        bulk
+            ? generation == _invalidationGeneration
+            : generation == _generations[Stripe(key)]
+                && (tags is not { Length: > 0 } || tagGeneration == _tagGeneration);
 
     private void InvalidateLocal(CacheInvalidation invalidation)
     {
         lock (_invalidationGate)
         {
             Interlocked.Increment(ref _invalidationGeneration);
-            if (invalidation.FlushAll || invalidation.Tags.Count > 0)
+            if (invalidation.FlushAll)
             {
-                // The keys a tag covers are not known here, and a flush covers every key.
+                // A flush covers every key and every tag.
+                Interlocked.Increment(ref _tagGeneration);
                 for (var stripe = 0; stripe < GenerationStripes; stripe++)
                 {
                     _generations[stripe]++;
+                    _tagGenerations[stripe]++;
                 }
-            }
-            else
-            {
-                foreach (var key in invalidation.Keys)
-                {
-                    _generations[Stripe(key)]++;
-                }
-            }
 
-            if (invalidation.FlushAll)
-            {
                 _local?.Clear();
                 return;
             }
+
+            foreach (var key in invalidation.Keys)
+            {
+                _generations[Stripe(key)]++;
+            }
+
+            if (invalidation.Tags.Count > 0)
+            {
+                // The keys a tag covers are not known here; a fill declaring the tag notices its
+                // stripe move, and a distributed read notices the tag generation move.
+                Interlocked.Increment(ref _tagGeneration);
+                foreach (var tag in invalidation.Tags)
+                {
+                    _tagGenerations[TagStripe(tag)]++;
+                }
+            }
+
             _local?.Remove(invalidation.Keys);
             foreach (var tag in invalidation.Tags)
             {

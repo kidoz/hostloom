@@ -58,10 +58,15 @@ because invalidations published during the outage were never delivered.
 
 An applied invalidation also prevents overlapping distributed reads, writes, warmup batches,
 and factory results from refilling the in-process tier. A factory invalidated before its write
-starts returns its result without caching it. Keys are tracked in 1024 generation stripes, so
-an invalidation of one key suppresses only in-flight fills of keys sharing its stripe, while a
-tag or flush invalidation, whose keys are not known, suppresses every in-flight fill; bulk reads
-and warmup batches are guarded by the whole generation. The channel echoes this instance's own
+starts returns its result without caching it. Keys and tags are each tracked in 1024 generation
+stripes: an invalidation of one key suppresses only in-flight fills of keys sharing its stripe,
+and an invalidation of one tag suppresses only in-flight fills that declare a tag sharing its
+stripe, so an untagged fill or a fill on an unrelated tag proceeds. That relies on every writer
+of a key declaring the same tags; a fill that omits a tag another writer attached to the same
+key is not suppressed by that tag's invalidation. A distributed read learns its tags from the
+payload, so a tagged payload read while any tag invalidation was applied is returned but not
+copied into the in-process tier. A flush suppresses every in-flight fill, and bulk reads and
+warmup batches are guarded by the whole generation. The channel echoes this instance's own
 publishes back to it; an echo of a message published within `Caching:Invalidation:Timeout` is
 recognised and skipped, so the refill that follows a removal is cached. A distributed read that
 completes after a later write to the same key does not replace that write's in-process entry.

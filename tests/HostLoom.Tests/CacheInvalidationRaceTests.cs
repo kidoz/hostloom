@@ -530,6 +530,226 @@ public sealed class CacheInvalidationRaceTests
         Assert.Equal("v2", local.Value);
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task An_invalidation_of_an_unrelated_tag_does_not_suppress_a_tagged_fill()
+    {
+        var token = TestContext.Current.CancellationToken;
+        // Pick a second tag from another stripe: a shared stripe is the documented exception.
+        var other = Enumerable
+            .Range(0, 100_000)
+            .Select(i => "other-" + i)
+            .First(candidate =>
+                TieredCache.TagStripeOf(candidate) != TieredCache.TagStripeOf("catalog")
+            );
+        await using var race = await RaceFillAsync(
+            ["catalog"],
+            new CacheInvalidation([], [other]),
+            token
+        );
+
+        Assert.Equal("fresh", race.Result);
+        // The unrelated invalidation left this fill alone: it reached both tiers.
+        Assert.Equal(1, race.Cache.LocalEntryCount);
+        Assert.Equal(
+            CacheTier.L1,
+            (await race.Cache.TryGetAsync<string>("catalog:eu", token)).Tier
+        );
+        await ExpectStoreSets(race.Store, 1);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task A_tag_invalidation_does_not_suppress_an_untagged_fill()
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var race = await RaceFillAsync(
+            null,
+            new CacheInvalidation([], ["catalog"]),
+            token
+        );
+
+        Assert.Equal("fresh", race.Result);
+        Assert.Equal(1, race.Cache.LocalEntryCount);
+        Assert.Equal(
+            CacheTier.L1,
+            (await race.Cache.TryGetAsync<string>("catalog:eu", token)).Tier
+        );
+        await ExpectStoreSets(race.Store, 1);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task A_remote_invalidation_of_the_same_tag_discards_the_fill_before_the_store_write()
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var race = await RaceFillAsync(
+            ["catalog", "customers"],
+            new CacheInvalidation([], ["customers"]),
+            token
+        );
+
+        // The caller still receives the factory result, but neither tier keeps it.
+        Assert.Equal("fresh", race.Result);
+        Assert.Equal(0, race.Cache.LocalEntryCount);
+        await ExpectStoreSets(race.Store, 0);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task A_flush_discards_an_untagged_fill()
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var race = await RaceFillAsync(null, CacheInvalidation.Flush, token);
+
+        Assert.Equal("fresh", race.Result);
+        Assert.Equal(0, race.Cache.LocalEntryCount);
+        await ExpectStoreSets(race.Store, 0);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task A_tagged_distributed_read_overlapping_a_tag_invalidation_is_returned_but_not_promoted()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var options = new CachingOptions { Namespace = "promote-" + Guid.NewGuid().ToString("N") };
+        var store = Substitute.For<IDistributedCacheStore>();
+        var channel = Substitute.For<ICacheInvalidationChannel>();
+        Action<CacheInvalidation>? invalidate = null;
+        channel
+            .Subscribe(Arg.Any<Action<CacheInvalidation>>())
+            .Returns(call =>
+            {
+                invalidate = call.Arg<Action<CacheInvalidation>>();
+                return Substitute.For<IDisposable>();
+            });
+        using var payload = new PooledBufferWriter();
+        CachePayloadCodec.Encode(Serializer, "v1", ["catalog"], int.MaxValue, payload, out _);
+        var snapshot = new CacheStoreEntry(payload.WrittenMemory.ToArray(), Expiration);
+        var read = new TaskCompletionSource<CacheStoreEntry?>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        store
+            .GetAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(_ => new ValueTask<CacheStoreEntry?>(read.Task));
+        using var listener = ReceivedListener(options.Namespace, out var applied);
+        await using var cache = new TieredCache(options, store, Serializer, channel);
+
+        // The read does not declare tags; only the payload says which tags the entry carries.
+        var slow = cache.TryGetAsync<string>("catalog:eu", token).AsTask();
+        try
+        {
+            invalidate!(new CacheInvalidation([], ["catalog"]));
+            await applied.Task.WaitAsync(Bound, token);
+        }
+        finally
+        {
+            read.TrySetResult(snapshot);
+        }
+        var lookup = await slow.WaitAsync(Bound, token);
+
+        Assert.Equal(CacheTier.L2, lookup.Tier);
+        Assert.Equal("v1", lookup.Value);
+        Assert.Equal(0, cache.LocalEntryCount);
+        // Once the invalidation is applied, a fresh read promotes again.
+        var refill = await cache.TryGetAsync<string>("catalog:eu", token);
+        Assert.Equal(CacheTier.L2, refill.Tier);
+        Assert.Equal(1, cache.LocalEntryCount);
+    }
+
+    [Fact]
+    public void A_tag_stripe_is_stable_and_within_range()
+    {
+        foreach (var tag in new[] { "catalog", "customers", "invoices", "", new string('x', 500) })
+        {
+            var stripe = TieredCache.TagStripeOf(tag);
+            Assert.InRange(stripe, 0, 1023);
+            Assert.Equal(stripe, TieredCache.TagStripeOf(tag));
+            Assert.Equal(stripe, TieredCache.TagStripeOf(new string(tag.AsSpan())));
+        }
+    }
+
+    /// <summary>A fill of "catalog:eu" whose factory was paused while <paramref name="invalidation"/> arrived over the channel.</summary>
+    private static async Task<FillRace> RaceFillAsync(
+        string[]? tags,
+        CacheInvalidation invalidation,
+        CancellationToken token
+    )
+    {
+        var options = new CachingOptions { Namespace = "tags-" + Guid.NewGuid().ToString("N") };
+        var store = Substitute.For<IDistributedCacheStore>();
+        var channel = Substitute.For<ICacheInvalidationChannel>();
+        Action<CacheInvalidation>? invalidate = null;
+        channel
+            .Subscribe(Arg.Any<Action<CacheInvalidation>>())
+            .Returns(call =>
+            {
+                invalidate = call.Arg<Action<CacheInvalidation>>();
+                return Substitute.For<IDisposable>();
+            });
+        store
+            .SetAsync(
+                Arg.Any<string>(),
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<TimeSpan>(),
+                Arg.Any<IReadOnlyCollection<string>?>(),
+                Arg.Any<CancellationToken>()
+            )
+            .Returns(ValueTask.CompletedTask);
+        var entered = Signal();
+        var release = Signal();
+        // A flush is reported as such rather than as a received message.
+        using var listener = DirectionListener(
+            options.Namespace,
+            invalidation.FlushAll ? "flushed" : "received",
+            out var applied
+        );
+        // CA2000: ownership moves to the returned race, which the test disposes.
+#pragma warning disable CA2000
+        var cache = new TieredCache(options, store, Serializer, channel);
+#pragma warning restore CA2000
+        try
+        {
+            var pending = cache
+                .GetOrCreateAsync(
+                    "catalog:eu",
+                    async _ =>
+                    {
+                        entered.SetResult();
+                        await release.Task;
+                        return "fresh";
+                    },
+                    new CacheEntryOptions(Expiration) { Tags = tags },
+                    token
+                )
+                .AsTask();
+            await entered.Task.WaitAsync(Bound, token);
+            invalidate!(invalidation);
+            await applied.Task.WaitAsync(Bound, token);
+            release.SetResult();
+            var result = await pending.WaitAsync(Bound, token);
+            return new FillRace(cache, store, result);
+        }
+        catch
+        {
+            await cache.DisposeAsync();
+            throw;
+        }
+    }
+
+    private static Task ExpectStoreSets(IDistributedCacheStore store, int count) =>
+        store
+            .Received(count)
+            .SetAsync(
+                Arg.Any<string>(),
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<TimeSpan>(),
+                Arg.Any<IReadOnlyCollection<string>?>(),
+                Arg.Any<CancellationToken>()
+            )
+            .AsTask();
+
+    private sealed record FillRace(TieredCache Cache, IDistributedCacheStore Store, string? Result)
+        : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync() => Cache.DisposeAsync();
+    }
+
     private static MeterListener ReceivedListener(
         string @namespace,
         out TaskCompletionSource applied
