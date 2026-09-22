@@ -19,6 +19,8 @@ A custom transport registers with
 | --- | --- | --- |
 | `Uri` | `amqp://guest:guest@localhost:5672/` | Broker connection URI |
 | `ClientProvidedName` | `hostloom-{machine}-{pid}` | Connection name shown in the management UI |
+| `PublishTimeout` | 30 seconds | Event publication deadline, including channel acquisition and confirmation |
+| `MaxConcurrentPublishes` | 16 | Maximum outstanding publications on exclusively owned channels |
 | `PrefetchCount` | `16` | Unacknowledged deliveries per consumer |
 | `DurableRequestQueues` | `true` | Request queues survive a broker restart |
 | `DurableTopics` | `true` | Topic exchanges/queues are durable and event messages are persistent |
@@ -63,20 +65,21 @@ Rationale for the differences: [transport semantics](../explanation/transports.m
 | --- | --- | --- | --- | --- |
 | Request/response | `IRequestBroker` | yes | yes | yes |
 | Publish/subscribe | `IEventBroker` | yes | yes | yes |
-| Broker health probe | `IBrokerHealthProbe` | yes | not yet | not yet |
+| Broker health probe | `IBrokerHealthProbe` | yes | not yet | local startup state |
 
 A transport without `IEventBroker` rejects publishing (throws) and fails
 subscription registration at startup. A transport without
 `IBrokerHealthProbe` is treated as reachable by the readiness check —
-for RabbitMQ and Kafka this means readiness cannot currently detect a
-broker outage that begins after startup.
+RabbitMQ therefore cannot currently report a broker outage through this contract. Kafka
+reports reply-consumer initialization failure and pending assignment; its probe does not
+perform a broker connectivity check.
 
 ## Behavioral differences worth knowing
 
-- **In-memory publishing** attempts every subscription even when one
-  throws, then propagates the failures to the publisher as an
-  `AggregateException`. Broker-backed publishing decouples the publisher
-  from subscribers entirely; a publish never observes a handler failure.
+- **In-memory publishing** awaits local deliveries for deterministic tests, but logs
+  subscriber failures without propagating them to the publisher or triggering outbox retries.
+  Caller cancellation ends its wait; accepted handler work uses the listener lifetime token.
+  Unbound requests wait for their timeout. This transport remains process-local and non-durable.
 - **RabbitMQ events** publish with no routing key and without
   `mandatory`: an event with no subscribers is dropped, not an error.
   Publishing awaits broker confirmation; durable event messages are persistent.
