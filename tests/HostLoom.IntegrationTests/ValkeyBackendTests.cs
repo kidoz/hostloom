@@ -203,6 +203,60 @@ public sealed class ValkeyBackendTests
         Assert.True(channel.IsSubscribed);
     }
 
+    [Theory(Skip = ValkeyAvailability.Skip, SkipUnless = nameof(Available))]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Invalidation_Probes_survive_a_slow_handler_and_queue_overflow(bool overflow)
+    {
+        var options = ValkeyAvailability.Options();
+        options.InvalidationProbeInterval = TimeSpan.FromMilliseconds(100);
+        options.CommandTimeout = TimeSpan.FromMilliseconds(400);
+        options.InvalidationQueueCapacity = 2;
+        await using var connection = new ValkeyConnection(options);
+        await using var channel = new ValkeyCacheInvalidationChannel(
+            connection,
+            new CachingOptions { Namespace = "valkey-slow-" + Guid.NewGuid().ToString("N") }
+        );
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(15));
+        using var release = new ManualResetEventSlim();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var subscription = channel.Subscribe(message =>
+        {
+            if (message.Keys.Contains("catalog"))
+            {
+                entered.TrySetResult();
+                release.Wait(deadline.Token);
+            }
+        });
+        try
+        {
+            await channel.StartAsync(deadline.Token);
+            await channel.PublishAsync(new CacheInvalidation(["catalog"], []), deadline.Token);
+            await entered.Task.WaitAsync(deadline.Token);
+            var baseline = channel.ProbesReceived;
+            if (overflow)
+                for (var i = 0; i < 20; i++)
+                    await channel.PublishAsync(
+                        new CacheInvalidation(["catalog"], []),
+                        deadline.Token
+                    );
+            await CacheConformance.WaitUntilAsync(() =>
+                Task.FromResult(channel.ProbesReceived >= baseline + 6)
+            );
+            Assert.Equal(0, channel.SubscriberResets);
+            Assert.True(channel.IsSubscribed);
+        }
+        finally
+        {
+            release.Set();
+        }
+        if (overflow)
+            await CacheConformance.WaitUntilAsync(() =>
+                Task.FromResult(channel.DroppedMessages > 0)
+            );
+    }
+
     [Fact(Skip = ValkeyAvailability.Skip, SkipUnless = nameof(Available))]
     public async Task Invalidation_ReplacesASubscriberWhoseSocketStoppedDelivering()
     {

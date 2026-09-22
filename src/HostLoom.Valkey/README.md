@@ -78,15 +78,18 @@ for its first server acknowledgement before beginning work. The channel is
 selection. Messages use a bounded versioned JSON format, separate from the Redis adapter's wire
 format; mixed Redis/Valkey adapters do not share invalidation messages.
 
-Recovery uses exponential backoff from 100 ms to 30 seconds. Pub/Sub cannot replay messages lost
-during a disconnection, so a re-established subscription hands `CacheInvalidation.Flush` to its
-subscribers when `Caching:Invalidation:FlushLocalOnReconnect` is set (the default) and the cache
-clears its in-process tier; so does a first subscription that lands after failed attempts, since
-the command connection may have filled the tier meanwhile. A subscriber socket that dies without
-a close, as an idle firewall or NAT drop produces, is not reported by the SDK, so the channel
-publishes a probe to itself every `InvalidationProbeInterval` and replaces the subscriber, with
-the same flush, when the probe does not arrive within `CommandTimeout`; `TimeSpan.Zero` disables
-the probe. Probes are messages naming no key, tag, or flush and are never handed to subscribers.
+Recovery uses exponential backoff from 100 ms to 30 seconds, reset only after a subscription
+has remained established for at least 30 seconds. Acknowledged but flapping sockets retain
+their increasing delay. Pub/Sub cannot replay messages lost
+during a disconnection, so every acknowledged subscription, including the first, hands a local
+flush to its observers when `FlushLocalOnReconnect` is enabled. This covers entries filled
+before the initial acknowledgement as well as reconnect gaps. Hosting does not await
+subscription readiness; use `StartAsync(token)` when work must wait for acknowledgement.
+The channel publishes a probe every `InvalidationProbeInterval` to a private subscription
+on the same socket. ACLs must permit the invalidation channel and its `:probe:*` suffix.
+Its independent reader and queue keep probes separate from slow
+handlers and invalidation queue overflow. A probe missing for `CommandTimeout` replaces
+the subscriber; `TimeSpan.Zero` disables probes.
 `ProbesReceived` and `SubscriberResets` on the channel count them. Queue overflow drops incoming messages, and with the flush disabled a
 disconnection loses them too; in either case **L1 expiry bounds staleness**; choose a suitable
 `CacheEntryOptions.LocalExpiration`. No stronger consistency is promised. A published flush is a

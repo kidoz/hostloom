@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using HostLoom.Caching;
 using HostLoom.Locking;
 using HostLoom.Valkey;
 using ValkeyDotNet;
@@ -79,6 +80,107 @@ public sealed class ValkeyDeliveryTests
             var command = await ReadCommandAsync(recovered, token);
             Assert.Equal("PING", Assert.Single(command));
             await recovered.WriteAsync("+PONG\r\n"u8.ToArray(), token);
+        }
+    }
+
+    [Fact]
+    public async Task First_subscription_flushes_and_acked_flapping_connections_keep_backoff()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken
+        );
+        deadline.CancelAfter(TimeSpan.FromSeconds(15));
+        var token = deadline.Token;
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var clock = new TestClock();
+        var acknowledgements = System.Threading.Channels.Channel.CreateUnbounded<int>();
+        var allowFirstAck = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var subscribing = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var flushes = 0;
+        var serving = ServeAsync();
+        await using var connection = new ValkeyConnection(
+            new ValkeyOptions
+            {
+                Connection = new ValkeyClientOptions
+                {
+                    Host = "127.0.0.1",
+                    Port = ((IPEndPoint)listener.LocalEndpoint).Port,
+                },
+                InvalidationProbeInterval = TimeSpan.Zero,
+            }
+        );
+        await using var channel = new ValkeyCacheInvalidationChannel(
+            connection,
+            new CachingOptions { Namespace = "catalog" },
+            null,
+            clock
+        );
+        using var subscription = channel.Subscribe(message =>
+        {
+            if (message.FlushAll)
+                Interlocked.Increment(ref flushes);
+        });
+        try
+        {
+            var starting = channel.StartAsync(token);
+            await subscribing.Task.WaitAsync(token);
+            Assert.False(starting.IsCompleted);
+            Assert.Equal(0, Volatile.Read(ref flushes));
+            allowFirstAck.SetResult();
+            await starting;
+            Assert.Equal(1, Volatile.Read(ref flushes));
+            for (var attempt = 0; attempt < 4; attempt++)
+            {
+                Assert.Equal(attempt, await acknowledgements.Reader.ReadAsync(token));
+                while (clock.PendingTimers == 0)
+                    await Task.Delay(1, token);
+                clock.Advance(TimeSpan.FromMilliseconds((100 * (1 << attempt)) - 1));
+                Assert.Equal(1, clock.PendingTimers);
+                clock.Advance(TimeSpan.FromMilliseconds(1));
+            }
+            Assert.Equal(4, await acknowledgements.Reader.ReadAsync(token));
+        }
+        finally
+        {
+            await deadline.CancelAsync();
+            try
+            {
+                await serving;
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        }
+
+        async Task ServeAsync()
+        {
+            for (var attempt = 0; attempt < 5; attempt++)
+            {
+                using var socket = await listener.AcceptTcpClientAsync(token);
+                var stream = socket.GetStream();
+                await HandshakeAsync(stream, token);
+                var command = await ReadCommandAsync(stream, token);
+                Assert.Equal("SUBSCRIBE", command[0], ignoreCase: true);
+                if (attempt == 0)
+                {
+                    subscribing.SetResult();
+                    await allowFirstAck.Task.WaitAsync(token);
+                }
+                var name = command[1];
+                await stream.WriteAsync(
+                    Encoding.UTF8.GetBytes(
+                        $">3\r\n$9\r\nsubscribe\r\n${Encoding.UTF8.GetByteCount(name)}\r\n{name}\r\n:1\r\n"
+                    ),
+                    token
+                );
+                await acknowledgements.Writer.WriteAsync(attempt, token);
+                // Closing after each acknowledgement reproduces an apparently successful flap.
+                while (Volatile.Read(ref flushes) <= attempt)
+                    await Task.Delay(1, token);
+            }
         }
     }
 
