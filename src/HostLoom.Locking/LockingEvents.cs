@@ -34,4 +34,7 @@ public static class LockingEvents
         3107,
         "LockCancellationCallbackFailed"
     );
+
+    /// <summary>Debug: a lease granted after its caller gave up was released best-effort, or could not be.</summary>
+    public static readonly EventId OrphanRelease = new(3108, "LockOrphanRelease");
 }

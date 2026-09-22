@@ -104,6 +104,144 @@ internal sealed class HangingLockProvider : ILockProvider
 }
 
 /// <summary>
+/// A provider whose acquire answers only when the test says so and ignores the token, so the
+/// composed lock, not the backend, is what gives up on the call. The answer still arrives later,
+/// as a write a server applied while its reply was no longer awaited. Release records the owner
+/// it was asked for and may be made to throw; nothing is ever really held.
+/// </summary>
+internal sealed class DeferredLockProvider : ILockProvider
+{
+    private readonly TaskCompletionSource<bool> _answer = new(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    );
+    private readonly TaskCompletionSource<(string Key, string Owner)> _released = new(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    );
+    private int _releases;
+
+    /// <summary>The owner token of the acquire call, once it was issued.</summary>
+    public string? AcquireOwner { get; private set; }
+
+    /// <summary>Completes with the key and owner of the first release call.</summary>
+    public Task<(string Key, string Owner)> Released => _released.Task;
+
+    public int Releases => Volatile.Read(ref _releases);
+
+    /// <summary>Thrown by every release call when set.</summary>
+    public Exception? ReleaseFault { get; set; }
+
+    public void Answer(bool acquired) => _answer.TrySetResult(acquired);
+
+    public void Fail(Exception exception) => _answer.TrySetException(exception);
+
+    public async ValueTask<bool> TryAcquireAsync(
+        string key,
+        string owner,
+        TimeSpan lease,
+        CancellationToken cancellationToken = default
+    )
+    {
+        AcquireOwner = owner;
+        return await _answer.Task.ConfigureAwait(false);
+    }
+
+    public ValueTask<bool> ReleaseAsync(
+        string key,
+        string owner,
+        CancellationToken cancellationToken = default
+    )
+    {
+        Interlocked.Increment(ref _releases);
+        _released.TrySetResult((key, owner));
+        if (ReleaseFault is { } fault)
+        {
+            throw fault;
+        }
+
+        return ValueTask.FromResult(true);
+    }
+
+    public ValueTask<bool> ExtendAsync(
+        string key,
+        string owner,
+        TimeSpan lease,
+        CancellationToken cancellationToken = default
+    ) => ValueTask.FromResult(false);
+}
+
+/// <summary>
+/// Passes every call to the inner provider and records the owner each acquire and release was
+/// made for, so a test can show a release went to the owner that acquired.
+/// </summary>
+internal sealed class RecordingLockProvider(ILockProvider inner) : ILockProvider
+{
+    private readonly Lock _gate = new();
+    private readonly List<(string Key, string Owner)> _acquires = [];
+    private readonly List<(string Key, string Owner, bool Released)> _releases = [];
+
+    public IReadOnlyList<(string Key, string Owner)> Acquires
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _acquires];
+            }
+        }
+    }
+
+    public IReadOnlyList<(string Key, string Owner, bool Released)> Releases
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _releases];
+            }
+        }
+    }
+
+    public ValueTask<bool> TryAcquireAsync(
+        string key,
+        string owner,
+        TimeSpan lease,
+        CancellationToken cancellationToken = default
+    )
+    {
+        lock (_gate)
+        {
+            _acquires.Add((key, owner));
+        }
+
+        return inner.TryAcquireAsync(key, owner, lease, cancellationToken);
+    }
+
+    public async ValueTask<bool> ReleaseAsync(
+        string key,
+        string owner,
+        CancellationToken cancellationToken = default
+    )
+    {
+        var released = await inner
+            .ReleaseAsync(key, owner, cancellationToken)
+            .ConfigureAwait(false);
+        lock (_gate)
+        {
+            _releases.Add((key, owner, released));
+        }
+
+        return released;
+    }
+
+    public ValueTask<bool> ExtendAsync(
+        string key,
+        string owner,
+        TimeSpan lease,
+        CancellationToken cancellationToken = default
+    ) => inner.ExtendAsync(key, owner, lease, cancellationToken);
+}
+
+/// <summary>
 /// Answers acquire and extend <c>latency</c> after the inner provider decided them, which is what
 /// a backend round trip does: the lease starts when the request is accepted, not when the answer
 /// arrives. Release is left alone so disposal does not move the clock.

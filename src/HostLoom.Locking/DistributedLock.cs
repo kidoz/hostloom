@@ -15,6 +15,9 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
     private static readonly LockOptions ExecuteDefaults = new();
     private static readonly LockOptions SkipIfBusy = new() { MaxWait = TimeSpan.Zero };
 
+    /// <summary>Upper bound on releasing a lease granted to an abandoned attempt.</summary>
+    private static readonly TimeSpan OrphanReleaseBound = TimeSpan.FromSeconds(5);
+
     private readonly ILockProvider? _provider;
     private readonly string _prefix;
     private readonly KeyValuePair<string, object?> _namespaceTag;
@@ -262,31 +265,30 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
             bool acquired;
 
             // MaxWait bounds the provider call too, or a backend that never answers turns the
-            // documented bound into an unbounded wait. An attempt cancelled this way may have
-            // taken the lock in the backend; that orphan expires with its lease.
+            // documented bound into an unbounded wait. An attempt abandoned this way may still
+            // take the lock in the backend; the continuation below gives such an orphan back
+            // as soon as the late confirmation arrives instead of leaving it to expire.
             long requestedAt;
+            Task<bool>? attempt = null;
             using (var bounded = Budget.ForAttempt(maxWait, start, Clock, cancellationToken))
             {
+                var token = bounded?.Token ?? cancellationToken;
                 requestedAt = Clock.GetTimestamp();
                 try
                 {
-                    acquired = await Provider
-                        .TryAcquireAsync(
-                            prefixed,
-                            owner,
-                            lease,
-                            bounded?.Token ?? cancellationToken
-                        )
-                        .ConfigureAwait(false);
+                    attempt = Provider.TryAcquireAsync(prefixed, owner, lease, token).AsTask();
+                    acquired = await attempt.WaitAsync(token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                     when (!cancellationToken.IsCancellationRequested && bounded is { Expired: true }
                     )
                 {
+                    ReleaseWhenAcquiredLate(attempt, key, prefixed, owner, lease);
                     break;
                 }
                 catch (OperationCanceledException)
                 {
+                    ReleaseWhenAcquiredLate(attempt, key, prefixed, owner, lease);
                     throw;
                 }
                 catch (LockProviderException exception)
@@ -303,10 +305,12 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
             if (acquired)
             {
                 // A successful but late reply is not a usable grant. Do not create a handle
-                // or start an action while its expiry callback is merely queued. As with a
-                // cancelled acquisition, any remaining backend lease expires on its own.
+                // or start an action while its expiry callback is merely queued. Whatever the
+                // backend still holds for this owner is given back best-effort, as after a
+                // cancelled acquisition.
                 if (Clock.GetElapsedTime(requestedAt) >= lease)
                 {
+                    _ = ReleaseOrphanAsync(key, prefixed, owner, lease);
                     throw Unavailable(
                         LockFailureKind.Timeout,
                         new LockProviderException(
@@ -367,6 +371,92 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
             activity?.SetTag("hostloom.lock.acquired", false);
             return new LockProviderUnavailableException(key, waited, attempts, kind, cause);
         }
+    }
+
+    /// <summary>
+    /// Follows an acquisition attempt its caller no longer waits for. A provider that still
+    /// confirms the grant later has taken the lock for an owner nobody will release, so that
+    /// confirmation triggers one best-effort release. A provider that throws, reports
+    /// cancellation, or never answers confirmed nothing, and nothing is done: the continuation
+    /// simply never runs, or runs and finds no grant.
+    /// </summary>
+    private void ReleaseWhenAcquiredLate(
+        Task<bool>? attempt,
+        string key,
+        string prefixed,
+        string owner,
+        TimeSpan lease
+    )
+    {
+        if (attempt is null)
+        {
+            return;
+        }
+
+        _ = FollowAsync(attempt);
+
+        async Task FollowAsync(Task<bool> pending)
+        {
+            bool acquired;
+            try
+            {
+                acquired = await pending.ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Observed here so a provider fault after the caller left is not an unobserved
+                // task exception. Without a confirmation there is nothing to release.
+                return;
+            }
+
+            if (acquired)
+            {
+                await ReleaseOrphanAsync(key, prefixed, owner, lease).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// One owner-checked release for a lease the backend granted to an attempt nobody uses,
+    /// bounded by the shorter of the lease and <see cref="OrphanReleaseBound"/> so it can never
+    /// outlive what it releases. The release script only touches this owner's lease, so a
+    /// successor that took the key after expiry is never affected. Never throws.
+    /// </summary>
+    private async Task ReleaseOrphanAsync(string key, string prefixed, string owner, TimeSpan lease)
+    {
+        var bound = lease < OrphanReleaseBound ? lease : OrphanReleaseBound;
+        string outcome;
+        Exception? failure = null;
+        try
+        {
+            using var timeout = new CancellationTokenSource(bound, Clock);
+            var released = await Provider
+                .ReleaseAsync(prefixed, owner, timeout.Token)
+                .ConfigureAwait(false);
+            outcome = released ? "released" : "absent";
+        }
+        catch (Exception exception)
+        {
+            outcome = "failed";
+            failure = exception;
+        }
+
+        if (Logger.IsEnabled(LogLevel.Debug))
+        {
+            Logger.LogDebug(
+                LockingEvents.OrphanRelease,
+                failure,
+                "Lock '{Key}' was granted after its caller gave up; the best-effort release reported {Outcome}.",
+                key,
+                outcome
+            );
+        }
+
+        LockingDiagnostics.OrphanReleases.Add(
+            1,
+            _namespaceTag,
+            new KeyValuePair<string, object?>(LockingDiagnostics.OutcomeTag, outcome)
+        );
     }
 
     /// <summary>

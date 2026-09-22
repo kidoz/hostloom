@@ -75,10 +75,15 @@ public sealed class LockingProductionReadinessTests
     {
         var clock = new TestClock();
         var backend = new InMemoryLockProvider(clock);
+        var provider = new RecordingLockProvider(
+            new SlowLockProvider(backend, clock, TimeSpan.FromMilliseconds(latencyMilliseconds))
+        );
+        var logger = new RecordingLogger<DistributedLock>();
         await using var locks = new DistributedLock(
             new LockingOptions { Namespace = "catalog" },
-            new SlowLockProvider(backend, clock, TimeSpan.FromMilliseconds(latencyMilliseconds)),
-            clock
+            provider,
+            clock,
+            logger
         );
         var failure = await Assert.ThrowsAsync<LockProviderUnavailableException>(async () =>
         {
@@ -96,6 +101,22 @@ public sealed class LockingProductionReadinessTests
         Assert.Equal(LockFailureKind.Timeout, failure.Kind);
         Assert.Equal(1, failure.Attempts);
         Assert.Equal(0, clock.PendingTimers);
+
+        // The grant was rejected, not forgotten: whatever the backend still holds for this owner
+        // is given back once, with the owner token of the rejected attempt. Here the backend's
+        // own lease ran out with the reply, so the owner-checked release finds nothing.
+        var acquire = Assert.Single(provider.Acquires);
+        var release = Assert.Single(provider.Releases);
+        Assert.Equal(acquire.Key, release.Key);
+        Assert.Equal(acquire.Owner, release.Owner);
+        Assert.False(release.Released);
+        Assert.Equal(0, backend.Count);
+        var entry = Assert.Single(
+            logger.Entries,
+            e => e.Event.Id == LockingEvents.OrphanRelease.Id
+        );
+        Assert.Contains("absent", entry.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(acquire.Owner, entry.Message, StringComparison.Ordinal);
     }
 
     [Fact(Timeout = 10_000)]

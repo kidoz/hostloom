@@ -19,7 +19,11 @@ public static class LockingDiagnostics
     /// <summary>Tag carrying <see cref="LockingOptions.Namespace"/> on every instrument.</summary>
     public const string NamespaceTag = "hostloom.lock.namespace";
 
-    /// <summary>Tag on <c>hostloom.lock.acquire.duration</c>: <c>acquired</c>, <c>not_acquired</c>, or <c>unavailable</c>.</summary>
+    /// <summary>
+    /// Outcome tag: on <c>hostloom.lock.acquire.duration</c> <c>acquired</c>, <c>not_acquired</c>,
+    /// or <c>unavailable</c>; on <c>hostloom.lock.orphan_releases</c> <c>released</c>,
+    /// <c>absent</c>, or <c>failed</c>.
+    /// </summary>
     public const string OutcomeTag = "hostloom.lock.outcome";
 
     internal static readonly ActivitySource ActivitySource = new(ActivitySourceName);
@@ -50,6 +54,12 @@ public static class LockingDiagnostics
         "hostloom.lock.lost",
         "{lease}",
         "Leases that expired or were refused by the provider before release."
+    );
+
+    internal static readonly Counter<long> OrphanReleases = Meter.CreateCounter<long>(
+        "hostloom.lock.orphan_releases",
+        "{release}",
+        "Best-effort releases of leases granted after their caller gave up, by outcome."
     );
 
     // Declared after Meter and Instances on purpose: static initialisers run in textual order.
