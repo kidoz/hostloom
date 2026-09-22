@@ -8,6 +8,115 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+Upgrading changes no public contract, but four defaults or behaviours change and are stated under
+**Changed**: RabbitMQ publishes on up to sixteen pooled channels instead of one, a Kafka event
+handler that keeps failing is retried until it succeeds instead of being dropped after five
+attempts, the in-memory transport no longer reports subscriber failures to the publisher and holds
+an unbound request for its full timeout, and a Redis Cluster connection without hash tags on
+database zero now fails hosted startup even when `FailFast` is false. A Valkey deployment with a
+restricted ACL must also allow the new `:probe:*` channel suffix.
+
+### Added
+
+- `RabbitMqOptions.PublishTimeout` (30 seconds) bounds an event publication end to end: waiting
+  for a publisher channel, declaring the exchange, and the broker confirmation. When it elapses
+  the publisher receives a `TimeoutException`; a request publication stays bounded by the request
+  timeout, which now also covers client initialization. `RabbitMqOptions.MaxConcurrentPublishes`
+  (16) caps the confirmed publisher channels the broker keeps in its pool; each outstanding
+  publication owns one exclusively. Both are validated when the broker is constructed.
+- `RabbitMqRequestBroker(IOptions<RabbitMqOptions>, ILogger<RabbitMqRequestBroker>?)`. A delivery
+  whose handler throws and whose requeue also fails is logged as `RabbitMqDeliveryRejected` (1401)
+  at Error with the delivery tag, the original exception, and whether `DeadLetterExchange` is
+  configured, before it is rejected without requeue. Previously the failure was swallowed.
+  Logging does not retain the message; configure `DeadLetterExchange` for that.
+- `KafkaRequestBroker` implements `IBrokerHealthProbe`, so the readiness check no longer treats
+  Kafka as always reachable. It reports unhealthy after disposal, after a failed reply-consumer
+  initialization ("the next request retries initialization"), and while the reply consumer is
+  still awaiting its partition assignment; otherwise healthy, stating that broker reachability is
+  not probed. It reflects local consumer state only.
+- `InMemoryRequestBroker(ILogger<InMemoryRequestBroker>?)`. A subscriber that throws is logged as
+  `InMemoryEventFailed` (1402) at Error with the subscription name.
+- The transports reference documents the two RabbitMQ options, the probe support of each
+  transport, and the in-memory delivery rules below.
+
+### Changed
+
+- RabbitMQ requests and events are published on a pool of confirmed channels, up to
+  `MaxConcurrentPublishes`, and the exclusive reply queue keeps its own channel. Previously every
+  request and event shared the reply-queue channel behind a single gate, so one stalled
+  confirmation serialized all publication. An upgrader who needs the old serialization sets
+  `MaxConcurrentPublishes = 1`; a deployment with a low `channel_max` should budget the extra
+  channels per instance. Publishing an event no longer initializes the reply queue. Disposal
+  cancels publishers that are waiting for a channel or a confirmation with
+  `ObjectDisposedException`, waits for borrowed channels to return, then closes the pool, the
+  client channel, and the connection, aggregating any failures; repeated disposal shares one task.
+- Kafka commits an offset after the handler returns, from the consumer loop, rather than inside
+  the handler. Successful handling and the commit are separate failure boundaries: a commit that
+  throws is logged and does not seek back and re-run a handler whose reply was already produced.
+  Kafka can still redeliver an uncommitted record after a reassignment, so handlers must remain
+  idempotent.
+- A Kafka event subscription retries a record whose handler keeps throwing indefinitely, seeking
+  back with the consume backoff each time, instead of logging an error and committing past it
+  after five attempts. A record that never succeeds holds its partition at that offset until
+  shutdown, so a handler that wants a poison event skipped must swallow it itself. Request
+  subscriptions keep the five-attempt cap; malformed records and unroutable replies are still
+  logged, committed, and skipped.
+- The in-memory transport delivers like a broker. A handler runs on the thread pool with the
+  listener's or subscription's lifetime token rather than the caller's: caller cancellation ends
+  the caller's wait without cancelling accepted receiver work, and disposing the listener, as a
+  host stop does, cancels work in progress instead of letting it finish. A publication is
+  accepted once every subscriber has been attempted; a subscriber failure is logged at 1402 and no
+  longer reaches the publisher as an `AggregateException`, so an outbox relay does not retry it. A
+  request to an address with no listener waits the full request timeout before
+  `RequestTimeoutException`; previously it was refused at once. Every member throws
+  `ObjectDisposedException` after disposal and the probe reports unhealthy. Tests that relied
+  on the old behaviour changed with it: `MessagingChaosTests` now expects a request accepted
+  before the stop to be cancelled and an unbound request to take its budget, and
+  `PublishSubscribeTests` no longer expects a failing subscriber to fault the publish.
+- `RedisConnection` throws `ArgumentException` ("Redis Cluster requires UseHashTags = true and
+  DatabaseIndex = 0") whenever it hands out a multiplexer, including one supplied through
+  `Redis:ConnectionFactory`, if any endpoint reports Cluster topology and the options differ.
+  `FailFast = false` no longer downgrades this to `RedisUnreachableAtStartup` (1304): hosted
+  startup fails. An upgrader on Cluster must set `UseHashTags = true` and `DatabaseIndex = 0`.
+  Hash tags wrap the namespace segment in `{…}`, so keys written before the change are under
+  different names: expect a cold cache, and roll every instance together where locks or leases
+  must stay mutually exclusive across the fleet.
+- The Valkey invalidation channel publishes its liveness probe to a private channel,
+  `{invalidation channel}:probe:{id}`, subscribed on the same socket with its own reader and
+  queue, so a slow invalidation handler or an overflowed invalidation queue no longer reads as a
+  dead subscriber. An ACL that names the invalidation channel must also permit the `:probe:*`
+  suffix. Probe payloads that an earlier version still publishes on the invalidation channel are
+  ignored.
+- The Valkey reconnect backoff is reset only after a subscription has stayed established for 30
+  seconds. Previously any acknowledgement reset it to 100 ms, so a socket that was acknowledged
+  and dropped repeatedly reconnected at the floor rate for as long as it flapped.
+- Every acknowledged Valkey subscription, including the first one of a channel's lifetime, hands
+  `CacheInvalidation.Flush` to its subscribers when `FlushLocalOnReconnect` is set. Previously the
+  first subscription flushed only if an earlier attempt had failed, leaving entries filled while
+  the acknowledgement was pending. An internal `TimeProvider` constructor drives the backoff in
+  tests.
+- StackExchange.Redis 3.3.1 and FusionCache 2.9.0 (with its System.Text.Json serializer).
+
+### Fixed
+
+- A Kafka reply consumer whose initial watermark query failed no longer poisons every later
+  request. The failed consumer is disposed, its offsets cleared, and the next request starts a
+  fresh consumer; previously the failure was latched and the documented remedy was to recreate the
+  host. Disposal waits for an initialization in flight before closing.
+- A tagged Redis `SetIfAbsentAsync` writes the tag memberships and the value in one script, and
+  a losing writer adds no membership. Previously the conditional `SET` and the membership batch
+  were two round trips, so a disconnect or caller cancellation between them left a value no tag
+  removal reaches. The script also refuses a tag index that is not a set before it writes.
+- Redis tracking flushes the in-process tier after the command connection is restored and
+  tracking is registered on the new connection, when `FlushLocalOnReconnect` is set and the mode
+  is not `Broadcast`; a fallback to the explicit channel keeps the flush pending until tracking
+  registers. Previously only a re-established subscription connection flushed, on the 0.7.0
+  reasoning that an interactive blip loses nothing, which does not hold for `CLIENT TRACKING`:
+  it is per connection, so keys read before the drop had no invalidation.
+- Disposing a stale in-memory listener or subscription handle removes only its own registration:
+  a successor bound to the same address or subscription name after the first disposal is no
+  longer removed by disposing the first handle again.
+
 ## [0.9.0] - 2026-09-22
 
 This release adds scheduled jobs, lease-based leadership, and outbox/inbox support. Upgrading
