@@ -12,10 +12,6 @@ namespace HostLoom.Tests;
 /// offset behaviour is verified without a broker. The fake mirrors the one semantic that matters:
 /// a partition tracks a single committed position, and committing a result commits its offset + 1.
 /// </summary>
-/// <remarks>
-/// These handlers commit on success, because that is the real handler's job — the production one
-/// commits only after the reply has been produced. The loop itself commits only when skipping.
-/// </remarks>
 public sealed class KafkaConsumerLoopTests
 {
     [Fact]
@@ -69,7 +65,6 @@ public sealed class KafkaConsumerLoopTests
                         throw new InvalidOperationException("transient");
                     }
 
-                    log.Commit(record);
                     return ValueTask.CompletedTask;
                 }
             )
@@ -102,7 +97,6 @@ public sealed class KafkaConsumerLoopTests
                         throw new MalformedEnvelopeException("undecodable");
                     }
 
-                    log.Commit(record);
                     return ValueTask.CompletedTask;
                 }
             )
@@ -134,7 +128,6 @@ public sealed class KafkaConsumerLoopTests
                         throw new InvalidDataException("application validation failed");
                     }
 
-                    log.Commit(record);
                     return ValueTask.CompletedTask;
                 }
             )
@@ -192,7 +185,6 @@ public sealed class KafkaConsumerLoopTests
                         throw new InvalidOperationException("partition 0 is down");
                     }
 
-                    log.Commit(record);
                     return ValueTask.CompletedTask;
                 }
             )
@@ -216,9 +208,60 @@ public sealed class KafkaConsumerLoopTests
         );
     }
 
+    [Fact]
+    public async Task Commit_failure_does_not_rerun_completed_handlers()
+    {
+        var log = new PartitionLog("requests", 2) { CommitFailuresRemaining = 1 };
+        var handled = new List<long>();
+        await using (
+            Start(
+                log,
+                (record, _) =>
+                {
+                    handled.Add(record.Offset.Value);
+                    return ValueTask.CompletedTask;
+                }
+            )
+        )
+        {
+            await WaitUntilAsync(
+                () => log.Commits.Count == 1,
+                "the later completed record commits"
+            );
+        }
+        Assert.Equal([0L, 1L], handled);
+        Assert.Empty(log.Seeks);
+        Assert.Equal(2, Assert.Single(log.Commits).Offset.Value);
+    }
+
+    [Fact]
+    public async Task Event_failure_beyond_five_attempts_is_retained_until_success()
+    {
+        var log = new PartitionLog("events", 1);
+        var handled = 0;
+        await using (
+            Start(
+                log,
+                (_, _) =>
+                {
+                    if (++handled <= 6)
+                        throw new InvalidOperationException("temporarily unavailable");
+                    return ValueTask.CompletedTask;
+                },
+                retryIndefinitely: true
+            )
+        )
+        {
+            await WaitUntilAsync(() => log.Commits.Count == 1, "the recovered handler commits");
+        }
+        Assert.Equal(7, handled);
+        Assert.Equal(6, log.Seeks.Count);
+    }
+
     private static ConsumerSubscription Start(
         PartitionLog log,
-        Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler
+        Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler,
+        bool retryIndefinitely = false
     )
     {
         var consumer = Substitute.For<IConsumer<string, byte[]>>();
@@ -237,7 +280,9 @@ public sealed class KafkaConsumerLoopTests
             log.Topic,
             handler,
             NullLogger.Instance,
-            TimeSpan.FromMilliseconds(1)
+            TimeSpan.FromMilliseconds(1),
+            commitOnSuccess: true,
+            retryIndefinitely: retryIndefinitely
         );
     }
 
@@ -280,6 +325,8 @@ public sealed class KafkaConsumerLoopTests
 
         public string Topic { get; }
 
+        public int CommitFailuresRemaining { get; set; }
+
         public List<TopicPartitionOffset> Commits { get; } = [];
 
         public List<TopicPartitionOffset> Seeks { get; } = [];
@@ -314,6 +361,8 @@ public sealed class KafkaConsumerLoopTests
         // Mirrors Confluent's documented behaviour: Commit(result) commits result.Offset + 1.
         public void Commit(ConsumeResult<string, byte[]> record)
         {
+            if (CommitFailuresRemaining-- > 0)
+                throw new KafkaException(ErrorCode.NotCoordinatorForGroup);
             lock (_gate)
             {
                 Commits.Add(

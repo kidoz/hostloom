@@ -19,7 +19,7 @@ internal delegate IConsumer<string, byte[]> KafkaConsumerFactory(
     PartitionsAssignedHandler? partitionsAssigned
 );
 
-public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
+public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHealthProbe
 {
     private const string CorrelationHeader = "hostloom-correlation-id";
     private const string ReplyToHeader = "hostloom-reply-to";
@@ -36,7 +36,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
 #pragma warning disable CA2213
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
 #pragma warning restore CA2213
-    private readonly TaskCompletionSource _replyConsumerReady = new(
+    private TaskCompletionSource _replyConsumerReady = new(
         TaskCreationOptions.RunContinuationsAsynchronously
     );
     private readonly ILogger<KafkaRequestBroker> _logger;
@@ -49,6 +49,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
     private readonly CancellationToken _shutdownToken;
     private Task? _disposing;
     private Task? _replyStarting;
+    private volatile bool _replyFailed;
 
     public KafkaRequestBroker(
         IOptions<KafkaOptions> options,
@@ -163,10 +164,9 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
                         // and run it again for a reply that still cannot be delivered.
                         throw UnroutableReplyException.For(replyTo, exception);
                     }
-
-                    consumer.Commit(record);
                 },
-                _logger
+                _logger,
+                commitOnSuccess: true
             );
             _subscriptions.Add(subscription);
             return subscription;
@@ -215,9 +215,10 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
                 async (record, token) =>
                 {
                     await handler(record.Message.Value, token).ConfigureAwait(false);
-                    consumer.Commit(record);
                 },
-                _logger
+                _logger,
+                commitOnSuccess: true,
+                retryIndefinitely: true
             );
             _subscriptions.Add(handled);
             return handled;
@@ -349,6 +350,16 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
     private async Task DisposeCoreAsync()
     {
         await _shutdown.CancelAsync().ConfigureAwait(false);
+        if (_replyStarting is { } starting)
+        {
+            try
+            {
+                await starting.ConfigureAwait(false);
+            }
+            catch (Exception)
+            { /* Initialization failure is reported to its callers. */
+            }
+        }
         await _lifecycleGate.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -419,8 +430,11 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
             ObjectDisposedException.ThrowIf(_disposed, this);
             // SDK construction is synchronous. A broker-owned task lets each request bound
             // its wait without cancelling shared initialization or blocking on construction.
+            // A previous caller may have timed out before shared startup failed.
+            if (_replyStarting is { IsFaulted: true } or { IsCanceled: true })
+                _replyStarting = null;
             starting = _replyStarting ??= Task.Run(
-                async () => await StartReplyConsumerAsync(_shutdownToken).ConfigureAwait(false),
+                InitializeReplyConsumerAsync,
                 CancellationToken.None
             );
         }
@@ -439,7 +453,52 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
             }
             throw;
         }
-        await _replyConsumerReady.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public ValueTask<BrokerHealth> CheckHealthAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(
+            _disposed || _replyFailed
+                ? BrokerHealth.Unhealthy(
+                    "Kafka reply consumer is unavailable; the next request retries initialization."
+                )
+            : _replyStarting is { IsCompleted: false }
+                ? BrokerHealth.Unhealthy("Kafka reply consumer is awaiting assignment.")
+            : BrokerHealth.Healthy(
+                "Kafka local consumer state has no reported startup failure; broker reachability is not probed."
+            )
+        );
+    }
+
+    private async Task InitializeReplyConsumerAsync()
+    {
+        try
+        {
+            await StartReplyConsumerAsync(_shutdownToken).ConfigureAwait(false);
+            await _replyConsumerReady.Task.WaitAsync(_shutdownToken).ConfigureAwait(false);
+            _replyFailed = false;
+        }
+        catch
+        {
+            _replyFailed = true;
+            await _lifecycleGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (_replySubscription is not null)
+                {
+                    await _replySubscription.DisposeAsync().ConfigureAwait(false);
+                    _replySubscription = null;
+                }
+                _replyOffsets.Clear();
+                _replyConsumerReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+            finally
+            {
+                _lifecycleGate.Release();
+            }
+            throw;
+        }
     }
 
     private void SubscribeOwned(IConsumer<string, byte[]> consumer, string topic)
@@ -552,7 +611,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker
         catch (Exception exception)
         {
             // Never fall back to a deferred End offset: a reply could arrive before it resolves.
-            // Initialization fails for callers; recreating the broker starts a fresh attempt.
+            // Initialization fails for callers; the next request starts a fresh consumer.
             _replyConsumerReady.TrySetException(exception);
             throw;
         }

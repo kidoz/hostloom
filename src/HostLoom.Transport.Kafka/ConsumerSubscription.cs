@@ -12,10 +12,9 @@ namespace HostLoom.Transport.Kafka;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Commit responsibility is split. The <c>handler</c> commits on success, because the offset must
-/// not advance until the reply has actually been produced. This loop commits only when it gives up
-/// on a record — a malformed one, one whose reply could not be produced, or one past the
-/// redelivery cap — so that a skip is durable.
+/// The loop commits after successful handling when configured, separately from handler retries.
+/// Poison records and unanswerable requests are skipped. Event application failures retain their
+/// offset and retry until shutdown rather than being discarded after a fixed attempt count.
 /// </para>
 /// <para>
 /// Takes <see cref="IConsumer{TKey,TValue}"/> rather than building one, so the loop can be
@@ -41,19 +40,25 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
     private readonly TimeSpan _backoff;
     private readonly CancellationTokenSource _stopping = new();
     private readonly Task _loop;
+    private readonly bool _commitOnSuccess;
+    private readonly bool _retryIndefinitely;
 
     private ConsumerSubscription(
         IConsumer<string, byte[]> consumer,
         string topic,
         Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler,
         ILogger logger,
-        TimeSpan backoff
+        TimeSpan backoff,
+        bool commitOnSuccess,
+        bool retryIndefinitely
     )
     {
         _consumer = consumer;
         _topic = topic;
         _logger = logger;
         _backoff = backoff;
+        _commitOnSuccess = commitOnSuccess;
+        _retryIndefinitely = retryIndefinitely;
         _loop = Task
             .Factory.StartNew(
                 () => RunAsync(handler),
@@ -69,8 +74,19 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
         string topic,
         Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler,
         ILogger logger,
-        TimeSpan? backoff = null
-    ) => new(consumer, topic, handler, logger, backoff ?? DefaultConsumeFailureBackoff);
+        TimeSpan? backoff = null,
+        bool commitOnSuccess = false,
+        bool retryIndefinitely = false
+    ) =>
+        new(
+            consumer,
+            topic,
+            handler,
+            logger,
+            backoff ?? DefaultConsumeFailureBackoff,
+            commitOnSuccess,
+            retryIndefinitely
+        );
 
     public async ValueTask DisposeAsync()
     {
@@ -158,6 +174,10 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
             {
                 await handler(record, _stopping.Token).ConfigureAwait(false);
                 retries.Remove(record.TopicPartition);
+                // A failed commit must not enter the handler retry path. The record was handled;
+                // later commits can advance it, or Kafka can redeliver after reassignment.
+                if (_commitOnSuccess)
+                    TryCommit(record);
             }
             catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
             {
@@ -201,10 +221,12 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                 var attempts =
                     retries.TryGetValue(record.TopicPartition, out var state)
                     && state.Offset == record.Offset.Value
-                        ? state.Attempts + 1
+                        ? state.Attempts == int.MaxValue
+                            ? int.MaxValue
+                            : state.Attempts + 1
                         : 1;
 
-                if (attempts >= MaxRedeliveryAttempts)
+                if (!_retryIndefinitely && attempts >= MaxRedeliveryAttempts)
                 {
                     _logger.LogError(
                         exception,

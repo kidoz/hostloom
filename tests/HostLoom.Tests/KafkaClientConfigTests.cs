@@ -291,6 +291,58 @@ public sealed class KafkaClientConfigTests
         Assert.Empty(kafka.Produced);
     }
 
+    [Fact]
+    public async Task Failed_watermark_can_recover_on_the_next_request()
+    {
+        var kafka = new FakeReplyKafka { FailedPartition = 0 };
+        await using var broker = new KafkaRequestBroker(
+            Options.Create(new KafkaOptions()),
+            null,
+            kafka.Producer,
+            kafka.CreateConsumer
+        );
+        var first = broker
+            .RequestAsync(
+                "orders",
+                new byte[] { 1 },
+                Guid.NewGuid(),
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken
+            )
+            .AsTask();
+        await kafka.ConsumerCreated.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken
+        );
+        Assert.Throws<KafkaException>(() => kafka.Assign(new TopicPartition("billing.replies", 0)));
+        await Assert.ThrowsAsync<KafkaException>(() => first);
+        Assert.False(
+            (await broker.CheckHealthAsync(TestContext.Current.CancellationToken)).IsHealthy
+        );
+        kafka.FailedPartition = null;
+        var id = Guid.NewGuid();
+        var second = broker
+            .RequestAsync(
+                "orders",
+                new byte[] { 1 },
+                id,
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken
+            )
+            .AsTask();
+        await kafka.ConsumerRecreated.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken
+        );
+        kafka.Assign(new TopicPartition("billing.replies", 0));
+        await kafka.WaitForProducedAsync(1);
+        kafka.DeliverReply(id, "answer");
+        Assert.Equal("answer", Encoding.UTF8.GetString((await second).Span));
+        Assert.True(
+            (await broker.CheckHealthAsync(TestContext.Current.CancellationToken)).IsHealthy
+        );
+    }
+
     private sealed record ProducedRecord(string Topic, string? Key, byte[] Value);
 
     /// <summary>A fake reply topology: records what is produced and lets the test raise the assignment and deliver replies.</summary>
@@ -332,6 +384,9 @@ public sealed class KafkaClientConfigTests
         public IProducer<string, byte[]> Producer { get; }
 
         public TaskCompletionSource<ConsumerConfig> ConsumerCreated { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource ConsumerRecreated { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public List<string> Subscribed { get; } = [];
@@ -382,7 +437,8 @@ public sealed class KafkaClientConfigTests
 
             _consumer = consumer;
             _assigned = partitionsAssigned;
-            ConsumerCreated.TrySetResult(config);
+            if (!ConsumerCreated.TrySetResult(config))
+                ConsumerRecreated.TrySetResult();
             return consumer;
         }
 

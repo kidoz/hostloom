@@ -83,8 +83,8 @@ Give each calling service its own response topic, named for the service.
 The reply consumer resolves the end of each initially assigned partition before any request
 is sent. Reassignments resume local progress; newly added partitions are read from the
 beginning to avoid skipping pending replies. If the initial watermark query fails, requests
-fail without publishing; correct the broker connectivity or permissions and recreate the
-client host to retry initialization. The ACL model stays legible: a handler service needs `Write` on the
+fail without publishing; the failed consumer is released and the next request retries
+initialization. Readiness reports the failed or pending initialization. The ACL model stays legible: a handler service needs `Write` on the
 response topics of the services that call it and `Read` on its request
 topics; a calling service needs `Write` on the request topics it calls
 and `Read` on its own response topic. A handler service can pin that
@@ -149,3 +149,9 @@ your Kafka UI of choice).
   reply topology's limits: [transport semantics](../explanation/transports.md).
 - Integration tests against a real broker:
   `tests/HostLoom.IntegrationTests`.
+
+Successful handling and offset commit are separate failure boundaries: a commit error is logged
+without locally rewinding completed work. Kafka can still redeliver uncommitted records after
+reassignment, so handlers must tolerate duplicates. Event application failures retry until
+shutdown; the adapter does not discard them after five attempts. A failing event can hold its
+partition behind that offset. Malformed records remain logged and skipped.
