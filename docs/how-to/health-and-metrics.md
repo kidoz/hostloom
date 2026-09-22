@@ -79,10 +79,11 @@ your metrics backend, tagged with the destination you used.
 - **Readiness stays healthy during a RabbitMQ/Kafka outage** — expected
   for now: a transport reports reachability by implementing
   `IBrokerHealthProbe`, a transport that does not is treated as reachable
-  ("cannot tell" must not read as "broken"), and today only the in-memory
-  transport implements it. Readiness for the broker transports reports on
-  listening endpoints only and cannot detect a post-start outage; pair it
-  with broker-side monitoring.
+  ("cannot tell" must not read as "broken"). The in-memory transport
+  implements it; the Kafka transport implements it for its local
+  reply-consumer state only and never contacts the broker; RabbitMQ does not
+  implement it. Readiness therefore cannot detect a broker outage that begins
+  after startup; pair it with broker-side monitoring.
 - **No HostLoom metrics in the backend** — the meter names are
   case-sensitive (`HostLoom`, `HostLoom.Pipelines`), and an exporter must
   be configured; `AddMeter` alone only subscribes.

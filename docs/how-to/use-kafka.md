@@ -145,7 +145,10 @@ HOSTLOOM_KAFKA_CHAOS=1 dotnet test tests/HostLoom.IntegrationTests/HostLoom.Inte
 - **Out-of-order events** — records are produced without a key, so
   ordering holds within a partition only.
 - **A broker outage after startup is not reflected in readiness** — the
-  Kafka adapter does not yet implement `IBrokerHealthProbe`; see
+  Kafka adapter's `IBrokerHealthProbe` reports only its local reply-consumer
+  state: unhealthy while the consumer awaits its assignment or after it failed
+  to start, and healthy otherwise without contacting the broker. Requests
+  during a later outage fail with `RequestTimeoutException`; see
   [health checks](health-and-metrics.md).
 
 ## Related
