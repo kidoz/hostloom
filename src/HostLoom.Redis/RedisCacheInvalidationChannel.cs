@@ -56,6 +56,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     private readonly List<ChannelMessageQueue> _queues = [];
     private ChannelMessageQueue? _trackingQueue;
     private long _trackingInitialisations;
+    private int _trackingRecoveryPending;
     private long _malformed;
     private int _disposed;
 
@@ -362,6 +363,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         CancellationToken cancellationToken
     )
     {
+        var recoveringTracking = Interlocked.Exchange(ref _trackingRecoveryPending, 0) != 0;
         Version? version = null;
         try
         {
@@ -398,6 +400,16 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             _ => false,
         };
         Transport = enabled ? transport : RedisInvalidationTransport.ExplicitOnly;
+        if (recoveringTracking)
+        {
+            if (enabled && transport == RedisInvalidationTransport.Tracking)
+            {
+                if (_options.Invalidation.FlushLocalOnReconnect)
+                    Dispatch(CacheInvalidation.Flush);
+            }
+            else
+                Interlocked.Exchange(ref _trackingRecoveryPending, 1);
+        }
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
@@ -851,6 +863,8 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             );
         }
 
+        if (_options.Invalidation.Mode != CacheInvalidationMode.Broadcast)
+            Interlocked.Exchange(ref _trackingRecoveryPending, 1);
         RequestTrackingRefresh();
     }
 
@@ -858,7 +872,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     {
         // Whatever was published, tracked, or broadcast while the subscription connection was
         // down never arrived. Every in-process entry could be stale, so the subscribers drop
-        // them all. Interactive-connection blips lose no invalidation and do not flush.
+        // them all. Tracking also flushes after command-connection registration is restored.
         if (IsSubscribed && _options.Invalidation.FlushLocalOnReconnect)
         {
             Dispatch(CacheInvalidation.Flush);

@@ -213,8 +213,12 @@ public sealed class RedisInvalidationModeTests
         );
     }
 
-    [Fact(Skip = RedisAvailability.Skip, SkipUnless = nameof(Available))]
-    public async Task Tracking_IsReinitialisedAfterTheServerDropsTheConnections()
+    [Theory(Skip = RedisAvailability.Skip, SkipUnless = nameof(Available))]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Tracking_IsReinitialisedAfterTheServerDropsTheConnections(
+        bool interactiveOnly
+    )
     {
         var ns = Namespace();
         await using var writer = Connection();
@@ -226,8 +230,11 @@ public sealed class RedisInvalidationModeTests
             new CachingOptions { Namespace = ns }.WithMode(CacheInvalidationMode.Tracking)
         );
         var received = new List<string>();
+        var flushed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var subscription = channel.Subscribe(invalidation =>
         {
+            if (invalidation.FlushAll)
+                flushed.TrySetResult();
             lock (received)
             {
                 received.AddRange(invalidation.Keys);
@@ -253,6 +260,7 @@ public sealed class RedisInvalidationModeTests
         var victims = list!
             .Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Where(line => line.Contains($"name={reader.ClientName} ", StringComparison.Ordinal))
+            .Where(line => !interactiveOnly || !line.Contains("flags=P", StringComparison.Ordinal))
             .Select(line =>
                 long.Parse(
                     line.Split(' ')[0]["id=".Length..],
@@ -260,7 +268,7 @@ public sealed class RedisInvalidationModeTests
                 )
             )
             .ToList();
-        Assert.True(victims.Count >= 2);
+        Assert.True(victims.Count >= (interactiveOnly ? 1 : 2));
         foreach (var id in victims)
         {
             await server.ClientKillAsync(new ClientKillFilter().WithId(id));
@@ -270,6 +278,8 @@ public sealed class RedisInvalidationModeTests
             () => Task.FromResult(channel.TrackingInitialisations >= 2),
             30
         );
+
+        await flushed.Task.WaitAsync(TimeSpan.FromSeconds(30), Token);
 
         // Tracked reads on the new connection report another connection's write again.
         await CacheConformance.WaitUntilAsync(
@@ -445,7 +455,10 @@ public sealed class RedisInvalidationModeTests
         await firstInvalidation.Task.WaitAsync(TimeSpan.FromSeconds(5), token);
         var entry = new CacheEntryOptions(TimeSpan.FromMinutes(1));
         await reader.SetAsync("catalog", new Payload("v1"), entry, token);
-        Assert.Equal(CacheTier.L1, (await reader.TryGetAsync<Payload>("catalog", token)).Tier);
+        // Recovery dispatches a flush after tracking registration; the cache applies it asynchronously.
+        await CacheConformance.WaitUntilAsync(async () =>
+            (await reader.TryGetAsync<Payload>("catalog", token)).Tier == CacheTier.L1
+        );
         await first.DisposeAsync();
         await writer.SetAsync("catalog", new Payload("v2"), entry, token);
         await CacheConformance.WaitUntilAsync(async () =>
