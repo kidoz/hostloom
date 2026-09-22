@@ -20,7 +20,7 @@ A custom transport registers with
 | `Uri` | `amqp://guest:guest@localhost:5672/` | Broker connection URI |
 | `ClientProvidedName` | `hostloom-{machine}-{pid}` | Connection name shown in the management UI |
 | `PublishTimeout` | 30 seconds | Event publication deadline, including channel acquisition and confirmation |
-| `MaxConcurrentPublishes` | 16 | Maximum outstanding publications on exclusively owned channels |
+| `MaxConcurrentPublishes` | 16 | Maximum outstanding publications on exclusively owned channels; also the number of abandoned publisher channels that may still be closing before a publication that needs a new channel waits for one |
 | `PrefetchCount` | `16` | Unacknowledged deliveries per consumer |
 | `RequestDispatchConcurrency` | `16` | Deliveries a request listener handles at once on its channel, 1 to `PrefetchCount` (unbounded when `PrefetchCount` is 0) |
 | `EventDispatchConcurrency` | `1` | Deliveries an event subscription handles at once on its channel, 1 to `PrefetchCount`; above 1 a subscription no longer sees events in queue order |

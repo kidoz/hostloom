@@ -13,6 +13,13 @@ namespace HostLoom.Transport.RabbitMq;
 public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 {
     private const string ContentType = "application/vnd.hostloom.envelope+json";
+
+    /// <summary>
+    /// How long disposal waits for channels that are still closing before it disposes the
+    /// connection, which closes whatever is left.
+    /// </summary>
+    internal static readonly TimeSpan ChannelCloseBound = TimeSpan.FromSeconds(5);
+
     private readonly RabbitMqOptions _options;
     private readonly RabbitMqQueueNaming _queueNaming;
     private readonly Func<CancellationToken, ValueTask<IConnection>> _connectionFactory;
@@ -22,14 +29,10 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     private readonly CancellationTokenSource _shutdown = new();
     private readonly CancellationToken _shutdownToken;
     private Task? _disposing;
-    private readonly int _maxPublishers;
-    // Waiters observe shutdown through their tokens; do not dispose their semaphore.
-#pragma warning disable CA2213
-    private readonly SemaphoreSlim _publishGate;
-#pragma warning restore CA2213
-    private readonly ConcurrentQueue<IChannel> _publishers = new();
-    private readonly Lock _publisherGate = new();
+    private readonly PublisherChannelPool _publishers;
+    private readonly Lock _disposalGate = new();
     private readonly ILogger<RabbitMqRequestBroker> _logger;
+    private readonly TimeProvider _clock;
     private readonly KeyValuePair<string, object?> _clientTag;
     private readonly ConcurrentDictionary<
         Guid,
@@ -52,12 +55,14 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 
     /// <summary>
     /// Takes a connection factory so the request/reply correlation can be driven by fake
-    /// <see cref="IConnection"/> and <see cref="IChannel"/> instances in tests, without a broker.
+    /// <see cref="IConnection"/> and <see cref="IChannel"/> instances in tests, without a broker,
+    /// and the clock that runs request and publication deadlines and the disposal bound.
     /// </summary>
     internal RabbitMqRequestBroker(
         IOptions<RabbitMqOptions> options,
         Func<CancellationToken, ValueTask<IConnection>>? connectionFactory,
-        ILogger<RabbitMqRequestBroker>? logger = null
+        ILogger<RabbitMqRequestBroker>? logger = null,
+        TimeProvider? timeProvider = null
     )
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -79,10 +84,15 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             _options.EventDispatchConcurrency,
             nameof(RabbitMqOptions.EventDispatchConcurrency)
         );
-        _maxPublishers = _options.MaxConcurrentPublishes;
-        _publishGate = new(_maxPublishers, _maxPublishers);
         _shutdownToken = _shutdown.Token;
         _logger = logger ?? NullLogger<RabbitMqRequestBroker>.Instance;
+        _clock = timeProvider ?? TimeProvider.System;
+        _publishers = new PublisherChannelPool(
+            _options.MaxConcurrentPublishes,
+            this,
+            _logger,
+            _clock
+        );
         if (!Enum.IsDefined(_options.QueueNaming))
             throw new ArgumentOutOfRangeException(
                 nameof(options),
@@ -96,6 +106,9 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 
     /// <summary>Requests published and still awaiting a reply; read by the pending-requests gauge.</summary>
     internal int PendingRequestCount => _pending.Count;
+
+    /// <summary>Channels closing in the background; read by the closing-channels gauge.</summary>
+    internal int ClosingChannelCount => _publishers.ClosingCount;
 
     /// <summary>The configured client name every measurement of this broker is tagged with.</summary>
     internal string ClientName => _options.ClientProvidedName;
@@ -422,7 +435,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         CancellationToken cancellationToken
     )
     {
-        using var deadline = new CancellationTokenSource(_options.PublishTimeout);
+        using var deadline = new CancellationTokenSource(_options.PublishTimeout, _clock);
         using var operation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             deadline.Token,
@@ -511,6 +524,12 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         }
     }
 
+    /// <summary>
+    /// Publishes on a channel rented exclusively from the pool. Only a publication that completed
+    /// returns its channel; anything else, a return or nack included, discards it, because a late
+    /// confirmation may still arrive on it. Neither waits for a channel to close, so the caller's
+    /// deadline bounds this whole call.
+    /// </summary>
     private async ValueTask PublishFrameCoreAsync(
         RequestAddress address,
         BasicProperties properties,
@@ -519,38 +538,12 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         CancellationToken cancellationToken
     )
     {
-        await _publishGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        IChannel? channel = null;
-        var reusable = false;
+        var channel = await _publishers
+            .RentAsync(OpenPublisherAsync, cancellationToken)
+            .ConfigureAwait(false);
+        var published = false;
         try
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            // Ownership transfers from the pool to channel and then to the finally block.
-#pragma warning disable CA2000
-            while (_publishers.TryDequeue(out var candidate))
-            {
-                if (candidate.IsOpen)
-                {
-                    channel = candidate;
-                    break;
-                }
-                await candidate.DisposeAsync().ConfigureAwait(false);
-            }
-#pragma warning restore CA2000
-            if (channel is null)
-            {
-                var connection = await EnsureConnectionAsync(cancellationToken)
-                    .ConfigureAwait(false);
-                channel = await connection
-                    .CreateChannelAsync(
-                        new CreateChannelOptions(
-                            publisherConfirmationsEnabled: true,
-                            publisherConfirmationTrackingEnabled: true
-                        ),
-                        cancellationToken
-                    )
-                    .ConfigureAwait(false);
-            }
             if (isEvent)
                 await DeclareTopicAsync(channel, address, cancellationToken).ConfigureAwait(false);
             await channel
@@ -565,34 +558,29 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                     cancellationToken: cancellationToken
                 )
                 .ConfigureAwait(false);
-            reusable = true;
+            published = true;
         }
         finally
         {
-            if (channel is not null)
-            {
-                lock (_publisherGate)
-                {
-                    if (reusable && !_disposed)
-                    {
-                        _publishers.Enqueue(channel);
-                        channel = null;
-                    }
-                }
-                if (channel is not null)
-                {
-                    try
-                    {
-                        await channel.DisposeAsync().ConfigureAwait(false);
-                    }
-                    catch (Exception exception)
-                    {
-                        _logger.LogWarning(exception, "RabbitMQ publisher channel cleanup failed.");
-                    }
-                }
-            }
-            _publishGate.Release();
+            if (published)
+                _publishers.Return(channel);
+            else
+                _publishers.Discard(channel);
         }
+    }
+
+    private async ValueTask<IChannel> OpenPublisherAsync(CancellationToken cancellationToken)
+    {
+        var connection = await EnsureConnectionAsync(cancellationToken).ConfigureAwait(false);
+        return await connection
+            .CreateChannelAsync(
+                new CreateChannelOptions(
+                    publisherConfirmationsEnabled: true,
+                    publisherConfirmationTrackingEnabled: true
+                ),
+                cancellationToken
+            )
+            .ConfigureAwait(false);
     }
 
     public async ValueTask<ReadOnlyMemory<byte>> RequestAsync(
@@ -603,7 +591,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         CancellationToken cancellationToken
     )
     {
-        using var deadline = new CancellationTokenSource(timeout);
+        using var deadline = new CancellationTokenSource(timeout, _clock);
         using var operation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             deadline.Token,
@@ -666,47 +654,32 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 
     public ValueTask DisposeAsync()
     {
-        lock (_publisherGate)
+        lock (_disposalGate)
         {
             _disposed = true;
             return new ValueTask(_disposing ??= DisposeCoreAsync());
         }
     }
 
+    /// <summary>
+    /// Cancels every operation, joins the publications still holding a channel, closes the idle
+    /// publisher channels and the reply channel, and waits a bounded time for them and for any
+    /// discarded channel still closing before disposing the connection, which closes the rest.
+    /// </summary>
     private async Task DisposeCoreAsync()
     {
         await _shutdown.CancelAsync().ConfigureAwait(false);
         foreach (var completion in _pending.Values)
             completion.TrySetException(new ObjectDisposedException(nameof(RabbitMqRequestBroker)));
-        // Join borrowed channels before disposing the connection or draining the pool.
-        for (var i = 0; i < _maxPublishers; i++)
-            await _publishGate.WaitAsync().ConfigureAwait(false);
         await _initializationGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            List<Exception> failures = [];
-            while (_publishers.TryDequeue(out var publisher))
-            {
-                try
-                {
-                    await publisher.DisposeAsync().ConfigureAwait(false);
-                }
-                catch (Exception exception)
-                {
-                    failures.Add(exception);
-                }
-            }
-            if (_clientChannel is not null)
-            {
-                try
-                {
-                    await _clientChannel.DisposeAsync().ConfigureAwait(false);
-                }
-                catch (Exception exception)
-                {
-                    failures.Add(exception);
-                }
-            }
+            List<Exception> failures =
+            [
+                .. await _publishers
+                    .ShutdownAsync(_clientChannel, ChannelCloseBound)
+                    .ConfigureAwait(false),
+            ];
             if (_connection is not null)
             {
                 try
@@ -725,7 +698,6 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         {
             RabbitMqDiagnostics.Unregister(this);
             _initializationGate.Release();
-            _publishGate.Release(_maxPublishers);
             _shutdown.Dispose();
         }
     }

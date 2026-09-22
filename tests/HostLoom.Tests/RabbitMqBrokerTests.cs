@@ -4,6 +4,7 @@ using System.Text;
 using HostLoom.Transport.RabbitMq;
 using Microsoft.Extensions.Options;
 using NSubstitute;
+using NSubstitute.Core;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using RabbitMQ.Client.Exceptions;
@@ -16,7 +17,7 @@ namespace HostLoom.Tests;
 /// instances, so request/reply correlation is verified without a broker. Deliveries are injected by
 /// capturing the consumer the broker registers and invoking it directly.
 /// </summary>
-public sealed class RabbitMqBrokerTests
+public sealed partial class RabbitMqBrokerTests
 {
     [Theory]
     [InlineData(true)]
@@ -1277,23 +1278,92 @@ public sealed class RabbitMqBrokerTests
         private readonly Lock _gate = new();
         private readonly List<FakeChannel> _channels = [];
 
+        private TaskCompletionSource? _channelGate;
+        private TaskCompletionSource _channelRequested = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        private int _channelRequests;
+
         public FakeRabbit()
         {
             Connection = Substitute.For<IConnection>();
             Connection.IsOpen.Returns(true);
             Connection
                 .CreateChannelAsync(Arg.Any<CreateChannelOptions?>(), Arg.Any<CancellationToken>())
-                .Returns(_ =>
+                .Returns(OpenChannel);
+        }
+
+        /// <summary>
+        /// Holds every channel requested from now on until the returned source completes, so a
+        /// test can keep publications parked while they own a permit.
+        /// </summary>
+        public TaskCompletionSource HoldNewChannels()
+        {
+            var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            Volatile.Write(ref _channelGate, gate);
+            return gate;
+        }
+
+        /// <summary>Completes once at least <paramref name="count"/> channels have been requested, opened or held.</summary>
+        public async Task WaitForChannelRequestsAsync(
+            int count,
+            CancellationToken cancellationToken
+        )
+        {
+            while (true)
+            {
+                Task requested;
+                lock (_gate)
                 {
-                    var channel = new FakeChannel();
-                    channel.Options = _.ArgAt<CreateChannelOptions?>(0);
-                    lock (_gate)
+                    if (_channelRequests >= count)
                     {
-                        _channels.Add(channel);
+                        return;
                     }
 
-                    return Task.FromResult(channel.Channel);
-                });
+                    requested = _channelRequested.Task;
+                }
+
+                await requested.WaitAsync(cancellationToken);
+            }
+        }
+
+        private Task<IChannel> OpenChannel(CallInfo call)
+        {
+            TaskCompletionSource requested;
+            lock (_gate)
+            {
+                _channelRequests++;
+                requested = _channelRequested;
+                _channelRequested = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            requested.TrySetResult();
+            var options = call.ArgAt<CreateChannelOptions?>(0);
+            var gate = Volatile.Read(ref _channelGate);
+            return gate is null
+                ? Task.FromResult(AddChannel(options))
+                : OpenHeldAsync(gate.Task, options, call.ArgAt<CancellationToken>(1));
+        }
+
+        private async Task<IChannel> OpenHeldAsync(
+            Task gate,
+            CreateChannelOptions? options,
+            CancellationToken cancellationToken
+        )
+        {
+            await gate.WaitAsync(cancellationToken);
+            return AddChannel(options);
+        }
+
+        private IChannel AddChannel(CreateChannelOptions? options)
+        {
+            var channel = new FakeChannel { Options = options };
+            lock (_gate)
+            {
+                _channels.Add(channel);
+            }
+
+            return channel.Channel;
         }
 
         public IConnection Connection { get; }
@@ -1343,17 +1413,7 @@ public sealed class RabbitMqBrokerTests
             Connection.CloseReason.Returns(_ => null!);
             Connection
                 .CreateChannelAsync(Arg.Any<CreateChannelOptions?>(), Arg.Any<CancellationToken>())
-                .Returns(_ =>
-                {
-                    var channel = new FakeChannel();
-                    channel.Options = _.ArgAt<CreateChannelOptions?>(0);
-                    lock (_gate)
-                    {
-                        _channels.Add(channel);
-                    }
-
-                    return Task.FromResult(channel.Channel);
-                });
+                .Returns(OpenChannel);
         }
 
         public List<FakeChannel> Channels
@@ -1528,6 +1588,56 @@ public sealed class RabbitMqBrokerTests
                     return _publishes.ToList();
                 }
             }
+        }
+
+        /// <summary>
+        /// Makes every later publication on this channel wait for its cancellation token, as one
+        /// whose confirmation never arrives; the returned task completes when the first begins.
+        /// </summary>
+        public Task StallPublishes()
+        {
+            var entered = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously
+            );
+            Channel
+                .BasicPublishAsync(
+                    Arg.Any<string>(),
+                    Arg.Any<string>(),
+                    Arg.Any<bool>(),
+                    Arg.Any<BasicProperties>(),
+                    Arg.Any<ReadOnlyMemory<byte>>(),
+                    Arg.Any<CancellationToken>()
+                )
+                .Returns(call =>
+                {
+                    entered.TrySetResult();
+                    return new ValueTask(
+                        Task.Delay(Timeout.InfiniteTimeSpan, call.ArgAt<CancellationToken>(5))
+                    );
+                });
+            return entered.Task;
+        }
+
+        /// <summary>
+        /// Makes disposing this channel hang, as a close waiting for a close-ok that never comes,
+        /// until <c>Finish</c> completes; <c>Started</c> completes when disposal begins.
+        /// </summary>
+        public (Task Started, TaskCompletionSource Finish) HoldClose()
+        {
+            var started = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously
+            );
+            var finish = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously
+            );
+            Channel
+                .DisposeAsync()
+                .Returns(_ =>
+                {
+                    started.TrySetResult();
+                    return new ValueTask(finish.Task);
+                });
+            return (started.Task, finish);
         }
 
         public async Task DeliverAsync(

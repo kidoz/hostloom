@@ -58,9 +58,16 @@ public static class RabbitMqDiagnostics
 #pragma warning disable CA1823 // observable instruments are kept alive by the meter, not read.
     private static readonly ObservableGauge<long> PendingRequests = Meter.CreateObservableGauge(
         "hostloom.rabbitmq.requests.pending",
-        static () => Observe(),
+        static () => Observe(static broker => broker.PendingRequestCount),
         "{request}",
         "Requests this client has published and is still awaiting a reply for."
+    );
+
+    private static readonly ObservableGauge<long> ClosingChannels = Meter.CreateObservableGauge(
+        "hostloom.rabbitmq.channels.closing",
+        static () => Observe(static broker => broker.ClosingChannelCount),
+        "{channel}",
+        "Channels closing in the background, such as a publisher channel given up after a failed publication."
     );
 #pragma warning restore CA1823
 
@@ -69,12 +76,12 @@ public static class RabbitMqDiagnostics
     internal static void Unregister(RabbitMqRequestBroker broker) =>
         LiveBrokers.TryRemove(broker, out _);
 
-    private static IEnumerable<Measurement<long>> Observe()
+    private static IEnumerable<Measurement<long>> Observe(Func<RabbitMqRequestBroker, int> read)
     {
         foreach (var broker in LiveBrokers.Keys)
         {
             yield return new Measurement<long>(
-                broker.PendingRequestCount,
+                read(broker),
                 new KeyValuePair<string, object?>(ClientTag, broker.ClientName)
             );
         }

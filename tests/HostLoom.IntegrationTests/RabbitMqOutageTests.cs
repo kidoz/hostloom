@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Threading.Channels;
@@ -31,8 +32,12 @@ public sealed class RabbitMqOutageTests
     private const string PublishDuration = "hostloom.rabbitmq.publish.duration";
     private const string Connections = "hostloom.rabbitmq.connections";
     private const string PendingRequests = "hostloom.rabbitmq.requests.pending";
+    private const string ClosingChannels = "hostloom.rabbitmq.channels.closing";
     private static readonly Uri Direct = new("amqp://guest:guest@localhost:5672/");
     private static readonly TimeSpan Bound = TimeSpan.FromSeconds(10);
+
+    /// <summary>How long a timed-out publication may take beyond its PublishTimeout to return.</summary>
+    private static readonly TimeSpan Slack = TimeSpan.FromSeconds(2);
 
     public static bool Enabled =>
         Environment.GetEnvironmentVariable("HOSTLOOM_RABBITMQ_CHAOS") == "1"
@@ -85,23 +90,29 @@ public sealed class RabbitMqOutageTests
         Assert.Equal("order-1", await NextAsync(arrivals, token));
 
         TimeoutException timedOut;
+        TimeSpan returnedAfter;
         proxy.HoldReplies();
         try
         {
+            var started = Stopwatch.GetTimestamp();
             var stalled = publisher.PublishAsync(topic, "order-2"u8.ToArray(), token).AsTask();
             // The frame reaches the broker at once and is routed; only its confirmation is held,
             // so the broker accepted an event its publisher is about to report as timed out.
             Assert.Equal("order-2", await NextAsync(arrivals, token));
-            // The deadline ends the wait for the confirmation after one second, but the call
-            // returns only once the abandoned channel is closed, and that close waits for its own
-            // reply behind the same hold, up to the client library's 20-second continuation
-            // timeout. The hold stays well inside the 60-second heartbeat, so the connection
-            // survives it. A cancelled deadline, not WaitAsync's own TimeoutException, bounds it.
+            // The deadline ends the wait for the confirmation after one second, and the call
+            // returns then. The abandoned channel is closed in the background, where its close
+            // waits for its own reply behind the same hold, up to the client library's 20-second
+            // continuation timeout; the hold stays well inside the 60-second heartbeat, so the
+            // connection survives it. A cancelled deadline, not WaitAsync's own
+            // TimeoutException, bounds the call.
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
-            deadline.CancelAfter(TimeSpan.FromSeconds(40));
+            deadline.CancelAfter(publishTimeout + Slack);
             timedOut = await Assert.ThrowsAsync<TimeoutException>(() =>
                 stalled.WaitAsync(deadline.Token)
             );
+            returnedAfter = Stopwatch.GetElapsedTime(started);
+            // Its close-ok is held with every other reply, so the channel is still closing.
+            Assert.Equal(1d, meters.Observe(ClosingChannels));
         }
         finally
         {
@@ -115,10 +126,12 @@ public sealed class RabbitMqOutageTests
         // The duration clock starts just after the deadline does, so allow for that gap.
         var took = string.Create(
             CultureInfo.InvariantCulture,
-            $"The timed-out publication returned after {stalledFor:F1} s."
+            $"The timed-out publication returned after {returnedAfter.TotalSeconds:F2} s; its recorded duration is {stalledFor:F2} s."
         );
-        Assert.True(stalledFor >= publishTimeout.TotalSeconds * 0.9, took);
         TestContext.Current.TestOutputHelper?.WriteLine(took);
+        Assert.True(stalledFor >= publishTimeout.TotalSeconds * 0.9, took);
+        Assert.True(returnedAfter <= publishTimeout + Slack, took);
+        Assert.True(stalledFor <= (publishTimeout + Slack).TotalSeconds, took);
 
         // The released confirmation of order-2 lands on the channel it was published on. That
         // channel stopped tracking it when the wait was cancelled and was closed rather than
@@ -136,6 +149,8 @@ public sealed class RabbitMqOutageTests
         Assert.Equal(3d, meters.Sum(Publishes));
         Assert.Equal(1d, meters.Sum(Connections, (EventTag, "opened")));
         Assert.Equal(0d, meters.Sum(Connections, (EventTag, "recovered")));
+        // Released, the close-ok lets the abandoned channel finish closing in the background.
+        await WaitForGaugeAsync(meters, ClosingChannels, 0d, token);
     }
 
     [Fact(Timeout = 60_000, Skip = Skip, SkipUnless = nameof(Enabled))]
@@ -215,6 +230,25 @@ public sealed class RabbitMqOutageTests
             await RequestAsync(broker, address, "invoice-3", Bound, token)
         );
         Assert.Equal(0d, meters.Observe(PendingRequests));
+    }
+
+    /// <summary>
+    /// Polls an observable gauge, which raises no event to wait on, until it reads
+    /// <paramref name="expected"/> or <see cref="Bound"/> passes.
+    /// </summary>
+    private static async Task WaitForGaugeAsync(
+        MeterCapture meters,
+        string instrument,
+        double expected,
+        CancellationToken token
+    )
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(Bound);
+        while (meters.Observe(instrument) != expected)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(50), deadline.Token);
+        }
     }
 
     private static Uri Through(TcpFaultProxy proxy) =>

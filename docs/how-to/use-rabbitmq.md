@@ -157,6 +157,15 @@ A stalled confirmation therefore does not serialize all publication behind one r
 though a broker resource alarm can still prevent the broker accepting any publication.
 Request deadlines bound publication and reply waiting.
 
+A channel whose publication was not confirmed is never reused: a late confirmation could
+still arrive on it. It is closed in the background, so the call returns at its deadline
+rather than after the close, which waits for the broker's reply for up to the client
+library's 20-second continuation timeout. At most `MaxConcurrentPublishes` such channels may
+still be closing before a publication that needs a new channel waits for one to finish,
+again within its own deadline; `hostloom.rabbitmq.channels.closing` reports how many are.
+Disposing the transport waits at most five seconds for channels still closing, then
+disposes the connection, which closes the rest.
+
 On the consuming side, `RequestDispatchConcurrency` (default 16) is how many deliveries a
 request listener's channel hands to its handler at once, and `EventDispatchConcurrency`
 (default 1) is the same for an event subscription. Both are bounded by `PrefetchCount`,
