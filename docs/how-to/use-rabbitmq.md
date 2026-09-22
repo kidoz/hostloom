@@ -149,3 +149,13 @@ Events without any subscriptions retain ordinary fan-out discard behavior.
 - Integration tests against a real broker:
   `tests/HostLoom.IntegrationTests` (they skip, and report as skipped,
   when broker ports are closed).
+
+Event publication has a `PublishTimeout` of 30 seconds, including waiting for a publisher
+channel and broker confirmation. `MaxConcurrentPublishes` defaults to 16; each outstanding
+publication exclusively owns a channel. The exclusive reply queue uses a separate channel.
+A stalled confirmation therefore does not serialize all publication behind one round trip,
+though a broker resource alarm can still prevent the broker accepting any publication.
+Request deadlines bound publication and reply waiting.
+
+Rejected deliveries log their exception and whether a dead-letter exchange is configured.
+Configure `DeadLetterExchange` to retain rejected messages; logging alone does not retain them.

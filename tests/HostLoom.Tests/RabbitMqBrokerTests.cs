@@ -262,11 +262,13 @@ public sealed class RabbitMqBrokerTests
         Assert.Equal(FakeRabbit.GeneratedReplyQueue, published.ReplyTo);
         Assert.Equal("ping", Encoding.UTF8.GetString(published.Body));
 
-        await client.DeliverAsync(
-            requestId.ToString("N"),
-            replyTo: null,
-            body: Encoding.UTF8.GetBytes("pong")
-        );
+        await rabbit
+            .Channels.Single(channel => channel.Consumer is not null)
+            .DeliverAsync(
+                requestId.ToString("N"),
+                replyTo: null,
+                body: Encoding.UTF8.GetBytes("pong")
+            );
         var response = await pending;
         Assert.Equal("pong", Encoding.UTF8.GetString(response.ToArray()));
     }
@@ -288,11 +290,13 @@ public sealed class RabbitMqBrokerTests
             .AsTask();
 
         var client = await WaitForChannelAsync(rabbit, channel => channel.Publishes.Count == 1);
-        await client.DeliverAsync(
-            Guid.NewGuid().ToString("N"),
-            replyTo: null,
-            body: Encoding.UTF8.GetBytes("not yours")
-        );
+        await rabbit
+            .Channels.Single(channel => channel.Consumer is not null)
+            .DeliverAsync(
+                Guid.NewGuid().ToString("N"),
+                replyTo: null,
+                body: Encoding.UTF8.GetBytes("not yours")
+            );
 
         // The correlation id does not match, so the reply is dropped and the request still times out.
         await Assert.ThrowsAsync<RequestTimeoutException>(async () => await pending);
@@ -674,6 +678,181 @@ public sealed class RabbitMqBrokerTests
                 Assert.True(channel.Options?.PublisherConfirmationTrackingEnabled);
             }
         );
+    }
+
+    [Fact]
+    public async Task A_stalled_event_confirmation_does_not_block_request_publication()
+    {
+        var rabbit = new FakeRabbit();
+        await using var broker = new RabbitMqRequestBroker(
+            Options.Create(new RabbitMqOptions { PublishTimeout = TimeSpan.FromMilliseconds(200) }),
+            _ => ValueTask.FromResult(rabbit.Connection)
+        );
+        await broker.PublishAsync(
+            "catalog",
+            new byte[] { 1 },
+            TestContext.Current.CancellationToken
+        );
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        rabbit
+            .Channels[0]
+            .Channel.BasicPublishAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<BasicProperties>(),
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<CancellationToken>()
+            )
+            .Returns(call =>
+            {
+                entered.TrySetResult();
+                return new ValueTask(
+                    Task.Delay(Timeout.InfiniteTimeSpan, call.ArgAt<CancellationToken>(5))
+                );
+            });
+        var stalled = broker
+            .PublishAsync("catalog", new byte[] { 2 }, TestContext.Current.CancellationToken)
+            .AsTask();
+        await entered.Task.WaitAsync(
+            TimeSpan.FromSeconds(2),
+            TestContext.Current.CancellationToken
+        );
+        var id = Guid.NewGuid();
+        var request = broker
+            .RequestAsync(
+                "orders",
+                new byte[] { 3 },
+                id,
+                TimeSpan.FromSeconds(2),
+                TestContext.Current.CancellationToken
+            )
+            .AsTask();
+        await WaitForChannelAsync(
+            rabbit,
+            channel => channel.Publishes.Any(p => p.CorrelationId == id.ToString("N"))
+        );
+        await rabbit
+            .Channels.Single(channel => channel.Consumer is not null)
+            .DeliverAsync(id.ToString("N"), null, new byte[] { 4 });
+        Assert.Equal(new byte[] { 4 }, (await request).ToArray());
+        await Assert.ThrowsAsync<TimeoutException>(() => stalled);
+        await broker.PublishAsync(
+            "catalog",
+            new byte[] { 5 },
+            TestContext.Current.CancellationToken
+        );
+    }
+
+    [Theory]
+    [InlineData("reply-to")]
+    [InlineData("envelope")]
+    [InlineData("ack")]
+    [InlineData("reply")]
+    [InlineData("event")]
+    public async Task Rejected_deliveries_emit_the_original_failure(string failure)
+    {
+        var rabbit = new FakeRabbit();
+        var logger = new RecordingLogger<RabbitMqRequestBroker>();
+        await using var broker = new RabbitMqRequestBroker(
+            Options.Create(new RabbitMqOptions()),
+            _ => ValueTask.FromResult(rabbit.Connection),
+            logger
+        );
+        await using var subscription =
+            failure == "event"
+                ? await broker.SubscribeAsync(
+                    "catalog",
+                    "audit",
+                    (_, _) => throw new InvalidOperationException("event failed"),
+                    TestContext.Current.CancellationToken
+                )
+                : await broker.ListenAsync(
+                    "catalog",
+                    (_, _) =>
+                        failure == "envelope"
+                            ? throw new MalformedEnvelopeException("invalid frame")
+                            : ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 1 }),
+                    TestContext.Current.CancellationToken
+                );
+        var channel = rabbit.Channels[0];
+        if (failure == "ack")
+            channel
+                .Channel.BasicAckAsync(
+                    Arg.Any<ulong>(),
+                    Arg.Any<bool>(),
+                    Arg.Any<CancellationToken>()
+                )
+                .Returns(ValueTask.FromException(new IOException("ack failed")));
+        if (failure == "reply")
+            channel
+                .Channel.BasicPublishAsync(
+                    Arg.Any<string>(),
+                    Arg.Any<string>(),
+                    Arg.Any<bool>(),
+                    Arg.Any<BasicProperties>(),
+                    Arg.Any<ReadOnlyMemory<byte>>(),
+                    Arg.Any<CancellationToken>()
+                )
+                .Returns(ValueTask.FromException(new IOException("reply failed")));
+        await channel.DeliverAsync(
+            "correlation",
+            failure == "reply-to" ? null : "amq.gen-reply",
+            new byte[] { 2 }
+        );
+        Assert.Single(channel.Rejects);
+        var logged = Assert.Single(logger.Entries);
+        Assert.Equal(1401, logged.Event.Id);
+        Assert.NotNull(logged.Exception);
+    }
+
+    [Fact]
+    public async Task Disposal_cancels_borrowed_and_waiting_publishers()
+    {
+        var rabbit = new FakeRabbit();
+        await using var broker = new RabbitMqRequestBroker(
+            Options.Create(new RabbitMqOptions { MaxConcurrentPublishes = 1 }),
+            _ => ValueTask.FromResult(rabbit.Connection)
+        );
+        await broker.PublishAsync(
+            "catalog",
+            new byte[] { 1 },
+            TestContext.Current.CancellationToken
+        );
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        rabbit
+            .Channels[0]
+            .Channel.BasicPublishAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<BasicProperties>(),
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<CancellationToken>()
+            )
+            .Returns(call =>
+            {
+                entered.TrySetResult();
+                return new ValueTask(
+                    Task.Delay(Timeout.InfiniteTimeSpan, call.ArgAt<CancellationToken>(5))
+                );
+            });
+        var active = broker
+            .PublishAsync("catalog", new byte[] { 2 }, TestContext.Current.CancellationToken)
+            .AsTask();
+        await entered.Task.WaitAsync(
+            TimeSpan.FromSeconds(2),
+            TestContext.Current.CancellationToken
+        );
+        var waiting = broker
+            .PublishAsync("catalog", new byte[] { 3 }, TestContext.Current.CancellationToken)
+            .AsTask();
+        await broker
+            .DisposeAsync()
+            .AsTask()
+            .WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => active);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => waiting);
     }
 
     private static RabbitMqRequestBroker Create(FakeRabbit rabbit) =>

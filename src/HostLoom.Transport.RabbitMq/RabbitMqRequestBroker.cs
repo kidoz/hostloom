@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
@@ -13,8 +15,20 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     private readonly RabbitMqOptions _options;
     private readonly RabbitMqQueueNaming _queueNaming;
     private readonly Func<CancellationToken, ValueTask<IConnection>> _connectionFactory;
+#pragma warning disable CA2213
     private readonly SemaphoreSlim _initializationGate = new(1, 1);
-    private readonly SemaphoreSlim _publishGate = new(1, 1);
+#pragma warning restore CA2213
+    private readonly CancellationTokenSource _shutdown = new();
+    private readonly CancellationToken _shutdownToken;
+    private Task? _disposing;
+    private readonly int _maxPublishers;
+    // Waiters observe shutdown through their tokens; do not dispose their semaphore.
+#pragma warning disable CA2213
+    private readonly SemaphoreSlim _publishGate;
+#pragma warning restore CA2213
+    private readonly ConcurrentQueue<IChannel> _publishers = new();
+    private readonly Lock _publisherGate = new();
+    private readonly ILogger<RabbitMqRequestBroker> _logger;
     private readonly ConcurrentDictionary<
         Guid,
         TaskCompletionSource<ReadOnlyMemory<byte>>
@@ -26,7 +40,13 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     private bool _disposed;
 
     public RabbitMqRequestBroker(IOptions<RabbitMqOptions> options)
-        : this(options, connectionFactory: null) { }
+        : this(options, logger: null) { }
+
+    public RabbitMqRequestBroker(
+        IOptions<RabbitMqOptions> options,
+        ILogger<RabbitMqRequestBroker>? logger
+    )
+        : this(options, connectionFactory: null, logger) { }
 
     /// <summary>
     /// Takes a connection factory so the request/reply correlation can be driven by fake
@@ -34,11 +54,25 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     /// </summary>
     internal RabbitMqRequestBroker(
         IOptions<RabbitMqOptions> options,
-        Func<CancellationToken, ValueTask<IConnection>>? connectionFactory
+        Func<CancellationToken, ValueTask<IConnection>>? connectionFactory,
+        ILogger<RabbitMqRequestBroker>? logger = null
     )
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
+        ArgumentOutOfRangeException.ThrowIfLessThan(_options.MaxConcurrentPublishes, 1);
+        if (
+            _options.PublishTimeout <= TimeSpan.Zero
+            || _options.PublishTimeout.TotalMilliseconds > uint.MaxValue - 1
+        )
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                "PublishTimeout must be a finite positive timer duration."
+            );
+        _maxPublishers = _options.MaxConcurrentPublishes;
+        _publishGate = new(_maxPublishers, _maxPublishers);
+        _shutdownToken = _shutdown.Token;
+        _logger = logger ?? NullLogger<RabbitMqRequestBroker>.Instance;
         if (!Enum.IsDefined(_options.QueueNaming))
             throw new ArgumentOutOfRangeException(
                 nameof(options),
@@ -121,8 +155,15 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                 {
                     await RequeueAsync(channel, delivery.DeliveryTag).ConfigureAwait(false);
                 }
-                catch
+                catch (Exception exception)
                 {
+                    _logger.LogError(
+                        new EventId(1401, "RabbitMqDeliveryRejected"),
+                        exception,
+                        "RabbitMQ delivery {DeliveryTag} failed and is rejected without requeue. Dead-letter exchange configured: {HasDeadLetterExchange}.",
+                        delivery.DeliveryTag,
+                        !string.IsNullOrEmpty(_options.DeadLetterExchange)
+                    );
                     await channel
                         .BasicRejectAsync(
                             delivery.DeliveryTag,
@@ -275,8 +316,15 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                 {
                     await RequeueAsync(channel, delivery.DeliveryTag).ConfigureAwait(false);
                 }
-                catch
+                catch (Exception exception)
                 {
+                    _logger.LogError(
+                        new EventId(1401, "RabbitMqDeliveryRejected"),
+                        exception,
+                        "RabbitMQ delivery {DeliveryTag} failed and is rejected without requeue. Dead-letter exchange configured: {HasDeadLetterExchange}.",
+                        delivery.DeliveryTag,
+                        !string.IsNullOrEmpty(_options.DeadLetterExchange)
+                    );
                     await channel
                         .BasicRejectAsync(
                             delivery.DeliveryTag,
@@ -306,40 +354,123 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         CancellationToken cancellationToken
     )
     {
-        await EnsureClientAsync(cancellationToken).ConfigureAwait(false);
-
-        var properties = new BasicProperties
-        {
-            ContentType = ContentType,
-            Persistent = _options.DurableTopics,
-        };
-
-        await _publishGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        using var deadline = new CancellationTokenSource(_options.PublishTimeout);
+        using var operation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            deadline.Token,
+            _shutdownToken
+        );
         try
         {
-            // Declared inside the gate: an IChannel must not be used concurrently, and this
-            // shares _clientChannel with every request and event publish. Declaring outside let
-            // an exchange declaration interleave frames with a publish, which closes the
-            // connection rather than failing the one operation.
-            await DeclareTopicAsync(_clientChannel!, topic, cancellationToken)
+            await EnsureConnectionAsync(operation.Token).ConfigureAwait(false);
+            await PublishFrameAsync(
+                    topic,
+                    new BasicProperties
+                    {
+                        ContentType = ContentType,
+                        Persistent = _options.DurableTopics,
+                    },
+                    frame,
+                    isEvent: true,
+                    operation.Token
+                )
                 .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+            when (_disposed && !cancellationToken.IsCancellationRequested)
+        {
+            throw new ObjectDisposedException(nameof(RabbitMqRequestBroker));
+        }
+        catch (OperationCanceledException exception)
+            when (deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                "The RabbitMQ event publication deadline elapsed.",
+                exception
+            );
+        }
+    }
 
-            // Not mandatory: an event with no subscriptions is dropped, which is ordinary
-            // publish/subscribe. Returning it unrouted would make publishing fail whenever
-            // nobody happens to be listening.
-            await _clientChannel!
+    private async ValueTask PublishFrameAsync(
+        RequestAddress address,
+        BasicProperties properties,
+        ReadOnlyMemory<byte> frame,
+        bool isEvent,
+        CancellationToken cancellationToken
+    )
+    {
+        await _publishGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        IChannel? channel = null;
+        var reusable = false;
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            // Ownership transfers from the pool to channel and then to the finally block.
+#pragma warning disable CA2000
+            while (_publishers.TryDequeue(out var candidate))
+            {
+                if (candidate.IsOpen)
+                {
+                    channel = candidate;
+                    break;
+                }
+                await candidate.DisposeAsync().ConfigureAwait(false);
+            }
+#pragma warning restore CA2000
+            if (channel is null)
+            {
+                var connection = await EnsureConnectionAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                channel = await connection
+                    .CreateChannelAsync(
+                        new CreateChannelOptions(
+                            publisherConfirmationsEnabled: true,
+                            publisherConfirmationTrackingEnabled: true
+                        ),
+                        cancellationToken
+                    )
+                    .ConfigureAwait(false);
+            }
+            if (isEvent)
+                await DeclareTopicAsync(channel, address, cancellationToken).ConfigureAwait(false);
+            await channel
                 .BasicPublishAsync(
-                    exchange: topic.Value,
-                    routingKey: string.Empty,
-                    mandatory: false,
+                    exchange: isEvent ? address.Value : string.Empty,
+                    routingKey: isEvent
+                        ? string.Empty
+                        : RabbitMqQueueNames.Request(address.Value, _queueNaming),
+                    mandatory: !isEvent,
                     basicProperties: properties,
                     body: frame,
                     cancellationToken: cancellationToken
                 )
                 .ConfigureAwait(false);
+            reusable = true;
         }
         finally
         {
+            if (channel is not null)
+            {
+                lock (_publisherGate)
+                {
+                    if (reusable && !_disposed)
+                    {
+                        _publishers.Enqueue(channel);
+                        channel = null;
+                    }
+                }
+                if (channel is not null)
+                {
+                    try
+                    {
+                        await channel.DisposeAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception exception)
+                    {
+                        _logger.LogWarning(exception, "RabbitMQ publisher channel cleanup failed.");
+                    }
+                }
+            }
             _publishGate.Release();
         }
     }
@@ -352,22 +483,24 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         CancellationToken cancellationToken
     )
     {
-        await EnsureClientAsync(cancellationToken).ConfigureAwait(false);
         using var deadline = new CancellationTokenSource(timeout);
         using var operation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
-            deadline.Token
+            deadline.Token,
+            _shutdownToken
         );
         var completion = new TaskCompletionSource<ReadOnlyMemory<byte>>(
             TaskCreationOptions.RunContinuationsAsynchronously
         );
-        if (!_pending.TryAdd(requestId, completion))
-        {
-            throw new InvalidOperationException($"Request id '{requestId}' is already pending.");
-        }
-
+        var registered = false;
         try
         {
+            await EnsureClientAsync(operation.Token).ConfigureAwait(false);
+            if (!_pending.TryAdd(requestId, completion))
+                throw new InvalidOperationException(
+                    $"Request id '{requestId}' is already pending."
+                );
+            registered = true;
             var properties = new BasicProperties
             {
                 ContentType = ContentType,
@@ -375,30 +508,28 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                 ReplyTo = _replyQueue,
             };
 
-            await _publishGate.WaitAsync(operation.Token).ConfigureAwait(false);
             try
             {
-                await _clientChannel!
-                    .BasicPublishAsync(
-                        exchange: string.Empty,
-                        routingKey: RabbitMqQueueNames.Request(address.Value, _queueNaming),
-                        mandatory: true,
-                        basicProperties: properties,
-                        body: request,
-                        cancellationToken: operation.Token
+                await PublishFrameAsync(
+                        address,
+                        properties,
+                        request,
+                        isEvent: false,
+                        operation.Token
                     )
                     .ConfigureAwait(false);
             }
             catch (PublishException exception) when (exception.IsReturn)
             {
-                // An unroutable request still follows the request/response timeout contract.
-            }
-            finally
-            {
-                _publishGate.Release();
+                // An unroutable request follows the request/response timeout contract.
             }
 
             return await completion.Task.WaitAsync(operation.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+            when (_disposed && !cancellationToken.IsCancellationRequested)
+        {
+            throw new ObjectDisposedException(nameof(RabbitMqRequestBroker));
         }
         catch (OperationCanceledException exception)
             when (deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
@@ -407,36 +538,74 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         }
         finally
         {
-            _pending.TryRemove(requestId, out _);
+            if (registered)
+                _pending.TryRemove(requestId, out _);
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (_disposed)
+        lock (_publisherGate)
         {
-            return;
+            _disposed = true;
+            return new ValueTask(_disposing ??= DisposeCoreAsync());
         }
+    }
 
-        _disposed = true;
+    private async Task DisposeCoreAsync()
+    {
+        await _shutdown.CancelAsync().ConfigureAwait(false);
         foreach (var completion in _pending.Values)
-        {
             completion.TrySetException(new ObjectDisposedException(nameof(RabbitMqRequestBroker)));
-        }
-
-        _pending.Clear();
-        if (_clientChannel is not null)
+        // Join borrowed channels before disposing the connection or draining the pool.
+        for (var i = 0; i < _maxPublishers; i++)
+            await _publishGate.WaitAsync().ConfigureAwait(false);
+        await _initializationGate.WaitAsync().ConfigureAwait(false);
+        try
         {
-            await _clientChannel.DisposeAsync().ConfigureAwait(false);
+            List<Exception> failures = [];
+            while (_publishers.TryDequeue(out var publisher))
+            {
+                try
+                {
+                    await publisher.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    failures.Add(exception);
+                }
+            }
+            if (_clientChannel is not null)
+            {
+                try
+                {
+                    await _clientChannel.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    failures.Add(exception);
+                }
+            }
+            if (_connection is not null)
+            {
+                try
+                {
+                    await _connection.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    failures.Add(exception);
+                }
+            }
+            if (failures.Count > 0)
+                throw new AggregateException(failures);
         }
-
-        if (_connection is not null)
+        finally
         {
-            await _connection.DisposeAsync().ConfigureAwait(false);
+            _initializationGate.Release();
+            _publishGate.Release(_maxPublishers);
+            _shutdown.Dispose();
         }
-
-        _initializationGate.Dispose();
-        _publishGate.Dispose();
     }
 
     private async ValueTask<IConnection> EnsureConnectionAsync(CancellationToken cancellationToken)
@@ -450,6 +619,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         await _initializationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (_connection is { IsOpen: true })
             {
                 return _connection;
@@ -523,6 +693,7 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         await _initializationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (_clientChannel is { IsOpen: true } && _replyQueue is not null)
             {
                 return;

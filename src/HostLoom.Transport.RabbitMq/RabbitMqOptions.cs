@@ -10,6 +10,12 @@ public sealed class RabbitMqOptions
     /// <summary>Physical queue identity scheme. Version2 isolates request and event routes. Legacy requires coordinated migration and retains ambiguous dotted subscription names.</summary>
     public RabbitMqQueueNaming QueueNaming { get; set; } = RabbitMqQueueNaming.Version2;
 
+    /// <summary>Maximum concurrent confirmed publications, each with exclusive channel ownership.</summary>
+    public int MaxConcurrentPublishes { get; set; } = 16;
+
+    /// <summary>Bounds event publication, including channel acquisition and confirmation.</summary>
+    public TimeSpan PublishTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
     public ushort PrefetchCount { get; set; } = 16;
 
     public bool DurableRequestQueues { get; set; } = true;
