@@ -176,7 +176,8 @@ unencrypted production connection is a configuration choice to review rather tha
 ## Redis Cluster
 
 Use `UseHashTags = true` and `DatabaseIndex = 0` for cluster deployments so Lua and tag operations
-stay within one slot. Every advertised node address must be reachable from the application.
+stay within one slot. HostLoom rejects incompatible settings when Cluster topology is known,
+including during hosted startup even when `FailFast` is false. Every advertised node address must be reachable from the application.
 Connections created by HostLoom check topology at most five seconds apart, preserving a supplied
 faster `configCheckSeconds` setting. This discovers replica promotions even when an existing
 socket stays connected. For an externally owned multiplexer, configure `configCheckSeconds=5`
@@ -208,3 +209,9 @@ HOSTLOOM_REDIS_INVALIDATION_TESTS=1 dotnet test \
 Works against Redis 7.x and Valkey using only the commands above. StackExchange.Redis is not
 annotated for trimming or Native AOT, so this package does not claim `IsAotCompatible`; the
 caching and locking kernels and their `DependencyInjection` packages do.
+
+Tagged `SetIfAbsentAsync` uses one script to conditionally add tag memberships and write the
+value. A losing writer adds no memberships. Caller cancellation or connection loss cannot
+interrupt the server between these steps; an ambiguous response still does not prove success.
+Tracking recovery flushes L1 after command-connection tracking is re-registered when
+`FlushLocalOnReconnect` is enabled, even if the Pub/Sub connection never disconnected.

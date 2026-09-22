@@ -90,6 +90,7 @@ public sealed class RedisConnection : IAsyncDisposable
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
             if (_multiplexer is { } existing)
             {
+                ValidateTopology(existing);
                 return existing;
             }
 
@@ -107,7 +108,21 @@ public sealed class RedisConnection : IAsyncDisposable
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            ValidateTopology(multiplexer);
             return multiplexer;
+        }
+    }
+
+    private void ValidateTopology(IConnectionMultiplexer multiplexer)
+    {
+        if (Options.UseHashTags && Options.DatabaseIndex == 0)
+            return;
+        foreach (var endpoint in multiplexer.GetEndPoints())
+        {
+            if (multiplexer.GetServer(endpoint).ServerType == ServerType.Cluster)
+                throw new ArgumentException(
+                    "Redis Cluster requires UseHashTags = true and DatabaseIndex = 0."
+                );
         }
     }
 

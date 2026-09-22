@@ -85,7 +85,9 @@ internal sealed class RedisConnectionStarter(
             }
         }
         catch (Exception exception)
-            when (!connection.Options.FailFast && exception is not OperationCanceledException)
+            when (!connection.Options.FailFast
+                && exception is not OperationCanceledException and not ArgumentException
+            )
         {
             logger.LogWarning(
                 new EventId(1304, "RedisUnreachableAtStartup"),

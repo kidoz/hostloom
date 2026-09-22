@@ -19,6 +19,29 @@ public sealed class RedisClusterFailoverTests
     private const string Skip =
         "Run scripts/test-redis-cluster.py for an owned three-primary, three-replica cluster.";
 
+    [Theory(Timeout = 30_000, Skip = Skip, SkipUnless = nameof(Enabled))]
+    [InlineData(false, 0)]
+    [InlineData(true, 1)]
+    public async Task Cluster_rejects_incompatible_settings_before_cache_commands(
+        bool hashTags,
+        int database
+    )
+    {
+        var fixture = new RedisClusterFixture();
+        var options = fixture.Options();
+        options.UseHashTags = hashTags;
+        options.DatabaseIndex = database;
+        await using var connection = new RedisConnection(options);
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+            connection.GetDatabaseAsync(TestContext.Current.CancellationToken).AsTask()
+        );
+        Assert.Contains(
+            "UseHashTags = true and DatabaseIndex = 0",
+            exception.Message,
+            StringComparison.Ordinal
+        );
+    }
+
     [Theory(Timeout = 120_000, Skip = Skip, SkipUnless = nameof(Enabled))]
     [InlineData(0)]
     [InlineData(1)]
