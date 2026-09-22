@@ -226,8 +226,10 @@ public sealed class UncoordinatedLeadershipTests
             await SchedulingTests.WaitUntilAsync(() => elector.IsLeader);
         }
 
+        // The schedule publishes its next due time before it arms the timer for it: advance only
+        // once that timer and the elector's own (its retry, or its renewal) are both armed.
         await SchedulingTests.WaitUntilAsync(() =>
-            scheduler.GetState("catalog:rebuild").NextDue is not null
+            scheduler.GetState("catalog:rebuild").NextDue is not null && clock.PendingTimers >= 2
         );
         clock.Advance(TimeSpan.FromSeconds(1));
         await SchedulingTests.WaitUntilAsync(() => scheduler.GetState("catalog:rebuild").Runs == 1);

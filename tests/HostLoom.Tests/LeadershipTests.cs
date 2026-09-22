@@ -221,12 +221,17 @@ public sealed class LeadershipTests
         await second.Elector.StartAsync(TestContext.Current.CancellationToken);
         var changes = new List<LeadershipChange>();
         using var _ = first.Elector.OnChange(changes.Add);
+        // The follower must observe contention and arm its retry before the leader resigns.
+        // Otherwise its initial acquisition can legally run after the release and take the lease.
+        await SchedulingTests.WaitUntilAsync(() => cluster.Clock.PendingTimers >= 4);
 
         await first.Elector.ResignAsync(TestContext.Current.CancellationToken);
 
         Assert.False(first.Elector.IsLeader);
         Assert.Equal(LeadershipChangeReason.Resigned, Assert.Single(changes).Reason);
         Assert.Equal(0, cluster.Backend.Count);
+        // The follower's retry and the resigner's pause must both be armed before time moves.
+        await SchedulingTests.WaitUntilAsync(() => cluster.Clock.PendingTimers >= 2);
         cluster.Clock.Advance(TimeSpan.FromSeconds(1));
         await SchedulingTests.WaitUntilAsync(() => second.Elector.IsLeader);
         Assert.Equal(LeadershipStatus.Candidate, first.Elector.Status);
