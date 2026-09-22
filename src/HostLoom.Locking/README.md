@@ -53,6 +53,18 @@ a heartbeat that fails is retried halfway to the lease end, then halfway again d
 twentieth of the lease, until an extension succeeds or the lease runs out; a single backend
 hiccup does not end automatic extension.
 
+An acquisition the caller stops waiting for, through its token or because `MaxWait` cancelled a
+provider call still in flight, leaves one of three states behind. Cancelled or timed out before
+the server applied the write: nothing is held. After the server applied it: the key stays held
+for the abandoned owner until the lease expires and retries see the not-acquired outcome
+meanwhile; when the provider still delivers the late confirmation, the lock issues one
+best-effort owner-checked release, bounded by the lease and at most five seconds, counted on
+`hostloom.lock.orphan_releases` (`released`, `absent`, `failed`) and logged at Debug as
+`LockOrphanRelease` with the key only. The same release follows a confirmation that arrives once
+the usable lease has already run out, which is rejected with `LockFailureKind.Timeout`. A
+provider that threw (`Unavailable` or `Timeout`) confirmed nothing: the state is unknown, the key
+is held for at most one lease, and nothing is released.
+
 `LockRetryPolicy` shapes the wait between attempts and never depends on `HostLoom.Pipelines`. The
 default reproduces the platform's historical behaviour: ten retries at a linear 50 ms step with up
 to 50 ms of additive jitter, about 3 s in total; `LockOptions.MaxWait` is a hard wall-clock bound

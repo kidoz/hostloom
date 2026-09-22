@@ -117,6 +117,7 @@ Identity is the `hostloom.lock.namespace` tag.
 | `hostloom.lock.hold.duration` | histogram (s) | Time a lock was held |
 | `hostloom.lock.active` | up-down counter | Locks currently held |
 | `hostloom.lock.lost` | counter | Leases that ended before release |
+| `hostloom.lock.orphan_releases` | counter | Best-effort releases of leases granted after their caller gave up, tagged `hostloom.lock.outcome` (`released`, `absent`, `failed`) |
 | `hostloom.lock.enabled` | observable gauge | 1 when the lock coordinates, 0 in single-instance mode |
 
 ## Schedule instruments (`HostLoom.Scheduling`)

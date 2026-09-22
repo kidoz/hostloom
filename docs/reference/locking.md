@@ -47,9 +47,35 @@ that is already lost, on acquisition and on extension alike.
 | `LockNotAcquiredException` | contention past `MaxWait` or the retry policy; carries `Key`, `Waited`, `Attempts` |
 | `LockProviderUnavailableException` | the provider failed; carries `Key`, `Waited`, `Attempts`, and a `LockFailureKind` (`Unavailable`, `Timeout`, `Other`) |
 | `LockReentrancyException` | the same asynchronous flow already holds the key and `Locking:DetectReentrancy` is on |
-| `OperationCanceledException` | the caller's token; nothing stays held |
+| `OperationCanceledException` | the caller's token; what the backend still holds depends on whether the server had applied the write, see below |
 
 `TimeoutException` is never thrown.
+
+### What an abandoned acquisition leaves behind
+
+The owner token is generated locally before the provider is called, so an
+attempt the caller stops waiting for, through its token or because `MaxWait`
+cancelled a provider call still in flight, ends in one of three states:
+
+- Cancelled or timed out before the server applied the write: nothing is held.
+- Cancelled or timed out after the server applied it: the key stays held for
+  the abandoned owner until its lease expires, and retries see the
+  not-acquired outcome meanwhile. When the provider still delivers the late
+  confirmation, the lock issues one best-effort, owner-checked release for
+  that owner, bounded by the lease and at most five seconds; the outcome is
+  counted on `hostloom.lock.orphan_releases` (`released`, `absent`, or
+  `failed`) and logged at Debug as `LockOrphanRelease` with the key only. The
+  same release follows a confirmation that arrives once the usable lease has
+  already run out, which is rejected as `LockProviderUnavailableException`
+  with kind `Timeout`. A release can only remove this owner's lease, never a
+  successor's.
+- The provider threw (`LockProviderUnavailableException` with kind
+  `Unavailable` or `Timeout`): the state is unknown, the key is held for at
+  most one lease, and nothing is released because nothing was confirmed.
+
+The Redis and Valkey providers stop waiting for the reply as soon as the token
+is cancelled, so after a caller cancellation their confirmation never reaches
+the lock and the second case ends with the lease expiring on its own.
 
 ## Per-call options (`LockOptions`)
 
