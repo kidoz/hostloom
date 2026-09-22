@@ -17,7 +17,11 @@ database zero now fails hosted startup even when `FailFast` is false. A Valkey d
 restricted ACL must also allow the new `:probe:*` channel suffix. RabbitMQ request handlers on one
 endpoint now run up to sixteen at a time instead of one after another; a handler that is not safe
 to overlap needs `RabbitMqOptions.RequestDispatchConcurrency = 1` or a receive-pipeline
-concurrency limit.
+concurrency limit. `RequestAsync` and `PublishAsync` now throw `MessagingTransportException` for
+transport failures, so code that caught a Kafka or RabbitMQ client-library exception from them
+must catch the new type and read its inner exception. Cancelling a lock acquisition no longer
+stops a command already sent, a leader keeps a held lease through a transient renewal failure,
+and a hosted elector whose lease exceeds `Locking:MaxLease` fails at startup.
 
 ### Added
 
@@ -26,7 +30,13 @@ concurrency limit.
   the publisher receives a `TimeoutException`; a request publication stays bounded by the request
   timeout, which now also covers client initialization. `RabbitMqOptions.MaxConcurrentPublishes`
   (16) caps the confirmed publisher channels the broker keeps in its pool; each outstanding
-  publication owns one exclusively. Both are validated when the broker is constructed.
+  publication owns one exclusively. Both are validated when the broker is constructed. A channel
+  whose publication was not confirmed is never reused and closes in the background, so the caller
+  returns at its deadline rather than after the broker's close reply. At most
+  `MaxConcurrentPublishes` channels close at once, and a publication that needs a new channel
+  meanwhile waits within its own deadline. The `hostloom.rabbitmq.channels.closing` gauge reports
+  them, and broker disposal waits at most five seconds for them before logging
+  `RabbitMqChannelsStillClosing` (1403) and closing the connection.
 - `RabbitMqRequestBroker(IOptions<RabbitMqOptions>, ILogger<RabbitMqRequestBroker>?)`. A delivery
   whose handler throws and whose requeue also fails is logged as `RabbitMqDeliveryRejected` (1401)
   at Error with the delivery tag, the original exception, and whether `DeadLetterExchange` is
@@ -64,6 +74,30 @@ concurrency limit.
 - `hostloom.lock.orphan_releases`, tagged `hostloom.lock.outcome` (`released`, `absent`,
   `failed`), and the `LockOrphanRelease` (3108) Debug event, which record the release described
   under **Changed** below.
+- `MessagingTransportException`, thrown by `IRequestBroker.RequestAsync` and
+  `IEventBroker.PublishAsync` when a transport cannot carry a request or an event. It carries the
+  `Address` and the client library's exception as `InnerException`. Whether the broker accepted
+  the message is unknown when it is thrown, so a retry can deliver an event twice or run a handler
+  twice.
+- The broker contracts document their observable outcomes: a timeout ends with
+  `RequestTimeoutException` and an unbound or unroutable address times out, caller cancellation
+  carries the caller's own token, disposal throws `ObjectDisposedException`, a handler's token
+  belongs to its listener, a completed publication means acceptance rather than handling, and a
+  health probe states whether it reports local state or checks the broker. A shared transport
+  conformance suite runs the same scenarios on the in-memory transport, RabbitMQ, and Kafka.
+- `FaultingLockProvider.HoldReplies()`, `DeliverReplies()`, and `WaitForHeldReplyAsync()` hold
+  acquisition replies so a test can abandon an attempt the backend already granted; `Heal()` also
+  delivers held replies. Lock conformance gains `AbandonedAcquisition_LeavesTheKeyFree`, run on
+  the in-process lock, Redis, and Valkey.
+- The caching reference documents write visibility across instances for each invalidation mode:
+  `SetAsync` and `SetIfAbsentAsync` publish nothing, so with the explicit channel another instance
+  keeps its old in-process value until it expires, while tracking and broadcast observe store
+  writes. In broadcast mode the writer also evicts its own entry on each write. Cache conformance
+  gains cross-instance removal, overwrite, own-echo, delivery-gap, and tag-removal scenarios.
+- Opt-in real-broker experiments: `HOSTLOOM_RABBITMQ_CHAOS=1` times out a publication and drops
+  and restores a connection through a private TCP proxy, and `HOSTLOOM_KAFKA_CHAOS=1` pauses a
+  Kafka container the test owns, including during the reply consumer's watermark query. The Kafka
+  meters are also asserted against the compose broker by default.
 
 ### Changed
 
@@ -74,8 +108,9 @@ concurrency limit.
   `MaxConcurrentPublishes = 1`; a deployment with a low `channel_max` should budget the extra
   channels per instance. Publishing an event no longer initializes the reply queue. Disposal
   cancels publishers that are waiting for a channel or a confirmation with
-  `ObjectDisposedException`, waits for borrowed channels to return, then closes the pool, the
-  client channel, and the connection, aggregating any failures; repeated disposal shares one task.
+  `ObjectDisposedException`, waits for borrowed channels to return and at most five seconds for
+  channels still closing, then closes the pool, the client channel, and the connection,
+  aggregating any failures; repeated disposal shares one task.
 - Kafka commits an offset after the handler returns, from the consumer loop, rather than inside
   the handler. Successful handling and the commit are separate failure boundaries: a commit that
   throws is logged and does not seek back and re-run a handler whose reply was already produced.
@@ -90,15 +125,18 @@ concurrency limit.
 - The in-memory transport delivers like a broker. A handler runs on the thread pool with the
   listener's or subscription's lifetime token rather than the caller's: caller cancellation ends
   the caller's wait without cancelling accepted receiver work, and disposing the listener, as a
-  host stop does, cancels work in progress instead of letting it finish. A publication is
+  host stop does, cancels work in progress instead of letting it finish. The requester of that
+  work waits out its own timeout and gets `RequestTimeoutException`, as with a broker that has no
+  other listener, instead of seeing the listener's cancellation. A publication is
   accepted once every subscriber has been attempted; a subscriber failure is logged at 1402 and no
   longer reaches the publisher as an `AggregateException`, so an outbox relay does not retry it. A
   request to an address with no listener waits the full request timeout before
-  `RequestTimeoutException`; previously it was refused at once. Every member throws
-  `ObjectDisposedException` after disposal and the probe reports unhealthy. Tests that relied
-  on the old behaviour changed with it: `MessagingChaosTests` now expects a request accepted
-  before the stop to be cancelled and an unbound request to take its budget, and
-  `PublishSubscribeTests` no longer expects a failing subscriber to fault the publish.
+  `RequestTimeoutException`, with an inner `TimeoutException`; previously it was refused at once.
+  Disposing the transport ends every waiting request at once with `ObjectDisposedException`, every
+  member throws it afterwards, and the probe reports unhealthy. Tests that relied on the old
+  behaviour changed with it: `MessagingChaosTests` now expects a request whose listener stops to
+  time out and an unbound request to take its budget, and `PublishSubscribeTests` no longer
+  expects a failing subscriber to fault the publish.
 - `RedisConnection` throws `ArgumentException` ("Redis Cluster requires UseHashTags = true and
   DatabaseIndex = 0") whenever it hands out a multiplexer, including one supplied through
   `Redis:ConnectionFactory`, if any endpoint reports Cluster topology and the options differ.
@@ -121,17 +159,42 @@ concurrency limit.
   first subscription flushed only if an earlier attempt had failed, leaving entries filled while
   the acknowledgement was pending. An internal `TimeProvider` constructor drives the backoff in
   tests.
-- A lock acquisition the caller stopped waiting for, through its token or because `MaxWait`
-  expired with the provider call in flight, no longer leaves a grant held for the whole lease
-  when the reply lands afterwards: the lock issues one best-effort owner-checked release for the
-  abandoned owner, bounded by the lease and at most five seconds. The same release follows a
-  reply rejected because the usable lease had already run out. A provider that threw confirmed
-  nothing, so nothing is released and the key expires on its own. The locking reference no longer
-  claims that cancellation leaves nothing held.
-- `RedisLockProvider` and `ValkeyLockProvider` honour the caller's token until the acquisition
-  command is sent and then let it run to its reply within `CommandTimeout`, so the late grant
-  above reaches the lock. A caller of a provider directly, rather than through `IDistributedLock`,
-  now waits up to the command timeout after cancelling instead of returning at once.
+- The lock gives each acquisition its own provider token, cancelled only when the lease has run
+  out since the request was sent or when the `DistributedLock` is disposed; the caller's token and
+  `MaxWait` end only the lock's wait. An acquisition whose outcome is uncertain no longer leaves a
+  grant held for the whole lease: exactly one bounded, owner-checked release that the caller never
+  waits for follows caller cancellation or `MaxWait` expiry once the grant arrives, a reply
+  rejected because the usable lease had already run out, and a provider failure of kind `Timeout`
+  or `Other`, where the caller still receives the same exception. `Unavailable` means the backend
+  was not reached and releases nothing, which includes a Redis connection that drops mid-command.
+  Cancelling therefore no longer stops a command already sent: an abandoned attempt can cost one
+  extra write plus one release, and a provider call can outlive its caller by up to one lease.
+  Providers follow standard cancellation, and the locking reference no longer claims that
+  cancellation leaves nothing held.
+- Disposing a `DistributedLock` ends its in-flight acquisitions with `ObjectDisposedException`,
+  and every later `TryAcquireAsync` or `ExecuteWithLockAsync` throws it, even with locking
+  disabled. Held handles still release.
+- `FaultingLockProvider.TryAcquireAsync` is asynchronous, so an injected failure arrives as a
+  faulted task instead of a synchronous throw.
+- A leader whose renewal fails while its lease is still held stays leader and retries at the
+  renewal interval or half the remaining lease, whichever is sooner, never more often than a
+  twentieth of the lease, until an extension succeeds under the same term or the lease ends.
+  Previously one transient provider failure handed leadership over and cancelled leader-only work.
+  A refusal, a lost handle, lease end, resignation, and stop still end leadership at once. Such a
+  failure is recorded as `failed` rather than `refused` on `hostloom.leader.renew.duration`.
+- A hosted elector whose `Leadership:Lease` exceeds `Locking:MaxLease` fails at startup with a
+  message naming the role and both values. Previously the lock capped the lease silently, which
+  could break the rule that the renewal interval is at most half the lease. An elector built
+  without the container is still capped silently.
+- `RequestAsync` and `PublishAsync` report transport failures as `MessagingTransportException`.
+  RabbitMQ maps nacks, closed connections and channels, an unreachable broker, and other
+  client-library, socket, and I/O failures; Kafka maps a reply consumer that fails to start and
+  `ProduceException`. An unroutable request still ends in `RequestTimeoutException`,
+  `PublishTimeout` still throws `TimeoutException`, and a failure after disposal is
+  `ObjectDisposedException`. `ListenAsync` and `SubscribeAsync` still surface the client
+  library's exception, which fails host startup. A cancelled RabbitMQ caller now receives its own
+  token instead of the transport's linked one, and a Kafka publication after disposal throws
+  `ObjectDisposedException`.
 - Invalidation generations are striped by tag as well as by key. A tag invalidation suppresses
   only in-flight fills that declare a tag sharing its stripe, an untagged fill ignores tag
   invalidations, and a fill on an unrelated tag reaches both tiers. Previously any tag
@@ -161,6 +224,12 @@ concurrency limit.
 - Disposing a stale in-memory listener or subscription handle removes only its own registration:
   a successor bound to the same address or subscription name after the first disposal is no
   longer removed by disposing the first handle again.
+- The in-process tier's warning when it clears itself at 150 % of `L1.MaxEntries`
+  (`CacheL1Cleared`, 1101) is logged through the cache's logger; previously the tier was built
+  without one and the warning never appeared. Expired entries are swept once per interval instead
+  of twice.
+- The Valkey invalidation channel throttles its warnings on the injected clock and is safe when
+  several threads warn at once.
 
 ## [0.9.0] - 2026-09-22
 
