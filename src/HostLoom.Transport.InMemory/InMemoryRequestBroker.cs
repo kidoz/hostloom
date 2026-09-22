@@ -12,14 +12,28 @@ public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBroke
         EventSubscription
     > _topics = new();
     private readonly ILogger<InMemoryRequestBroker> _logger;
+    private readonly TimeProvider _clock;
     private volatile bool _disposed;
     private readonly Lock _lifecycleGate = new();
 
     public InMemoryRequestBroker()
         : this(null) { }
 
-    public InMemoryRequestBroker(ILogger<InMemoryRequestBroker>? logger) =>
+    public InMemoryRequestBroker(ILogger<InMemoryRequestBroker>? logger)
+        : this(logger, timeProvider: null) { }
+
+    /// <summary>
+    /// Takes the clock that bounds requests, so a test registering a controllable
+    /// <see cref="TimeProvider"/> drives the request timeout instead of waiting it out.
+    /// </summary>
+    public InMemoryRequestBroker(
+        ILogger<InMemoryRequestBroker>? logger,
+        TimeProvider? timeProvider = null
+    )
+    {
         _logger = logger ?? NullLogger<InMemoryRequestBroker>.Instance;
+        _clock = timeProvider ?? TimeProvider.System;
+    }
 
     /// <summary>Simulates an unreachable broker, so readiness behaviour is testable in process.</summary>
     public bool IsReachable { get; set; } = true;
@@ -138,7 +152,7 @@ public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBroke
         cancellationToken.ThrowIfCancellationRequested();
         if (!_handlers.TryGetValue(address, out var subscription))
         {
-            await Task.Delay(timeout, cancellationToken).ConfigureAwait(false);
+            await Task.Delay(timeout, _clock, cancellationToken).ConfigureAwait(false);
             throw new RequestTimeoutException(address, timeout);
         }
         var owned = request.ToArray();
@@ -154,7 +168,9 @@ public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBroke
         );
         try
         {
-            return await delivery.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+            return await delivery
+                .WaitAsync(timeout, _clock, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (TimeoutException exception)
         {

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using HostLoom.Transport.InMemory;
@@ -126,19 +125,27 @@ public sealed class MessagingChaosTests
     public async Task A_handler_that_never_answers_is_bounded_by_the_request_timeout()
     {
         var gate = new Gate();
-        using var host = BuildInMemory(gate);
+        var clock = new TestClock();
+        using var host = BuildInMemory(gate, clock);
         await host.StartAsync(TestContext.Current.CancellationToken);
         var client = host.Services.GetRequiredService<IRequestClient<Reserve, Reserved>>();
-        var budget = TimeSpan.FromMilliseconds(250);
+        var budget = TimeSpan.FromMinutes(5);
 
-        var timeout = await Assert.ThrowsAsync<RequestTimeoutException>(async () =>
-            await client.GetResponseAsync(
+        var pending = client
+            .GetResponseAsync(
                 "inventory",
                 new Reserve("R-2"),
                 budget,
                 TestContext.Current.CancellationToken
             )
-        );
+            .AsTask();
+        await gate.Entered.Task.WaitAsync(Bounded, TestContext.Current.CancellationToken);
+        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 1);
+        clock.Advance(budget - TimeSpan.FromSeconds(1));
+        Assert.False(pending.IsCompleted);
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        var timeout = await Assert.ThrowsAsync<RequestTimeoutException>(() => pending);
 
         Assert.Equal("inventory", timeout.Address.Value);
         Assert.Equal(budget, timeout.Timeout);
@@ -152,35 +159,68 @@ public sealed class MessagingChaosTests
     public async Task A_request_after_the_endpoint_stopped_fails_instead_of_hanging()
     {
         var gate = new Gate();
-        using var host = BuildInMemory(gate);
+        var clock = new TestClock();
+        using var host = BuildInMemory(gate, clock);
         await host.StartAsync(TestContext.Current.CancellationToken);
         await host.StopAsync(TestContext.Current.CancellationToken);
         var client = host.Services.GetRequiredService<IRequestClient<Reserve, Reserved>>();
 
-        var budget = TimeSpan.FromMilliseconds(40);
-        var start = Stopwatch.GetTimestamp();
-        var timeout = await Assert.ThrowsAsync<RequestTimeoutException>(async () =>
-            await client.GetResponseAsync(
+        // An unbound endpoint waits out the whole request budget on the clock rather than
+        // failing fast, so the caller sees the same timeout it would against a real broker.
+        var budget = TimeSpan.FromMinutes(5);
+        var pending = client
+            .GetResponseAsync(
                 "inventory",
                 new Reserve("R-3"),
                 budget,
                 TestContext.Current.CancellationToken
             )
-        );
+            .AsTask();
+        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 1);
+        clock.Advance(budget - TimeSpan.FromSeconds(1));
+        Assert.False(pending.IsCompleted);
+        clock.Advance(TimeSpan.FromSeconds(1));
 
-        Assert.True(
-            Stopwatch.GetElapsedTime(start) >= budget,
-            "an unbound endpoint respects the request budget"
-        );
+        var timeout = await Assert.ThrowsAsync<RequestTimeoutException>(() => pending);
+
         Assert.Equal(budget, timeout.Timeout);
         Assert.Equal(0, gate.Started);
+    }
+
+    [Fact]
+    public async Task The_in_memory_transport_takes_the_time_provider_registered_before_it()
+    {
+        var clock = new TestClock();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton<TimeProvider>(clock);
+        builder.Services.AddHostLoom().UseInMemory().AddRequestClient<Reserve, Reserved>();
+        using var host = builder.Build();
+        await host.StartAsync(TestContext.Current.CancellationToken);
+        var client = host.Services.GetRequiredService<IRequestClient<Reserve, Reserved>>();
+
+        // The transport is registered by type, so the container picks its richest satisfiable
+        // constructor; the registered clock, not the system one, must be what bounds the wait.
+        var pending = client
+            .GetResponseAsync(
+                "inventory",
+                new Reserve("R-6"),
+                TimeSpan.FromHours(1),
+                TestContext.Current.CancellationToken
+            )
+            .AsTask();
+        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 1);
+        Assert.False(pending.IsCompleted);
+        clock.Advance(TimeSpan.FromHours(1));
+
+        await Assert.ThrowsAsync<RequestTimeoutException>(() => pending);
     }
 
     [Fact]
     public async Task Stopping_the_listener_cancels_receiver_work()
     {
         var gate = new Gate();
-        using var host = BuildInMemory(gate);
+        var clock = new TestClock();
+        using var host = BuildInMemory(gate, clock);
         await host.StartAsync(TestContext.Current.CancellationToken);
         var client = host.Services.GetRequiredService<IRequestClient<Reserve, Reserved>>();
 
@@ -200,14 +240,17 @@ public sealed class MessagingChaosTests
         Assert.Equal(0, gate.Completed);
 
         // The stop still took the endpoint away for anything that had not been accepted.
-        await Assert.ThrowsAsync<RequestTimeoutException>(async () =>
-            await client.GetResponseAsync(
+        var unbound = client
+            .GetResponseAsync(
                 "inventory",
                 new Reserve("R-5"),
-                TimeSpan.FromMilliseconds(40),
+                TimeSpan.FromMinutes(5),
                 TestContext.Current.CancellationToken
             )
-        );
+            .AsTask();
+        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 1);
+        clock.Advance(TimeSpan.FromMinutes(5));
+        await Assert.ThrowsAsync<RequestTimeoutException>(() => unbound);
     }
 
     [Fact]
@@ -304,10 +347,15 @@ public sealed class MessagingChaosTests
         return builder.Build();
     }
 
-    private static IHost BuildInMemory(Gate gate)
+    private static IHost BuildInMemory(Gate gate, TestClock? clock = null)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(gate);
+        if (clock is not null)
+        {
+            builder.Services.AddSingleton<TimeProvider>(clock);
+        }
+
         builder
             .Services.AddHostLoom()
             .UseInMemory()
