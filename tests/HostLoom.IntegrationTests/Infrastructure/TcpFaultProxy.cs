@@ -19,6 +19,9 @@ internal sealed class TcpFaultProxy : IAsyncDisposable
     private readonly Task _accept;
     private readonly string _upstreamHost;
     private readonly int _upstreamPort;
+    private readonly TaskCompletionSource _refused = new(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    );
     private bool _enabled = true;
     private TaskCompletionSource? _hold;
 
@@ -39,6 +42,12 @@ internal sealed class TcpFaultProxy : IAsyncDisposable
     public static string Host => "127.0.0.1";
 
     public int Port { get; }
+
+    /// <summary>
+    /// Completes the first time the disabled proxy refuses a connection, such as a client's
+    /// reconnection attempt, so an outage can be held across one without sleeping.
+    /// </summary>
+    public Task Refused => _refused.Task;
 
     /// <summary>
     /// Stops forwarding server replies on every current session that has carried a
@@ -107,6 +116,7 @@ internal sealed class TcpFaultProxy : IAsyncDisposable
                     if (!_enabled)
                     {
                         client.Dispose();
+                        _refused.TrySetResult();
                         continue;
                     }
                     var session = new Session();
