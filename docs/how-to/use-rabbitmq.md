@@ -157,5 +157,16 @@ A stalled confirmation therefore does not serialize all publication behind one r
 though a broker resource alarm can still prevent the broker accepting any publication.
 Request deadlines bound publication and reply waiting.
 
+On the consuming side, `RequestDispatchConcurrency` (default 16) is how many deliveries a
+request listener's channel hands to its handler at once, and `EventDispatchConcurrency`
+(default 1) is the same for an event subscription. Both are bounded by `PrefetchCount`,
+because the broker never has more deliveries in flight on the channel than that. Requests
+are independent of one another, so they run in parallel by default; a subscription keeps
+its events in queue order only while its value is 1, and raising it means the handlers
+overlap and may finish out of order. Neither setting throttles the handler itself: to cap
+how many run at once inside the process, add `UseConcurrencyLimit` to the receive pipeline
+rather than lowering the dispatch concurrency, which would also hold back the prefetched
+deliveries behind it.
+
 Rejected deliveries log their exception and whether a dead-letter exchange is configured.
 Configure `DeadLetterExchange` to retain rejected messages; logging alone does not retain them.

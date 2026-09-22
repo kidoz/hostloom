@@ -22,6 +22,8 @@ A custom transport registers with
 | `PublishTimeout` | 30 seconds | Event publication deadline, including channel acquisition and confirmation |
 | `MaxConcurrentPublishes` | 16 | Maximum outstanding publications on exclusively owned channels |
 | `PrefetchCount` | `16` | Unacknowledged deliveries per consumer |
+| `RequestDispatchConcurrency` | `16` | Deliveries a request listener handles at once on its channel, 1 to `PrefetchCount` (unbounded when `PrefetchCount` is 0) |
+| `EventDispatchConcurrency` | `1` | Deliveries an event subscription handles at once on its channel, 1 to `PrefetchCount`; above 1 a subscription no longer sees events in queue order |
 | `DurableRequestQueues` | `true` | Request queues survive a broker restart |
 | `DurableTopics` | `true` | Topic exchanges/queues are durable and event messages are persistent |
 | `QueueNaming` | `RabbitMqQueueNaming.Version2` | Role-qualified hashed request/subscription names; explicit `Legacy` supports migration |
@@ -55,7 +57,7 @@ A custom transport registers with
 | Event topic | in-process channel | fanout exchange | Kafka topic |
 | Subscription | named handler on the topic | durable V2 queue for the topic/subscription pair | consumer group |
 | Cross-subscription order | unspecified | unspecified | unspecified |
-| Ordering within a subscription | delivery order | queue order | per partition only (records produced without a key) |
+| Ordering within a subscription | delivery order | queue order while `EventDispatchConcurrency` is 1 | per partition only (records produced without a key) |
 
 Rationale for the differences: [transport semantics](../explanation/transports.md).
 

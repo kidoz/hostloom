@@ -69,6 +69,14 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                 nameof(options),
                 "PublishTimeout must be a finite positive timer duration."
             );
+        ValidateDispatchConcurrency(
+            _options.RequestDispatchConcurrency,
+            nameof(RabbitMqOptions.RequestDispatchConcurrency)
+        );
+        ValidateDispatchConcurrency(
+            _options.EventDispatchConcurrency,
+            nameof(RabbitMqOptions.EventDispatchConcurrency)
+        );
         _maxPublishers = _options.MaxConcurrentPublishes;
         _publishGate = new(_maxPublishers, _maxPublishers);
         _shutdownToken = _shutdown.Token;
@@ -82,6 +90,32 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         _connectionFactory = connectionFactory ?? ConnectAsync;
     }
 
+    /// <summary>
+    /// A consumer channel dispatches at most this many deliveries at once, so a value above the
+    /// prefetch window could never be reached and would only misstate the real bound.
+    /// </summary>
+    private void ValidateDispatchConcurrency(ushort concurrency, string name)
+    {
+        var limit = _options.PrefetchCount == 0 ? ushort.MaxValue : _options.PrefetchCount;
+        if (concurrency < 1 || concurrency > limit)
+            throw new ArgumentOutOfRangeException(
+                nameof(concurrency),
+                concurrency,
+                $"RabbitMqOptions.{name} must be between 1 and PrefetchCount ({limit})."
+            );
+    }
+
+    /// <summary>
+    /// Consumer channels never publish with confirmations: a listener's reply is answered on the
+    /// same channel, and the tracking mode would make every reply await a broker round trip.
+    /// </summary>
+    private static CreateChannelOptions ConsumerChannelOptions(ushort dispatchConcurrency) =>
+        new(
+            publisherConfirmationsEnabled: false,
+            publisherConfirmationTrackingEnabled: false,
+            consumerDispatchConcurrency: dispatchConcurrency
+        );
+
     public async ValueTask<IAsyncDisposable> ListenAsync(
         RequestAddress address,
         RequestFrameHandler handler,
@@ -90,7 +124,10 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     {
         var connection = await EnsureConnectionAsync(cancellationToken).ConfigureAwait(false);
         var channel = await connection
-            .CreateChannelAsync(cancellationToken: cancellationToken)
+            .CreateChannelAsync(
+                ConsumerChannelOptions(_options.RequestDispatchConcurrency),
+                cancellationToken
+            )
             .ConfigureAwait(false);
 
         var stopping = new CancellationTokenSource();
@@ -266,7 +303,10 @@ public sealed class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 
         var connection = await EnsureConnectionAsync(cancellationToken).ConfigureAwait(false);
         var channel = await connection
-            .CreateChannelAsync(cancellationToken: cancellationToken)
+            .CreateChannelAsync(
+                ConsumerChannelOptions(_options.EventDispatchConcurrency),
+                cancellationToken
+            )
             .ConfigureAwait(false);
 
         var stopping = new CancellationTokenSource();

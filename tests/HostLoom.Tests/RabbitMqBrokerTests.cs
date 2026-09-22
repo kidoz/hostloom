@@ -855,6 +855,86 @@ public sealed class RabbitMqBrokerTests
         await Assert.ThrowsAsync<ObjectDisposedException>(() => waiting);
     }
 
+    [Fact]
+    public async Task Consumer_channels_dispatch_with_the_configured_concurrency()
+    {
+        var rabbit = new FakeRabbit();
+        await using var broker = new RabbitMqRequestBroker(
+            Options.Create(
+                new RabbitMqOptions
+                {
+                    PrefetchCount = 32,
+                    RequestDispatchConcurrency = 8,
+                    EventDispatchConcurrency = 3,
+                }
+            ),
+            _ => ValueTask.FromResult(rabbit.Connection)
+        );
+
+        await using var listener = await broker.ListenAsync(
+            "orders",
+            (_, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 1 }),
+            TestContext.Current.CancellationToken
+        );
+        await using var subscription = await broker.SubscribeAsync(
+            "orders",
+            "audit",
+            (_, _) => ValueTask.CompletedTask,
+            TestContext.Current.CancellationToken
+        );
+
+        var listenerOptions = Assert.IsType<CreateChannelOptions>(rabbit.Channels[0].Options);
+        Assert.Equal((ushort)8, listenerOptions.ConsumerDispatchConcurrency);
+        Assert.False(listenerOptions.PublisherConfirmationsEnabled);
+        var subscriptionOptions = Assert.IsType<CreateChannelOptions>(rabbit.Channels[1].Options);
+        Assert.Equal((ushort)3, subscriptionOptions.ConsumerDispatchConcurrency);
+        Assert.False(subscriptionOptions.PublisherConfirmationsEnabled);
+    }
+
+    [Fact]
+    public async Task Requests_dispatch_up_to_the_prefetch_window_and_events_serially_by_default()
+    {
+        var rabbit = new FakeRabbit();
+        await using var broker = Create(rabbit);
+
+        await using var listener = await broker.ListenAsync(
+            "orders",
+            (_, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 1 }),
+            TestContext.Current.CancellationToken
+        );
+        await using var subscription = await broker.SubscribeAsync(
+            "orders",
+            "audit",
+            (_, _) => ValueTask.CompletedTask,
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal((ushort)16, rabbit.Channels[0].Options?.ConsumerDispatchConcurrency);
+        Assert.Equal((ushort)1, rabbit.Channels[1].Options?.ConsumerDispatchConcurrency);
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(17, 1)]
+    [InlineData(1, 0)]
+    [InlineData(1, 17)]
+    public void Dispatch_concurrency_outside_the_prefetch_window_is_rejected(
+        int requests,
+        int events
+    )
+    {
+        var options = new RabbitMqOptions
+        {
+            PrefetchCount = 16,
+            RequestDispatchConcurrency = (ushort)requests,
+            EventDispatchConcurrency = (ushort)events,
+        };
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new RabbitMqRequestBroker(Options.Create(options))
+        );
+    }
+
     private static RabbitMqRequestBroker Create(FakeRabbit rabbit) =>
         new(Options.Create(new RabbitMqOptions()), _ => ValueTask.FromResult(rabbit.Connection));
 

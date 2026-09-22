@@ -60,6 +60,63 @@ public sealed class RabbitMqTransportTests
     }
 
     [Fact(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
+    public async Task A_listener_handles_a_full_prefetch_window_of_requests_at_once()
+    {
+        var address = Unique("held");
+        var gate = new Gate(16);
+        using var host = await StartAsync(
+            hostLoom => hostLoom.AddHandler<Hold, Held, HoldingHandler>(address),
+            services => services.AddSingleton(gate)
+        );
+        var client = ClientOf<Hold, Held>(host);
+
+        // The default dispatch concurrency equals the prefetch window, so every one of these
+        // must be inside the handler before any is released; a serial dispatch would park the
+        // first and never let the sixteenth arrive.
+        var pending = Enumerable
+            .Range(0, 16)
+            .Select(i =>
+                client.GetResponseAsync(address, new Hold(i), cancellationToken: Token).AsTask()
+            )
+            .ToArray();
+        await gate.AllArrived.WaitAsync(Bound, Token);
+        Assert.Equal(16, gate.Peak);
+        Assert.All(pending, task => Assert.False(task.IsCompleted));
+
+        gate.Release();
+        var responses = await Task.WhenAll(pending);
+
+        Assert.Equal(
+            [.. Enumerable.Range(0, 16)],
+            [.. responses.Select(response => response.Index).Order()]
+        );
+    }
+
+    [Fact(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
+    public async Task A_subscription_receives_events_in_publish_order_by_default()
+    {
+        var topic = Unique("sequence");
+        var received = new Received();
+        received.Expect(16);
+        using var host = await StartAsync(
+            hostLoom => hostLoom.AddSubscriber<OrderPlaced, SequenceHandler>(topic, "sequence"),
+            received: received
+        );
+
+        // Each publish awaits its confirmation, so the queue order is the loop order; with the
+        // default event dispatch concurrency of 1 the handler must see exactly that order.
+        for (var i = 0; i < 16; i++)
+        {
+            await PublisherOf(host).PublishAsync(topic, new OrderPlaced($"S-{i:D2}"), Token);
+        }
+
+        Assert.Equal(
+            [.. Enumerable.Range(0, 16).Select(i => $"sequence:S-{i:D2}")],
+            await received.WaitInOrderAsync(Bound)
+        );
+    }
+
+    [Fact(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
     public async Task A_handler_fault_returns_as_a_remote_fault_without_a_stack_trace()
     {
         var address = Unique("failures");
@@ -103,7 +160,7 @@ public sealed class RabbitMqTransportTests
                 hostLoom
                     .AddSubscriber<OrderPlaced, AuditHandler>(topic, "audit")
                     .AddSubscriber<OrderPlaced, ShippingHandler>(topic, "shipping"),
-            received
+            received: received
         );
 
         await PublisherOf(host).PublishAsync(topic, new OrderPlaced("A-1"), Token);
@@ -123,7 +180,7 @@ public sealed class RabbitMqTransportTests
                 hostLoom
                     .AddSubscriber<OrderPlaced, AuditHandler>(topic, "combined")
                     .AddSubscriber<OrderPlaced, ShippingHandler>(topic, "combined"),
-            received
+            received: received
         );
 
         await PublisherOf(host).PublishAsync(topic, new OrderPlaced("A-2"), Token);
@@ -154,11 +211,13 @@ public sealed class RabbitMqTransportTests
 
     private static async Task<IHost> StartAsync(
         Action<HostLoomBuilder> configure,
+        Action<IServiceCollection>? services = null,
         Received? received = null
     )
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(received ?? new Received());
+        services?.Invoke(builder.Services);
         configure(
             builder
                 .Services.AddHostLoom(options => options.RequestTimeout = TimeSpan.FromSeconds(20))

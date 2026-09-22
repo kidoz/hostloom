@@ -18,6 +18,20 @@ public sealed class RabbitMqOptions
 
     public ushort PrefetchCount { get; set; } = 16;
 
+    /// <summary>
+    /// Deliveries a request listener handles concurrently on its channel, between 1 and
+    /// <see cref="PrefetchCount"/>. Requests are independent, so they run in parallel by default;
+    /// bound the handler itself with a receive-pipeline concurrency limit when it needs one.
+    /// </summary>
+    public ushort RequestDispatchConcurrency { get; set; } = 16;
+
+    /// <summary>
+    /// Deliveries an event subscription handles concurrently on its channel, between 1 and
+    /// <see cref="PrefetchCount"/>. The default of 1 keeps a subscription's events in queue
+    /// order; any higher value gives that up, and the handlers must then be safe to overlap.
+    /// </summary>
+    public ushort EventDispatchConcurrency { get; set; } = 1;
+
     public bool DurableRequestQueues { get; set; } = true;
 
     /// <summary>Whether topic exchanges and their subscription queues survive a broker restart.</summary>
