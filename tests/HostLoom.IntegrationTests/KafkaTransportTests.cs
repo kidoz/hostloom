@@ -1,5 +1,7 @@
+using System.Text;
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
+using HostLoom.IntegrationTests.Infrastructure;
 using HostLoom.Transport.Kafka;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -20,6 +22,20 @@ public sealed class KafkaTransportTests : IAsyncLifetime
     private readonly List<string> _topics = [];
 
     private static readonly TimeSpan Bound = TimeSpan.FromSeconds(60);
+
+    // The documented instrument and tag names, spelled out so a rename fails here.
+    private const string ClientTag = "hostloom.kafka.client";
+    private const string DestinationTag = "messaging.destination.name";
+    private const string KindTag = "hostloom.kafka.kind";
+    private const string ReasonTag = "hostloom.kafka.reason";
+    private const string OutcomeTag = "hostloom.kafka.outcome";
+    private const string Produced = "hostloom.kafka.produced";
+    private const string Consumed = "hostloom.kafka.consumed";
+    private const string Committed = "hostloom.kafka.committed";
+    private const string Skipped = "hostloom.kafka.records.skipped";
+    private const string Rewound = "hostloom.kafka.records.rewound";
+    private const string Initializations = "hostloom.kafka.reply_consumer.initializations";
+    private const string PendingRequests = "hostloom.kafka.requests.pending";
 
     public static bool Available => BrokerAvailability.Kafka;
 
@@ -170,6 +186,151 @@ public sealed class KafkaTransportTests : IAsyncLifetime
         Assert.Equal(["audit:A-5"], await second.WaitAsync(Bound));
     }
 
+    [Fact(Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(Available))]
+    public async Task A_round_trip_meters_both_produces_the_listener_and_one_reply_consumer_start()
+    {
+        // The request topic is the address itself, so the listener's loop measurements carry it.
+        var address = await CreateTopicAsync("metered");
+        var clientId = Unique("client");
+        using var client = new MeterCapture(KafkaDiagnostics.MeterName, ClientTag, clientId);
+        using var listener = new MeterCapture(KafkaDiagnostics.MeterName, DestinationTag, address);
+        var gate = new Gate(1);
+        using var host = await StartAsync(
+            hostLoom =>
+            {
+                hostLoom.Services.AddSingleton(gate);
+                hostLoom.AddHandler<Hold, Held, HoldingHandler>(address);
+            },
+            clientId: clientId
+        );
+
+        var response = ClientOf<Hold, Held>(host)
+            .GetResponseAsync(address, new Hold(7), cancellationToken: Token)
+            .AsTask();
+        await gate.AllArrived.WaitAsync(Bound, Token);
+        // The handler is holding the request, so its caller is still awaiting the reply.
+        Assert.Equal(1, client.Observe(PendingRequests));
+        gate.Release();
+        Assert.Equal(7, (await response.WaitAsync(Bound, Token)).Index);
+
+        // The listener commits after the reply has been produced, so the commit, and with it the
+        // reply count, may trail the response the caller already holds.
+        using var deadline = Deadline();
+        await listener.WaitForAsync(Committed, 1, deadline.Token);
+        Assert.Equal(1, client.Sum(Produced, (KindTag, "request")));
+        Assert.Equal(1, client.Sum(Produced, (KindTag, "reply")));
+        Assert.Equal(0, client.Sum(Produced, (KindTag, "event")));
+        Assert.Equal(1, client.Sum(Initializations, (OutcomeTag, "succeeded")));
+        Assert.Equal(0, client.Sum(Initializations, (OutcomeTag, "failed")));
+        Assert.Equal(0, client.Observe(PendingRequests));
+        Assert.Equal(1, listener.Sum(Consumed));
+        Assert.Equal(1, listener.Sum(Committed));
+        Assert.Equal(0, listener.Sum(Skipped));
+        Assert.Equal(0, listener.Sum(Rewound));
+    }
+
+    [Fact(Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(Available))]
+    public async Task A_failed_event_is_rewound_and_redelivered_before_its_offset_is_committed()
+    {
+        var topic = await CreateTopicAsync("invoices");
+        using var loop = new MeterCapture(KafkaDiagnostics.MeterName, DestinationTag, topic);
+        var deliveries = new FailFirstDelivery();
+        (double Rewound, double Committed)? atRedelivery = null;
+        // Taken inside the handler, on the consumer loop, before the redelivery can be committed.
+        deliveries.OnAttempt = attempt =>
+        {
+            if (attempt == 2)
+            {
+                atRedelivery = (loop.Sum(Rewound), loop.Sum(Committed));
+            }
+        };
+        using var host = await StartAsync(hostLoom =>
+        {
+            hostLoom.Services.AddSingleton(deliveries);
+            hostLoom.AddSubscriber<OrderPlaced, FailFirstDeliveryHandler>(topic, "billing");
+        });
+
+        await PublisherOf(host).PublishAsync(topic, new OrderPlaced("I-1"), Token);
+
+        // Events retry until shutdown, so only the deadline bounds a redelivery that never comes.
+        using var deadline = Deadline();
+        await deliveries.Redelivered.WaitAsync(deadline.Token);
+        await loop.WaitForAsync(Committed, 1, deadline.Token);
+        Assert.Equal(["I-1", "I-1"], deliveries.Seen);
+        Assert.NotNull(atRedelivery);
+        Assert.True(
+            atRedelivery.Value.Rewound >= 1,
+            "The failure was not rewound before redelivery."
+        );
+        Assert.Equal(0, atRedelivery.Value.Committed);
+        Assert.Equal(2, loop.Sum(Consumed));
+        Assert.Equal(1, loop.Sum(Committed));
+        Assert.Equal(0, loop.Sum(Skipped));
+    }
+
+    [Fact(Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(Available))]
+    public async Task A_record_that_is_not_an_envelope_is_skipped_and_the_listener_keeps_serving()
+    {
+        var address = await CreateTopicAsync("malformed");
+        using var listener = new MeterCapture(KafkaDiagnostics.MeterName, DestinationTag, address);
+        using var host = await StartAsync(hostLoom =>
+            hostLoom.AddHandler<Greet, Greeting, GreetHandler>(address)
+        );
+
+        using (
+            var producer = new ProducerBuilder<string, byte[]>(
+                new ProducerConfig
+                {
+                    BootstrapServers = "localhost:9092",
+                    MessageTimeoutMs = 15_000,
+                }
+            ).Build()
+        )
+        {
+            // No headers at all: the transport rejects it before the host sees it.
+            await producer
+                .ProduceAsync(
+                    address,
+                    new Message<string, byte[]> { Value = "not an envelope"u8.ToArray() },
+                    Token
+                )
+                .WaitAsync(Bound, Token);
+            // The transport's headers around a body the host cannot decode as an envelope.
+            await producer
+                .ProduceAsync(
+                    address,
+                    new Message<string, byte[]>
+                    {
+                        Value = [0xFF, 0x00, 0x7B],
+                        Headers = new Headers
+                        {
+                            {
+                                "hostloom-correlation-id",
+                                Encoding.UTF8.GetBytes(Guid.NewGuid().ToString("N"))
+                            },
+                            { "hostloom-reply-to", Encoding.UTF8.GetBytes(Unique("replies")) },
+                        },
+                    },
+                    Token
+                )
+                .WaitAsync(Bound, Token);
+        }
+
+        using var deadline = Deadline();
+        await listener.WaitForAsync(Skipped, 2, deadline.Token, (ReasonTag, "malformed"));
+        await listener.WaitForAsync(Committed, 2, deadline.Token);
+
+        var response = await ClientOf<Greet, Greeting>(host)
+            .GetResponseAsync(address, new Greet("Ada"), cancellationToken: Token);
+
+        Assert.Equal("Hello, Ada!", response.Text);
+        await listener.WaitForAsync(Committed, 3, deadline.Token);
+        Assert.Equal(2, listener.Sum(Skipped, (ReasonTag, "malformed")));
+        Assert.Equal(2, listener.Sum(Skipped));
+        Assert.Equal(3, listener.Sum(Consumed));
+        Assert.Equal(0, listener.Sum(Rewound));
+    }
+
     public ValueTask InitializeAsync() => ValueTask.CompletedTask;
 
     public async ValueTask DisposeAsync()
@@ -215,6 +376,13 @@ public sealed class KafkaTransportTests : IAsyncLifetime
 
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
+    private static CancellationTokenSource Deadline()
+    {
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        deadline.CancelAfter(Bound);
+        return deadline;
+    }
+
     private static string Unique(string prefix) => $"it-{prefix}-{Guid.NewGuid():N}";
 
     private static IRequestClient<TRequest, TResponse> ClientOf<TRequest, TResponse>(IHost host)
@@ -228,7 +396,8 @@ public sealed class KafkaTransportTests : IAsyncLifetime
     private async Task<IHost> StartAsync(
         Action<HostLoomBuilder> configure,
         Received? received = null,
-        string? consumerGroup = null
+        string? consumerGroup = null,
+        string? clientId = null
     )
     {
         var responseTopic = await CreateTopicAsync("responses");
@@ -242,6 +411,10 @@ public sealed class KafkaTransportTests : IAsyncLifetime
                     options.BootstrapServers = "localhost:9092";
                     options.ConsumerGroup = consumerGroup ?? Unique("group");
                     options.ResponseTopic = responseTopic;
+                    if (clientId is not null)
+                    {
+                        options.ClientId = clientId;
+                    }
                 })
         );
 

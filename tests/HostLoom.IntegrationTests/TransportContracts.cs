@@ -161,3 +161,47 @@ public sealed class ShippingHandler(Received received) : IEventHandler<OrderPlac
         return ValueTask.CompletedTask;
     }
 }
+
+/// <summary>
+/// Records every delivery the <see cref="FailFirstDeliveryHandler"/> sees and fails only the
+/// first, so a transport's redelivery of a failed event can be asserted on without sleeping.
+/// </summary>
+public sealed class FailFirstDelivery
+{
+    private readonly ConcurrentQueue<string> _seen = new();
+    private readonly TaskCompletionSource _redelivered = new(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    );
+    private int _attempts;
+
+    /// <summary>Runs inside the handler with the attempt number, before it returns or throws.</summary>
+    public Action<int>? OnAttempt { get; set; }
+
+    /// <summary>Completes when the second delivery has been handled successfully.</summary>
+    public Task Redelivered => _redelivered.Task;
+
+    public IReadOnlyList<string> Seen => [.. _seen];
+
+    /// <summary>Records one delivery and returns whether it must fail.</summary>
+    public bool Record(string reference)
+    {
+        _seen.Enqueue(reference);
+        var attempt = Interlocked.Increment(ref _attempts);
+        OnAttempt?.Invoke(attempt);
+        if (attempt == 2)
+        {
+            _redelivered.TrySetResult();
+        }
+
+        return attempt == 1;
+    }
+}
+
+public sealed class FailFirstDeliveryHandler(FailFirstDelivery deliveries)
+    : IEventHandler<OrderPlaced>
+{
+    public ValueTask HandleAsync(OrderPlaced @event, CancellationToken cancellationToken) =>
+        deliveries.Record(@event.Reference)
+            ? throw new InvalidOperationException("The first delivery of every event fails.")
+            : ValueTask.CompletedTask;
+}
