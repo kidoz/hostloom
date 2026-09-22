@@ -1,4 +1,3 @@
-using System.Diagnostics.Metrics;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using HostLoom.Caching;
@@ -293,8 +292,11 @@ public sealed class RedisOutageTests
             new LockingOptions { Namespace = ns },
             provider
         );
-        var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var listener = OrphanReleaseListener(released);
+        using var meters = new MeterCapture(
+            LockingDiagnostics.MeterName,
+            LockingDiagnostics.NamespaceTag,
+            ns
+        );
 
         // Connect first: a held handshake reply would fail the connection, not the acquisition.
         Assert.True((await provider.CheckHealthAsync(token)).IsHealthy);
@@ -317,7 +319,14 @@ public sealed class RedisOutageTests
 
         // The late grant is released by the abandoned owner, long before its 20-second lease
         // would expire, so a successor on another connection takes the key.
-        await released.Task.WaitAsync(TimeSpan.FromSeconds(10), token);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        await meters.WaitForAsync(
+            "hostloom.lock.orphan_releases",
+            1,
+            deadline.Token,
+            (LockingDiagnostics.OutcomeTag, "released")
+        );
         await using var direct = new RedisConnection(
             new RedisOptions { Configuration = RedisAvailability.Configuration }
         );
@@ -332,34 +341,6 @@ public sealed class RedisOutageTests
             token
         );
         Assert.NotNull(successor);
-    }
-
-    private static MeterListener OrphanReleaseListener(TaskCompletionSource released)
-    {
-        var listener = new MeterListener
-        {
-            InstrumentPublished = (instrument, l) =>
-            {
-                if (
-                    instrument.Meter.Name == LockingDiagnostics.MeterName
-                    && instrument.Name == "hostloom.lock.orphan_releases"
-                )
-                    l.EnableMeasurementEvents(instrument);
-            },
-        };
-        listener.SetMeasurementEventCallback<long>(
-            (_, _, tags, _) =>
-            {
-                foreach (var tag in tags)
-                    if (
-                        tag.Key == LockingDiagnostics.OutcomeTag
-                        && string.Equals(tag.Value as string, "released", StringComparison.Ordinal)
-                    )
-                        released.TrySetResult();
-            }
-        );
-        listener.Start();
-        return listener;
     }
 
     private static RedisConnection Connection(RedisFaultProxy proxy) =>
