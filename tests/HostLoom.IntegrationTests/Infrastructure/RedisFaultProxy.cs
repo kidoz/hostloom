@@ -19,6 +19,7 @@ internal sealed class RedisFaultProxy : IAsyncDisposable
     private readonly string _upstreamHost;
     private readonly int _upstreamPort;
     private bool _enabled = true;
+    private TaskCompletionSource? _hold;
 
     public RedisFaultProxy()
         : this(RedisAvailability.Host, RedisAvailability.Port) { }
@@ -58,6 +59,20 @@ internal sealed class RedisFaultProxy : IAsyncDisposable
             }
         }
     }
+
+    /// <summary>
+    /// Holds every server reply on every session, current and future, until
+    /// <see cref="ReleaseReplies"/>; requests still reach the server. Models a reply that lands
+    /// after the caller stopped waiting.
+    /// </summary>
+    public void HoldReplies() =>
+        Interlocked.CompareExchange(
+            ref _hold,
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+            null
+        );
+
+    public void ReleaseReplies() => Interlocked.Exchange(ref _hold, null)?.TrySetResult();
 
     public void SetEnabled(bool enabled)
     {
@@ -137,7 +152,7 @@ internal sealed class RedisFaultProxy : IAsyncDisposable
     }
 
     /// <summary>Server-to-client copy that notices subscription acknowledgements and can be stalled.</summary>
-    private static async Task PumpRepliesAsync(
+    private async Task PumpRepliesAsync(
         NetworkStream source,
         NetworkStream target,
         Session session,
@@ -164,6 +179,11 @@ internal sealed class RedisFaultProxy : IAsyncDisposable
                 continue;
             }
 
+            if (Volatile.Read(ref _hold) is { } hold)
+            {
+                await hold.Task.WaitAsync(token);
+            }
+
             await target.WriteAsync(buffer.AsMemory(0, read), token);
         }
     }
@@ -177,6 +197,7 @@ internal sealed class RedisFaultProxy : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        ReleaseReplies();
         SetEnabled(false);
         await _shutdown.CancelAsync();
         await _accept;

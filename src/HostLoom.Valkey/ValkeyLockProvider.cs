@@ -44,12 +44,16 @@ public sealed class ValkeyLockProvider : ILockProvider, ILockProviderHealthProbe
     )
     {
         var milliseconds = ValkeyFailures.Milliseconds(lease);
+        cancellationToken.ThrowIfCancellationRequested();
         try
         {
+            // Once the command is sent the caller's token is not honoured on purpose: the lock
+            // kernel stops waiting on its own, and it needs this reply to release a grant that
+            // lands after the caller gave up. The command timeout still bounds the wait.
             var reply = await _connection
                 .ExecuteAsync(
                     new ValkeyCommand("SET", key, owner, "NX", "PX", milliseconds),
-                    cancellationToken
+                    CancellationToken.None
                 )
                 .ConfigureAwait(false);
             return !reply.IsNull && string.Equals(reply.AsString(), "OK", StringComparison.Ordinal);

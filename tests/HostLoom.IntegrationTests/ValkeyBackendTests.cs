@@ -166,6 +166,66 @@ public sealed class ValkeyBackendTests
     }
 
     [Fact(Skip = ValkeyAvailability.Skip, SkipUnless = nameof(Available))]
+    public async Task CancelledAcquire_ReleasesTheGrantThatLandsAfterTheCallerGaveUp()
+    {
+        await using var proxy = new RedisFaultProxy("localhost", ValkeyAvailability.Port);
+        var options = ValkeyAvailability.Options();
+        options.Connection = new ValkeyClientOptions
+        {
+            Host = RedisFaultProxy.Host,
+            Port = proxy.Port,
+            ClientName = options.Connection.ClientName,
+        };
+        await using var connection = new ValkeyConnection(options);
+        var provider = new ValkeyLockProvider(connection);
+        var ns = "valkey-late-" + Guid.NewGuid().ToString("N");
+        await using var mutex = new DistributedLock(
+            new LockingOptions { Namespace = ns },
+            provider
+        );
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+
+        // Connect first: a held handshake reply would fail the connection, not the acquisition.
+        Assert.True((await provider.CheckHealthAsync(timeout.Token)).IsHealthy);
+
+        // The SET reaches the server at once; only its reply is held until the caller gave up.
+        proxy.HoldReplies();
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        var acquire = mutex
+            .TryAcquireAsync(
+                "inventory",
+                new LockOptions { Lease = TimeSpan.FromSeconds(20) },
+                caller.Token
+            )
+            .AsTask();
+        await Task.Delay(TimeSpan.FromMilliseconds(200), timeout.Token);
+        Assert.False(acquire.IsCompleted);
+        await caller.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => acquire);
+        proxy.ReleaseReplies();
+
+        // The abandoned owner releases the late grant well inside its 20-second lease, so a
+        // successor on a direct connection takes the key.
+        await using var direct = new ValkeyConnection(ValkeyAvailability.Options());
+        var successorProvider = new ValkeyLockProvider(direct);
+        await using var successorLock = new DistributedLock(
+            new LockingOptions { Namespace = ns },
+            successorProvider
+        );
+        await using var successor = await successorLock.TryAcquireAsync(
+            "inventory",
+            new LockOptions
+            {
+                Lease = TimeSpan.FromSeconds(5),
+                Retry = LockRetryPolicy.Interval(50, TimeSpan.FromMilliseconds(100)),
+            },
+            timeout.Token
+        );
+        Assert.NotNull(successor);
+    }
+
+    [Fact(Skip = ValkeyAvailability.Skip, SkipUnless = nameof(Available))]
     public async Task Invalidation_FlushesWhenTheFirstSubscriptionFollowsAFailedAttempt()
     {
         await using var proxy = new RedisFaultProxy("localhost", ValkeyAvailability.Port);

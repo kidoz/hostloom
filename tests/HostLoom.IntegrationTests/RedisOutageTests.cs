@@ -1,3 +1,4 @@
+using System.Diagnostics.Metrics;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using HostLoom.Caching;
@@ -278,6 +279,87 @@ public sealed class RedisOutageTests
         }
 
         Assert.True(held.IsHeld);
+    }
+
+    [Fact(Timeout = 60_000, Skip = Skip, SkipUnless = nameof(Enabled))]
+    public async Task CancelledAcquire_ReleasesTheGrantThatLandsAfterTheCallerGaveUp()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var ns = "outage-" + Guid.NewGuid().ToString("N");
+        await using var proxy = new RedisFaultProxy();
+        await using var connection = Connection(proxy);
+        await using var provider = new RedisLockProvider(connection);
+        await using var mutex = new DistributedLock(
+            new LockingOptions { Namespace = ns },
+            provider
+        );
+        var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var listener = OrphanReleaseListener(released);
+
+        // Connect first: a held handshake reply would fail the connection, not the acquisition.
+        Assert.True((await provider.CheckHealthAsync(token)).IsHealthy);
+
+        // The SET reaches the server at once; only its reply is held until the caller gave up.
+        proxy.HoldReplies();
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var acquire = mutex
+            .TryAcquireAsync(
+                "inventory",
+                new LockOptions { Lease = TimeSpan.FromSeconds(20) },
+                caller.Token
+            )
+            .AsTask();
+        await Task.Delay(TimeSpan.FromMilliseconds(200), token);
+        Assert.False(acquire.IsCompleted);
+        await caller.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => acquire);
+        proxy.ReleaseReplies();
+
+        // The late grant is released by the abandoned owner, long before its 20-second lease
+        // would expire, so a successor on another connection takes the key.
+        await released.Task.WaitAsync(TimeSpan.FromSeconds(10), token);
+        await using var direct = new RedisConnection(
+            new RedisOptions { Configuration = RedisAvailability.Configuration }
+        );
+        await using var successorProvider = new RedisLockProvider(direct);
+        await using var successorLock = new DistributedLock(
+            new LockingOptions { Namespace = ns },
+            successorProvider
+        );
+        await using var successor = await successorLock.TryAcquireAsync(
+            "inventory",
+            new LockOptions { Lease = TimeSpan.FromSeconds(5) },
+            token
+        );
+        Assert.NotNull(successor);
+    }
+
+    private static MeterListener OrphanReleaseListener(TaskCompletionSource released)
+    {
+        var listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, l) =>
+            {
+                if (
+                    instrument.Meter.Name == LockingDiagnostics.MeterName
+                    && instrument.Name == "hostloom.lock.orphan_releases"
+                )
+                    l.EnableMeasurementEvents(instrument);
+            },
+        };
+        listener.SetMeasurementEventCallback<long>(
+            (_, _, tags, _) =>
+            {
+                foreach (var tag in tags)
+                    if (
+                        tag.Key == LockingDiagnostics.OutcomeTag
+                        && string.Equals(tag.Value as string, "released", StringComparison.Ordinal)
+                    )
+                        released.TrySetResult();
+            }
+        );
+        listener.Start();
+        return listener;
     }
 
     private static RedisConnection Connection(RedisFaultProxy proxy) =>

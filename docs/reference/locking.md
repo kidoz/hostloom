@@ -73,9 +73,10 @@ cancelled a provider call still in flight, ends in one of three states:
   `Unavailable` or `Timeout`): the state is unknown, the key is held for at
   most one lease, and nothing is released because nothing was confirmed.
 
-The Redis and Valkey providers stop waiting for the reply as soon as the token
-is cancelled, so after a caller cancellation their confirmation never reaches
-the lock and the second case ends with the lease expiring on its own.
+The Redis and Valkey providers honour the token until the command is sent and
+then let it run to its reply within their command timeout, so a grant that
+lands after the caller gave up reaches the lock and is released. A provider
+whose command times out confirms nothing and falls under the third case.
 
 ## Per-call options (`LockOptions`)
 

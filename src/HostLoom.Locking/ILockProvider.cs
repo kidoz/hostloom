@@ -10,7 +10,10 @@ public interface ILockProvider
 {
     /// <summary>
     /// Takes <paramref name="key"/> for <paramref name="owner"/> for <paramref name="lease"/>, or
-    /// returns <see langword="false"/> when another owner holds an unexpired lease.
+    /// returns <see langword="false"/> when another owner holds an unexpired lease. A provider
+    /// honours <paramref name="cancellationToken"/> until the command is sent and then lets it
+    /// run to its reply within its own command timeout, so the lock can release a grant that
+    /// lands after the caller stopped waiting.
     /// </summary>
     ValueTask<bool> TryAcquireAsync(
         string key,
