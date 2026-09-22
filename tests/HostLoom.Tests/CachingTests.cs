@@ -1455,6 +1455,86 @@ public sealed class TieredCacheTests
         Assert.Contains(logger.Entries, entry => entry.Event.Id == 1007);
     }
 
+    [Fact]
+    public async Task InProcessTierCapacityClear_IsLoggedThroughTheCachesLogger()
+    {
+        var logger = new RecordingLogger<TieredCache>();
+        var options = Options("capacity");
+        options.L1.MaxEntries = 2;
+        await using var cache = new TieredCache(options, timeProvider: _clock, logger: logger);
+        var token = TestContext.Current.CancellationToken;
+        var entry = new CacheEntryOptions(TimeSpan.FromMinutes(5));
+
+        // Three entries reach 150 % of two, which clears the tier instead of evicting a fraction.
+        await cache.SetAsync("catalog:1", 1, entry, token);
+        await cache.SetAsync("catalog:2", 2, entry, token);
+        Assert.DoesNotContain(logger.Entries, logged => logged.Event.Id == 1101);
+        await cache.SetAsync("catalog:3", 3, entry, token);
+
+        Assert.Equal(0, cache.LocalEntryCount);
+        var cleared = Assert.Single(logger.Entries, logged => logged.Event.Id == 1101);
+        Assert.Equal(LogLevel.Warning, cleared.Level);
+        Assert.Equal("CacheL1Cleared", cleared.Event.Name);
+    }
+
+    [Fact]
+    public async Task ExpiredInProcessEntries_AreSweptByOneTimerPerCleanupInterval()
+    {
+        var clock = new TimerCountingClock(_clock);
+        var options = Options("sweep");
+        options.L1.CleanupInterval = TimeSpan.FromSeconds(30);
+        await using var cache = new TieredCache(options, timeProvider: clock);
+        var token = TestContext.Current.CancellationToken;
+
+        Assert.Equal(1, clock.PeriodicTimers(options.L1.CleanupInterval));
+
+        await cache.SetAsync(
+            "catalog:eu",
+            1,
+            new CacheEntryOptions(TimeSpan.FromSeconds(5)),
+            token
+        );
+        Assert.Equal(1, cache.LocalEntryCount);
+        _clock.Advance(options.L1.CleanupInterval);
+        Assert.Equal(0, cache.LocalEntryCount);
+    }
+
+    /// <summary>Counts the periodic timers a composition arms, delegating everything to an inner clock.</summary>
+    private sealed class TimerCountingClock(TimeProvider inner) : TimeProvider
+    {
+        private readonly Lock _gate = new();
+        private readonly List<TimeSpan> _periods = [];
+
+        public override long TimestampFrequency => inner.TimestampFrequency;
+
+        public override long GetTimestamp() => inner.GetTimestamp();
+
+        public override DateTimeOffset GetUtcNow() => inner.GetUtcNow();
+
+        public int PeriodicTimers(TimeSpan period)
+        {
+            lock (_gate)
+            {
+                return _periods.Count(candidate => candidate == period);
+            }
+        }
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period
+        )
+        {
+            lock (_gate)
+            {
+                _periods.Add(period);
+            }
+
+            return inner.CreateTimer(callback, state, dueTime, period);
+        }
+    }
+
     private sealed class BlockingKeys(TaskCompletionSource entered, TaskCompletionSource release)
         : IReadOnlyCollection<string>
     {

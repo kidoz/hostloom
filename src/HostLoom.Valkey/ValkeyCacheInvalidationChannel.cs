@@ -41,7 +41,13 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
     private long _probesReceived;
     private long _subscriberResets;
     private TaskCompletionSource? _probeWaiter;
-    private long _lastWarning;
+
+    /// <summary>The shortest gap between two degraded warnings from one channel.</summary>
+    internal static readonly TimeSpan WarningInterval = TimeSpan.FromSeconds(30);
+
+    // A clock timestamp can be zero, so "never warned" needs a value no clock returns.
+    private const long NeverWarned = long.MinValue;
+    private long _lastWarning = NeverWarned;
 
     /// <summary>An invalidation naming nothing: what the channel publishes to itself as a probe.</summary>
     private static readonly byte[] ProbePayload = ValkeyInvalidationCodec.Encode(
@@ -381,12 +387,19 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
         }
     }
 
-    private void Warn(string reason)
+    /// <summary>
+    /// Logs at most one warning per <see cref="WarningInterval"/> on the injected clock. The
+    /// worker, the probe loop and handler failures warn concurrently; the compare-and-swap lets
+    /// exactly one caller claim each interval.
+    /// </summary>
+    internal void Warn(string reason)
     {
-        var now = Environment.TickCount64;
-        if (_lastWarning != 0 && now - _lastWarning < 30_000)
+        var now = _clock.GetTimestamp();
+        var last = Interlocked.Read(ref _lastWarning);
+        if (last != NeverWarned && _clock.GetElapsedTime(last, now) < WarningInterval)
             return;
-        _lastWarning = now;
+        if (Interlocked.CompareExchange(ref _lastWarning, now, last) != last)
+            return;
         _logger.LogWarning("Valkey invalidation degraded: {Reason}", reason);
     }
 

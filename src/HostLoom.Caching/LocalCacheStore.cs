@@ -39,6 +39,23 @@ public sealed class LocalCacheStore : IDisposable
         TimeProvider? timeProvider = null,
         ILogger<LocalCacheStore>? logger = null
     )
+        : this(options, timeProvider, logger, sweepsExpired: true) { }
+
+    /// <summary>Creates the tier for a composing cache.</summary>
+    /// <param name="options">The tier's bounds and intervals.</param>
+    /// <param name="timeProvider">Clock for expiry and the cleanup timer.</param>
+    /// <param name="logger">Where the capacity clear is reported, typically the composing cache's own logger.</param>
+    /// <param name="sweepsExpired">
+    /// Whether the tier arms its own cleanup timer. A composing cache that already calls
+    /// <see cref="RemoveExpired"/> from its maintenance timer passes false, so expired entries
+    /// are swept once per interval rather than twice.
+    /// </param>
+    internal LocalCacheStore(
+        CacheL1Options options,
+        TimeProvider? timeProvider,
+        ILogger? logger,
+        bool sweepsExpired
+    )
     {
         ArgumentNullException.ThrowIfNull(options);
         var problems = new List<string>();
@@ -51,12 +68,14 @@ public sealed class LocalCacheStore : IDisposable
         _options = options;
         _time = timeProvider ?? TimeProvider.System;
         _logger = logger ?? NullLogger<LocalCacheStore>.Instance;
-        _cleanup = _time.CreateTimer(
-            static state => ((LocalCacheStore)state!).RemoveExpired(),
-            this,
-            options.CleanupInterval,
-            options.CleanupInterval
-        );
+        _cleanup = sweepsExpired
+            ? _time.CreateTimer(
+                static state => ((LocalCacheStore)state!).RemoveExpired(),
+                this,
+                options.CleanupInterval,
+                options.CleanupInterval
+            )
+            : null;
     }
 
     /// <summary>Entries currently held, including ones that expired but were not yet reclaimed.</summary>

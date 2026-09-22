@@ -195,7 +195,11 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         _channel = channel ?? store as ICacheInvalidationChannel;
         _time = timeProvider ?? TimeProvider.System;
         _logger = logger ?? NullLogger<TieredCache>.Instance;
-        _local = options.L1.Enabled ? new LocalCacheStore(options.L1, _time) : null;
+        // The maintenance timer below owns the expired-entry sweep, so the tier arms none of its
+        // own; the tier reports its capacity clear through this cache's logger.
+        _local = options.L1.Enabled
+            ? new LocalCacheStore(options.L1, _time, _logger, sweepsExpired: false)
+            : null;
         // Four guards per in-process entry bounds the single-flight map; beyond that idle guards
         // are reclaimed at once and further keys share striped guards.
         _guard = new KeyedAsyncGuard(
@@ -1640,6 +1644,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         && left.Keys.SequenceEqual(right.Keys, StringComparer.Ordinal)
         && left.Tags.SequenceEqual(right.Tags, StringComparer.Ordinal);
 
+    /// <summary>The one periodic sweep: expired in-process entries and idle single-flight guards.</summary>
     private void Maintain()
     {
         _local?.RemoveExpired();

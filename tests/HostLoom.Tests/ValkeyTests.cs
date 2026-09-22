@@ -8,6 +8,7 @@ using HostLoom.Locking.DependencyInjection;
 using HostLoom.Valkey;
 using HostLoom.Valkey.Internal;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using ValkeyDotNet;
 using Xunit;
 
@@ -209,6 +210,51 @@ public sealed class ValkeyTests
         await channel.DisposeAsync();
         await channel.DisposeAsync();
         Assert.Throws<ObjectDisposedException>(() => channel.Subscribe(_ => { }));
+        Assert.Equal(ValkeyConnectionState.NeverConnected, connection.State);
+    }
+
+    [Fact]
+    public async Task Invalidation_WarningsAreThrottledOnTheInjectedClockAcrossThreads()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var clock = new TestClock();
+        var logger = new RecordingLogger<ValkeyCacheInvalidationChannel>();
+        await using var connection = new ValkeyConnection(new ValkeyOptions());
+        await using var channel = new ValkeyCacheInvalidationChannel(
+            connection,
+            new CachingOptions { Namespace = "valkey-unit" },
+            logger,
+            clock
+        );
+
+        // The worker, the probe loop and failing handlers warn concurrently; one interval
+        // admits exactly one line, even at the clock's first timestamp.
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var warners = Enumerable
+            .Range(0, 16)
+            .Select(_ =>
+                Task.Run(
+                    async () =>
+                    {
+                        await gate.Task;
+                        channel.Warn("concurrent");
+                    },
+                    token
+                )
+            )
+            .ToArray();
+        gate.SetResult();
+        await Task.WhenAll(warners).WaitAsync(TimeSpan.FromSeconds(10), token);
+        Assert.Single(logger.Entries);
+
+        // The interval is measured on the injected clock, not the wall clock.
+        clock.Advance(ValkeyCacheInvalidationChannel.WarningInterval - TimeSpan.FromTicks(1));
+        channel.Warn("inside the interval");
+        Assert.Single(logger.Entries);
+        clock.Advance(TimeSpan.FromTicks(1));
+        channel.Warn("next interval");
+        Assert.Equal(2, logger.Entries.Count);
+        Assert.All(logger.Entries, entry => Assert.Equal(LogLevel.Warning, entry.Level));
         Assert.Equal(ValkeyConnectionState.NeverConnected, connection.State);
     }
 
