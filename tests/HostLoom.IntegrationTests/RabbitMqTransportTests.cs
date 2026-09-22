@@ -1,3 +1,4 @@
+using HostLoom.IntegrationTests.Infrastructure;
 using HostLoom.Transport.RabbitMq;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -8,15 +9,23 @@ namespace HostLoom.IntegrationTests;
 /// <summary>
 /// Drives the RabbitMQ transport against a real broker from <c>docker-compose.yml</c>. The unit
 /// suite covers correlation against fake channels; only these tests prove the adapter against
-/// actual AMQP delivery, acknowledgement, and exchange topology.
+/// actual AMQP delivery, acknowledgement, and exchange topology. Every name a test mints is
+/// recorded in a topology scope, so the durable queues and exchanges it declares are removed
+/// from the shared broker after the host that used them is gone.
 /// </summary>
 [Collection(nameof(RabbitMqTransportTests))]
 [CollectionDefinition(nameof(RabbitMqTransportTests), DisableParallelization = true)]
-public sealed class RabbitMqTransportTests
+public sealed class RabbitMqTransportTests : IAsyncLifetime
 {
     private static readonly TimeSpan Bound = TimeSpan.FromSeconds(30);
 
+    private readonly RabbitMqTopologyScope _scope = new();
+
     public static bool Available => BrokerAvailability.RabbitMq;
+
+    public ValueTask InitializeAsync() => ValueTask.CompletedTask;
+
+    public ValueTask DisposeAsync() => _scope.DisposeAsync();
 
     [Fact(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
     public async Task Request_and_response_round_trip_over_a_real_broker()
@@ -95,7 +104,7 @@ public sealed class RabbitMqTransportTests
     [Fact(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
     public async Task A_subscription_receives_events_in_publish_order_by_default()
     {
-        var topic = Unique("sequence");
+        var topic = Unique("sequence", "sequence");
         var received = new Received();
         received.Expect(16);
         using var host = await StartAsync(
@@ -152,7 +161,7 @@ public sealed class RabbitMqTransportTests
     [Fact(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
     public async Task Every_subscription_on_a_topic_receives_the_event()
     {
-        var topic = Unique("orders");
+        var topic = Unique("orders", "audit", "shipping");
         var received = new Received();
         received.Expect(2);
         using var host = await StartAsync(
@@ -172,7 +181,7 @@ public sealed class RabbitMqTransportTests
     [Fact(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
     public async Task Handlers_sharing_one_subscription_share_a_single_delivery()
     {
-        var topic = Unique("orders-shared");
+        var topic = Unique("orders-shared", "combined");
         var received = new Received();
         received.Expect(2);
         using var host = await StartAsync(
@@ -199,7 +208,23 @@ public sealed class RabbitMqTransportTests
 
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
-    private static string Unique(string prefix) => $"it-{prefix}-{Guid.NewGuid():N}";
+    /// <summary>
+    /// Mints a name no other run can collide with and records what it may become on the broker:
+    /// a request queue, a topic exchange, and one subscription queue per name given. Nothing here
+    /// knows which of those a test will declare, and deleting a name that never existed is free.
+    /// </summary>
+    private string Unique(string prefix, params string[] subscriptions)
+    {
+        var name = $"it-{prefix}-{Guid.NewGuid():N}";
+        _scope.Request(name);
+        _scope.Topic(name);
+        foreach (var subscription in subscriptions)
+        {
+            _scope.Subscription(name, subscription);
+        }
+
+        return name;
+    }
 
     private static IRequestClient<TRequest, TResponse> ClientOf<TRequest, TResponse>(IHost host)
         where TRequest : class, IRequest<TResponse>
