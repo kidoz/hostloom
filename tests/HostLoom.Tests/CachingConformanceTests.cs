@@ -14,6 +14,12 @@ namespace HostLoom.Tests;
 /// <c>new</c>, composed through the container, and in-process only, so the
 /// compositions are proven to behave the same.
 /// </summary>
+/// <remarks>
+/// <see cref="InMemoryDistributedCacheStore"/> is an explicit channel: it carries removals only,
+/// so an overwrite is not reported to other instances. It delivers within the process and has no
+/// subscription to lose, and deciding to flush after a restored subscription belongs to the
+/// backend channels, so the delivery-gap scenario is left to the Redis and Valkey runners.
+/// </remarks>
 public sealed class CachingConformanceTests
 {
     public static TheoryData<string, string> Scenarios
@@ -46,31 +52,38 @@ public sealed class CachingConformanceTests
         await CacheConformance.Scenarios[scenario](fixture);
     }
 
-    private static CachingOptions Options() => new() { Namespace = "conformance" };
+    private static string Namespace() => "conformance-" + Guid.NewGuid().ToString("N")[..8];
+
+    private static CachingOptions Options(string ns) => new() { Namespace = ns };
 
     private static JsonSerializerOptions Json() =>
         new() { TypeInfoResolver = new DefaultJsonTypeInfoResolver() };
 
     private static CacheConformanceFixture ContainerFree()
     {
+        var ns = Namespace();
         var clock = new ManualTimeProvider();
         var faults = new FaultingCacheStore(new InMemoryDistributedCacheStore(clock));
         var serializer = new SystemTextJsonCacheValueSerializer(Json());
         return new CacheConformanceFixture
         {
             Clock = new ManualConformanceClock(clock),
+            Namespace = ns,
             Faults = faults,
-            CreateCache = () => new TieredCache(Options(), faults, serializer, timeProvider: clock),
+            CreateCache = () =>
+                new TieredCache(Options(ns), faults, serializer, timeProvider: clock),
         };
     }
 
     private static CacheConformanceFixture Container()
     {
+        var ns = Namespace();
         var clock = new ManualTimeProvider();
         var faults = new FaultingCacheStore(new InMemoryDistributedCacheStore(clock));
         return new CacheConformanceFixture
         {
             Clock = new ManualConformanceClock(clock),
+            Namespace = ns,
             Faults = faults,
             CreateCache = () =>
             {
@@ -79,7 +92,7 @@ public sealed class CachingConformanceTests
                 services.AddSingleton(faults);
                 services.AddSingleton<TimeProvider>(clock);
                 services
-                    .AddHostLoomCaching(caching => caching.Namespace = "conformance")
+                    .AddHostLoomCaching(caching => caching.Namespace = ns)
                     .UseStore<FaultingCacheStore>("Faulting")
                     .UseSystemTextJson(Json());
                 return services.BuildServiceProvider().GetRequiredService<ICache>();
@@ -89,14 +102,16 @@ public sealed class CachingConformanceTests
 
     private static CacheConformanceFixture InProcessOnly()
     {
+        var ns = Namespace();
         var clock = new ManualTimeProvider();
         TieredCache? shared = null;
         return new CacheConformanceFixture
         {
             Clock = new ManualConformanceClock(clock),
+            Namespace = ns,
             Faults = null,
             // Without a distributed tier every "instance" is the same process-local cache.
-            CreateCache = () => shared ??= new TieredCache(Options(), timeProvider: clock),
+            CreateCache = () => shared ??= new TieredCache(Options(ns), timeProvider: clock),
         };
     }
 }
