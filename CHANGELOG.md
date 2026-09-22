@@ -8,6 +8,14 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-22
+
+This release adds scheduled jobs, lease-based leadership, and outbox/inbox support. Upgrading
+from 0.8.0 requires reviewing the source and deployment changes below: custom lock implementations
+must expose `IsCoordinated`, RabbitMQ deployments must migrate queue names or explicitly select
+`Legacy`, remote fault details are now opt-in, and keyed WebSocket topics refuse topic-wide
+subscriptions unless explicitly enabled. The browser client has its own version and release tags.
+
 ### Added
 
 - `HostLoom.Scheduling`, a scheduled-job kernel in the shape of the caching and locking kernels:
@@ -105,7 +113,6 @@ are derived from release tags at publish time.
 - Redis health-check descriptions report reachability and latency without endpoints, machine
   name, or process id; `Describe()` is unchanged for logs.
 - The development `docker-compose.yml` binds RabbitMQ, Kafka, and Redis to loopback only.
-
 - RabbitMQ defaults to versioned, role-qualified queue names that separate request routes and
   event subscription pairs. Existing deployments must follow the
   [queue migration guide](docs/how-to/use-rabbitmq.md#migrate-existing-queues) or explicitly set
@@ -113,7 +120,6 @@ are derived from release tags at publish time.
 - RabbitMQ event publication waits for publisher confirmation and sets persistent delivery when
   `DurableTopics` is enabled. Unconfirmed outbox messages remain retryable; retries can duplicate
   an event whose confirmation was lost.
-
 - The WebSocket gateway ends a subscription before it answers an invalid `credit` or `ack` frame
   with a fault, so a fault after `subscribed` is terminal on both peers. Previously the
   subscription stayed live behind the fault and kept delivering events on a stream the browser
@@ -121,6 +127,11 @@ are derived from release tags at publish time.
 
 ### Fixed
 
+- Lock acquisition rejects a successful backend reply that arrives after the usable lease has
+  expired, reporting `LockFailureKind.Timeout` instead of granting an expired handle.
+- Concurrent lock renewals, including automatic heartbeats, serialize backend calls with local
+  deadline updates. Waiting honours cancellation and rechecks ownership before issuing a command,
+  preventing an older renewal from overwriting a newer lease deadline.
 - Kafka reply consumers retain progress across reassignments and fail initialization instead of
   falling back to an unresolved end offset. Live request/reply tests provision their owned topics.
 - RabbitMQ subscriptions close channels even when cancellation callbacks throw and tolerate
@@ -130,7 +141,6 @@ are derived from release tags at publish time.
 - Logging bounds message and text-field buffer growth before encoding and falls back to the
   capped rendered message when a CLEF template exceeds the message budget.
 - The npm publish step uses one environment mapping for its version and bootstrap token.
-
 - Lock-loss callback exceptions no longer escape timer callbacks or interrupt lease accounting.
 - Valkey tag invalidation removes only snapshotted members, retaining concurrently added keys for
   later invalidation. Restricted cache ACLs now also need `SREM` permission.
@@ -1102,7 +1112,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/kidoz/hostloom/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/kidoz/hostloom/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/kidoz/hostloom/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/kidoz/hostloom/compare/v0.5.0...v0.6.0
