@@ -27,10 +27,6 @@ public sealed class InMemoryTransportConformanceTests
         OrderedWithinSubscription = true,
         // Direct dispatch has one handler per address; a second listen is refused.
         CompetingListeners = false,
-        CancellationCarriesCallerToken = true,
-        // "Unbound requests wait for their timeout" (docs/reference/transports.md), and disposing
-        // the broker does not end that wait.
-        DisposalFailsPendingRequests = false,
     };
 
     public static TheoryData<string> Scenarios

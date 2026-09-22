@@ -31,8 +31,6 @@ public sealed class KafkaTransportConformanceTests
         // Listeners on one address join one consumer group, and the partition moves to whichever
         // member remains.
         CompetingListeners = true,
-        CancellationCarriesCallerToken = true,
-        DisposalFailsPendingRequests = true,
     };
 
     public static bool Available => BrokerAvailability.Kafka;

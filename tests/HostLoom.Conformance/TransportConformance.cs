@@ -12,10 +12,8 @@ namespace HostLoom.Conformance;
 /// completes, fault replies and handlers sharing a subscription, run through a host.
 /// </summary>
 /// <remarks>
-/// Two behaviours are left out on purpose, because the transports are changing them: the
-/// exception type a transport failure surfaces as, and what a requester sees when the listener
-/// serving it stops while its handler is still running. Scenarios that stop a listener mid-request
-/// only require that the request ends. Both belong here once they settle.
+/// The exception a transport failure surfaces as, <see cref="MessagingTransportException"/>, is
+/// left to each transport's own tests: no fault can be injected the same way on every transport.
 /// </remarks>
 public static class TransportConformance
 {
@@ -250,18 +248,8 @@ public static class TransportConformance
         // Not a timeout and not a remote fault: the caller walked away, and that is what it sees.
         await SettleAsync(fixture, pending, "The cancelled request");
         var cancelled = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
-        if (fixture.Profile.CancellationCarriesCallerToken)
-        {
-            Assert.Equal(caller.Token, cancelled.CancellationToken);
-        }
-        else
-        {
-            // RabbitMQ lets the cancellation of the token it linked the caller's to escape as
-            // is, so the exception names that linked token instead of the caller's own.
-            Assert.True(caller.IsCancellationRequested);
-            Assert.True(cancelled.CancellationToken.IsCancellationRequested);
-            Assert.NotEqual(caller.Token, cancelled.CancellationToken);
-        }
+        // The caller's own token, not one the transport linked it into.
+        Assert.Equal(caller.Token, cancelled.CancellationToken);
 
         // The handler's token belongs to the listener, so the caller leaving does not reach it,
         // and the accepted work runs to completion.
@@ -282,14 +270,15 @@ public static class TransportConformance
         var address = await fixture.CreateAddressAsync("stopping");
         var parking = new Parking();
         var listener = await ListenAsync(fixture, broker, address, parking.HandleAsync);
-        using var caller = new CancellationTokenSource();
+        var budget = fixture.TimeoutBudget;
+        var started = fixture.Clock.Provider.GetTimestamp();
         var pending = broker
             .RequestAsync(
                 address,
                 Frame("orders:hold"),
                 Guid.NewGuid(),
-                fixture.RequestTimeout,
-                caller.Token
+                budget,
+                fixture.CancellationToken
             )
             .AsTask();
         var handlerToken = await parking.Entered.Task.WaitAsync(
@@ -307,10 +296,13 @@ public static class TransportConformance
         // Disposing again is a no-op, not a second teardown or an exception.
         await listener.DisposeAsync().AsTask().WaitAsync(fixture.Bound, fixture.CancellationToken);
 
-        // What the requester sees when its listener stops mid-request is not asserted here (see
-        // the remarks on this class); the caller walks away, and the request only has to end.
-        await caller.CancelAsync();
+        // A stopped listener answers nothing. With no other listener a broker requeues or
+        // redelivers the request and the in-memory transport has nowhere to hand it, so the
+        // caller waits out its own timeout instead of seeing the listener's cancellation.
+        await fixture.Clock.AdvanceAsync(budget, fixture.CancellationToken);
         await SettleAsync(fixture, pending, "The request whose listener stopped");
+        var timeout = await Assert.ThrowsAsync<RequestTimeoutException>(() => pending);
+        AssertTimedOutWithinBudget(fixture, started, budget, timeout, address);
     }
 
     public static async Task BrokerDisposal_EndsAPendingRequest(TransportConformanceFixture fixture)
@@ -325,9 +317,7 @@ public static class TransportConformance
         await using var listener = fixture.Profile.SharedAcrossInstances
             ? await ListenAsync(fixture, fixture.CreateBroker(), address, parking.HandleAsync)
             : null;
-        var budget = fixture.Profile.DisposalFailsPendingRequests
-            ? fixture.RequestTimeout
-            : fixture.TimeoutBudget;
+        var budget = fixture.RequestTimeout;
 
         var started = fixture.Clock.Provider.GetTimestamp();
         var pending = requester
@@ -346,22 +336,10 @@ public static class TransportConformance
 
         await requester.DisposeAsync().AsTask().WaitAsync(fixture.Bound, fixture.CancellationToken);
 
-        if (fixture.Profile.DisposalFailsPendingRequests)
-        {
-            await SettleAsync(fixture, pending, "The request pending at disposal");
-            await Assert.ThrowsAsync<ObjectDisposedException>(() => pending);
-            // Ended by the disposal, not by running out its budget.
-            Assert.True(fixture.Clock.Provider.GetElapsedTime(started) < budget);
-        }
-        else
-        {
-            // The in-memory transport documents that an unbound request waits for its timeout,
-            // and disposal does not cut the wait short: the request still ends at its budget.
-            await ElapseBudgetAsync(fixture, pending, budget);
-            await SettleAsync(fixture, pending, "The request pending at disposal");
-            var timeout = await Assert.ThrowsAsync<RequestTimeoutException>(() => pending);
-            AssertTimedOutWithinBudget(fixture, started, budget, timeout, address);
-        }
+        await SettleAsync(fixture, pending, "The request pending at disposal");
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => pending);
+        // Ended by the disposal, not by running out its budget.
+        Assert.True(fixture.Clock.Provider.GetElapsedTime(started) < budget);
 
         if (listener is not null)
         {

@@ -29,10 +29,6 @@ public sealed class RabbitMqTransportConformanceTests
         OrderedWithinSubscription = true,
         // Listeners on one address consume the same request queue.
         CompetingListeners = true,
-        // RequestAsync lets the cancellation of the token it links the caller's to escape
-        // unchanged, so the exception carries that linked token rather than the caller's.
-        CancellationCarriesCallerToken = false,
-        DisposalFailsPendingRequests = true,
     };
 
     public static bool Available => BrokerAvailability.RabbitMq;

@@ -33,18 +33,6 @@ public sealed record TransportProfile
     /// keeps answering once the first leaves; otherwise the second listen is refused.
     /// </summary>
     public required bool CompetingListeners { get; init; }
-
-    /// <summary>
-    /// The <see cref="OperationCanceledException"/> a cancelled caller sees carries the caller's
-    /// own token rather than one the transport linked to it.
-    /// </summary>
-    public required bool CancellationCarriesCallerToken { get; init; }
-
-    /// <summary>
-    /// Disposing the broker fails a pending request with <see cref="ObjectDisposedException"/>;
-    /// otherwise the request keeps waiting and ends at its own timeout.
-    /// </summary>
-    public required bool DisposalFailsPendingRequests { get; init; }
 }
 
 /// <summary>
