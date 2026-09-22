@@ -185,6 +185,12 @@ public sealed class ValkeyDeploymentTests
         var serializer = new SystemTextJsonCacheValueSerializer(
             new JsonSerializerOptions { TypeInfoResolver = ValkeyBackendJson.Default }
         );
+        // Created before the reader subscribes, so the flush of the first subscription is recorded.
+        using var meters = new MeterCapture(
+            CachingDiagnostics.MeterName,
+            "hostloom.cache.namespace",
+            ns
+        );
         await using var channel = new ValkeyCacheInvalidationChannel(connection, options);
         await using var reader = new TieredCache(options, store, serializer, channel, clock);
         var writerOptions = new CachingOptions { Namespace = ns };
@@ -200,6 +206,18 @@ public sealed class ValkeyDeploymentTests
                 resumed.TrySetResult();
         });
         await channel.StartAsync(token);
+        // Every acknowledged subscription, the first included, hands its subscribers a flush, and
+        // the reader applies it on its own loop, possibly after StartAsync has returned. Wait until
+        // it has, or it would clear the entry written below; then re-arm the signal so the flush
+        // after the restart is observed on its own.
+        await meters.WaitForAsync(
+            "hostloom.cache.invalidations",
+            1,
+            token,
+            ("hostloom.cache.direction", "flushed")
+        );
+        await WaitUntilAsync(() => Task.FromResult(flushed.Task.IsCompleted), token);
+        flushed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var entry = new CacheEntryOptions(TimeSpan.FromMinutes(5))
         {
             LocalExpiration = TimeSpan.FromSeconds(2),
