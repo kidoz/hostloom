@@ -65,6 +65,7 @@ singletons defeats that isolation — the `HLM0003`
 | `RemoteRequestException` | the remote handler failed; carries the fault from the wire | `string ErrorType` — `HandlerFault`, `HandlerNotFound`, `ResponseTypeMismatch`, or the remote exception's type name when details were forwarded |
 | `RemoteFaultException` (thrown by handlers, not raised by HostLoom) | a handler wants the caller to read its message; its type and message cross the wire verbatim, unlike any other exception | standard constructors; subclass it for typed faults |
 | `RequestTimeoutException` (`: TimeoutException`) | no reply within the timeout | `RequestAddress Address`, `TimeSpan Timeout` |
+| `MessagingTransportException` | the transport could not carry a request or event: the broker refused or lost the connection, rejected the publication, or its client library failed; whether the broker accepted the message is unknown, so a retry can deliver twice | `RequestAddress Address`; the client library's exception as `InnerException` |
 | `MalformedEnvelopeException` | an envelope cannot be decoded, has no message id, or has an unusable correlation id | message only |
 | `NotSupportedException` | publishing through a transport without `IEventBroker` | — |
 
