@@ -114,6 +114,14 @@ response topic, and a consumer group per subscription plus a unique
 response group per client instance (`kafka-consumer-groups --list`, or
 your Kafka UI of choice).
 
+To watch requests fail within their timeout while the broker is frozen and
+the same host recover once it resumes, run the opt-in outage experiment; it
+starts, pauses, and removes a Kafka container of its own:
+
+```text
+HOSTLOOM_KAFKA_CHAOS=1 dotnet test tests/HostLoom.IntegrationTests/HostLoom.IntegrationTests.csproj -c Release -- --filter-class '*KafkaOutageTests'
+```
+
 ## Troubleshoot
 
 - **`RequestTimeoutException` on every request** — the handler

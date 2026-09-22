@@ -10,5 +10,7 @@
   <ItemGroup>
     <!-- The consumer loop is internal; the tests drive it with a fake IConsumer. -->
     <InternalsVisibleTo Include="HostLoom.Tests" />
+    <!-- The outage experiment builds real consumers through the factory seam to time a fault. -->
+    <InternalsVisibleTo Include="HostLoom.IntegrationTests" />
   </ItemGroup>
 </Project>
