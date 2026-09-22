@@ -14,7 +14,10 @@ handler that keeps failing is retried until it succeeds instead of being dropped
 attempts, the in-memory transport no longer reports subscriber failures to the publisher and holds
 an unbound request for its full timeout, and a Redis Cluster connection without hash tags on
 database zero now fails hosted startup even when `FailFast` is false. A Valkey deployment with a
-restricted ACL must also allow the new `:probe:*` channel suffix.
+restricted ACL must also allow the new `:probe:*` channel suffix. RabbitMQ request handlers on one
+endpoint now run up to sixteen at a time instead of one after another; a handler that is not safe
+to overlap needs `RabbitMqOptions.RequestDispatchConcurrency = 1` or a receive-pipeline
+concurrency limit.
 
 ### Added
 
@@ -38,6 +41,29 @@ restricted ACL must also allow the new `:probe:*` channel suffix.
   `InMemoryEventFailed` (1402) at Error with the subscription name.
 - The transports reference documents the two RabbitMQ options, the probe support of each
   transport, and the in-memory delivery rules below.
+- `RabbitMqOptions.RequestDispatchConcurrency` (16) and `RabbitMqOptions.EventDispatchConcurrency`
+  (1), the deliveries a request listener and an event subscription handle concurrently on their
+  channel, each validated between 1 and `PrefetchCount`. Previously both were the client
+  library's default of 1, so `PrefetchCount` only buffered deliveries and every handler on an
+  endpoint ran in turn.
+- `InMemoryRequestBroker(ILogger<InMemoryRequestBroker>?, TimeProvider?)`. The request timeout and
+  the unbound-address wait run on the supplied clock, and a host that registers a `TimeProvider`
+  before `UseInMemory()` drives them from a test clock without waiting in real time.
+- Meters `HostLoom.Transport.RabbitMq` and `HostLoom.Transport.Kafka`. RabbitMQ counts
+  `hostloom.rabbitmq.publishes` by outcome (`confirmed`, `returned`, `failed`, `timed_out`) with
+  `hostloom.rabbitmq.publish.duration`, `hostloom.rabbitmq.deliveries.rejected` by reason
+  (`malformed`, `handler_failed`), `hostloom.rabbitmq.deliveries.requeued`,
+  `hostloom.rabbitmq.connections` by event (`opened`, `recovered`), and the
+  `hostloom.rabbitmq.requests.pending` gauge. Kafka counts `hostloom.kafka.produced` by kind
+  (`request`, `reply`, `event`), `hostloom.kafka.consumed`, `hostloom.kafka.committed`,
+  `hostloom.kafka.records.skipped` by reason (`malformed`, `unroutable_reply`,
+  `attempts_exhausted`), `hostloom.kafka.records.rewound`, `hostloom.kafka.loop.faults` by stage,
+  `hostloom.kafka.reply_consumer.initializations` by outcome, and the
+  `hostloom.kafka.requests.pending` gauge. Handler outcomes stay on the kernel's request
+  instruments and are not counted twice.
+- `hostloom.lock.orphan_releases`, tagged `hostloom.lock.outcome` (`released`, `absent`,
+  `failed`), and the `LockOrphanRelease` (3108) Debug event, which record the release described
+  under **Changed** below.
 
 ### Changed
 
@@ -95,6 +121,25 @@ restricted ACL must also allow the new `:probe:*` channel suffix.
   first subscription flushed only if an earlier attempt had failed, leaving entries filled while
   the acknowledgement was pending. An internal `TimeProvider` constructor drives the backoff in
   tests.
+- A lock acquisition the caller stopped waiting for, through its token or because `MaxWait`
+  expired with the provider call in flight, no longer leaves a grant held for the whole lease
+  when the reply lands afterwards: the lock issues one best-effort owner-checked release for the
+  abandoned owner, bounded by the lease and at most five seconds. The same release follows a
+  reply rejected because the usable lease had already run out. A provider that threw confirmed
+  nothing, so nothing is released and the key expires on its own. The locking reference no longer
+  claims that cancellation leaves nothing held.
+- `RedisLockProvider` and `ValkeyLockProvider` honour the caller's token until the acquisition
+  command is sent and then let it run to its reply within `CommandTimeout`, so the late grant
+  above reaches the lock. A caller of a provider directly, rather than through `IDistributedLock`,
+  now waits up to the command timeout after cancelling instead of returning at once.
+- Invalidation generations are striped by tag as well as by key. A tag invalidation suppresses
+  only in-flight fills that declare a tag sharing its stripe, an untagged fill ignores tag
+  invalidations, and a fill on an unrelated tag reaches both tiers. Previously any tag
+  invalidation on any instance discarded every in-flight fill, so a key with a slow factory was
+  never cached while tags were being invalidated. A flush still suppresses every fill, bulk reads
+  and warmup stay on the whole generation, and a tagged payload read from the distributed tier
+  while a tag invalidation was applied is returned but not copied into the in-process tier. Every
+  writer of a key must declare the same tags for the suppression to hold.
 - StackExchange.Redis 3.3.1 and FusionCache 2.9.0 (with its System.Text.Json serializer).
 
 ### Fixed
