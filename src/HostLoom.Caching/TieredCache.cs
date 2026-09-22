@@ -31,7 +31,6 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     private readonly ICacheInvalidationChannel? _channel;
     private readonly TimeProvider _time;
     private readonly ILogger _logger;
-    private readonly LocalCacheStore? _local;
     private readonly KeyedAsyncGuard _guard;
     private readonly DegradedLogThrottle _throttle;
     private readonly string _dataPrefix;
@@ -46,111 +45,16 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     private readonly ITimer _maintenance;
     private int _disposed;
 
-    // A generation per key stripe conservatively rejects every single-key fill overlapping an
-    // invalidation of that key, and a generation per tag stripe rejects every fill declaring a
-    // tag invalidated meanwhile: a fill is checked against its key stripe and one stripe per
-    // tag it declares, so an untagged fill ignores tag-only invalidations and a fill on another
-    // tag or key stripe proceeds. That relies on every writer of a key declaring the same tags.
-    // A flush moves every stripe of both kinds, and the whole generation guards bulk
-    // operations. A distributed read learns its tags from the payload only after the read, so
-    // it is checked against the single tag generation that any tag message moves. The gate
-    // makes generation checks and L1 insertion atomic with local eviction.
-    private const int GenerationStripes = 1024;
-    private readonly Lock _invalidationGate = new();
-    private readonly long[] _generations = new long[GenerationStripes];
-    private readonly long[] _tagGenerations = new long[GenerationStripes];
-    private long _invalidationGeneration;
-    private long _tagGeneration;
-
-    // What this instance published and has not yet seen come back. The channel echoes every
-    // publish to its publisher; applying the echo as a fresh invalidation would suppress the
-    // very refill that follows a removal, so an echo is recognised and skipped.
-    private const int RememberedPublishes = 64;
-    private readonly Lock _publishedGate = new();
-    private readonly Queue<PublishedInvalidation> _published = new();
-
-    private long FillGeneration => Interlocked.Read(ref _invalidationGeneration);
-
-    private long TagFillGeneration => Interlocked.Read(ref _tagGeneration);
-
-    private static int Stripe(string key) =>
-        (int)((uint)string.GetHashCode(key, StringComparison.Ordinal) % GenerationStripes);
-
-    private static int TagStripe(string tag) =>
-        (int)((uint)string.GetHashCode(tag, StringComparison.Ordinal) % GenerationStripes);
+    // Every in-process insert goes through the coherent tier, which compares the generations an
+    // operation captured before it began with the ones invalidations have moved since.
+    private readonly CoherentLocalTier _tier;
+    private readonly PublishedInvalidationLog _published;
 
     /// <summary>The generation stripe of <paramref name="key"/>, for tests that need two keys apart.</summary>
-    internal static int StripeOf(string key) => Stripe(key);
+    internal static int StripeOf(string key) => CoherentLocalTier.StripeOf(key);
 
     /// <summary>The tag generation stripe of <paramref name="tag"/>, for tests that need two tags apart.</summary>
-    internal static int TagStripeOf(string tag) => TagStripe(tag);
-
-    /// <summary>
-    /// The generations a single-key fill started against: its key stripe and one tag stripe per
-    /// tag it declares. Any of them moving means an invalidation overlapped the fill.
-    /// </summary>
-    private readonly struct FillGenerations(int keyStripe, long key, TagGeneration[]? tags)
-    {
-        public int KeyStripe { get; } = keyStripe;
-        public long Key { get; } = key;
-        public TagGeneration[]? Tags { get; } = tags;
-    }
-
-    private readonly record struct TagGeneration(int Stripe, long Generation);
-
-    /// <summary>Captures the generations a fill of <paramref name="key"/> declaring <paramref name="tags"/> is checked against.</summary>
-    private FillGenerations FillGenerationsOf(string key, IReadOnlyCollection<string>? tags)
-    {
-        var keyStripe = Stripe(key);
-        var keyGeneration = Volatile.Read(ref _generations[keyStripe]);
-        if (tags is not { Count: > 0 })
-        {
-            return new FillGenerations(keyStripe, keyGeneration, null);
-        }
-
-        var tagGenerations = new TagGeneration[tags.Count];
-        var index = 0;
-        foreach (var tag in tags)
-        {
-            var stripe = TagStripe(tag);
-            tagGenerations[index++] = new TagGeneration(
-                stripe,
-                Volatile.Read(ref _tagGenerations[stripe])
-            );
-        }
-
-        return new FillGenerations(keyStripe, keyGeneration, tagGenerations);
-    }
-
-    /// <summary>Whether no invalidation has moved a generation the fill captured.</summary>
-    private bool Unchanged(in FillGenerations captured)
-    {
-        if (captured.Key != Volatile.Read(ref _generations[captured.KeyStripe]))
-        {
-            return false;
-        }
-
-        if (captured.Tags is null)
-        {
-            return true;
-        }
-
-        foreach (var (stripe, generation) in captured.Tags)
-        {
-            if (generation != Volatile.Read(ref _tagGenerations[stripe]))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private readonly record struct PublishedInvalidation(
-        int Hash,
-        CacheInvalidation Message,
-        long PublishedAt
-    );
+    internal static int TagStripeOf(string tag) => CoherentLocalTier.TagStripeOf(tag);
 
     /// <summary>Composes a cache.</summary>
     /// <param name="options">Validated with <see cref="CachingOptions.Validate"/>.</param>
@@ -197,9 +101,8 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         _logger = logger ?? NullLogger<TieredCache>.Instance;
         // The maintenance timer below owns the expired-entry sweep, so the tier arms none of its
         // own; the tier reports its capacity clear through this cache's logger.
-        _local = options.L1.Enabled
-            ? new LocalCacheStore(options.L1, _time, _logger, sweepsExpired: false)
-            : null;
+        _tier = new CoherentLocalTier(options.L1, _time, _logger);
+        _published = new PublishedInvalidationLog(_time, options.Invalidation);
         // Four guards per in-process entry bounds the single-flight map; beyond that idle guards
         // are reclaimed at once and further keys share striped guards.
         _guard = new KeyedAsyncGuard(
@@ -216,7 +119,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             options.Namespace
         );
 
-        if (_channel is not null && _local is not null)
+        if (_channel is not null && _tier.Enabled)
         {
             _pending = Channel.CreateBounded<CacheInvalidation>(
                 new BoundedChannelOptions(options.Invalidation.MaxPending)
@@ -244,7 +147,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     /// <summary>The key prefix.</summary>
     public string Namespace => _options.Namespace;
 
-    internal long LocalEntryCount => _local?.Count ?? 0;
+    internal long LocalEntryCount => _tier.Count;
 
     internal long ActiveGuardCount => _guard.ActiveCount;
 
@@ -290,7 +193,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         ThrowIfDisposed();
 
         var start = Stopwatch.GetTimestamp();
-        if (_local is not null && _local.TryGet<T>(key, out var hit))
+        if (_tier.TryGet<T>(key, out var hit))
         {
             RecordOperation("get_or_create", "hit_l1", start);
             return new ValueTask<T?>(hit);
@@ -318,7 +221,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         ValidateKey(key);
         ThrowIfDisposed();
         var start = Stopwatch.GetTimestamp();
-        if (_local is not null && _local.TryGet<T>(key, out var hit))
+        if (_tier.TryGet<T>(key, out var hit))
         {
             RecordOperation("get", "hit_l1", start);
             return new ValueTask<CacheLookup<T>>(CacheLookup.Hit(hit, CacheTier.L1));
@@ -357,7 +260,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 key,
                 value,
                 options,
-                FillGenerationsOf(key, options.Tags),
+                _tier.Capture(key, options.Tags),
                 cancellationToken
             )
             .ConfigureAwait(false);
@@ -394,17 +297,13 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         var start = Stopwatch.GetTimestamp();
         if (_store is null)
         {
-            bool added;
-            lock (_invalidationGate)
-            {
-                added = _local!.SetIfAbsent(
-                    key,
-                    value,
-                    options.Expiration,
-                    options.Tags,
-                    options.Size
-                );
-            }
+            var added = _tier.SetIfAbsent(
+                key,
+                value,
+                options.Expiration,
+                options.Tags,
+                options.Size
+            );
             RecordOperation("set_if_absent", added ? "miss" : "hit_l1", start);
             return added;
         }
@@ -416,7 +315,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             return false;
         }
 
-        var generation = FillGenerationsOf(key, options.Tags);
+        var generation = _tier.Capture(key, options.Tags);
         bool written;
         try
         {
@@ -441,20 +340,15 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
         if (written)
         {
-            lock (_invalidationGate)
-            {
-                if (Unchanged(generation))
-                {
-                    _local?.Set(
-                        key,
-                        value,
-                        options.LocalExpiration ?? options.Expiration,
-                        options.Tags,
-                        payload.WrittenCount,
-                        options.EffectiveStaleGrace
-                    );
-                }
-            }
+            _tier.TryCommit(
+                generation,
+                key,
+                value,
+                options.LocalExpiration ?? options.Expiration,
+                options.Tags,
+                payload.WrittenCount,
+                options.EffectiveStaleGrace
+            );
             if (compressed)
             {
                 CachingDiagnostics.Compressions.Add(1, _namespaceTag);
@@ -472,7 +366,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         ThrowIfDisposed();
         using var activity = StartActivity("cache.remove", key);
         var start = Stopwatch.GetTimestamp();
-        InvalidateLocal(new CacheInvalidation([key], []));
+        _tier.Apply(new CacheInvalidation([key], []));
         var degraded = false;
         if (_store is not null)
         {
@@ -487,7 +381,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             }
         }
 
-        InvalidateLocal(new CacheInvalidation([key], []));
+        _tier.Apply(new CacheInvalidation([key], []));
         await PublishAsync(new CacheInvalidation([key], []), cancellationToken)
             .ConfigureAwait(false);
         RecordOperation("remove", degraded ? "degraded" : "miss", start);
@@ -513,7 +407,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         }
 
         var start = Stopwatch.GetTimestamp();
-        InvalidateLocal(new CacheInvalidation(list, []));
+        _tier.Apply(new CacheInvalidation(list, []));
         var degraded = false;
         if (_store is not null)
         {
@@ -530,7 +424,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             }
         }
 
-        InvalidateLocal(new CacheInvalidation(list, []));
+        _tier.Apply(new CacheInvalidation(list, []));
         await PublishAsync(new CacheInvalidation(list, []), cancellationToken)
             .ConfigureAwait(false);
         RecordOperation("remove", degraded ? "degraded" : "miss", start);
@@ -545,7 +439,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         CacheKey.Validate(tag, _options.MaxKeyLength, nameof(tag));
         ThrowIfDisposed();
         var start = Stopwatch.GetTimestamp();
-        InvalidateLocal(new CacheInvalidation([], [tag]));
+        _tier.Apply(new CacheInvalidation([], [tag]));
         var degraded = false;
         if (_store is not null && _store.Capabilities.HasFlag(CacheStoreCapabilities.Tags))
         {
@@ -562,7 +456,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             }
         }
 
-        InvalidateLocal(new CacheInvalidation([], [tag]));
+        _tier.Apply(new CacheInvalidation([], [tag]));
         await PublishAsync(new CacheInvalidation([], [tag]), cancellationToken)
             .ConfigureAwait(false);
         RecordOperation("remove_by_tag", degraded ? "degraded" : "miss", start);
@@ -583,7 +477,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         foreach (var key in keys)
         {
             ValidateKey(key);
-            if (_local is not null && _local.TryGet<T>(key, out var hit))
+            if (_tier.TryGet<T>(key, out var hit))
             {
                 found[key] = hit!;
             }
@@ -596,7 +490,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         var degraded = false;
         if (_store is not null && missing is { Count: > 0 })
         {
-            var generation = FillGeneration;
+            var generation = _tier.CaptureBulk();
             var readStart = _time.GetTimestamp();
             IReadOnlyDictionary<string, CacheStoreEntry> entries;
             try
@@ -616,8 +510,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             {
                 if (
                     entries.TryGetValue(DataKey(key), out var entry)
-                    && Decode<T>(key, entry, null, generation, 0, readStart, bulk: true)
-                        is { Found: true } lookup
+                    && Decode<T>(key, entry, null, generation, readStart) is { Found: true } lookup
                 )
                 {
                     found[key] = lookup.Value!;
@@ -717,7 +610,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             }
         }
 
-        _local?.Dispose();
+        _tier.Dispose();
         _guard.Dispose();
         _disposal.Dispose();
     }
@@ -735,7 +628,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             _store is null
                 ? "Store = InMemory (UseInMemory: the in-process tier is the only tier)"
                 : $"Store = {storeName} (UseStore)",
-            _local is null
+            !_tier.Enabled
                 ? "L1 = disabled (Caching:L1:Enabled = false)"
                 : $"L1 = enabled (Caching:L1:Enabled = true, MaxEntries = {_options.L1.MaxEntries}, MaxBytes = {_options.L1.MaxBytes?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unbounded"}, MaxEntryAge = {_options.L1.MaxEntryAge})",
             _serializer is null
@@ -755,7 +648,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         return new CacheDescription(
             _options.Namespace,
             storeName,
-            _local is not null,
+            _tier.Enabled,
             _serializer?.GetType().Name,
             invalidation,
             warmups,
@@ -794,8 +687,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             haveStale =
                 lookup.Degraded
                 && options.EffectiveStaleGrace is not null
-                && _local is not null
-                && _local.TryGetWithinGrace(key, out stale, out _);
+                && _tier.TryGetWithinGrace(key, out stale, out _);
         }
 
         if (haveStale && !_guard.TryAcquire(key, out tryGuard))
@@ -809,7 +701,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             : await _guard.AcquireAsync(key, cancellationToken).ConfigureAwait(false);
         // A caller can receive an earlier store miss after another caller has already filled the
         // cache and released the guard. Re-check even when acquisition did not have to wait.
-        if (_local is not null && _local.TryGet<T>(key, out var filled))
+        if (_tier.TryGet<T>(key, out var filled))
         {
             Finish(activity, "get_or_create", "hit_l1", start, degraded, CacheTier.L1);
             return filled;
@@ -890,7 +782,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
         try
         {
-            var generation = FillGenerationsOf(key, options.Tags);
+            var generation = _tier.Capture(key, options.Tags);
             var factoryStart = Stopwatch.GetTimestamp();
             T value;
             try
@@ -973,8 +865,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         CancellationToken cancellationToken
     )
     {
-        var generation = Volatile.Read(ref _generations[Stripe(key)]);
-        var tagGeneration = TagFillGeneration;
+        var generation = _tier.CaptureRead(key);
         var readStart = _time.GetTimestamp();
         CacheStoreEntry? entry;
         try
@@ -988,17 +879,14 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         }
 
         return entry is { } found
-            ? Decode<T>(key, found, options, generation, tagGeneration, readStart, bulk: false)
+            ? Decode<T>(key, found, options, generation, readStart)
             : CacheLookup.Miss<T>();
     }
 
     /// <param name="generation">
-    /// The key's stripe generation, or the whole generation when <paramref name="bulk"/>,
-    /// captured before the distributed read; an invalidation since then leaves L1 untouched.
-    /// </param>
-    /// <param name="tagGeneration">
-    /// The tag generation captured before a single-key read; a tag invalidation since then keeps
-    /// a tagged payload out of L1. Ignored when <paramref name="bulk"/>.
+    /// What the distributed read captured before it started: the key's stripe and the tag
+    /// generation, or the whole generation for a bulk read. An invalidation since then leaves L1
+    /// untouched, and a tag invalidation keeps a tagged payload out of it.
     /// </param>
     /// <param name="readStart">
     /// When the distributed read started: a value written to L1 after that is newer than what
@@ -1008,10 +896,8 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         string key,
         CacheStoreEntry entry,
         CacheEntryOptions? options,
-        long generation,
-        long tagGeneration,
-        long readStart,
-        bool bulk
+        ReadCapture generation,
+        long readStart
     )
     {
         var status = CachePayloadCodec.TryDecode<T>(
@@ -1033,36 +919,26 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                     return CacheLookup.Miss<T>();
                 }
 
-                lock (_invalidationGate)
-                {
-                    if (MayPromote(key, tags, generation, tagGeneration, bulk))
-                    {
-                        _local?.SetNull(
-                            key,
-                            LocalTimeToLive(entry, options),
-                            tags,
-                            options?.EffectiveStaleGrace,
-                            notIfWrittenAfter: readStart
-                        );
-                    }
-                }
+                _tier.TryPromoteNull(
+                    generation,
+                    key,
+                    tags,
+                    LocalTimeToLive(entry, options),
+                    options?.EffectiveStaleGrace,
+                    readStart
+                );
                 return CacheLookup.Hit<T>(default, CacheTier.L2);
             case PayloadDecodeStatus.Ok when value is not null:
-                lock (_invalidationGate)
-                {
-                    if (MayPromote(key, tags, generation, tagGeneration, bulk))
-                    {
-                        _local?.Set(
-                            key,
-                            value,
-                            LocalTimeToLive(entry, options),
-                            tags,
-                            entry.Payload.Length,
-                            options?.EffectiveStaleGrace,
-                            notIfWrittenAfter: readStart
-                        );
-                    }
-                }
+                _tier.TryPromote(
+                    generation,
+                    key,
+                    tags,
+                    value,
+                    LocalTimeToLive(entry, options),
+                    entry.Payload.Length,
+                    options?.EffectiveStaleGrace,
+                    readStart
+                );
                 return CacheLookup.Hit(value, CacheTier.L2);
             case PayloadDecodeStatus.VersionMismatch:
                 // Written by a newer or older deploy: a miss, and deliberately not an error.
@@ -1101,11 +977,11 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     private async ValueTask<bool> WriteNullAsync(
         string key,
         CacheEntryOptions options,
-        FillGenerations generation,
+        FillCapture generation,
         CancellationToken cancellationToken
     )
     {
-        if (!Unchanged(generation))
+        if (!_tier.IsCurrent(generation))
         {
             return false;
         }
@@ -1138,13 +1014,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             options.LocalExpiration is { } explicitLocal && explicitLocal < expiration
                 ? explicitLocal
                 : expiration;
-        lock (_invalidationGate)
-        {
-            if (Unchanged(generation))
-            {
-                _local?.SetNull(key, local, options.Tags, options.EffectiveStaleGrace);
-            }
-        }
+        _tier.TryCommitNull(generation, key, local, options.Tags, options.EffectiveStaleGrace);
         return degraded;
     }
 
@@ -1153,11 +1023,11 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         string key,
         T value,
         CacheEntryOptions options,
-        FillGenerations generation,
+        FillCapture generation,
         CancellationToken cancellationToken
     )
     {
-        if (!Unchanged(generation))
+        if (!_tier.IsCurrent(generation))
         {
             return false;
         }
@@ -1194,20 +1064,15 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             }
         }
 
-        lock (_invalidationGate)
-        {
-            if (Unchanged(generation))
-            {
-                _local?.Set(
-                    key,
-                    value,
-                    options.LocalExpiration ?? options.Expiration,
-                    options.Tags,
-                    size,
-                    options.EffectiveStaleGrace
-                );
-            }
-        }
+        _tier.TryCommit(
+            generation,
+            key,
+            value,
+            options.LocalExpiration ?? options.Expiration,
+            options.Tags,
+            size,
+            options.EffectiveStaleGrace
+        );
         return degraded;
     }
 
@@ -1217,7 +1082,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         CancellationToken cancellationToken
     )
     {
-        var generation = FillGeneration;
+        var generation = _tier.CaptureBulk();
         if (_store is not null)
         {
             var writers = new List<PooledBufferWriter>(batch.Count);
@@ -1267,17 +1132,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             }
         }
 
-        lock (_invalidationGate)
-        {
-            if (_local is not null && generation == _invalidationGeneration)
-            {
-                foreach (var (key, value) in batch)
-                {
-                    _local.Set(key, value!, expiration);
-                }
-            }
-        }
-
+        _tier.TryCommitBatch(generation, batch, expiration);
         return true;
     }
 
@@ -1372,7 +1227,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             timeout.Token
         );
         // Before the call: the echo can arrive before the publish returns.
-        RememberPublished(invalidation);
+        _published.Remember(invalidation);
         try
         {
             await _channel.PublishAsync(invalidation, linked.Token).ConfigureAwait(false);
@@ -1384,12 +1239,12 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            ForgetPublished(invalidation);
+            _published.Forget(invalidation);
             throw;
         }
         catch (Exception exception)
         {
-            ForgetPublished(invalidation);
+            _published.Forget(invalidation);
             CachingDiagnostics.Errors.Add(
                 1,
                 _namespaceTag,
@@ -1438,7 +1293,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 .ConfigureAwait(false)
         )
         {
-            if (IsOwnEcho(invalidation))
+            if (_published.IsOwnEcho(invalidation))
             {
                 // Applied when it was published; applying it again would suppress the refill
                 // that follows a removal on this instance.
@@ -1450,7 +1305,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 continue;
             }
 
-            InvalidateLocal(invalidation);
+            _tier.Apply(invalidation);
             if (invalidation.FlushAll)
             {
                 CachingDiagnostics.Invalidations.Add(
@@ -1478,176 +1333,10 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// Read under <see cref="_invalidationGate"/>: whether a distributed read that captured
-    /// <paramref name="generation"/> and <paramref name="tagGeneration"/> may still fill L1 with
-    /// a payload carrying <paramref name="tags"/>.
-    /// </summary>
-    private bool MayPromote(
-        string key,
-        string[]? tags,
-        long generation,
-        long tagGeneration,
-        bool bulk
-    ) =>
-        bulk
-            ? generation == _invalidationGeneration
-            : generation == _generations[Stripe(key)]
-                && (tags is not { Length: > 0 } || tagGeneration == _tagGeneration);
-
-    private void InvalidateLocal(CacheInvalidation invalidation)
-    {
-        lock (_invalidationGate)
-        {
-            Interlocked.Increment(ref _invalidationGeneration);
-            if (invalidation.FlushAll)
-            {
-                // A flush covers every key and every tag.
-                Interlocked.Increment(ref _tagGeneration);
-                for (var stripe = 0; stripe < GenerationStripes; stripe++)
-                {
-                    _generations[stripe]++;
-                    _tagGenerations[stripe]++;
-                }
-
-                _local?.Clear();
-                return;
-            }
-
-            foreach (var key in invalidation.Keys)
-            {
-                _generations[Stripe(key)]++;
-            }
-
-            if (invalidation.Tags.Count > 0)
-            {
-                // The keys a tag covers are not known here; a fill declaring the tag notices its
-                // stripe move, and a distributed read notices the tag generation move.
-                Interlocked.Increment(ref _tagGeneration);
-                foreach (var tag in invalidation.Tags)
-                {
-                    _tagGenerations[TagStripe(tag)]++;
-                }
-            }
-
-            _local?.Remove(invalidation.Keys);
-            foreach (var tag in invalidation.Tags)
-            {
-                _local?.RemoveByTag(tag);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Remembers a message about to be published, so its echo is recognised. Bounded by count
-    /// and by the publish timeout: an echo later than that is treated as someone else's.
-    /// </summary>
-    private void RememberPublished(CacheInvalidation invalidation)
-    {
-        var remembered = new PublishedInvalidation(
-            Fingerprint(invalidation),
-            invalidation,
-            _time.GetTimestamp()
-        );
-        lock (_publishedGate)
-        {
-            _published.Enqueue(remembered);
-            while (_published.Count > RememberedPublishes)
-            {
-                _published.Dequeue();
-            }
-        }
-    }
-
-    /// <summary>Forgets a message whose publish failed: no echo will come.</summary>
-    private void ForgetPublished(CacheInvalidation invalidation)
-    {
-        lock (_publishedGate)
-        {
-            if (_published.Count == 0)
-            {
-                return;
-            }
-
-            var kept = _published.Where(entry => !ReferenceEquals(entry.Message, invalidation));
-            var remaining = kept.ToArray();
-            _published.Clear();
-            foreach (var entry in remaining)
-            {
-                _published.Enqueue(entry);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Whether <paramref name="invalidation"/> is the echo of a message this instance published
-    /// within the publish timeout, consuming the remembered publish when it is.
-    /// </summary>
-    private bool IsOwnEcho(CacheInvalidation invalidation)
-    {
-        var hash = Fingerprint(invalidation);
-        lock (_publishedGate)
-        {
-            if (_published.Count == 0)
-            {
-                return false;
-            }
-
-            var matched = false;
-            var remaining = new List<PublishedInvalidation>(_published.Count);
-            while (_published.TryDequeue(out var entry))
-            {
-                if (_time.GetElapsedTime(entry.PublishedAt) > _options.Invalidation.Timeout)
-                {
-                    continue;
-                }
-
-                if (!matched && entry.Hash == hash && SameMessage(entry.Message, invalidation))
-                {
-                    matched = true;
-                    continue;
-                }
-
-                remaining.Add(entry);
-            }
-
-            foreach (var entry in remaining)
-            {
-                _published.Enqueue(entry);
-            }
-
-            return matched;
-        }
-    }
-
-    private static int Fingerprint(CacheInvalidation invalidation)
-    {
-        var hash = new HashCode();
-        hash.Add(invalidation.FlushAll);
-        hash.Add(invalidation.Keys.Count);
-        foreach (var key in invalidation.Keys)
-        {
-            hash.Add(key, StringComparer.Ordinal);
-        }
-
-        hash.Add(invalidation.Tags.Count);
-        foreach (var tag in invalidation.Tags)
-        {
-            hash.Add(tag, StringComparer.Ordinal);
-        }
-
-        return hash.ToHashCode();
-    }
-
-    private static bool SameMessage(CacheInvalidation left, CacheInvalidation right) =>
-        left.FlushAll == right.FlushAll
-        && left.Keys.SequenceEqual(right.Keys, StringComparer.Ordinal)
-        && left.Tags.SequenceEqual(right.Tags, StringComparer.Ordinal);
-
     /// <summary>The one periodic sweep: expired in-process entries and idle single-flight guards.</summary>
     private void Maintain()
     {
-        _local?.RemoveExpired();
+        _tier.RemoveExpired();
         _guard.Reclaim(_options.L1.GuardIdleTime);
     }
 
