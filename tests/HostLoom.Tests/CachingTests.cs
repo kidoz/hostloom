@@ -1448,7 +1448,14 @@ public sealed class TieredCacheTests
         Assert.Equal(CacheTier.L1, (await cache.TryGetAsync<int>("a", token)).Tier);
 
         await store.PublishAsync(CacheInvalidation.Flush, token);
-        await CacheConformance.WaitUntilAsync(() => Task.FromResult(cache.LocalEntryCount == 0));
+        // The tier is cleared before the flush is counted and logged, so wait for all three.
+        await CacheConformance.WaitUntilAsync(() =>
+            Task.FromResult(
+                cache.LocalEntryCount == 0
+                    && metrics.Directions.Contains(("hostloom.cache.invalidations", "flushed"))
+                    && logger.Entries.Any(entry => entry.Event.Id == 1007)
+            )
+        );
 
         Assert.Equal(CacheTier.L2, (await cache.TryGetAsync<int>("a", token)).Tier);
         Assert.Contains(("hostloom.cache.invalidations", "flushed"), metrics.Directions);
