@@ -72,6 +72,14 @@ outside the invalidation filter.
 tracking and keyspace notification handling are not implemented. Changes made outside HostLoom
 are observed through expiry. The probe describes this explicit-channel fallback.
 
+Only `RemoveAsync` and `RemoveByTagAsync` publish. `SetAsync`, `SetIfAbsentAsync`, get-or-create
+fills, and warmup write Valkey and the writer's own in-process tier and publish nothing, and no
+server-side transport reports the write either: after an overwrite, another instance that
+already holds the key keeps serving its old in-process copy until that copy expires. When other
+instances must not serve an old value, write the source of truth and then call `RemoveAsync`, or
+keep `CacheEntryOptions.LocalExpiration` short. A cache recognises the echo of its own publish,
+so the refill that follows its own removal stays cached.
+
 The dedicated subscriber starts on the first subscription. `StartAsync(token)` can be used to wait
 for its first server acknowledgement before beginning work. The channel is
 `{namespace}:cache:invalidate:db:{database}` because Valkey Pub/Sub ignores logical database

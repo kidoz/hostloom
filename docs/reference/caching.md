@@ -27,8 +27,8 @@ Every member returns `ValueTask`, takes a trailing optional
 | `GetOrCreateAsync<TState, T>(key, state, factory, options, ct)` | The state-carrying form; the factory receives `state` instead of closing over it, so an in-process hit allocates nothing on the caller's side. |
 | `TryGetAsync<T>(key, ct)` | `CacheLookup<T>` with `Found`, `Value`, `Tier` (`None`, `L1`, `L2`), and `Degraded`. The member new code uses. |
 | `GetAsync<T>(key, ct)` | `default(T)` on a miss or under degradation. For a value type a cached `0` is indistinguishable from a miss; kept for call sites written against that contract. |
-| `SetAsync<T>(key, value, options, ct)` | Distributed tier, then in-process tier. Null throws `ArgumentNullException`. |
-| `SetIfAbsentAsync<T>(key, value, options \| expiration, ct)` | Atomic in the distributed tier (in-process when there is none). Tags are indexed in both tiers when the write happened. `false` when present, or when the store is unavailable and `OnUnavailable` is `ReturnFalse`; `CacheUnavailableException` under `Throw`. |
+| `SetAsync<T>(key, value, options, ct)` | Distributed tier, then in-process tier. Publishes no invalidation; see [write visibility](#write-visibility-across-instances). Null throws `ArgumentNullException`. |
+| `SetIfAbsentAsync<T>(key, value, options \| expiration, ct)` | Atomic in the distributed tier (in-process when there is none). Tags are indexed in both tiers when the write happened. Publishes no invalidation. `false` when present, or when the store is unavailable and `OnUnavailable` is `ReturnFalse`; `CacheUnavailableException` under `Throw`. |
 | `RemoveAsync(key \| keys, ct)` | In-process tier first, then one batched distributed call, then one invalidation message. |
 | `RemoveByTagAsync(tag, ct)` | Evicts every entry written with the tag, on every instance. |
 | `GetManyAsync<T>(keys, ct)` | In-process tier, then one batched distributed read; only found entries; partial under failure, never throws. |
@@ -197,6 +197,40 @@ decorates a store to inject failures (`FaultingCacheStore`) or record calls
 (`RecordingCacheStore`). The in-process store implements the whole contract,
 so a consumer's tests need no backend.
 
+## Write visibility across instances
+
+Only removals publish. `RemoveAsync` and `RemoveByTagAsync` send an invalidation on the
+explicit channel, and every instance drops the named entries from its in-process tier.
+`SetAsync`, `SetIfAbsentAsync`, a get-or-create fill, and `WarmupAsync` write the distributed
+tier and the writer's own in-process tier and publish nothing. Whether another instance that
+already holds the key in process sees an overwrite therefore depends on what reports store
+writes:
+
+| Invalidation in effect | Another instance holding the key | The instance that wrote |
+| --- | --- | --- |
+| Explicit channel only: `InMemoryDistributedCacheStore`, `HostLoom.Valkey`, or Redis when neither tracking nor broadcast could be enabled | keeps serving its old in-process copy until that copy expires | keeps the value it wrote |
+| Redis `Tracking` | drops its copy when the server's tracking message arrives and reads the new value from Redis | keeps the value it wrote: tracking is registered with `NOLOOP` |
+| Redis `Broadcast` | drops its copy when the keyspace `set` event arrives | drops it too: keyspace notifications have no `NOLOOP`, so every write evicts the writer's own in-process entry and its next read of the key goes to Redis |
+| No channel (a store without one) | keeps its copy until it expires | keeps the value it wrote |
+
+The old copy lives for its in-process time to live: the `LocalExpiration` of the call that
+filled it, or otherwise the remaining distributed time to live when it was read. Even where the
+backend reports writes, the report travels asynchronously, so another instance can serve the old
+value until it arrives.
+
+When other instances must not keep serving an old value, invalidate instead of overwriting:
+write the source of truth, then call `RemoveAsync` for the key (or `RemoveByTagAsync`), and let
+the next read on each instance fill both tiers. Where overwriting with `SetAsync` is the pattern,
+a short `LocalExpiration` bounds how long other instances serve the previous value.
+
+The explicit channel also delivers every publish back to its publisher. A cache recognises the
+echo of a message it published within `Caching:Invalidation:Timeout` and skips it, so the refill
+that follows its own removal stays cached. The recognition covers the explicit channel only:
+under Redis broadcast a removal also returns to the remover as a keyspace `del` or `unlink` event
+naming the same key, one of the two is taken for the echo, and the other is applied, which at
+most evicts a refill that its own `set` event evicts anyway. Tracking reports neither the
+writer's writes nor its removals back to it.
+
 ## What to keep in the in-process tier
 
 The in-process tier answers in microseconds and the distributed tier in a
@@ -244,6 +278,9 @@ enough to cache in process.
   served. There is no background refresh ahead of expiry.
 - The in-process tier is per process; without a distributed tier, staleness
   across instances is bounded by expiry only.
+- Only removals publish an invalidation. An overwrite reaches another
+  instance's in-process copy only through Redis tracking or broadcast;
+  otherwise that copy is served until it expires.
 - Invalidation is not durable. A message dropped by a full queue costs one
   in-process expiry; a reconnect clears the in-process tier when
   `Caching:Invalidation:FlushLocalOnReconnect` is set, which is the default.

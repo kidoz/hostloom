@@ -124,6 +124,27 @@ subscription handlers, including while the shared multiplexer is disconnected. D
 pending subscription calls before detaching their queues. An observer that throws is logged
 without preventing delivery to the remaining observers.
 
+Only `RemoveAsync` and `RemoveByTagAsync` publish on the explicit channel. `SetAsync`,
+`SetIfAbsentAsync`, get-or-create fills, and warmup publish nothing, so what another instance
+learns about an overwrite depends on the transport in effect:
+
+- **Tracking** drops another instance's in-process copy when the tracking message arrives. The
+  writer keeps the entry it has just written, because of `NOLOOP`. `NOLOOP` belongs to the
+  connection, so caches in one process that share a `RedisConnection` do not learn about each
+  other's writes this way; removals still reach them over the explicit channel.
+- **Broadcast** drops another instance's copy when the keyspace `set` event arrives. Keyspace
+  notifications have no `NOLOOP`, so the writer receives its own `set` event as well and evicts
+  the entry it has just written: its next read of the key is a Redis round trip, one extra read
+  per write. A removal likewise returns to the remover as a keyspace `del` or `unlink` event
+  besides the explicit echo. The cache recognises only one of the two as its own echo and
+  applies the other, which at most evicts a refill that its own `set` event evicts anyway.
+- **Explicit channel only**, when neither mode could be enabled, reports no write: another
+  instance keeps serving its old in-process copy until that copy expires.
+
+When other instances must not serve an old value, write the source of truth and then call
+`RemoveAsync`, or keep `CacheEntryOptions.LocalExpiration` short. Even tracking and broadcast
+deliver asynchronously, so another instance can serve the old value until the message arrives.
+
 Two connection settings follow from this and are applied by the package: the client-side
 `allowAdmin` flag, because StackExchange.Redis gates every `CLIENT` command behind it (this
 grants nothing on the server; ACLs still apply), and RESP2, so subscriptions run on a dedicated

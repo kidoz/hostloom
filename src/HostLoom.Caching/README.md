@@ -68,7 +68,11 @@ payload, so a tagged payload read while any tag invalidation was applied is retu
 copied into the in-process tier. A flush suppresses every in-flight fill, and bulk reads and
 warmup batches are guarded by the whole generation. The channel echoes this instance's own
 publishes back to it; an echo of a message published within `Caching:Invalidation:Timeout` is
-recognised and skipped, so the refill that follows a removal is cached. A distributed read that
+recognised and skipped, so the refill that follows a removal is cached. Only removals publish:
+`SetAsync`, `SetIfAbsentAsync`, fills, and warmup do not, so another instance's in-process copy
+of an overwritten key stays until it expires unless the backend itself reports writes, as Redis
+tracking and broadcast do. Call `RemoveAsync` after writing the source of truth, or keep
+`LocalExpiration` short, when other instances must not serve the old value. A distributed read that
 completes after a later write to the same key does not replace that write's in-process entry.
 None of this makes distributed operations atomic: an overlapping caller can still receive an
 older result, and missed or queued invalidations still leave a window of staleness.
