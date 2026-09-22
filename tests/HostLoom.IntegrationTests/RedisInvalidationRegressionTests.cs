@@ -40,6 +40,9 @@ public sealed class RedisInvalidationRegressionTests : IAsyncLifetime
                 "run",
                 "--detach",
                 "--rm",
+                // The image declares /data a volume; tmpfs keeps each case from leaving one behind.
+                "--tmpfs",
+                "/data",
                 "--name",
                 _container,
                 "--publish",
@@ -68,7 +71,8 @@ public sealed class RedisInvalidationRegressionTests : IAsyncLifetime
         if (_started)
         {
             _started = false;
-            await DockerAsync("rm", "--force", _container);
+            // A forced removal bypasses --rm's own cleanup, so anonymous volumes go explicitly.
+            await DockerAsync("rm", "--force", "--volumes", _container);
         }
     }
 
