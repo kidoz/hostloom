@@ -15,6 +15,8 @@ internal sealed class RedisClusterFixture
     private readonly string _container;
     private readonly string _owner;
     private readonly int[] _ports;
+    private readonly string? _gatewayContainer;
+    public int? GatewayPort { get; }
 
     public RedisClusterFixture()
     {
@@ -29,6 +31,21 @@ internal sealed class RedisClusterFixture
             .EnumerateArray()
             .Select(port => port.GetInt32())
             .ToArray();
+        if (
+            data.TryGetProperty("gatewayPort", out var gatewayPort)
+            && gatewayPort.ValueKind == JsonValueKind.Number
+        )
+        {
+            GatewayPort = gatewayPort.GetInt32();
+            _gatewayContainer = data.GetProperty("gatewayContainer").GetString();
+            if (
+                GatewayPort is < 1 or > 65535
+                || _ports.Contains(GatewayPort.Value)
+                || _gatewayContainer is not { Length: 64 }
+                || !_gatewayContainer.All(char.IsAsciiHexDigit)
+            )
+                throw new InvalidOperationException("Invalid gateway fixture identity.");
+        }
         if (
             _container.Length != 64
             || !_container.All(char.IsAsciiHexDigit)
@@ -51,6 +68,85 @@ internal sealed class RedisClusterFixture
             HealthTimeout = TimeSpan.FromMilliseconds(500),
             ClientName = "hostloom-cluster-" + _owner,
         };
+
+    public RedisOptions GatewayOptions()
+    {
+        var options = Options();
+        options.Configuration =
+            "127.0.0.1:"
+            + (GatewayPort ?? throw new InvalidOperationException("Run with --haproxy."));
+        return options;
+    }
+
+    public async Task PromoteAsync(ClusterNode replica, CancellationToken token)
+    {
+        var port = OwnedPort(replica.EndPoint);
+        await VerifyOwnershipAsync(token);
+        Assert.Equal("OK", (await CliAsync(port, ["CLUSTER", "FAILOVER"], token)).Trim());
+        await WaitForPromotionAsync(replica, token);
+    }
+
+    public async Task RestartGatewayAsync(CancellationToken token)
+    {
+        await VerifyGatewayAsync(token);
+        await DockerAsync(["restart", "--time", "0", _gatewayContainer!], token);
+    }
+
+    public async Task RouteGatewayToReplicaAsync(ClusterNode replica, CancellationToken token)
+    {
+        var target = OwnedPort(replica.EndPoint);
+        await VerifyGatewayAsync(token);
+        foreach (var port in _ports)
+        {
+            await GatewayCommandAsync($"disable health primaries/node{port}", token);
+            await GatewayCommandAsync($"set server primaries/node{port} state maint", token);
+            await GatewayCommandAsync($"shutdown sessions server primaries/node{port}", token);
+        }
+        await GatewayCommandAsync($"set server primaries/node{target} health up", token);
+        await GatewayCommandAsync($"set server primaries/node{target} state ready", token);
+    }
+
+    private async Task GatewayCommandAsync(string command, CancellationToken token)
+    {
+        var result = await DockerAsync(
+            [
+                "exec",
+                _gatewayContainer!,
+                "sh",
+                "-c",
+                "printf '%s\\n' \"$1\" | nc -w 1 127.0.0.1 20010",
+                "hostloom-gateway",
+                command,
+            ],
+            token
+        );
+        Assert.True(
+            string.IsNullOrWhiteSpace(result),
+            "HAProxy rejected the fixture command: " + result
+        );
+    }
+
+    private async Task VerifyGatewayAsync(CancellationToken token)
+    {
+        await VerifyOwnershipAsync(token);
+        using var document = JsonDocument.Parse(
+            await DockerAsync(["inspect", _gatewayContainer!], token)
+        );
+        var data = document.RootElement[0];
+        var host = data.GetProperty("HostConfig");
+        if (
+            data.GetProperty("Id").GetString() != _gatewayContainer
+            || data.GetProperty("Name").GetString() != "/hostloom-redis-gateway-" + _owner
+            || data.GetProperty("Config")
+                .GetProperty("Labels")
+                .GetProperty("hostloom.redis.cluster-owner")
+                .GetString() != _owner
+            || host.GetProperty("NetworkMode").GetString() != "container:" + _container
+            || host.GetProperty("Memory").GetInt64() != 64 * 1024 * 1024
+            || host.GetProperty("NanoCpus").GetInt64() != 1_000_000_000
+        )
+            throw new InvalidOperationException("Gateway ownership or containment mismatch.");
+    }
 
     public async Task<(
         string Namespace,
@@ -286,10 +382,10 @@ internal sealed class RedisClusterFixture
                 .GetString() != _owner
             || host.GetProperty("Memory").GetInt64() != 512 * 1024 * 1024
             || host.GetProperty("NanoCpus").GetInt64() != 2_000_000_000
-            || bindings.EnumerateObject().Count() != 6
+            || bindings.EnumerateObject().Count() != (GatewayPort.HasValue ? 7 : 6)
         )
             throw new InvalidOperationException("Cluster ownership or containment mismatch.");
-        foreach (var port in _ports)
+        foreach (var port in GatewayPort is { } gateway ? [.. _ports, gateway] : _ports)
         {
             var binding = bindings.GetProperty(
                 port.ToString(CultureInfo.InvariantCulture) + "/tcp"

@@ -62,6 +62,10 @@ test-valkey-deployment:
 test-redis-cluster:
     uv run --locked python scripts/test-redis-cluster.py
 
+# Test HAProxy recovery and reject unsupported single-endpoint Cluster routing.
+test-redis-gateway:
+    uv run --locked python scripts/test-redis-cluster.py --haproxy
+
 # Run all object mapping comparisons and strategy measurements.
 benchmark-mapping:
     dotnet run --project benchmarks/HostLoom.Mapping.Benchmarks -c Release -- --filter "*"

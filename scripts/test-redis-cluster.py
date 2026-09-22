@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run real Redis Cluster primary-crash tests in one owned six-process Docker fixture."""
+"""Run Redis Cluster crash or HAProxy bootstrap/recovery tests in owned Docker fixtures."""
 
 import argparse
 import json
@@ -39,6 +39,19 @@ def inspect_owned(container: str, owner: str, ports: list[int]) -> dict[str, Any
     return data
 
 
+def inspect_gateway(container: str, owner: str, cluster: str) -> None:
+    data = json.loads(run(["docker", "inspect", container]))[0]
+    if (
+        data["Id"] != container
+        or data["Name"] != "/hostloom-redis-gateway-" + owner
+        or data["Config"]["Labels"].get(LABEL) != owner
+        or data["HostConfig"]["NetworkMode"] != "container:" + cluster
+        or data["HostConfig"]["Memory"] != 64 * 1024 * 1024
+        or data["HostConfig"]["NanoCpus"] != 1_000_000_000
+    ):
+        raise RuntimeError("HAProxy gateway ownership or containment mismatch.")
+
+
 def wait_ready(container: str, ports: list[int]) -> None:
     deadline = time.monotonic() + 40
     while time.monotonic() < deadline:
@@ -59,6 +72,18 @@ def wait_ready(container: str, ports: list[int]) -> None:
     raise TimeoutError("Six-node Redis Cluster did not become healthy.")
 
 
+def wait_gateway(container: str, port: int) -> None:
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            if run(["docker", "exec", container, "redis-cli", "-p", str(port), "PING"]) == "PONG":
+                return
+        except RuntimeError:
+            pass
+        time.sleep(0.1)
+    raise TimeoutError("HAProxy did not reach a healthy Redis primary.")
+
+
 def run_tests(environment: dict[str, str], method: str) -> None:
     arguments = [
         "dotnet",
@@ -71,7 +96,9 @@ def run_tests(environment: dict[str, str], method: str) -> None:
         "--no-restore",
         "--",
         "--filter-class",
-        "*RedisClusterFailoverTests",
+        "*RedisGatewayTests"
+        if environment.get("HOSTLOOM_REDIS_GATEWAY")
+        else "*RedisClusterFailoverTests",
         "--filter-method",
         method,
     ]
@@ -91,6 +118,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-build", action="store_true", help="Use already built Release tests.")
     parser.add_argument("--filter-method", default="*", help="Optional xUnit method filter.")
+    parser.add_argument(
+        "--haproxy", action="store_true", help="Test HAProxy bootstrap, demotion and reconnect."
+    )
     args = parser.parse_args()
     if os.name != "posix":
         raise RuntimeError("This fixture runner requires Linux or macOS.")
@@ -104,8 +134,16 @@ def main() -> None:
         ["docker", "image", "inspect", "redis:7.4"], capture_output=True, check=False
     ).returncode:
         run(["docker", "pull", "redis:7.4"], timeout=180)
+    if (
+        args.haproxy
+        and subprocess.run(
+            ["docker", "image", "inspect", "haproxy:3.2-alpine"], capture_output=True, check=False
+        ).returncode
+    ):
+        run(["docker", "pull", "haproxy:3.2-alpine"], timeout=180)
     owner = uuid.uuid4().hex
     container = ""
+    gateway = ""
     ports: list[int] = []
     with tempfile.TemporaryDirectory(prefix="hostloom-redis-cluster-") as temporary:
         directory = Path(temporary).resolve()
@@ -113,7 +151,7 @@ def main() -> None:
         runtime.mkdir(mode=0o755)
         reservations: list[socket.socket] = []
         try:
-            for _ in range(6):
+            for _ in range(7 if args.haproxy else 6):
                 reservation = socket.socket()
                 reservations.append(reservation)
                 reservation.bind(("127.0.0.1", 0))
@@ -121,6 +159,8 @@ def main() -> None:
         finally:
             for reservation in reservations:
                 reservation.close()
+        published = ports.copy()
+        gateway_port = ports.pop() if args.haproxy else None
         for index, port in enumerate(ports):
             config = runtime / f"node-{port}.conf"
             # All six processes share a network namespace: the advertised loopback addresses
@@ -157,11 +197,11 @@ def main() -> None:
                 "--tmpfs",
                 "/data:rw,size=67108864",
             ]
-            for port in ports:
+            for port in published:
                 command.extend(["--publish", f"127.0.0.1:{port}:{port}"])
             command.extend(["redis:7.4", "sleep", "infinity"])
             container = run(command)
-            inspect_owned(container, owner, ports)
+            inspect_owned(container, owner, published)
             for port in ports:
                 run(["docker", "exec", container, "mkdir", "-p", f"/data/node-{port}"])
                 run(["docker", "exec", container, "redis-server", f"/fixture/node-{port}.conf"])
@@ -184,20 +224,87 @@ def main() -> None:
                 flush=True,
             )
             wait_ready(container, ports)
+            if gateway_port is not None:
+                config = runtime / "haproxy.cfg"
+                config.write_text(
+                    "global\n  maxconn 128\n"
+                    "  stats socket ipv4@127.0.0.1:20010 level admin\n"
+                    "defaults\n  mode tcp\n"
+                    "  timeout connect 2s\n  timeout client 30s\n  timeout server 30s\n"
+                    f"frontend redis\n  bind :{gateway_port}\n  default_backend primaries\n"
+                    "backend primaries\n  balance first\n  option tcp-check\n"
+                    "  tcp-check send PING\\r\\n\n  tcp-check expect string +PONG\n"
+                    "  tcp-check send info\\ replication\\r\\n\n"
+                    "  tcp-check expect string role:master\n"
+                    + "".join(
+                        f"  server node{port} 127.0.0.1:{port} check inter 200ms fall 1 rise 1 "
+                        "on-marked-down shutdown-sessions\n"
+                        for port in ports
+                    )
+                )
+                config.chmod(0o644)
+                gateway = run(
+                    [
+                        "docker",
+                        "run",
+                        "-d",
+                        "--pull=never",
+                        "--name",
+                        "hostloom-redis-gateway-" + owner,
+                        "--label",
+                        LABEL + "=" + owner,
+                        "--memory",
+                        "64m",
+                        "--cpus",
+                        "1",
+                        "--network",
+                        "container:" + container,
+                        "--mount",
+                        f"type=bind,src={config},dst=/usr/local/etc/haproxy/haproxy.cfg,readonly",
+                        "haproxy:3.2-alpine",
+                    ]
+                )
+                inspect_gateway(gateway, owner, container)
+                print(run(["docker", "exec", gateway, "haproxy", "-v"]), flush=True)
+                wait_gateway(container, gateway_port)
             fixture = directory / "fixture.json"
-            fixture.write_text(json.dumps({"container": container, "owner": owner, "ports": ports}))
+            fixture.write_text(
+                json.dumps(
+                    {
+                        "container": container,
+                        "owner": owner,
+                        "ports": ports,
+                        "gatewayContainer": gateway,
+                        "gatewayPort": gateway_port,
+                    }
+                )
+            )
             fixture.chmod(0o600)
             print(
-                "Testing Redis 7.4: three primaries, three replicas, process crashes, loopback only.",
+                "Testing Redis 7.4: three primaries, three replicas, loopback only; "
+                + ("HAProxy gateway and role changes." if args.haproxy else "process crashes."),
                 flush=True,
             )
-            run_tests(
-                dict(os.environ, HOSTLOOM_REDIS_CLUSTER_FIXTURE=str(fixture)), args.filter_method
-            )
+            environment = dict(os.environ, HOSTLOOM_REDIS_CLUSTER_FIXTURE=str(fixture))
+            environment.pop("HOSTLOOM_REDIS_GATEWAY", None)
+            if args.haproxy:
+                environment["HOSTLOOM_REDIS_GATEWAY"] = "1"
+                print(
+                    "Includes a negative topology test: a pass confirms that one TCP endpoint "
+                    "cannot route unreachable cluster shards, even after connection recreation.",
+                    flush=True,
+                )
+            run_tests(environment, args.filter_method)
             wait_ready(container, ports)
+            if gateway_port is not None:
+                wait_gateway(container, gateway_port)
         finally:
+            if gateway:
+                inspect_gateway(gateway, owner, container)
+                run(["docker", "rm", "-f", gateway])
+                print("Removed the owned HAProxy gateway.", flush=True)
             if container:
-                inspect_owned(container, owner, ports)
+                inspect_owned(container, owner, published)
                 run(["docker", "rm", "-f", container])
                 print(
                     "Removed the owned Redis Cluster container and ephemeral node data.", flush=True
