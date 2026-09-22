@@ -8,20 +8,29 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
-Upgrading changes no public contract, but four defaults or behaviours change and are stated under
-**Changed**: RabbitMQ publishes on up to sixteen pooled channels instead of one, a Kafka event
-handler that keeps failing is retried until it succeeds instead of being dropped after five
-attempts, the in-memory transport no longer reports subscriber failures to the publisher and holds
-an unbound request for its full timeout, and a Redis Cluster connection without hash tags on
-database zero now fails hosted startup even when `FailFast` is false. A Valkey deployment with a
-restricted ACL must also allow the new `:probe:*` channel suffix. RabbitMQ request handlers on one
-endpoint now run up to sixteen at a time instead of one after another; a handler that is not safe
-to overlap needs `RabbitMqOptions.RequestDispatchConcurrency = 1` or a receive-pipeline
-concurrency limit. `RequestAsync` and `PublishAsync` now throw `MessagingTransportException` for
-transport failures, so code that caught a Kafka or RabbitMQ client-library exception from them
-must catch the new type and read its inner exception. Cancelling a lock acquisition no longer
-stops a command already sent, a leader keeps a held lease through a transient renewal failure,
-and a hosted elector whose lease exceeds `Locking:MaxLease` fails at startup.
+## [0.10.0] - 2026-09-23
+
+This release closes the gaps a review of the transports and backends found in 0.9.0: bounded
+RabbitMQ publication, recoverable Kafka reply consumers, broker-like in-memory delivery, Redis and
+Valkey invalidation recovery, and lock acquisitions and leader renewals whose outcome is
+uncertain. It adds per-role RabbitMQ dispatch concurrency, meters for both broker transports,
+`MessagingTransportException`, and transport and cache-invalidation conformance suites that run
+on every transport and backend.
+
+Upgrading from 0.9.0 changes behaviour an application can observe; each change is stated under
+**Changed**. `RequestAsync` and `PublishAsync` throw `MessagingTransportException` for transport
+failures, so code that caught a Kafka or RabbitMQ client-library exception from them must catch
+the new type and read its inner exception. RabbitMQ publishes on up to sixteen pooled channels
+instead of one, and request handlers on one endpoint run up to sixteen at a time; a handler that
+is not safe to overlap needs `RabbitMqOptions.RequestDispatchConcurrency = 1` or a receive-pipeline
+concurrency limit. A Kafka event handler that keeps failing is retried until it succeeds instead of
+being dropped after five attempts. The in-memory transport no longer reports subscriber failures
+to the publisher and holds an unbound request for its full timeout. A Redis Cluster connection
+without hash tags on database zero fails hosted startup even when `FailFast` is false, and a
+Valkey deployment with a restricted ACL must allow the new `:probe:*` channel suffix. Cancelling a
+lock acquisition no longer stops a command already sent, a leader keeps a held lease through a
+transient renewal failure, and a hosted elector whose lease exceeds `Locking:MaxLease` fails at
+startup.
 
 ### Added
 
@@ -1337,7 +1346,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/kidoz/hostloom/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/kidoz/hostloom/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/kidoz/hostloom/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/kidoz/hostloom/compare/v0.6.0...v0.7.0
