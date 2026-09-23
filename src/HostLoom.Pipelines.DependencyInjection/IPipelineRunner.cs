@@ -1,9 +1,10 @@
 namespace HostLoom.Pipelines.DependencyInjection;
 
 /// <summary>
-/// Executes one registered pipeline. Each run gets its own dependency-injection scope, resolves
-/// the enabled filters transiently in stage order, composes them, and sends the context through.
-/// Exceptions propagate unchanged, so a caller with at-least-once semantics sees every failure.
+/// Executes one registered pipeline. Each attempt of a run (one, unless <c>WithRetry</c> re-runs
+/// it) gets its own dependency-injection scope, resolves the enabled filters transiently in stage
+/// order, composes them, sends the context through, and disposes the scope. Exceptions propagate
+/// unchanged, so a caller with at-least-once semantics sees every failure.
 /// </summary>
 /// <remarks>
 /// Resolve by key (the pipeline name) when a process hosts several pipelines for one context

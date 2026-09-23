@@ -66,15 +66,16 @@ A pipeline is composed once and reused. That is what gives a circuit
 breaker or rate limiter *process-wide* state — a breaker that reset per
 message would never open. The complementary rule sits one level up: in
 registered pipelines, filter *instances* are resolved transient from a
-per-run scope, so stateful infrastructure lives in the filter's own
-long-lived internals while dependencies stay scoped.
+per-attempt scope, so stateful infrastructure lives in the filter's own
+long-lived internals while dependencies stay scoped, and a retry never
+reuses the failed attempt's scope.
 
 ## One model at three altitudes
 
 1. **Standalone** — `Pipe.Create<TContext>` with no container; also the
    unit-test shape.
 2. **Registered** — `AddPipeline<TContext>` adds named stages,
-   constructor-injected filters, per-run feature toggles, startup
+   constructor-injected filters, per-attempt feature toggles, startup
    validation (duplicate names and missing constructor dependencies fail
    startup, not the first run), and automatic per-filter metrics and
    tracing.

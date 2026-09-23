@@ -9,6 +9,11 @@ internal sealed class PipelineRunner<TContext>(
 ) : IPipelineRunner<TContext>
     where TContext : class, IPipeContext
 {
+    // The run-level wrappers (retry, timeout) around a terminal that opens one scope per attempt.
+    // Those wrappers keep no state between sends, so one composition serves every concurrent run;
+    // everything an attempt owns is created inside AttemptFilter.
+    private readonly IPipe<TContext> _pipe = ComposeRun(definition, scopeFactory);
+
     public string PipelineName => definition.Name;
 
     public PipelineTopology Topology => definition.Topology;
@@ -28,12 +33,7 @@ internal sealed class PipelineRunner<TContext>(
         var outcome = "success";
         try
         {
-            var scope = scopeFactory.CreateAsyncScope();
-            await using (scope.ConfigureAwait(false))
-            {
-                var pipe = BuildPipe(scope.ServiceProvider);
-                await pipe.SendAsync(context).ConfigureAwait(false);
-            }
+            await _pipe.SendAsync(context).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -57,9 +57,10 @@ internal sealed class PipelineRunner<TContext>(
         }
     }
 
-    // Rebuilt per run: filters are transient with scoped dependencies, and EnabledWhen is a
-    // per-run decision. The build itself is a list walk and a fold, cheap next to any filter.
-    private IPipe<TContext> BuildPipe(IServiceProvider provider)
+    private static IPipe<TContext> ComposeRun(
+        PipelineDefinition<TContext> definition,
+        IServiceScopeFactory scopeFactory
+    )
     {
         var builder = new PipeBuilder<TContext>();
         foreach (var configure in definition.OuterFilters)
@@ -67,34 +68,65 @@ internal sealed class PipelineRunner<TContext>(
             configure(builder);
         }
 
-        foreach (var stage in definition.Stages)
-        {
-            foreach (var registration in stage.Filters)
-            {
-                if (registration.EnabledWhen is not null && !registration.EnabledWhen(provider))
-                {
-                    continue;
-                }
+        return builder.Use(new AttemptFilter(definition, scopeFactory)).Build();
+    }
 
-                var filter =
-                    (IFilter<TContext>)
-                        provider.GetRequiredKeyedService(
-                            registration.FilterType,
-                            registration.ServiceKey
-                        );
-                builder.Use(
-                    definition.Instrumented
-                        ? new InstrumentedFilter<TContext>(
-                            filter,
-                            definition.Name,
-                            stage.Name,
-                            registration.Name
-                        )
-                        : filter
-                );
+    /// <summary>
+    /// Terminal of the run-level wrappers: each send is one attempt, run in its own scope with the
+    /// stage filters resolved from it. Nothing follows it, so the downstream pipe is not invoked.
+    /// </summary>
+    private sealed class AttemptFilter(
+        PipelineDefinition<TContext> definition,
+        IServiceScopeFactory scopeFactory
+    ) : IFilter<TContext>
+    {
+        public async ValueTask SendAsync(TContext context, IPipe<TContext> next)
+        {
+            // The scope opens beneath the retry and timeout wrappers, so a retry gets a fresh scope
+            // and fresh filter instances. Reusing the failed attempt's scope would hand the retry
+            // the scoped state that attempt left behind, such as a unit of work holding its changes.
+            var scope = scopeFactory.CreateAsyncScope();
+            await using (scope.ConfigureAwait(false))
+            {
+                var pipe = BuildStages(scope.ServiceProvider);
+                await pipe.SendAsync(context).ConfigureAwait(false);
             }
         }
 
-        return builder.Build();
+        // Rebuilt per attempt: filters are transient with scoped dependencies, and EnabledWhen is a
+        // per-attempt decision. The build itself is a list walk and a fold, cheap next to any filter.
+        private IPipe<TContext> BuildStages(IServiceProvider provider)
+        {
+            var builder = new PipeBuilder<TContext>();
+            foreach (var stage in definition.Stages)
+            {
+                foreach (var registration in stage.Filters)
+                {
+                    if (registration.EnabledWhen is not null && !registration.EnabledWhen(provider))
+                    {
+                        continue;
+                    }
+
+                    var filter =
+                        (IFilter<TContext>)
+                            provider.GetRequiredKeyedService(
+                                registration.FilterType,
+                                registration.ServiceKey
+                            );
+                    builder.Use(
+                        definition.Instrumented
+                            ? new InstrumentedFilter<TContext>(
+                                filter,
+                                definition.Name,
+                                stage.Name,
+                                registration.Name
+                            )
+                            : filter
+                    );
+                }
+            }
+
+            return builder.Build();
+        }
     }
 }

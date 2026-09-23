@@ -91,17 +91,18 @@ Meter and `ActivitySource` are both named `HostLoom.Pipelines`
 
 `AddPipeline<TContext>(this IServiceCollection, string name, Action<PipelineBuilder<TContext>> configure)`.
 
-Lifetimes: declared filters are **keyed transient** (resolved per run
-from a dedicated scope); `IPipelineRunner<TContext>` is a **keyed
-singleton** under the pipeline name; an unkeyed `IPipelineRunner<TContext>`
+Lifetimes: declared filters are **keyed transient**, resolved per attempt
+from a dedicated scope that is disposed when the attempt ends (a run is
+one attempt unless `WithRetry` re-runs it); `IPipelineRunner<TContext>`
+is a **keyed singleton** under the pipeline name; an unkeyed `IPipelineRunner<TContext>`
 resolves only when exactly one pipeline exists for that context type;
 startup validation runs as a hosted service.
 
 | Type | Members |
 | --- | --- |
-| `PipelineBuilder<TContext>` | `Stage(name, configure)`, `WithRetry(policy, shouldRetry?, timeProvider?)`, `WithoutInstrumentation()`; `WithTimeout(timeout, timeProvider?)` extension (`TContext : PipeContext`) — retry/timeout wrappers nest in declaration order, first outermost |
+| `PipelineBuilder<TContext>` | `Stage(name, configure)`, `WithRetry(policy, shouldRetry?, timeProvider?)`, `WithoutInstrumentation()`; `WithTimeout(timeout, timeProvider?)` extension (`TContext : PipeContext`) — retry/timeout wrappers nest in declaration order, first outermost; each retry attempt gets a fresh scope and fresh filters, and shares the context |
 | `PipelineStageBuilder<TContext>` | `AddFilter<TFilter>(Action<PipelineFilterBuilder>? configure = null)`; default diagnostic name is the filter type name |
-| `PipelineFilterBuilder` | `WithName(string)`, `EnabledWhen(Func<IServiceProvider, bool>)` — evaluated once per run |
+| `PipelineFilterBuilder` | `WithName(string)`, `EnabledWhen(Func<IServiceProvider, bool>)` — evaluated once per attempt, against that attempt's scope |
 | `IPipelineRunner<TContext>` | `PipelineName`, `Topology`, `RunAsync(TContext)` |
 | `PipelineTopology` | `Describe()` renders `stage[filterA, filterB?]` — a trailing `?` marks a conditional filter; `PipelineStageTopology` / `PipelineFilterTopology` carry the structure |
 | `PipelineValidator` | `ValidateAsync(IServiceProvider, CancellationToken)` — the check the startup hosted service runs |

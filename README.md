@@ -913,8 +913,10 @@ pipe.UseTimeout(TimeSpan.FromMinutes(5));
 
 `HostLoom.Pipelines.DependencyInjection` turns a pipeline into a first-class
 registration: named stages in declared order, filters resolved transient from a
-per-run scope so they take repositories and loggers through constructors, and
-per-filter feature toggles evaluated on every run:
+per-attempt scope so they take repositories and loggers through constructors, and
+per-filter feature toggles evaluated on every attempt. `WithRetry` re-runs the
+whole pipeline in a new scope with fresh filters, so a retry never inherits the
+failed attempt's scoped state:
 
 ```csharp
 using HostLoom.Pipelines.DependencyInjection;

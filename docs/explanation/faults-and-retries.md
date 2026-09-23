@@ -45,6 +45,12 @@ distributed-systems bugs; HostLoom removes it structurally rather than by
 convention. (The `HLM0003` analyzer guards the other door: a handler
 registered as a singleton would smuggle state across attempts anyway.)
 
+Registered pipelines follow the same rule. `WithRetry` re-runs the whole
+pipeline, and every attempt opens its own scope, resolves fresh filter
+instances, and evaluates `EnabledWhen` again; the failed attempt's scope
+is disposed before the next attempt starts. The one thing every attempt
+shares is the context object, including any payloads filters added to it.
+
 ## In-process retry is not redelivery
 
 The receive pipeline never moves a broker offset or acknowledgement.

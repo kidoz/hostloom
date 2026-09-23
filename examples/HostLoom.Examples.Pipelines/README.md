@@ -10,11 +10,12 @@ dotnet run --project examples/HostLoom.Examples.Pipelines
 The program demonstrates three ways to build a pipe from several filters:
 
 1. **Registered pipeline (dependency injection)** — `AddPipeline<IndexingContext>("document-indexing", …)`
-   declares named stages holding filter types. Filters resolve transient from a per-run scope, so
+   declares named stages holding filter types. Filters resolve transient from a per-attempt scope, so
    `WordCountFilter`, `ReadingTimeFilter`, and `StoreDocumentFilter` take loggers and the
    `IDocumentStore` repository through constructors. Host startup validates the pipeline and logs
-   its topology; the run is wrapped in a timeout and a retry policy; `sentence_count` is behind a
-   feature toggle evaluated on every run; each filter is automatically instrumented (meter and
+   its topology; the run is wrapped in a timeout and a retry policy, and each retry attempt gets
+   a fresh scope and fresh filters; `sentence_count` is behind a feature toggle evaluated on every
+   attempt; each filter is automatically instrumented (meter and
    activity source `HostLoom.Pipelines`).
 2. **Manual composition from container-resolved filters** — open a scope, resolve each filter
    type with `GetRequiredService`, and hand the instances to `Pipe.Create`. Full control over

@@ -13,7 +13,7 @@ internal static class Program
         var builder = Host.CreateApplicationBuilder();
 
         // Filter dependencies register like any other service. AddPipeline owns private transient
-        // registrations for its filters and resolves them per run through constructor injection.
+        // registrations for its filters and resolves them per attempt through constructor injection.
         builder.Services.AddSingleton<IDocumentStore, LoggingDocumentStore>();
         builder.Services.AddSingleton<FeatureFlags>();
         builder.Services.AddTransient<WordCountFilter>();
@@ -72,7 +72,8 @@ internal static class Program
 
     /// <summary>
     /// The registered pipeline: resolve the runner by pipeline name and send one context per
-    /// batch. Each run gets its own dependency-injection scope and freshly resolved filters.
+    /// batch. Each attempt, retries included, gets its own dependency-injection scope and freshly
+    /// resolved filters.
     /// </summary>
     private static async Task RunRegisteredPipelineAsync(IServiceProvider services, ILogger logger)
     {
@@ -84,7 +85,7 @@ internal static class Program
 
         await runner.RunAsync(new IndexingContext(Batch("intro"))).ConfigureAwait(false);
 
-        // Toggles are evaluated per run: the next run composes the sentence_count filter in.
+        // Toggles are evaluated per attempt: the next run composes the sentence_count filter in.
         services.GetRequiredService<FeatureFlags>().SentenceCountEnabled = true;
         logger.LogInformation("sentence_count enabled; indexing the next batch");
         await runner.RunAsync(new IndexingContext(Batch("guide"))).ConfigureAwait(false);

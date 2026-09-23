@@ -57,7 +57,7 @@ Tagged by destination and message type.
 | --- | --- | --- |
 | `hostloom.pipeline.filter.duration` | histogram | A filter's own work, downstream time subtracted |
 | `hostloom.pipeline.filter.failures` | counter | Filter failures |
-| `hostloom.pipeline.run.duration` | histogram | Whole pipeline run duration |
+| `hostloom.pipeline.run.duration` | histogram | Whole pipeline run duration, recorded once per run across all retry attempts and tagged `hostloom.pipeline.outcome` (`success`, `failure`, `canceled`) with the final outcome |
 | `hostloom.pipeline.run.active` | up-down counter | In-flight pipeline runs |
 
 The per-filter duration subtracts downstream time on purpose: the slow

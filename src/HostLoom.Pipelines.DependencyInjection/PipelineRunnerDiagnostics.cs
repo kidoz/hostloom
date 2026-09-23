@@ -16,7 +16,7 @@ internal static class PipelineRunnerDiagnostics
     internal static readonly Histogram<double> RunDuration = Meter.CreateHistogram<double>(
         "hostloom.pipeline.run.duration",
         "s",
-        "Time one pipeline run spent from scope creation to completion."
+        "Time one pipeline run spent from start to completion, across every retry attempt."
     );
 
     internal static readonly UpDownCounter<long> ActiveRuns = Meter.CreateUpDownCounter<long>(

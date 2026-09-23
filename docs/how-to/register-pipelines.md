@@ -2,8 +2,8 @@
 
 Turn a pipeline into a first-class dependency-injection registration with
 `HostLoom.Pipelines.DependencyInjection`: named stages in declared order,
-filters resolved from a per-run scope, per-filter feature toggles,
-startup validation, and built-in instrumentation.
+filters resolved from a fresh scope for every attempt, per-filter feature
+toggles, startup validation, and built-in instrumentation.
 
 ## Before you begin
 
@@ -38,10 +38,17 @@ builder.Services.AddPipeline<IndexingContext>("document-indexing", pipeline => p
 ```
 
 - **Stages** run in declared order and give the topology readable names.
-- **Filters are resolved transient from a per-run scope**, so they take
-  repositories and loggers through constructors like any scoped service.
-- **`EnabledWhen`** is evaluated on every run, so a feature flag flips a
-  filter without restarting the host.
+- **Filters are resolved transient from a per-attempt scope**, so they
+  take repositories and loggers through constructors like any scoped
+  service. A run is one attempt unless `WithRetry` re-runs it.
+- **`WithRetry`** re-runs the whole pipeline in a new scope: the failed
+  attempt's scope is disposed first, and the retry gets fresh filter
+  instances and fresh scoped services. The context object, with any
+  payloads filters added to it, is the same for every attempt.
+- **`WithTimeout`** declared before `WithRetry` is a budget across all
+  attempts; declared after it, it bounds each attempt separately.
+- **`EnabledWhen`** is evaluated on every attempt, so a feature flag
+  flips a filter without restarting the host.
 
 ## 3. Run it
 
@@ -82,7 +89,8 @@ it sits. Opt out with `WithoutInstrumentation()`.
 - **Resolving the unkeyed `IPipelineRunner<TContext>` throws** — more
   than one pipeline is registered for that context type; resolve by key.
 - **A toggled filter never runs** — `EnabledWhen` is evaluated once per
-  run against the run's scope; check what the predicate reads there.
+  attempt against that attempt's scope; check what the predicate reads
+  there.
 
 ## Related
 

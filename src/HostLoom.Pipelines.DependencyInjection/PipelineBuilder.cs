@@ -46,8 +46,11 @@ public sealed class PipelineBuilder<TContext>
     }
 
     /// <summary>
-    /// Retries the whole run per <paramref name="policy"/> when it faults. Wrappers added through
-    /// this method and <c>WithTimeout</c> nest in declaration order, first outermost.
+    /// Retries the whole run per <paramref name="policy"/> when it faults. Every attempt gets a
+    /// fresh dependency-injection scope, freshly resolved filters, and freshly evaluated
+    /// <c>EnabledWhen</c> predicates, and the failed attempt's scope is disposed before the next
+    /// one opens. The context itself is shared by all attempts, payloads included. Wrappers added
+    /// through this method and <c>WithTimeout</c> nest in declaration order, first outermost.
     /// </summary>
     public PipelineBuilder<TContext> WithRetry(
         RetryPolicy policy,
@@ -109,7 +112,7 @@ public sealed class PipelineStageBuilder<TContext>
     internal PipelineStageBuilder() { }
 
     /// <summary>
-    /// Appends a filter resolved from the container per run. The default diagnostic name is the
+    /// Appends a filter resolved from the container per attempt. The default diagnostic name is the
     /// filter type's name; use <see cref="PipelineFilterBuilder.WithName"/> for a domain name.
     /// </summary>
     public PipelineStageBuilder<TContext> AddFilter<TFilter>(
@@ -143,9 +146,10 @@ public sealed class PipelineFilterBuilder
     }
 
     /// <summary>
-    /// Evaluated once per run against the run's service scope; when false the filter is left out
-    /// of the composed pipe. Backed by options or configuration, this turns a filter on and off
-    /// per environment without redeploying.
+    /// Evaluated once per attempt against that attempt's service scope (once per run unless
+    /// <c>WithRetry</c> re-runs it); when false the filter is left out of the attempt's composed
+    /// pipe. Backed by options or configuration, this turns a filter on and off per environment
+    /// without redeploying.
     /// </summary>
     public PipelineFilterBuilder EnabledWhen(Func<IServiceProvider, bool> predicate)
     {

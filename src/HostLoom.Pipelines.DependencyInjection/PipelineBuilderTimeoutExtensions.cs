@@ -10,7 +10,8 @@ public static class PipelineBuilderTimeoutExtensions
     /// Bounds the whole run: when it exceeds <paramref name="timeout"/> the run fails with
     /// <see cref="PipelineTimeoutException"/> and the context's token is cancelled so in-flight
     /// filter work stops. Nested with <c>WithRetry</c> in declaration order, first outermost, so
-    /// declaring the timeout first makes it a budget across all retry attempts.
+    /// declaring the timeout first makes it a budget across all retry attempts, and declaring it
+    /// after the retry bounds each attempt separately.
     /// </summary>
     public static PipelineBuilder<TContext> WithTimeout<TContext>(
         this PipelineBuilder<TContext> builder,

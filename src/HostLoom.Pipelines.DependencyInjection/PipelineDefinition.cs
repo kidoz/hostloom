@@ -56,7 +56,7 @@ internal sealed class PipelineDefinition<TContext> : IPipelineDefinition
 
     public IReadOnlyList<PipelineStageDefinition> Stages { get; }
 
-    /// <summary>Wrappers around the whole pipeline (timeout, retry), applied in declaration order, first outermost.</summary>
+    /// <summary>Wrappers around the per-attempt scope (timeout, retry), applied in declaration order, first outermost.</summary>
     public IReadOnlyList<Action<PipeBuilder<TContext>>> OuterFilters { get; }
 
     public bool Instrumented { get; }

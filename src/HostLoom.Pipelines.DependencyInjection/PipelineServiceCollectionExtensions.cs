@@ -8,9 +8,10 @@ public static class PipelineServiceCollectionExtensions
 {
     /// <summary>
     /// Registers a named pipeline over <typeparamref name="TContext"/>. Filters are registered
-    /// transient and resolved per run from a dedicated scope, so they can take repositories,
-    /// producers, and loggers through their constructors. Every pipeline is validated and its
-    /// topology logged when the host starts.
+    /// transient and resolved per attempt from a dedicated scope, so they can take repositories,
+    /// producers, and loggers through their constructors, and a retry never inherits the failed
+    /// attempt's scoped state. Every pipeline is validated and its topology logged when the host
+    /// starts.
     /// </summary>
     public static IServiceCollection AddPipeline<TContext>(
         this IServiceCollection services,
