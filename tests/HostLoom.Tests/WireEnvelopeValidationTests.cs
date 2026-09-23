@@ -7,9 +7,10 @@ using Xunit;
 namespace HostLoom.Tests;
 
 /// <summary>
-/// The envelope identifiers a sender can leave out or zero. A missing <c>messageId</c> reads as
-/// <see cref="Guid.Empty"/>, and every inbox key and correlation lookup is built on that id, so the
-/// codec rejects it as malformed rather than letting unrelated deliveries collide.
+/// The envelope identifiers a sender can leave out or zero, and the names it can leave null. A
+/// missing <c>messageId</c> reads as <see cref="Guid.Empty"/>, and every inbox key and correlation
+/// lookup is built on that id, so the codec rejects it as malformed rather than letting unrelated
+/// deliveries collide; a missing message type would fail the registration lookup instead.
 /// </summary>
 public sealed class WireEnvelopeValidationTests
 {
@@ -137,6 +138,169 @@ public sealed class WireEnvelopeValidationTests
         Assert.Contains(reason, exception.Message, StringComparison.Ordinal);
     }
 
+    // An explicit null passes deserialization, because the web defaults do not enforce nullable
+    // annotations. Left to the subscriber lookup it became an argument error, which a Kafka event
+    // subscription rewinds until shutdown; as a malformed envelope it is skipped at once.
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public async Task An_event_without_a_message_type_is_malformed_and_never_handled(
+        string? messageType
+    )
+    {
+        var handled = 0;
+        using var host = await StartAsync(() => handled++);
+        var frame = Frame(
+            $$"""
+            {
+              "messageId": "{{Guid.NewGuid()}}",
+              "kind": "Event",
+              "messageType": {{Name(messageType)}},
+              "responseType": "",
+              "sentAt": "2026-09-20T10:00:00Z",
+              "body": "{{Body(new Placed("A-1"))}}"
+            }
+            """
+        );
+
+        var exception = await Assert.ThrowsAsync<MalformedEnvelopeException>(async () =>
+            await Broker(host).DeliverEventAsync("orders", frame)
+        );
+
+        Assert.Contains("message type", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(0, handled);
+    }
+
+    [Fact]
+    public async Task An_event_with_a_null_response_type_is_still_handled()
+    {
+        // An event's response type is empty by design and never read, so null is not malformed.
+        var handled = 0;
+        using var host = await StartAsync(() => handled++);
+        var frame = Frame(
+            $$"""
+            {
+              "messageId": "{{Guid.NewGuid()}}",
+              "kind": "Event",
+              "messageType": "{{TypeName<Placed>()}}",
+              "responseType": null,
+              "sentAt": "2026-09-20T10:00:00Z",
+              "body": "{{Body(new Placed("A-1"))}}"
+            }
+            """
+        );
+
+        await Broker(host).DeliverEventAsync("orders", frame);
+
+        Assert.Equal(1, handled);
+    }
+
+    // A request's message type is resolved before the fault boundary, so a null one escaped as an
+    // argument error rather than a poison frame; without a response type the reply has no type.
+    [Theory]
+    [InlineData(null, nameof(Echoed), "message type")]
+    [InlineData("", nameof(Echoed), "message type")]
+    [InlineData(nameof(Echo), null, "response type")]
+    [InlineData(nameof(Echo), "", "response type")]
+    public async Task A_request_without_a_message_or_response_type_is_malformed_and_never_handled(
+        string? messageType,
+        string? responseType,
+        string reason
+    )
+    {
+        var handled = 0;
+        using var host = await StartAsync(() => handled++);
+        var frame = Frame(
+            $$"""
+            {
+              "messageId": "{{Guid.NewGuid()}}",
+              "kind": "Request",
+              "messageType": {{Name(messageType)}},
+              "responseType": {{Name(responseType)}},
+              "sentAt": "2026-09-20T10:00:00Z",
+              "body": "{{Body(new Echo("a"))}}"
+            }
+            """
+        );
+
+        var exception = await Assert.ThrowsAsync<MalformedEnvelopeException>(async () =>
+            await Broker(host).DeliverRequestAsync("echo", frame)
+        );
+
+        Assert.Contains(reason, exception.Message, StringComparison.Ordinal);
+        Assert.Equal(0, handled);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public async Task A_response_without_a_message_type_is_malformed(string? messageType)
+    {
+        using var host = await StartAsync(() => { });
+        Broker(host).CannedReply = requestId =>
+            Frame(
+                $$"""
+                {
+                  "messageId": "{{Guid.NewGuid()}}",
+                  "correlationId": "{{requestId}}",
+                  "kind": "Response",
+                  "messageType": {{Name(messageType)}},
+                  "responseType": "{{EchoedType}}",
+                  "sentAt": "2026-09-20T10:00:00Z",
+                  "body": "{{Body(new Echoed("a"))}}"
+                }
+                """
+            );
+
+        var exception = await Assert.ThrowsAsync<MalformedEnvelopeException>(async () =>
+            await RequestAsync(host)
+        );
+
+        Assert.Contains("message type", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(nameof(Echoed), """{"errorType":null,"message":"failed"}""", "error type")]
+    [InlineData(nameof(Echoed), """{"errorType":"","message":"failed"}""", "error type")]
+    [InlineData(nameof(Echoed), """{"errorType":"HandlerFault","message":null}""", "error type")]
+    [InlineData(nameof(Echoed), "{}", "error type")]
+    [InlineData(null, """{"errorType":"HandlerFault","message":"failed"}""", "message type")]
+    public async Task A_fault_missing_a_required_field_is_malformed(
+        string? messageType,
+        string fault,
+        string reason
+    )
+    {
+        using var host = await StartAsync(() => { });
+        Broker(host).CannedReply = requestId => FaultFrame(requestId, messageType, fault);
+
+        var exception = await Assert.ThrowsAsync<MalformedEnvelopeException>(async () =>
+            await RequestAsync(host)
+        );
+
+        Assert.Contains(reason, exception.Message, StringComparison.Ordinal);
+    }
+
+    // An empty message is a legitimate exception message, and an absent fault has always been
+    // reported to the caller as an unknown one rather than as a malformed reply.
+    [Theory]
+    [InlineData("""{"errorType":"HandlerFault","message":""}""", "HandlerFault")]
+    [InlineData("null", "Unknown")]
+    public async Task A_fault_with_an_empty_message_or_no_detail_still_reaches_the_caller(
+        string fault,
+        string errorType
+    )
+    {
+        using var host = await StartAsync(() => { });
+        Broker(host).CannedReply = requestId => FaultFrame(requestId, nameof(Echoed), fault);
+
+        var exception = await Assert.ThrowsAsync<RemoteRequestException>(async () =>
+            await RequestAsync(host)
+        );
+
+        Assert.Equal(errorType, exception.ErrorType);
+    }
+
     [Fact]
     public async Task A_well_formed_request_still_round_trips()
     {
@@ -162,7 +326,50 @@ public sealed class WireEnvelopeValidationTests
 
     private static byte[] Frame(string json) => Encoding.UTF8.GetBytes(json);
 
-    private static async Task<IHost> StartAsync(Action onHandled)
+    /// <summary>
+    /// A JSON value for a logical name: <c>null</c>, an empty string, or the registered name of
+    /// the contract called <paramref name="value"/>.
+    /// </summary>
+    private static string Name(string? value) =>
+        JsonSerializer.Serialize(
+            value switch
+            {
+                nameof(Echo) => EchoType,
+                nameof(Echoed) => EchoedType,
+                _ => value,
+            }
+        );
+
+    private static ReadOnlyMemory<byte> FaultFrame(
+        Guid requestId,
+        string? messageType,
+        string fault
+    ) =>
+        Frame(
+            $$"""
+            {
+              "messageId": "{{Guid.NewGuid()}}",
+              "correlationId": "{{requestId}}",
+              "kind": "Fault",
+              "messageType": {{Name(messageType)}},
+              "responseType": "{{EchoedType}}",
+              "sentAt": "2026-09-20T10:00:00Z",
+              "body": "",
+              "fault": {{fault}}
+            }
+            """
+        );
+
+    private static ValueTask<Echoed> RequestAsync(IHost host) =>
+        host
+            .Services.GetRequiredService<IRequestClient<Echo, Echoed>>()
+            .GetResponseAsync(
+                "echo",
+                new Echo("a"),
+                cancellationToken: TestContext.Current.CancellationToken
+            );
+
+    internal static async Task<IHost> StartAsync(Action onHandled)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(onHandled);
@@ -215,6 +422,9 @@ public sealed class WireEnvelopeValidationTests
 
         public ReadOnlyMemory<byte>? CannedResponse { get; set; }
 
+        /// <summary>Builds the answer from the request id, for a reply that must correlate.</summary>
+        public Func<Guid, ReadOnlyMemory<byte>>? CannedReply { get; set; }
+
         public ValueTask<IAsyncDisposable> ListenAsync(
             RequestAddress address,
             RequestFrameHandler handler,
@@ -232,7 +442,8 @@ public sealed class WireEnvelopeValidationTests
             TimeSpan timeout,
             CancellationToken cancellationToken
         ) =>
-            CannedResponse
+            CannedReply?.Invoke(requestId)
+            ?? CannedResponse
             ?? await _handlers[address](request, cancellationToken).ConfigureAwait(false);
 
         public ValueTask<IAsyncDisposable> SubscribeAsync(

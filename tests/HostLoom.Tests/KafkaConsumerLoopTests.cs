@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using System.Text.Json;
 using Confluent.Kafka;
 using HostLoom.Transport.Kafka;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -110,6 +112,38 @@ public sealed class KafkaConsumerLoopTests
         Assert.Equal([0, 1], handled);
         Assert.Empty(log.Seeks);
         Assert.Equal([1, 2], log.Commits.Select(commit => commit.Offset.Value));
+    }
+
+    [Fact]
+    public async Task An_event_record_without_a_message_type_is_committed_past_rather_than_rewound()
+    {
+        // Decoded by the real event dispatcher. An explicit null message type used to reach the
+        // subscriber lookup as an argument error, which an event subscription rewinds until
+        // shutdown while its partition waits; as a malformed envelope it is skipped at once.
+        var handled = 0;
+        using var host = await WireEnvelopeValidationTests.StartAsync(() => handled++);
+        var broker = (WireEnvelopeValidationTests.FrameBroker)
+            host.Services.GetRequiredService<IRequestBroker>();
+        var log = new PartitionLog("orders", 2)
+        {
+            ValueAt = offset =>
+                EventFrame(offset == 0 ? null : TypeName<WireEnvelopeValidationTests.Placed>()),
+        };
+
+        await using (
+            Start(
+                log,
+                (record, _) => broker.DeliverEventAsync("orders", record.Message.Value),
+                retryIndefinitely: true
+            )
+        )
+        {
+            await WaitUntilAsync(() => log.Commits.Count == 2, "both records commit");
+        }
+
+        Assert.Empty(log.Seeks);
+        Assert.Equal([1, 2], log.Commits.Select(commit => commit.Offset.Value));
+        Assert.Equal(1, handled);
     }
 
     [Fact]
@@ -377,6 +411,24 @@ public sealed class KafkaConsumerLoopTests
 
     private static string UniqueTopic() => $"metrics-{Guid.NewGuid():N}";
 
+    private static string TypeName<T>() =>
+        $"{typeof(T).Assembly.GetName().Name}:{typeof(T).FullName}";
+
+    private static byte[] EventFrame(string? messageType) =>
+        JsonSerializer.SerializeToUtf8Bytes(
+            new
+            {
+                messageId = Guid.NewGuid(),
+                kind = "Event",
+                messageType,
+                responseType = "",
+                sentAt = DateTimeOffset.UnixEpoch,
+                body = JsonSerializer.SerializeToUtf8Bytes(
+                    new WireEnvelopeValidationTests.Placed("A-1")
+                ),
+            }
+        );
+
     /// <summary>
     /// Collects Kafka consumer-loop measurements for one topic. The meter is process-wide and
     /// static, so filtering by the destination tag keeps concurrently running tests apart.
@@ -513,6 +565,9 @@ public sealed class KafkaConsumerLoopTests
 
         public int CommitFailuresRemaining { get; set; }
 
+        /// <summary>The record value served at an offset; empty unless a test decodes it.</summary>
+        public Func<long, byte[]> ValueAt { get; init; } = static _ => [];
+
         public List<TopicPartitionOffset> Commits { get; } = [];
 
         public List<TopicPartitionOffset> Seeks { get; } = [];
@@ -578,7 +633,7 @@ public sealed class KafkaConsumerLoopTests
                 Message = new Message<string, byte[]>
                 {
                     Key = $"{partition}-{offset}",
-                    Value = [],
+                    Value = ValueAt(offset),
                     Headers = new Headers(),
                 },
             };

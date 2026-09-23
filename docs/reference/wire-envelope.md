@@ -44,7 +44,7 @@ through the configurable serialization boundary: `IMessageSerializer`,
 whose default is `SystemTextJsonMessageSerializer`, replaceable through
 dependency injection because it is registered with `TryAddSingleton`.
 
-## Identifier validation
+## Identifier and name validation
 
 Decoding rejects an envelope whose `MessageId` is missing or the all-zero
 GUID, one whose `CorrelationId` is present but all-zero, and a `Response`
@@ -52,6 +52,19 @@ or `Fault` without a `CorrelationId`. Each is a `MalformedEnvelopeException`
 raised before any handler runs: the message id is the sender's, and every
 inbox key and reply correlation is built on it, so an empty one would let
 unrelated deliveries collide.
+
+Decoding also rejects, with the same exception, an envelope of any kind whose
+`MessageType` is `null` or empty, a `Request` whose `ResponseType` is `null`
+or empty, and a `Fault` whose `Fault` object has a `null` or empty
+`ErrorType` or a `null` `Message`. The names are what the receiver resolves
+registrations by, and the web defaults do not enforce nullable annotations, so
+an explicit `null` would otherwise reach that lookup. An `Event` carries an
+empty `ResponseType` by design, and neither a `Response`'s nor an `Event`'s
+`ResponseType` is read. A `Fault` with no `Fault` object, or with an empty
+`Message`, is still accepted; the caller sees the former as `ErrorType`
+`Unknown`. Transports treat the exception as a poison frame rather than a
+handler failure: Kafka commits past the record, and RabbitMQ rejects it
+without requeue.
 
 ## Faults
 
