@@ -104,6 +104,65 @@ public sealed class CronExpressionTests
     }
 
     [Theory]
+    // Clocks fall back from 02:00 EDT to 01:00 EST on 1 November 2026 (06:00Z), so 01:00-01:59
+    // local happens twice. Each local time occurs once, at its earlier (EDT) instant.
+    [InlineData("0 */5 * * * *", "2026-11-01T05:10:00Z", "2026-11-01T05:15:00Z")]
+    [InlineData("0 */5 * * * *", "2026-11-01T05:55:00Z", "2026-11-01T07:00:00Z")]
+    [InlineData("0 */5 * * * *", "2026-11-01T06:10:00Z", "2026-11-01T07:00:00Z")]
+    [InlineData("0 30 1 * * *", "2026-11-01T05:30:00Z", "2026-11-02T06:30:00Z")]
+    [InlineData("0 30 1 * * *", "2026-11-01T06:00:00Z", "2026-11-02T06:30:00Z")]
+    public void An_ambiguous_local_time_occurs_once_during_a_fall_back_transition(
+        string expression,
+        string after,
+        string expected
+    )
+    {
+        var zone = NewYorkOrSkip();
+        var cron = CronExpression.Parse(expression);
+
+        var next = cron.GetNextOccurrence(DateTimeOffset.Parse(after, null), zone);
+
+        Assert.Equal(DateTimeOffset.Parse(expected, null), next);
+    }
+
+    [Fact]
+    public void Every_occurrence_across_a_fall_back_transition_is_strictly_after_its_input()
+    {
+        var zone = NewYorkOrSkip();
+        var cron = CronExpression.Parse("0 */5 * * * *");
+
+        for (
+            var after = new DateTimeOffset(2026, 11, 1, 4, 0, 0, TimeSpan.Zero);
+            after < new DateTimeOffset(2026, 11, 1, 8, 0, 0, TimeSpan.Zero);
+            after = after.AddSeconds(37)
+        )
+        {
+            var next = cron.GetNextOccurrence(after, zone);
+
+            Assert.NotNull(next);
+            Assert.True(next > after, $"{next:O} is not after {after:O}.");
+            // The longest gap is from 01:55 EDT to 02:00 EST, across the repeated hour.
+            Assert.True(
+                next - after <= TimeSpan.FromMinutes(65),
+                $"{next:O} skips too far past {after:O}."
+            );
+        }
+    }
+
+    private static TimeZoneInfo NewYorkOrSkip()
+    {
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            Assert.Skip("The America/New_York zone is not installed.");
+            throw;
+        }
+    }
+
+    [Theory]
     [InlineData("* * * *", "4 fields")]
     [InlineData("* * * * * * *", "7 fields")]
     [InlineData("60 * * * *", "minute")]

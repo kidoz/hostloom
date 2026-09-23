@@ -224,7 +224,16 @@ public sealed class CronExpression
             var offset = zone.IsAmbiguousTime(local)
                 ? zone.GetAmbiguousTimeOffsets(local).Max()
                 : zone.GetUtcOffset(local);
-            return new DateTimeOffset(local, offset);
+            var occurrence = new DateTimeOffset(local, offset);
+            if (occurrence <= after)
+            {
+                // Inside the repeated hour of a fall-back transition: this local time already
+                // occurred at its earlier instant, before `after`, so it does not occur again.
+                local = local.AddSeconds(1);
+                continue;
+            }
+
+            return occurrence;
         }
 
         return null;
