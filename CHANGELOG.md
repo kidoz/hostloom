@@ -8,6 +8,90 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- `HostLoomWebSocketOptions.CloseTimeout` (5 seconds) bounds how long a session this side is
+  closing waits for the client's close frame before aborting; the abort is logged as
+  `WebSocketCloseTimedOut` (4111).
+- `IInboxStore.ReleaseAsync(string, CancellationToken)`, a default member that does nothing, and
+  `InboxStore.FromClaim(tryRecord, release)`. `InMemoryInboxStore` implements the release. A
+  release the store cannot complete is logged as `InboxReleaseFailed` (3312).
+
+### Changed
+
+- The inbox releases a delivery's key when its handlers throw or are cancelled, so the
+  transport's redelivery runs them again: a Kafka event that failed, a RabbitMQ delivery requeued
+  by a shutdown, and an inbox inside `UseRetry` no longer have their next attempt acknowledged as a
+  duplicate. The release runs on its own five-second token and never replaces the handler's
+  exception. A custom store must implement `ReleaseAsync` for this; one that does not keeps the
+  earlier behaviour. A process that stops between recording a key and completing the handlers
+  still loses that event's redeliveries inside the window.
+- An envelope with a null or empty `messageType`, a request with a null or empty `responseType`,
+  and a fault whose fault object lacks an error type or a message are rejected as
+  `MalformedEnvelopeException`. A null `messageType` on an event used to fail the handler lookup
+  as an argument error, which Kafka retried forever and so stalled the partition; the record is
+  now committed past as poison, and RabbitMQ counts it as `malformed` rather than `handler_failed`.
+- A registered pipeline's `WithRetry` gives every attempt a fresh DI scope and fresh filter
+  instances, and evaluates `EnabledWhen` again. Previously a retry reused the failed attempt's
+  scope, so scoped services such as a unit of work kept that attempt's state. Filter construction
+  and scope disposal now run inside the retry and timeout. The context and its payloads are
+  still shared by the attempts of one run.
+- A composition rule's `Skip`, `Throw`, and `Replace` compare its entries only with registrations
+  that existed before the rule: the collection and earlier rules. Entries of the same rule no
+  longer collide with each other, so `ExpectMany().Throw()` over two implementations registers
+  both instead of throwing, `Replace` and `Skip` keep every implementation instead of the last or
+  first, and `As(IA, IB).ExpectOne().Replace(ImplementationType)` keeps both services. A
+  hand-written plan that gives consecutive entries one origin is treated as one rule.
+- The Kafka reply consumer group is named by a random per-instance id instead of
+  `KafkaOptions.ClientId`, and no longer auto-commits. Replicas configured with one client id
+  used to share a reply group, so the response partitions were split between them and most of
+  their requests timed out. Each process start also stops leaving a committed group behind.
+
+### Fixed
+
+- A cron schedule in a zone with daylight saving time no longer runs repeatedly during the
+  fall-back hour. `CronExpression.GetNextOccurrence` returned the earlier instant of an ambiguous
+  local time even when it preceded its input, so the scheduler found every occurrence overdue; an
+  ambiguous local time now occurs once, as documented.
+- `AddHostLoomLogging` registers its provider so the container owns it: disposing the host drains
+  the queue and flushes and disposes the sink. Previously the provider was never disposed, so
+  records still queued at shutdown were lost and a buffered sink was never flushed. The writer
+  thread now starts when logging is first resolved rather than at registration.
+- An exception whose `Message` getter throws no longer faults the log writer and silences every
+  later record. `JsonLogFormatter` writes `[MessageUnavailable]` for it, and caps `error.message`
+  at its `maxExceptionLength` like the stack trace.
+
+- The WebSocket gateway completes the close handshake for every close it starts. Session
+  expiry, `IWebSocketSessionControl` disconnects, rate limiting, protocol violations, and host
+  shutdown used to cancel the pending receive, which aborts the runtime's socket, so clients saw
+  an abnormal closure (1006) instead of the status and reason; the TypeScript client then
+  reconnected after a logout or revocation. The writer now sends the frames already queued and
+  the close frame, and the session ends when the client answers or `CloseTimeout` elapses. A
+  disconnect or shutdown waits up to `CloseTimeout` for each client that does not answer.
+- Host shutdown closes WebSocket sessions with 1001 when the host starts stopping, before Kestrel
+  drains its connections, instead of after it; a `WebApplication` with connected clients no longer
+  waits out `HostOptions.ShutdownTimeout` on every stop. A session accepted after shutdown began is
+  closed without a welcome.
+
+- A Redis invalidation channel whose subscription fails no longer leaves a StackExchange.Redis
+  queue attached for every failed attempt. Each attempt's queue stayed subscribed without a
+  reader, so after Redis recovered every invalidation was buffered in each of them for the life of
+  the process, and disposal did not detach them. Each subscription now attaches one handler, a
+  failed attempt detaches its own, disposal detaches exactly what the channel attached and leaves
+  other subscriptions on a shared multiplexer in place, and a broadcast retry subscribes only the
+  keyspace patterns still missing. Messages are applied by one reader, and a message that fails to
+  apply is logged as `RedisInvalidationMessageFailed` (1320) instead of ending delivery.
+
+### Security
+
+- The NuGet release workflow grants `id-token: write` and `attestations: write` only to a
+  publish job that downloads the tested packages and runs no restore, build, or test code; the
+  build job can only read the repository. The publish job checks the package list against the
+  packed packages in both directions before the first push and pushes with `--skip-duplicate`, so
+  a rerun can finish a partial release.
+- The WebSocket client release workflow no longer reads an npm token and refuses to publish from
+  a branch whose name looks like a release tag.
+
 ## [0.10.0] - 2026-09-23
 
 This release closes the gaps a review of the transports and backends found in 0.9.0: bounded
