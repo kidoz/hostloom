@@ -20,6 +20,29 @@ internal static class ExceptionText
             text = exception.GetType().FullName ?? "Exception";
         }
 
-        return text.Length <= maxLength ? text : string.Concat(text.AsSpan(0, maxLength), "…");
+        return Cap(text, maxLength);
     }
+
+    /// <summary>
+    /// <see cref="Exception.Message"/>, guarded and capped like <see cref="Render"/>: a custom
+    /// exception can compute its message and throw from the getter, and one that embeds a
+    /// response body would otherwise make a single record arbitrarily large.
+    /// </summary>
+    public static string Message(Exception exception, int maxLength)
+    {
+        string text;
+        try
+        {
+            text = exception.Message;
+        }
+        catch (Exception)
+        {
+            text = "[MessageUnavailable]";
+        }
+
+        return Cap(text, maxLength);
+    }
+
+    private static string Cap(string text, int maxLength) =>
+        text.Length <= maxLength ? text : string.Concat(text.AsSpan(0, maxLength), "…");
 }

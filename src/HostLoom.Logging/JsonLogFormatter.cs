@@ -61,7 +61,10 @@ public sealed class JsonLogFormatter : ILogFormatter
                 "error.type"u8,
                 exception.GetType().FullName ?? exception.GetType().Name
             );
-            _writer.WriteString("error.message"u8, exception.Message);
+            _writer.WriteString(
+                "error.message"u8,
+                ExceptionText.Message(exception, _maxExceptionLength)
+            );
             // The full ToString chain — inner exceptions and aggregate children included — not
             // just the top frame's stack; chain analysis is routine incident work.
             _writer.WriteString(

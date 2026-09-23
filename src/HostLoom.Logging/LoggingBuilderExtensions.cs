@@ -63,15 +63,16 @@ public static class LoggingBuilderExtensions
         ILogFormatter? formatter
     )
     {
-        // CA2000: ownership transfers to the container, which disposes registered singletons and so
-        // drains the pipeline at shutdown.
-#pragma warning disable CA2000
+        // A factory, not an instance: the container disposes only the singletons it creates, and
+        // the logger factory never disposes providers it receives from the container. Created
+        // here, the provider is disposed with the container, which drains the pipeline and
+        // flushes and disposes the sink at shutdown; the writer thread also starts only when
+        // logging is first resolved.
         builder.Services.TryAddEnumerable(
-            ServiceDescriptor.Singleton<ILoggerProvider>(
-                new HostLoomLoggerProvider(formatter ?? new JsonLogFormatter(), sink, options)
+            ServiceDescriptor.Singleton<ILoggerProvider, HostLoomLoggerProvider>(
+                _ => new HostLoomLoggerProvider(formatter ?? new JsonLogFormatter(), sink, options)
             )
         );
-#pragma warning restore CA2000
         return builder;
     }
 }
