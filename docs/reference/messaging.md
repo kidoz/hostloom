@@ -66,7 +66,7 @@ singletons defeats that isolation — the `HLM0003`
 | `RemoteFaultException` (thrown by handlers, not raised by HostLoom) | a handler wants the caller to read its message; its type and message cross the wire verbatim, unlike any other exception | standard constructors; subclass it for typed faults |
 | `RequestTimeoutException` (`: TimeoutException`) | no reply within the timeout | `RequestAddress Address`, `TimeSpan Timeout` |
 | `MessagingTransportException` | the transport could not carry a request or event: the broker refused or lost the connection, rejected the publication, or its client library failed; whether the broker accepted the message is unknown, so a retry can deliver twice | `RequestAddress Address`; the client library's exception as `InnerException` |
-| `MalformedEnvelopeException` | an envelope cannot be decoded, has no message id, or has an unusable correlation id | message only |
+| `MalformedEnvelopeException` | an envelope cannot be decoded, has no message id, has an unusable correlation id, or lacks a name or fault field its kind requires ([validation](wire-envelope.md#identifier-and-name-validation)) | message only |
 | `NotSupportedException` | publishing through a transport without `IEventBroker` | — |
 
 ## Serialization boundary
@@ -163,27 +163,62 @@ bare join would let two subscriptions share a key. The message id is the
 sender's; the codec rejects an empty one before the filter sees it. Requests pass through untouched, because a
 request that is not answered leaves its caller waiting for a timeout.
 
-`IInboxStore` has one member, `TryRecordAsync(key, window, ct)`, the atomic
-set-if-absent every idempotency store reduces to. `InboxStore.FromClaim`
-wraps a delegate, so a cache's set-if-absent with the key as its own value is
-a store:
+| `IInboxStore` member | Contract |
+| --- | --- |
+| `TryRecordAsync(key, window, ct)` | atomic set-if-absent: `true` when the key was not present and is now recorded for the window, `false` when it was; throw when the backend cannot answer |
+| `ReleaseAsync(key, ct)` | forget a key recorded for a run that did not complete; succeed when the key is already gone |
+
+`ReleaseAsync` has a default implementation that does nothing, so a store
+written against `TryRecordAsync` alone still compiles. Such a store keeps a
+failed run's key: every redelivery of that event inside the window is then
+acknowledged as a duplicate without running the handlers, which loses the
+event. Implement `ReleaseAsync` in every store that can delete a key.
+`InMemoryInboxStore` implements both. `InboxStore.FromClaim` wraps delegates,
+so a cache's set-if-absent with the key as its own value, and its remove, are a
+store:
 
 ```csharp
 .UseInbox(
-    provider => InboxStore.FromClaim((key, window, token) =>
-        provider.GetRequiredService<ICache>().SetIfAbsentAsync(
-            key, key, new CacheEntryOptions(window) { OnUnavailable = UnavailableBehavior.Throw }, token)),
+    provider => InboxStore.FromClaim(
+        (key, window, token) => provider.GetRequiredService<ICache>().SetIfAbsentAsync(
+            key, key, new CacheEntryOptions(window) { OnUnavailable = UnavailableBehavior.Throw }, token),
+        (key, token) => provider.GetRequiredService<ICache>().RemoveAsync(key, token)),
     TimeSpan.FromDays(1))
 ```
 
-A store that throws lets the handlers run with an `InboxSkipped` payload on the
-context and a warning in the log: processing twice is recoverable, dropping a
-delivery on an outage is not. The key is recorded before processing, so a run
-that fails after recording is not repeated by a later redelivery inside the
-window; register `UseInbox` before a `ConfigureReceivePipeline` that adds
-`UseRetry` when a failed run should be retried in process. The filter reports
-itself in the receive-pipeline probe as `inbox` with its window and store.
-Metric: `hostloom.inbox.duplicates`; log events in `InboxEvents` (3310, 3311).
+The single-delegate `FromClaim(tryRecord)` overload remains and builds a store
+that cannot release.
+
+A store that throws from `TryRecordAsync` lets the handlers run with an
+`InboxSkipped` payload on the context and a warning in the log: processing
+twice is recoverable, dropping a delivery on an outage is not.
+
+When the handlers throw or are cancelled after the key was recorded, the filter
+calls `ReleaseAsync` and then rethrows the original exception unchanged, so the
+transport redelivers the event and the handlers run again: delivery stays
+at-least-once. The release runs with its own five-second token rather than the
+delivery's, which may be the cancellation being handled; a release that fails is
+logged as a warning (`InboxReleaseFailed`, 3312) and never replaces the
+handlers' exception. The key covers the subscription, so a redelivery after one
+handler failed also runs the handlers that had completed. An in-process retry
+works on either side of the filter. Registered after `UseInbox`, `UseRetry`
+retries inside one recorded run and does not depend on the release; registered
+before it, every attempt passes through the filter and runs because the
+previous attempt released the key.
+
+What the inbox cannot cover is a process that stops between recording the key
+and completing the handlers, such as a crash or a kill; a graceful shutdown
+cancels the handlers and so releases. Nothing releases the key, so it stays
+until the window ends, and the
+transport's redelivery inside the window is acknowledged as a duplicate without
+running the handlers. That event is lost. A release that fails, and a store
+without `ReleaseAsync`, lose a failed run's redeliveries the same way. Size the
+window with that in mind, and treat the inbox as absorbing duplicates of work
+that completed, not as a record of work that started.
+
+The filter reports itself in the receive-pipeline probe as `inbox` with its
+window and store. Metric: `hostloom.inbox.duplicates`; log events in
+`InboxEvents` (3310 to 3312).
 
 ## Cancellation and concurrency
 

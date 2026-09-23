@@ -279,9 +279,10 @@ builder.Services
     .UseRabbitMq()
     .UseOutbox<OrdersOutboxStore>()                  // IOutboxStore over the orders database
     .UseInbox(
-        provider => InboxStore.FromClaim((key, window, token) =>
-            provider.GetRequiredService<ICache>().SetIfAbsentAsync(
-                key, key, new CacheEntryOptions(window) { OnUnavailable = UnavailableBehavior.Throw }, token)),
+        provider => InboxStore.FromClaim(
+            (key, window, token) => provider.GetRequiredService<ICache>().SetIfAbsentAsync(
+                key, key, new CacheEntryOptions(window) { OnUnavailable = UnavailableBehavior.Throw }, token),
+            (key, token) => provider.GetRequiredService<ICache>().RemoveAsync(key, token)),
         TimeSpan.FromDays(1))
     .AddSubscriber<OrderPlaced, ShippingHandler>("orders", subscription: "shipping");
 ```
@@ -295,7 +296,10 @@ with the failure's type and a growing, clamped retry delay, and after `Outbox:Ma
 message is dead-lettered in the store for an operator instead of claimed again. Delivery is
 at-least-once, which is why the inbox exists: it records a length-prefixed
 `{topic}:{subscription}:{messageId}` key with an `IInboxStore` before the handlers run and skips
-a delivery it has seen inside the window. A store that cannot answer lets
+a delivery it has seen inside the window. Handlers that throw or are cancelled release the key,
+so the transport's redelivery runs them again. A process that crashes between recording the key
+and finishing the handlers leaves the key in place, and that event's redelivery is then dropped
+until the window ends. A store that cannot answer lets
 the handlers run and flags the delivery, because processing twice is recoverable and dropping is
 not. `UseInMemoryOutbox` and `UseInMemoryInbox` supply per-process stores for tests and
 single-process deployments. See the [messaging reference](docs/reference/messaging.md#outbox).

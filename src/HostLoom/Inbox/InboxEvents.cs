@@ -10,4 +10,10 @@ public static class InboxEvents
 
     /// <summary>Warning: the store could not say whether the delivery was seen, so the handlers ran.</summary>
     public static readonly EventId StoreUnavailable = new(3311, "InboxStoreUnavailable");
+
+    /// <summary>
+    /// Warning: the handlers failed or were cancelled and the store could not forget the key, so
+    /// a redelivery inside the window will be treated as a duplicate and its handlers not run.
+    /// </summary>
+    public static readonly EventId ReleaseFailed = new(3312, "InboxReleaseFailed");
 }

@@ -18,19 +18,39 @@ public sealed record InboxDuplicate(string Key);
 public sealed record InboxSkipped(string Key, Exception Failure);
 
 /// <summary>
-/// The idempotent consumer: runs an event's handlers at most once per (topic, subscription,
-/// message id) inside a window, by recording the key with the <see cref="IInboxStore"/> before
-/// the handlers run. Requests pass through untouched, because a request that is not answered
-/// leaves its caller waiting for a timeout.
+/// The idempotent consumer: once an event's handlers have completed for a (topic, subscription,
+/// message id), skips every redelivery of it inside a window. The key is recorded with the
+/// <see cref="IInboxStore"/> before the handlers run, so a concurrent redelivery is skipped too.
+/// Requests pass through untouched, because a request that is not answered leaves its caller
+/// waiting for a timeout.
 /// </summary>
 /// <remarks>
-/// The key is recorded before processing, so a run that fails after recording is not repeated
-/// by a later redelivery inside the window; put <c>UseRetry</c> after this filter when a failed
-/// run should be retried in process. The window bounds how long a redelivery is recognised and
-/// how much the store holds; a day covers a broker's redelivery horizon in most deployments.
+/// <para>
+/// A run that throws or is cancelled releases its key through
+/// <see cref="IInboxStore.ReleaseAsync"/> before the original exception continues to the
+/// transport, so the transport's redelivery runs the handlers again: delivery stays
+/// at-least-once. The key covers the whole subscription, so a redelivery after one handler
+/// failed also runs the handlers that had completed. An in-process retry works on either side
+/// of this filter, but <c>UseRetry</c> registered after it retries inside one recorded run and
+/// does not depend on the release succeeding.
+/// </para>
+/// <para>
+/// What remains is a process that stops between recording the key and completing the
+/// handlers, such as a crash or a kill. Nothing releases the key, so it stays until the window
+/// ends, and a redelivery inside the window is acknowledged as a duplicate without running the
+/// handlers: that event is lost. A release that fails, and a store that does not implement one,
+/// lose a failed run's redeliveries the same way. The window also bounds how long a redelivery
+/// is recognised and how much the store holds; a day covers a broker's redelivery horizon in
+/// most deployments.
+/// </para>
 /// </remarks>
 public sealed class InboxFilter : IFilter<ReceiveContext>
 {
+    // The delivery's token cannot bound the release: it may be the very cancellation being
+    // handled. A few seconds covers a remote store's round trip under load, while keeping a slow
+    // store from holding the transport's requeue or rewind, and on Kafka the partition, for long.
+    private static readonly TimeSpan ReleaseTimeout = TimeSpan.FromSeconds(5);
+
     private readonly IInboxStore _store;
     private readonly TimeSpan _window;
     private readonly ILogger<InboxFilter> _logger;
@@ -130,7 +150,17 @@ public sealed class InboxFilter : IFilter<ReceiveContext>
             return;
         }
 
-        await next.SendAsync(context).ConfigureAwait(false);
+        try
+        {
+            await next.SendAsync(context).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Every failure, cancellation included: the key was recorded for a run that did not
+            // complete, and keeping it would turn the transport's redelivery into a duplicate.
+            await ReleaseAsync(key).ConfigureAwait(false);
+            throw;
+        }
     }
 
     /// <inheritdoc />
@@ -141,5 +171,27 @@ public sealed class InboxFilter : IFilter<ReceiveContext>
         scope.Set("window", _window);
         scope.Set("store", _store.GetType().Name);
         scope.Set("onUnavailable", "run");
+    }
+
+    /// <summary>
+    /// Forgets <paramref name="key"/> after a run that did not complete, best-effort. A failure
+    /// here is logged and swallowed, so the handlers' own exception is the one the transport sees.
+    /// </summary>
+    private async ValueTask ReleaseAsync(string key)
+    {
+        using var timeout = new CancellationTokenSource(ReleaseTimeout);
+        try
+        {
+            await _store.ReleaseAsync(key, timeout.Token).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                InboxEvents.ReleaseFailed,
+                exception,
+                "The inbox store could not release delivery {Key} after its handlers failed or were cancelled; a redelivery inside the window will be treated as a duplicate.",
+                key
+            );
+        }
     }
 }

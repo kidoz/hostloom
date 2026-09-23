@@ -63,12 +63,20 @@ builder.Services
     .ConfigureReceivePipeline(pipe => pipe.UseRetry(RetryPolicy.Immediate(3)));
 ```
 
-Register it before the retry: the key is recorded before processing, so a run
-that fails after recording is not repeated by a later redelivery, and the
-in-process retry is what gives a failed run another chance. A store that cannot
-answer lets the handlers run and leaves an `InboxSkipped` payload on the
-context. See [Inbox](../reference/messaging.md#inbox) for the store contract
-and the cache-backed one-liner.
+A run whose handlers throw or are cancelled releases its key before the
+exception reaches the transport, so the broker's redelivery runs the handlers
+again. Registering the inbox before the retry, as above, keeps the in-process
+retries inside one recorded run, so they do not depend on that release
+succeeding. A store that cannot answer lets the handlers run and leaves an
+`InboxSkipped` payload on the context.
+
+Two cases still drop an event. A process that crashes or is killed between
+recording the key and finishing the handlers leaves the key in place until the
+window ends, and the redelivery is acknowledged as a duplicate. A store that
+does not implement `IInboxStore.ReleaseAsync`, or a release that fails (logged
+as `InboxReleaseFailed`), keeps a failed run's key the same way. See
+[Inbox](../reference/messaging.md#inbox) for the store contract and the
+cache-backed pair of delegates.
 
 ## 3. Verify
 

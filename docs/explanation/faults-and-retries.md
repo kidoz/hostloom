@@ -103,7 +103,9 @@ deliberately.
 What the framework does include is the pair that makes at-least-once
 delivery safe to build on: the transactional outbox, which stores an event
 with the business change and relays it afterwards, and the inbox, which
-runs a redelivered event's handlers once per subscription inside a window.
+skips a redelivered event once its handlers have completed for that
+subscription inside a window, and releases the key of a run that failed so
+the redelivery runs again.
 See [Outbox](../reference/messaging.md#outbox) and
 [Inbox](../reference/messaging.md#inbox). The outbox relay retries a
 message the transport refuses with an exponential backoff and, after

@@ -61,4 +61,17 @@ public sealed class InMemoryInboxStore(TimeProvider? timeProvider = null) : IInb
             return ValueTask.FromResult(true);
         }
     }
+
+    /// <inheritdoc />
+    public ValueTask ReleaseAsync(string key, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(key);
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            _seen.Remove(key);
+        }
+
+        return ValueTask.CompletedTask;
+    }
 }

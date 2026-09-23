@@ -10,10 +10,12 @@ namespace HostLoom;
 public static class InboxHostLoomBuilderExtensions
 {
     /// <summary>
-    /// Runs each event's handlers at most once per (topic, subscription, message id) inside
-    /// <paramref name="window"/>, recording deliveries in <typeparamref name="TStore"/>. The
-    /// filter is appended to the receive pipeline at this point in registration order, so call
-    /// it before <c>ConfigureReceivePipeline</c> adds a retry when a failed run should be retried.
+    /// Skips redeliveries of an event whose handlers completed for the same (topic, subscription,
+    /// message id) inside <paramref name="window"/>, recording deliveries in
+    /// <typeparamref name="TStore"/>; a run that fails releases its key. The filter is appended
+    /// to the receive pipeline at this point in registration order, so call it before
+    /// <c>ConfigureReceivePipeline</c> adds a retry to keep in-process retries inside one
+    /// recorded run.
     /// </summary>
     public static HostLoomBuilder UseInbox<
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TStore
@@ -29,9 +31,11 @@ public static class InboxHostLoomBuilderExtensions
     }
 
     /// <summary>
-    /// Runs each event's handlers at most once per (topic, subscription, message id) inside
-    /// <paramref name="window"/>, recording deliveries in the store <paramref name="store"/>
-    /// resolves, for example <see cref="InboxStore.FromClaim"/> over a cache.
+    /// Skips redeliveries of an event whose handlers completed for the same (topic, subscription,
+    /// message id) inside <paramref name="window"/>, recording deliveries in the store
+    /// <paramref name="store"/> resolves, for example
+    /// <see cref="InboxStore.FromClaim(Func{string, TimeSpan, CancellationToken, ValueTask{bool}}, Func{string, CancellationToken, ValueTask})"/>
+    /// over a cache.
     /// </summary>
     public static HostLoomBuilder UseInbox(
         this HostLoomBuilder builder,

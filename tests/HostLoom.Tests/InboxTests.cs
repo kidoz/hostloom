@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using HostLoom.Pipelines;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Xunit;
 using static HostLoom.Tests.PublishSubscribeTests;
 
@@ -138,6 +140,276 @@ public sealed class InboxTests
     }
 
     [Fact]
+    public async Task The_in_memory_store_forgets_a_released_key()
+    {
+        var store = new InMemoryInboxStore(new TestClock());
+
+        Assert.True(
+            await store.TryRecordAsync(
+                "k",
+                TimeSpan.FromHours(1),
+                TestContext.Current.CancellationToken
+            )
+        );
+        await store.ReleaseAsync("k", TestContext.Current.CancellationToken);
+        await store.ReleaseAsync("absent", TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, store.Count);
+        Assert.True(
+            await store.TryRecordAsync(
+                "k",
+                TimeSpan.FromHours(1),
+                TestContext.Current.CancellationToken
+            )
+        );
+    }
+
+    [Fact]
+    public async Task A_failed_run_releases_its_key_so_the_redelivery_runs_the_handlers_again()
+    {
+        var received = new Received();
+        using var host = await StartAsync(
+            received,
+            hostLoom =>
+            {
+                hostLoom.Services.AddSingleton<FlakyHandler.Attempts>();
+                hostLoom
+                    .UseInMemoryInbox(TimeSpan.FromHours(1))
+                    .AddSubscriber<OrderPlaced, FlakyHandler>("orders", "flaky");
+            }
+        );
+        var broker = Broker(host);
+
+        // The handler fails twice and then succeeds, as a broker's redeliveries would find it.
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await PublishAsync(host, new OrderPlaced("A-3"))
+        );
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await broker.RedeliverAsync(0, TestContext.Current.CancellationToken)
+        );
+        await broker.RedeliverAsync(0, TestContext.Current.CancellationToken);
+        await broker.RedeliverAsync(0, TestContext.Current.CancellationToken);
+
+        // Only the redelivery after the run that completed is a duplicate.
+        Assert.Equal(["flaky:1", "flaky:2", "flaky:3"], received.Sorted());
+        Assert.Equal(1, host.Services.GetRequiredService<InMemoryInboxStore>().Count);
+    }
+
+    [Fact]
+    public async Task A_cancelled_run_releases_its_key_with_a_token_of_its_own()
+    {
+        var received = new Received();
+        var gate = new StallingHandler.Gate();
+        var inner = new InMemoryInboxStore();
+        var released = new List<(string Key, bool Cancelled)>();
+        using var host = await StartAsync(
+            received,
+            hostLoom =>
+            {
+                hostLoom.Services.AddSingleton(gate);
+                hostLoom
+                    .UseInbox(
+                        _ =>
+                            InboxStore.FromClaim(
+                                inner.TryRecordAsync,
+                                (key, token) =>
+                                {
+                                    released.Add((key, token.IsCancellationRequested));
+                                    return inner.ReleaseAsync(key, token);
+                                }
+                            ),
+                        TimeSpan.FromHours(1)
+                    )
+                    .AddSubscriber<OrderPlaced, StallingHandler>("orders", "audit");
+            }
+        );
+        using var delivery = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken
+        );
+
+        // A consumer shutting down mid-handler, as a rolling deploy does: the broker requeues.
+        var publish = host
+            .Services.GetRequiredService<IPublishEndpoint>()
+            .PublishAsync("orders", new OrderPlaced("A-4"), delivery.Token)
+            .AsTask();
+        await gate.Started.Task.WaitAsync(TestContext.Current.CancellationToken);
+        await delivery.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => publish);
+
+        // The delivery's token was cancelled; the release had a live one, so the key went.
+        var release = Assert.Single(released);
+        Assert.StartsWith("6:orders:5:audit:", release.Key, StringComparison.Ordinal);
+        Assert.False(release.Cancelled);
+        Assert.Equal(0, inner.Count);
+
+        await Broker(host).RedeliverAsync(0, TestContext.Current.CancellationToken);
+
+        Assert.Equal(["audit:A-4"], received.Sorted());
+        Assert.Equal(1, inner.Count);
+    }
+
+    [Fact]
+    public async Task A_retry_registered_before_the_inbox_runs_every_attempt()
+    {
+        var received = new Received();
+        using var host = await StartAsync(
+            received,
+            hostLoom =>
+            {
+                hostLoom.Services.AddSingleton<FlakyHandler.Attempts>();
+                hostLoom
+                    .ConfigureReceivePipeline(pipe => pipe.UseRetry(RetryPolicy.Immediate(3)))
+                    .UseInMemoryInbox(TimeSpan.FromHours(1))
+                    .AddSubscriber<OrderPlaced, FlakyHandler>("orders", "flaky");
+            }
+        );
+
+        await PublishAsync(host, new OrderPlaced("A-5"));
+        await Broker(host).RedeliverAsync(0, TestContext.Current.CancellationToken);
+
+        // The retry wraps the inbox, so every attempt records the key; each failed attempt
+        // released it, so the next one ran rather than being taken for a duplicate.
+        Assert.Equal(["flaky:1", "flaky:2", "flaky:3"], received.Sorted());
+        Assert.Equal(1, host.Services.GetRequiredService<InMemoryInboxStore>().Count);
+    }
+
+    [Fact]
+    public async Task A_release_that_fails_is_logged_and_the_handlers_exception_surfaces()
+    {
+        var logger = new RecordingLogger<InboxFilter>();
+        var inner = new InMemoryInboxStore();
+        var duplicates = 0;
+        using var host = await StartAsync(
+            new Received(),
+            hostLoom =>
+            {
+                hostLoom.Services.AddSingleton<ILogger<InboxFilter>>(logger);
+                hostLoom
+                    .ConfigureReceivePipeline(pipe =>
+                        pipe.Use(
+                            async (context, next) =>
+                            {
+                                await next.SendAsync(context);
+                                if (context.TryGetPayload<InboxDuplicate>(out _))
+                                {
+                                    duplicates++;
+                                }
+                            },
+                            "observer"
+                        )
+                    )
+                    .UseInbox(
+                        _ =>
+                            InboxStore.FromClaim(
+                                inner.TryRecordAsync,
+                                static (_, _) => throw new InvalidOperationException("release down")
+                            ),
+                        TimeSpan.FromHours(1)
+                    )
+                    .AddSubscriber<OrderPlaced, ExplodingHandler>("orders", "broken");
+            }
+        );
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await PublishAsync(host, new OrderPlaced("A-6"))
+        );
+
+        Assert.Equal("subscriber is broken", exception.Message);
+        var warning = Assert.Single(
+            logger.Entries,
+            entry => entry.Event.Id == InboxEvents.ReleaseFailed.Id
+        );
+        Assert.Equal(LogLevel.Warning, warning.Level);
+        Assert.Equal("release down", warning.Exception?.Message);
+
+        // The key stayed, which is the documented cost: the redelivery is taken for a duplicate.
+        await Broker(host).RedeliverAsync(0, TestContext.Current.CancellationToken);
+        Assert.Equal(1, duplicates);
+    }
+
+    [Theory]
+    [InlineData(nameof(RecordOnlyStore))]
+    [InlineData(nameof(InboxStore.FromClaim))]
+    public async Task A_store_without_a_release_keeps_a_failed_runs_key(string store)
+    {
+        var received = new Received();
+        var keys = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+        IInboxStore inbox =
+            store == nameof(RecordOnlyStore)
+                ? new RecordOnlyStore(keys)
+                : InboxStore.FromClaim((key, _, _) => ValueTask.FromResult(keys.TryAdd(key, 0)));
+        using var host = await StartAsync(
+            received,
+            hostLoom =>
+            {
+                hostLoom.Services.AddSingleton<FlakyHandler.Attempts>();
+                hostLoom
+                    .UseInbox(_ => inbox, TimeSpan.FromHours(1))
+                    .AddSubscriber<OrderPlaced, FlakyHandler>("orders", "flaky");
+            }
+        );
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await PublishAsync(host, new OrderPlaced("A-7"))
+        );
+        await Broker(host).RedeliverAsync(0, TestContext.Current.CancellationToken);
+
+        // The default release does nothing, so such a store behaves as the one-member contract
+        // did: the failed run's key stays, and its redelivery is dropped as a duplicate.
+        Assert.Equal(["flaky:1"], received.Sorted());
+        Assert.Single(keys);
+    }
+
+    [Fact]
+    public async Task A_claim_store_with_a_release_delegate_releases_a_failed_runs_key()
+    {
+        var received = new Received();
+        var inner = new InMemoryInboxStore();
+        var released = new List<string>();
+        using var host = await StartAsync(
+            received,
+            hostLoom =>
+            {
+                hostLoom.Services.AddSingleton<FlakyHandler.Attempts>();
+                hostLoom
+                    .UseInbox(
+                        _ =>
+                            InboxStore.FromClaim(
+                                inner.TryRecordAsync,
+                                (key, token) =>
+                                {
+                                    released.Add(key);
+                                    return inner.ReleaseAsync(key, token);
+                                }
+                            ),
+                        TimeSpan.FromHours(1)
+                    )
+                    .AddSubscriber<OrderPlaced, FlakyHandler>("orders", "flaky");
+            }
+        );
+        var broker = Broker(host);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await PublishAsync(host, new OrderPlaced("A-8"))
+        );
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await broker.RedeliverAsync(0, TestContext.Current.CancellationToken)
+        );
+        await broker.RedeliverAsync(0, TestContext.Current.CancellationToken);
+
+        Assert.Equal(["flaky:1", "flaky:2", "flaky:3"], received.Sorted());
+        Assert.Equal(2, released.Count);
+        Assert.All(
+            released,
+            key => Assert.StartsWith("6:orders:5:flaky:", key, StringComparison.Ordinal)
+        );
+        Assert.Equal(1, inner.Count);
+        Assert.Throws<ArgumentNullException>(() =>
+            InboxStore.FromClaim(inner.TryRecordAsync, null!)
+        );
+    }
+
+    [Fact]
     public async Task Requests_pass_through_the_inbox_untouched()
     {
         using var host = await StartAsync(
@@ -216,6 +488,42 @@ public sealed class InboxTests
 
     private static RedeliveringBroker Broker(IHost host) =>
         (RedeliveringBroker)host.Services.GetRequiredService<IRequestBroker>();
+
+    private static ValueTask PublishAsync(IHost host, OrderPlaced @event) =>
+        host
+            .Services.GetRequiredService<IPublishEndpoint>()
+            .PublishAsync("orders", @event, TestContext.Current.CancellationToken);
+
+    /// <summary>Holds its first delivery until that delivery is cancelled; later ones complete.</summary>
+    public sealed class StallingHandler(Received received, StallingHandler.Gate gate)
+        : IEventHandler<OrderPlaced>
+    {
+        public async ValueTask HandleAsync(OrderPlaced @event, CancellationToken cancellationToken)
+        {
+            if (gate.Started.TrySetResult())
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            received.Add($"audit:{@event.Reference}");
+        }
+
+        public sealed class Gate
+        {
+            public TaskCompletionSource Started { get; } =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+    }
+
+    /// <summary>A store written against the one-member contract: it records and never forgets.</summary>
+    private sealed class RecordOnlyStore(ConcurrentDictionary<string, byte> keys) : IInboxStore
+    {
+        public ValueTask<bool> TryRecordAsync(
+            string key,
+            TimeSpan window,
+            CancellationToken cancellationToken = default
+        ) => ValueTask.FromResult(keys.TryAdd(key, 0));
+    }
 
     public sealed record Echo(string Value) : IRequest<Echoed>;
 

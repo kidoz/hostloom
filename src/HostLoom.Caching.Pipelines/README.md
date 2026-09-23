@@ -52,8 +52,9 @@ must be able to serialize `string`.
 
 This filter is offered for generic pipelines. The messaging receive pipeline has its own
 idempotent consumer, `UseInbox` in the `HostLoom` package, which keys on the topic, subscription,
-and message id; `InboxStore.FromClaim` turns this cache's `SetIfAbsentAsync` into its store in one
-line, and a database inbox remains the answer where a platform's concurrency rules require one.
+and message id; `InboxStore.FromClaim` turns this cache's `SetIfAbsentAsync` and `RemoveAsync`
+into its store, the remove releasing the key of a run whose handlers failed, and a database inbox
+remains the answer where a platform's concurrency rules require one.
 
 ## From the container
 
