@@ -12,7 +12,7 @@ public enum CompositionCardinality
     Many,
 }
 
-/// <summary>How an incoming registration handles the current service collection.</summary>
+/// <summary>How an incoming registration handles registrations that existed before its rule.</summary>
 public enum CompositionRegistrationStrategy
 {
     /// <summary>Throw for One; append distinct implementations for Many.</summary>

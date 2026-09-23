@@ -52,13 +52,13 @@ public sealed class CompositionTypeRuleBuilder
     /// <summary>Appends subject to cardinality, duplicate and lifetime validation.</summary>
     public CompositionTypeRuleBuilder Append() => throw CompositionRuleBuilder.DeclarationOnly();
 
-    /// <summary>Keeps existing registrations of each projected service.</summary>
+    /// <summary>Keeps registrations of each projected service that existed before this rule.</summary>
     public CompositionTypeRuleBuilder Skip() => throw CompositionRuleBuilder.DeclarationOnly();
 
-    /// <summary>Rejects existing registrations of each projected service.</summary>
+    /// <summary>Rejects registrations of each projected service that existed before this rule.</summary>
     public CompositionTypeRuleBuilder Throw() => throw CompositionRuleBuilder.DeclarationOnly();
 
-    /// <summary>Replaces existing descriptors selected by a constant replacement predicate.</summary>
+    /// <summary>Replaces descriptors that existed before this rule, selected by a constant predicate.</summary>
     public CompositionTypeRuleBuilder Replace(CompositionReplacementBehavior behavior) =>
         throw CompositionRuleBuilder.DeclarationOnly();
 

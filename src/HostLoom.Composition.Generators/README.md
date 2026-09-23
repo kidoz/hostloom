@@ -116,8 +116,9 @@ application registrations.
 Application policies use the [runtime strategy table](../HostLoom.Composition/README.md).
 They never hide internal duplicates, mixed lifetimes or ambiguous `ExpectOne` candidates. Replacement
 by implementation applies to type-backed descriptors; it does not inspect forwarding factories.
-Policies act on the current collection in emitted order, so review their application report,
-including effects of skip/replace on self registrations used by aliases.
+Policies run in emitted order against the registrations that existed before each rule, never
+against that rule's own entries. Review the application report, including effects of skip/replace
+on self registrations used by aliases.
 
 | ID | Error |
 | --- | --- |

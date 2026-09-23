@@ -40,7 +40,13 @@ registrations. `Many` appends distinct activations of one lifetime; duplicate im
 identical factory references, known alias targets or identical instance references are errors. Distinct factory bodies
 are opaque: planning never executes them to decide whether they create the same implementation.
 
-| Strategy | Collision behavior |
+Strategies compare each entry with the registrations that existed before its rule was applied: the
+collection, including earlier plans, and the entries of earlier rules in the same plan. Entries of
+one rule never collide with each other, so a rule with several implementations or services registers
+all of them when nothing existed before it. Consecutive plan entries with equal origins form one
+rule; generated plans give every rule its own origin.
+
+| Strategy | Collision with registrations that existed before the rule was applied |
 |---|---|
 | Default | Throw for One; append distinct activations for Many |
 | Append | Append, then enforce cardinality, duplicate and lifetime invariants |

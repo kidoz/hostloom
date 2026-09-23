@@ -168,8 +168,9 @@ application registrations.
 Application policies use the [application policies](#application-policies).
 They never hide internal duplicates, mixed lifetimes or ambiguous `ExpectOne` candidates. Replacement
 by implementation applies to type-backed descriptors; it does not inspect forwarding factories.
-Policies act on the current collection in emitted order, so review their application report,
-including effects of skip/replace on self registrations used by aliases.
+Policies run in emitted order against the registrations that existed before each rule, never
+against that rule's own entries. Review the application report, including effects of skip/replace
+on self registrations used by aliases.
 
 | ID | Error |
 | --- | --- |
@@ -237,12 +238,18 @@ with the same lifetime, preserving descriptor order. Duplicate implementation ty
 targets, identical factory references and identical instance references are rejected. Different
 opaque factories cannot be assumed equivalent without executing them, which composition never does.
 
-| Policy | Existing unkeyed registration |
+Policies compare each entry with the registrations that existed before its rule was applied: the
+collection, including earlier plans, and the entries of earlier rules in the same plan. Entries of
+one rule never collide with each other, so a rule with several implementations or services registers
+all of them when nothing existed before it. Consecutive plan entries with equal origins form one
+rule; generated plans give every rule its own origin.
+
+| Policy | Unkeyed registration that existed before the rule was applied |
 | --- | --- |
 | Default | Throw for One; append distinct activations for Many |
 | Append | Append and enforce cardinality, lifetime and duplicate invariants |
 | Skip | Retain the existing descriptors; record the incoming entry as skipped |
-| Throw | Fail if the service is already registered |
+| Throw | Fail if the service was registered before the rule |
 | Replace(ServiceType) | Remove descriptors of the service, then append |
 | Replace(ImplementationType) | Remove type descriptors of that implementation across services, then append |
 | Replace(All) | Remove the union of those two sets, then append |

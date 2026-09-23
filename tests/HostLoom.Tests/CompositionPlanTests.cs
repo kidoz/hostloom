@@ -410,6 +410,116 @@ public sealed class CompositionPlanTests
     }
 
     [Fact]
+    public void Policies_ignore_entries_staged_by_the_same_rule_application()
+    {
+        var catalog = ServiceDescriptor.Transient<ICatalog, Catalog>();
+        var inventory = ServiceDescriptor.Transient<ICatalog, Inventory>();
+        var many = new CompositionPlan(
+            "many",
+            [
+                Entry(catalog, CompositionCardinality.Many, CompositionRegistrationStrategy.Throw),
+                // An equal origin value is the same rule, even when it is a different instance.
+                new CompositionRegistration(
+                    inventory,
+                    CompositionCardinality.Many,
+                    new CompositionOrigin(Origin.Rule, Origin.Group, Origin.FilePath, Origin.Line),
+                    CompositionRegistrationStrategy.Throw
+                ),
+            ]
+        );
+        var services = new ServiceCollection();
+        Assert.All(
+            many.ApplyTo(services).Probe(),
+            decision => Assert.Equal(CompositionApplicationOutcome.Added, decision.Outcome)
+        );
+        Assert.Equal([catalog, inventory], services.ToArray());
+
+        var existing = ServiceDescriptor.Transient<ICatalog, Catalog>();
+        var asCatalog = ServiceDescriptor.Transient<ICatalog, Catalog>();
+        var asInventory = ServiceDescriptor.Transient<IInventory, Catalog>();
+        services = new ServiceCollection { existing };
+        var replacement = new CompositionPlan(
+            "replacement",
+            [
+                Entry(
+                    asCatalog,
+                    strategy: CompositionRegistrationStrategy.Replace,
+                    replacement: CompositionReplacementBehavior.ImplementationType
+                ),
+                Entry(
+                    asInventory,
+                    strategy: CompositionRegistrationStrategy.Replace,
+                    replacement: CompositionReplacementBehavior.ImplementationType
+                ),
+            ]
+        );
+
+        CompositionApplicationReport report = replacement.ApplyTo(services);
+
+        Assert.Equal([asCatalog, asInventory], services.ToArray());
+        Assert.Equal(
+            new CompositionApplicationDecision[]
+            {
+                new(
+                    existing,
+                    Origin,
+                    CompositionApplicationOutcome.Replaced,
+                    "Replaced by rule 'DeclareCatalog'."
+                ),
+                new(
+                    asCatalog,
+                    Origin,
+                    CompositionApplicationOutcome.Added,
+                    "Added by rule 'DeclareCatalog'."
+                ),
+                new(
+                    asInventory,
+                    Origin,
+                    CompositionApplicationOutcome.Added,
+                    "Added by rule 'DeclareCatalog'."
+                ),
+            },
+            report.Probe().ToArray()
+        );
+    }
+
+    [Fact]
+    public void A_repeated_origin_after_another_rule_starts_a_new_rule_application()
+    {
+        var plan = new CompositionPlan(
+            "catalog",
+            [
+                Entry(
+                    ServiceDescriptor.Transient<ICatalog, Catalog>(),
+                    CompositionCardinality.Many,
+                    CompositionRegistrationStrategy.Throw
+                ),
+                new CompositionRegistration(
+                    ServiceDescriptor.Transient<IInventory, Inventory>(),
+                    CompositionCardinality.One,
+                    new CompositionOrigin("DeclareInventory", "inventory")
+                ),
+                Entry(
+                    ServiceDescriptor.Transient<ICatalog, Inventory>(),
+                    CompositionCardinality.Many,
+                    CompositionRegistrationStrategy.Throw
+                ),
+            ]
+        );
+        var services = new ServiceCollection();
+
+        CompositionValidationException error = Assert.Throws<CompositionValidationException>(() =>
+            plan.ApplyTo(services)
+        );
+
+        Assert.Equal(CompositionValidationPhase.Application, error.Phase);
+        Assert.Equal(Origin, error.Origin);
+        Assert.Equal(Origin, error.ExistingOrigin);
+        Assert.Contains("collection index 0:", error.Message, StringComparison.Ordinal);
+        Assert.Empty(services);
+    }
+
+    [Fact]
     public void Replacement_without_a_match_keeps_all_existing_descriptors_in_order()
     {
         var keyed = ServiceDescriptor.KeyedTransient<ICatalog, Catalog>("local");

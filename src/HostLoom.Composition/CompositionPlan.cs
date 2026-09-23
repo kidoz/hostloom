@@ -64,6 +64,11 @@ public sealed class CompositionPlan
     public CompositionPlanProbe Probe() => _probe;
 
     /// <summary>Validates against the current collection, applies once and returns passive effects.</summary>
+    /// <remarks>
+    /// Consecutive registrations with equal origins form one rule. Skip, Throw and Replace compare
+    /// each entry with the registrations that existed before its rule: the collection and the
+    /// entries of earlier rules. Entries of the same rule never collide with each other.
+    /// </remarks>
     public CompositionApplicationReport ApplyTo(IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -90,10 +95,19 @@ public sealed class CompositionPlan
         }
 
         var decisions = new List<CompositionApplicationDecision>();
+        // Consecutive entries with equal origins are one rule application. Its policy sees what
+        // existed before the rule: the collection and earlier rules, never the rule's own output.
+        var rule = 0;
+        CompositionOrigin? ruleOrigin = null;
         foreach (CompositionRegistration entry in _probe.Registrations)
         {
+            if (entry.Origin != ruleOrigin)
+            {
+                rule++;
+                ruleOrigin = entry.Origin;
+            }
             AddContract(contracts, entry, CompositionValidationPhase.Application);
-            Stage(entry, staged, decisions);
+            Stage(entry, rule, staged, decisions);
         }
         ValidateSet(staged, contracts, CompositionValidationPhase.Application);
         var report = new CompositionApplicationReport(Identity, decisions);
@@ -144,6 +158,7 @@ public sealed class CompositionPlan
 
     private void Stage(
         CompositionRegistration entry,
+        int rule,
         List<TrackedDescriptor> staged,
         List<CompositionApplicationDecision> decisions
     )
@@ -157,7 +172,9 @@ public sealed class CompositionPlan
         int collision = strategy
             is CompositionRegistrationStrategy.Skip
                 or CompositionRegistrationStrategy.Throw
-            ? staged.FindIndex(item => SameService(item.Descriptor, entry.Descriptor))
+            ? staged.FindIndex(item =>
+                item.Rule != rule && SameService(item.Descriptor, entry.Descriptor)
+            )
             : -1;
         if (strategy == CompositionRegistrationStrategy.Skip && collision >= 0)
         {
@@ -188,7 +205,7 @@ public sealed class CompositionPlan
             for (var index = 0; index < staged.Count; index++)
             {
                 TrackedDescriptor item = staged[index];
-                if (!ShouldReplace(entry, item.Descriptor))
+                if (item.Rule == rule || !ShouldReplace(entry, item.Descriptor))
                 {
                     if (retainedCount != index)
                         staged[retainedCount] = item;
@@ -207,7 +224,7 @@ public sealed class CompositionPlan
             }
             staged.RemoveRange(retainedCount, staged.Count - retainedCount);
         }
-        staged.Add(new TrackedDescriptor(entry.Descriptor, entry));
+        staged.Add(new TrackedDescriptor(entry.Descriptor, entry, Rule: rule));
         decisions.Add(
             new CompositionApplicationDecision(
                 entry.Descriptor,
@@ -375,10 +392,12 @@ public sealed class CompositionPlan
                 && existing.ImplementationType == incoming.Descriptor.ImplementationType
         );
 
+    // Rule is the one-based rule application that staged an incoming entry; zero otherwise.
     private sealed record TrackedDescriptor(
         ServiceDescriptor Descriptor,
         CompositionRegistration? Registration,
-        int? ExistingIndex = null
+        int? ExistingIndex = null,
+        int Rule = 0
     );
 
     private sealed class ApplicationState
