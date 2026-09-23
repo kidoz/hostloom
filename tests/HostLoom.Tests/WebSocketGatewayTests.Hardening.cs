@@ -748,6 +748,12 @@ public sealed partial class WebSocketGatewayTests
                 options.SnapshotInitializationTimeout = TimeSpan.FromDays(60)
             )
         );
+        _ = Assert.Throws<InvalidOperationException>(() =>
+            hostLoom.AddWebSocketGateway(options => options.CloseTimeout = TimeSpan.Zero)
+        );
+        _ = Assert.Throws<InvalidOperationException>(() =>
+            hostLoom.AddWebSocketGateway(options => options.CloseTimeout = TimeSpan.FromDays(60))
+        );
     }
 
     [Fact]

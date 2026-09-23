@@ -51,4 +51,10 @@ public static class WebSocketEvents
     /// <c>message_too_large</c> fault.
     /// </summary>
     public static readonly EventId ResponseTooLarge = new(4110, "WebSocketResponseTooLarge");
+
+    /// <summary>
+    /// Warning: the peer did not answer a server-initiated close within the configured close
+    /// timeout and the session was aborted.
+    /// </summary>
+    public static readonly EventId CloseTimedOut = new(4111, "WebSocketCloseTimedOut");
 }

@@ -127,6 +127,13 @@ internal static class WebSocketLog
         "WebSocket session {SessionId} response for registered operation {Operation} encoded to {EncodedBytes} bytes, above the {MaximumMessageSize} byte limit, and was replaced by a fault."
     );
 
+    private static readonly Action<ILogger, Guid, double, Exception?> CloseTimedOutMessage =
+        LoggerMessage.Define<Guid, double>(
+            LogLevel.Warning,
+            WebSocketEvents.CloseTimedOut,
+            "WebSocket session {SessionId} did not receive the peer's close frame within {TimeoutMilliseconds} ms and was aborted."
+        );
+
     public static void SessionOpened(
         ILogger logger,
         Guid sessionId,
@@ -220,4 +227,7 @@ internal static class WebSocketLog
             maximumMessageSize,
             null
         );
+
+    public static void CloseTimedOut(ILogger logger, Guid sessionId, double timeoutMilliseconds) =>
+        CloseTimedOutMessage(logger, sessionId, timeoutMilliseconds, null);
 }

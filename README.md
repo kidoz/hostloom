@@ -390,9 +390,10 @@ are available from the `HostLoom.AspNetCore.WebSockets` meter. Its low-cardinali
 only protocol, registered topic, and library-controlled reason or fault values—never session ids,
 subjects, subscription keys, payloads, or credentials.
 
-Stable structured log events `4100`–`4110` cover session lifecycle, rejected subscriptions,
+Stable structured log events `4100`–`4111` cover session lifecycle, rejected subscriptions,
 slow-client aborts, handler-level handshake rejection, operation or snapshot failures, stalled
-snapshots, authorization handler failures, expiry-timer failures, and oversized responses.
+snapshots, authorization handler failures, expiry-timer failures, oversized responses, and
+unanswered close handshakes.
 Framework-controlled properties never include subscription keys, payloads, credentials, handshake
 headers, caller-supplied close text, or remote fault messages.
 

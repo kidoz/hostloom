@@ -34,10 +34,11 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
     private readonly ConcurrentDictionary<Guid, Task> _requestTasks = [];
     private readonly ConcurrentDictionary<Guid, SubscriptionState> _subscriptions = [];
     private readonly ConcurrentDictionary<Guid, Task> _subscriptionTasks = [];
-    private WebSocketCloseStatus _closeStatus = WebSocketCloseStatus.NormalClosure;
-    private string _closeReason = "Session completed.";
+    private readonly Lock _closeGate = new();
+    private CloseRequest? _close;
+    private ITimer? _closeTimeout;
+    private bool _closing;
     private int _aborted;
-    private int _closeAssigned;
     private int _slowClientAbortLogged;
 
     public WebSocketSession(
@@ -81,33 +82,62 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
     public WebSocketSessionInfo GetInfo() =>
         new(Id, _subject, _protocol.SubProtocol, _connectedAt, _expiresAt, _subscriptions.Count);
 
+    /// <summary>
+    /// Starts a close from this side: request and snapshot work stops, the writer sends the frames
+    /// already queued and then the close frame, and the receive loop keeps reading until the peer
+    /// answers. The pending receive is never cancelled for this, because the runtime's socket
+    /// aborts when it is and the peer would see an abnormal closure instead of this status.
+    /// </summary>
     public void RequestDisconnect(WebSocketCloseStatus status, string reason)
     {
         RequestClose(status, reason);
+        lock (_closeGate)
+        {
+            if (_closing)
+            {
+                return;
+            }
+
+            // Armed before the close frame can be queued, so a peer that has read the frame is
+            // always inside the timeout. The session counts as closing only once the timer
+            // exists: a clock that cannot create one leaves it open rather than closing unbounded.
+            _closeTimeout = _timeProvider.CreateTimer(
+                static state => ((WebSocketSession)state!).AbortUnansweredClose(),
+                this,
+                _configuration.Options.CloseTimeout,
+                Timeout.InfiniteTimeSpan
+            );
+            _closing = true;
+        }
+
         try
         {
             _stop.Cancel();
         }
         catch (ObjectDisposedException)
         {
-            // The session completed between a directory snapshot and the disconnect request.
+            // The session finished its own teardown between the gate and this call.
         }
+
+        _outbound.Complete();
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
-        _registry.Register(this);
+        var shutdown = _registry.Register(this);
         WebSocketDiagnostics.SessionOpened(_protocol.SubProtocol);
         WebSocketLog.SessionOpened(_logger, Id, _protocol.SubProtocol, _subject);
         using var expiryCancellation = new CancellationTokenSource();
         var expiry = ExpireAsync(expiryCancellation.Token);
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            _stop.Token
-        );
         var writer = WriteLoopAsync(cancellationToken);
         try
         {
+            if (shutdown is { } close)
+            {
+                // Accepted after the host began stopping: the close replaces the welcome.
+                RequestDisconnect(close.Status, close.Reason);
+            }
+
             if (
                 !TryQueue(
                     new HubFrame
@@ -123,31 +153,58 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                 )
             )
             {
-                Abort();
+                AbortUnlessClosing();
             }
 
-            while (!linked.IsCancellationRequested && _socket.State is WebSocketState.Open)
+            // Only the host's token reaches the receive: cancelling it aborts the runtime's
+            // socket. A close started here is sent by the writer instead, and the loop keeps
+            // reading until the peer's close frame arrives or the close timeout aborts the socket.
+            while (_socket.State is WebSocketState.Open or WebSocketState.CloseSent)
             {
-                var inbound = await ReceiveAsync(linked.Token).ConfigureAwait(false);
-                if (inbound.IsClose)
+                var inbound = await ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                if (inbound.Kind is InboundKind.Close)
                 {
-                    var closeStatus = inbound.CloseStatus ?? WebSocketCloseStatus.NormalClosure;
+                    // Either the peer started the close, or this answers one started here and
+                    // the status already chosen is kept.
                     RequestClose(
-                        closeStatus,
-                        closeStatus is WebSocketCloseStatus.MessageTooBig
-                            ? "The message exceeded the configured limit."
-                            : "Peer closed the session."
+                        inbound.CloseStatus ?? WebSocketCloseStatus.NormalClosure,
+                        "Peer closed the session."
                     );
                     break;
                 }
 
+                if (Volatile.Read(ref _closing))
+                {
+                    // The close frame is queued or sent. Whatever the peer sent before reading
+                    // it is discarded while the loop waits for the answer.
+                    continue;
+                }
+
+                if (inbound.Kind is InboundKind.TooLarge)
+                {
+                    RequestDisconnect(
+                        WebSocketCloseStatus.MessageTooBig,
+                        "The message exceeded the configured limit."
+                    );
+                    continue;
+                }
+
+                if (inbound.Kind is InboundKind.InvalidFragment)
+                {
+                    RequestDisconnect(
+                        WebSocketCloseStatus.InvalidPayloadData,
+                        "The fragmented message was invalid."
+                    );
+                    continue;
+                }
+
                 if (inbound.MessageType != _protocol.MessageType)
                 {
-                    RequestClose(
+                    RequestDisconnect(
                         WebSocketCloseStatus.InvalidMessageType,
                         "The frame type does not match the negotiated subprotocol."
                     );
-                    break;
+                    continue;
                 }
 
                 HubFrame frame;
@@ -157,23 +214,23 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                 }
                 catch (InvalidDataException)
                 {
-                    RequestClose(
+                    RequestDisconnect(
                         WebSocketCloseStatus.InvalidPayloadData,
                         "The application frame could not be decoded."
                     );
-                    break;
+                    continue;
                 }
 
                 await HandleAsync(frame).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
-        catch (InvalidDataException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception exception)
+            when ((exception is OperationCanceledException or ObjectDisposedException) && IsAborted)
         {
-            RequestClose(
-                WebSocketCloseStatus.InvalidPayloadData,
-                "The fragmented message was invalid."
-            );
+            // An abort fails the pending receive, whether it came from this session (slow client,
+            // close timeout, writer failure) or from the runtime's keep-alive timeout.
+            Abort();
         }
         catch (WebSocketException)
         {
@@ -181,6 +238,15 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         }
         finally
         {
+            ITimer? closeTimeout;
+            lock (_closeGate)
+            {
+                // Teardown owns the queue from here, so a disconnect that arrives late arms no
+                // timer and completes nothing.
+                _closing = true;
+                closeTimeout = _closeTimeout;
+            }
+
             try
             {
                 await expiryCancellation.CancelAsync().ConfigureAwait(false);
@@ -237,6 +303,9 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             }
             finally
             {
+                // Released only after the writer finished, so the timeout also bounds a writer
+                // still draining toward a peer that stopped reading.
+                closeTimeout?.Dispose();
                 _registry.Unregister(this);
                 var duration = Math.Max(0, (_timeProvider.GetUtcNow() - _connectedAt).TotalSeconds);
                 var closeReason = GetDiagnosticCloseReason();
@@ -247,7 +316,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                     _protocol.SubProtocol,
                     _subject,
                     closeReason,
-                    _closeStatus,
+                    CurrentClose.Status,
                     duration * 1000
                 );
                 _stop.Dispose();
@@ -273,6 +342,14 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                 || !string.Equals(subscription.Key, subscriptionKey, StringComparison.Ordinal)
             )
             {
+                continue;
+            }
+
+            if (Volatile.Read(ref _closing))
+            {
+                // A closing session delivers nothing more. Buffering for a subscription whose
+                // snapshot was cancelled would also hold outbound capacity until teardown.
+                WebSocketDiagnostics.EventDropped(topic, "subscription_stopped");
                 continue;
             }
 
@@ -312,7 +389,13 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                     if (!_outbound.TryWriteReserved(frame))
                     {
                         WebSocketDiagnostics.EventDropped(topic, "queue_unavailable");
-                        accepted = false;
+
+                        // A close that started after the check above refuses the write by design;
+                        // reporting it would make the publisher abort the close handshake.
+                        if (!Volatile.Read(ref _closing))
+                        {
+                            accepted = false;
+                        }
                     }
 
                     break;
@@ -345,6 +428,40 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         }
 
         _socket.Abort();
+    }
+
+    private bool IsAborted =>
+        Volatile.Read(ref _aborted) != 0 || _socket.State is WebSocketState.Aborted;
+
+    private CloseRequest CurrentClose => Volatile.Read(ref _close) ?? CloseRequest.Completed;
+
+    /// <summary>
+    /// Aborts after the outbound queue refused a frame. Once the session is closing the queue
+    /// refuses frames by design, and aborting then would cut the close handshake short.
+    /// </summary>
+    private void AbortUnlessClosing()
+    {
+        if (!Volatile.Read(ref _closing))
+        {
+            Abort();
+        }
+    }
+
+    private void AbortUnansweredClose()
+    {
+        // The handshake can finish just as the timer fires; a socket that already closed or
+        // aborted needs nothing more.
+        if (_socket.State is WebSocketState.Closed or WebSocketState.Aborted)
+        {
+            return;
+        }
+
+        WebSocketLog.CloseTimedOut(
+            _logger,
+            Id,
+            _configuration.Options.CloseTimeout.TotalMilliseconds
+        );
+        Abort();
     }
 
     private async ValueTask HandleAsync(HubFrame frame)
@@ -523,7 +640,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
 
             if (!TryQueue(response, encoded))
             {
-                Abort();
+                AbortUnlessClosing();
             }
         }
         finally
@@ -660,7 +777,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         {
             state.Stop(_outbound.Release);
             state.InitializationFinished();
-            Abort();
+            AbortUnlessClosing();
             return;
         }
 
@@ -737,8 +854,8 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                 if (write is SnapshotWriteDisposition.Failed)
                 {
                     // Size was checked above, so a failed write means the outbound budget was
-                    // exhausted (the slow-client path already aborted) or the session is ending.
-                    Abort();
+                    // exhausted (the slow-client path already aborted) or the session is closing.
+                    AbortUnlessClosing();
                     return;
                 }
 
@@ -750,7 +867,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
 
             if (!state.CompleteInitialization(_outbound.TryWriteReserved, _outbound.Release))
             {
-                Abort();
+                AbortUnlessClosing();
             }
         }
         catch (OperationCanceledException)
@@ -801,7 +918,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         WebSocketDiagnostics.SubscriptionRemoved(state.Topic);
         if (!TryQueue(WebSocketRequestRouter.Fault(state.StreamId, code, message)))
         {
-            Abort();
+            AbortUnlessClosing();
         }
     }
 
@@ -998,12 +1115,19 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                 && _socket.State is WebSocketState.Open or WebSocketState.CloseReceived
             )
             {
+                var close = CurrentClose;
                 await _socket
-                    .CloseOutputAsync(_closeStatus, _closeReason, cancellationToken)
+                    .CloseOutputAsync(close.Status, close.Reason, cancellationToken)
                     .ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception exception)
+            when ((exception is OperationCanceledException or ObjectDisposedException) && IsAborted)
+        {
+            // A send pending when the socket was aborted fails instead of completing; the abort
+            // is the outcome, not a fault in the writer.
+        }
         catch (WebSocketException)
         {
             Abort();
@@ -1025,26 +1149,33 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                 if (result.MessageType is WebSocketMessageType.Close)
                 {
                     return new InboundMessage(
+                        InboundKind.Close,
                         ReadOnlyMemory<byte>.Empty,
-                        WebSocketMessageType.Close,
-                        true,
+                        result.MessageType,
                         result.CloseStatus
                     );
                 }
 
+                // Violations are returned rather than thrown so the loop can start a close and
+                // keep reading until the peer answers it.
                 messageType ??= result.MessageType;
                 if (messageType != result.MessageType)
                 {
-                    throw new InvalidDataException("A fragmented message changed frame type.");
+                    return new InboundMessage(
+                        InboundKind.InvalidFragment,
+                        ReadOnlyMemory<byte>.Empty,
+                        result.MessageType,
+                        null
+                    );
                 }
 
                 if (writer.WrittenCount + result.Count > _configuration.Options.MaximumMessageSize)
                 {
                     return new InboundMessage(
+                        InboundKind.TooLarge,
                         ReadOnlyMemory<byte>.Empty,
                         result.MessageType,
-                        true,
-                        WebSocketCloseStatus.MessageTooBig
+                        null
                     );
                 }
 
@@ -1052,9 +1183,9 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                 if (result.EndOfMessage)
                 {
                     return new InboundMessage(
+                        InboundKind.Message,
                         writer.WrittenMemory.ToArray(),
                         result.MessageType,
-                        false,
                         null
                     );
                 }
@@ -1066,16 +1197,12 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         }
     }
 
-    private void RequestClose(WebSocketCloseStatus status, string reason)
-    {
-        if (Interlocked.CompareExchange(ref _closeAssigned, 1, 0) != 0)
-        {
-            return;
-        }
-
-        _closeStatus = status;
-        _closeReason = reason;
-    }
+    /// <summary>
+    /// Records the close status and reason; the first request wins. Status and reason are
+    /// published together, so a writer that sees a close in progress never reads half of one.
+    /// </summary>
+    private void RequestClose(WebSocketCloseStatus status, string reason) =>
+        _ = Interlocked.CompareExchange(ref _close, new CloseRequest(status, reason), null);
 
     private async Task ExpireAsync(CancellationToken cancellationToken)
     {
@@ -1115,7 +1242,8 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             return "aborted";
         }
 
-        return _closeReason switch
+        var close = CurrentClose;
+        return close.Reason switch
         {
             "session_expired" => "session_expired",
             "server_shutdown" => "server_shutdown",
@@ -1126,17 +1254,33 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             or "The fragmented message was invalid." => "invalid_payload",
             "Peer closed the session." => "peer_closed",
             "Session completed." => "completed",
-            _ when _closeStatus is WebSocketCloseStatus.PolicyViolation => "policy_violation",
-            _ when _closeStatus is WebSocketCloseStatus.EndpointUnavailable =>
+            _ when close.Status is WebSocketCloseStatus.PolicyViolation => "policy_violation",
+            _ when close.Status is WebSocketCloseStatus.EndpointUnavailable =>
                 "endpoint_unavailable",
             _ => "other",
         };
     }
 
+    private enum InboundKind
+    {
+        Message,
+        Close,
+        TooLarge,
+        InvalidFragment,
+    }
+
     private readonly record struct InboundMessage(
+        InboundKind Kind,
         ReadOnlyMemory<byte> Payload,
         WebSocketMessageType MessageType,
-        bool IsClose,
         WebSocketCloseStatus? CloseStatus
     );
+
+    private sealed record CloseRequest(WebSocketCloseStatus Status, string Reason)
+    {
+        public static readonly CloseRequest Completed = new(
+            WebSocketCloseStatus.NormalClosure,
+            "Session completed."
+        );
+    }
 }

@@ -502,6 +502,7 @@ public sealed partial class WebSocketGatewayTests
             new EventId(4110, "WebSocketResponseTooLarge"),
             WebSocketEvents.ResponseTooLarge
         );
+        Assert.Equal(new EventId(4111, "WebSocketCloseTimedOut"), WebSocketEvents.CloseTimedOut);
     }
 
     [Fact]
@@ -2969,6 +2970,10 @@ public sealed partial class WebSocketGatewayTests
             CancellationToken cancellationToken
         ) => CloseOutputAsync(closeStatus, statusDescription, cancellationToken);
 
+        /// <summary>
+        /// Records the status the server sent. A close the server starts is answered the way a
+        /// compliant peer answers it, with a close frame of its own on the inbound side.
+        /// </summary>
         public override Task CloseOutputAsync(
             WebSocketCloseStatus closeStatus,
             string? statusDescription,
@@ -2977,7 +2982,14 @@ public sealed partial class WebSocketGatewayTests
         {
             _closeStatus = closeStatus;
             _closeStatusDescription = statusDescription;
-            _state = WebSocketState.Closed;
+            if (_state is WebSocketState.CloseReceived)
+            {
+                _state = WebSocketState.Closed;
+                return Task.CompletedTask;
+            }
+
+            _state = WebSocketState.CloseSent;
+            _inbound.Writer.TryWrite(new Inbound([], WebSocketMessageType.Close, closeStatus));
             return Task.CompletedTask;
         }
 
@@ -2995,7 +3007,12 @@ public sealed partial class WebSocketGatewayTests
             var inbound = await _inbound.Reader.ReadAsync(cancellationToken);
             if (inbound.MessageType is WebSocketMessageType.Close)
             {
-                _state = WebSocketState.CloseReceived;
+                _state = _state switch
+                {
+                    WebSocketState.Open => WebSocketState.CloseReceived,
+                    WebSocketState.CloseSent => WebSocketState.Closed,
+                    _ => _state,
+                };
                 return new WebSocketReceiveResult(
                     0,
                     WebSocketMessageType.Close,

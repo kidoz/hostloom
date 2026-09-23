@@ -228,8 +228,25 @@ await sessions.DisconnectSubjectAsync(userId, "roles_changed", cancellationToken
 ```
 
 Administrative disconnects close with 1008 and the supplied close reason. Reasons must be nonempty
-and at most 123 UTF-8 bytes. Host shutdown closes every registered session with 1001
-`server_shutdown` and waits for session teardown before HostLoom broker subscriptions stop.
+and at most 123 UTF-8 bytes.
+
+Every close the server starts (expiry, administrative disconnect, rate limiting, a protocol
+violation, or shutdown) uses the WebSocket close handshake: request and snapshot work stops, the
+writer sends the frames already queued followed by the close frame, and the session keeps reading
+until the peer's close frame arrives, discarding frames the client sent before it read the close.
+The pending receive is never cancelled to stop a session, because the runtime's socket aborts when
+it is and the client would see 1006 instead of the status. A peer that does not answer within
+`CloseTimeout` (5 seconds by default) is aborted and logged as `WebSocketCloseTimedOut`, so
+`DisconnectAsync` and `DisconnectSubjectAsync` return once the client answers or that timeout
+elapses.
+
+Host shutdown sends 1001 `server_shutdown` to every session as soon as the host begins stopping,
+before any hosted service stops. A `WebApplication` registers its web server last, so the server
+stops first and waits for upgraded requests; closing earlier lets sessions end during that wait
+instead of stalling it until the host's shutdown timeout aborts them. Sessions accepted while the
+host is stopping are closed the same way, and the gateway waits for session teardown before
+HostLoom broker subscriptions stop.
+
 Client `cancel`, `subscribe`, `credit`, `ack`, `unsubscribe`, and `ping` frames share a per-session
 fixed one-second rate window; exceeding `MaximumControlFramesPerSecond` closes with 1008
 `rate_limited`. Frame kinds a client may not send count against the same window, so a flood of
@@ -387,8 +404,8 @@ Important limits are `MaximumMessageSize`, `MaximumQueuedBytesPerConnection`,
 `MaximumQueuedFramesPerConnection`, `MaximumConcurrentRequestsPerConnection`,
 `MaximumSubscriptionsPerConnection`, `MaximumCreditPerSubscription`,
 `MaximumControlFramesPerSecond`, `MaximumRequestsPerSecond`, `SnapshotInitializationTimeout`,
-`MaximumSessionLifetime`, and `MaximumRequestTimeout`. Defaults are conservative and should be
-load-tested with the actual event size distribution and client population.
+`MaximumSessionLifetime`, `CloseTimeout`, and `MaximumRequestTimeout`. Defaults are conservative
+and should be load-tested with the actual event size distribution and client population.
 
 ## Composition probe
 
@@ -511,6 +528,7 @@ use cached `LoggerMessage` delegates.
 | `4108` / `WebSocketAuthorizationFailed` | Error | `Policy`, exception |
 | `4109` / `WebSocketSessionExpiryFailed` | Error | `SessionId`, exception |
 | `4110` / `WebSocketResponseTooLarge` | Warning | `SessionId`, `Operation`, `EncodedBytes`, `MaximumMessageSize` |
+| `4111` / `WebSocketCloseTimedOut` | Warning | `SessionId`, `TimeoutMilliseconds` |
 
 Session close reasons use the same normalized vocabulary as
 `hostloom.websocket.session.duration`. Subscription-denial reasons are `topic_not_found`,
@@ -533,4 +551,6 @@ dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --filter "*Web
 `HostLoom.AspNetCore.WebSockets.Testing` wraps ASP.NET Core `TestServer` with a protocol-aware
 `WebSocketTestClient`. It configures upgrade headers, sends and receives `HubFrame` values, and has
 helpers for awaiting `welcome`, `subscribed`, `event`, and `fault` frames without a real browser or
-network listener.
+network listener. A close started by the server ends the session only after the client answers
+it, so a test that expects the session to end calls `client.Socket.CloseOutputAsync` once it has
+received the close frame, as a real client does.

@@ -55,6 +55,13 @@ public sealed class HostLoomWebSocketOptions
     /// </summary>
     public TimeSpan MaximumSessionLifetime { get; set; } = TimeSpan.FromHours(12);
 
+    /// <summary>
+    /// Gets or sets how long a close started by the server waits for the peer's close frame. The
+    /// server sends its close frame after the frames already queued and keeps reading until the
+    /// peer answers; when this elapses first, the connection is aborted.
+    /// </summary>
+    public TimeSpan CloseTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
     /// <summary>Gets or sets the claim used to identify sessions belonging to one subject.</summary>
     public string SubjectClaimType { get; set; } = ClaimTypes.NameIdentifier;
 
@@ -97,6 +104,14 @@ public sealed class HostLoomWebSocketOptions
         {
             throw new InvalidOperationException(
                 "The snapshot initialization timeout must be positive and at most "
+                    + $"{TimerLimits.MaximumDelay.TotalDays:F0} days."
+            );
+        }
+
+        if (CloseTimeout <= TimeSpan.Zero || CloseTimeout > TimerLimits.MaximumDelay)
+        {
+            throw new InvalidOperationException(
+                "The close timeout must be positive and at most "
                     + $"{TimerLimits.MaximumDelay.TotalDays:F0} days."
             );
         }

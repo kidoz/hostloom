@@ -36,6 +36,8 @@ internal sealed class WebSocketSessionRegistry
     private readonly ConcurrentDictionary<SubscriptionGroup, GroupState> _groups = [];
     private readonly Lock _groupsGate = new();
     private readonly ConcurrentDictionary<Guid, IWebSocketSessionHandle> _sessions = [];
+    private readonly Lock _sessionsGate = new();
+    private (WebSocketCloseStatus Status, string Reason)? _shutdown;
 
     public int Count => _sessions.Count;
 
@@ -94,31 +96,58 @@ internal sealed class WebSocketSessionRegistry
         return sessions.Length;
     }
 
-    internal void Register(IWebSocketSessionHandle session)
+    /// <summary>
+    /// Registers a session and, when shutdown has already begun, returns the close it must start
+    /// at once. The web server keeps accepting upgrades until it stops and then waits for each of
+    /// them, so a session accepted late must not hold that wait open until the shutdown timeout.
+    /// </summary>
+    internal (WebSocketCloseStatus Status, string Reason)? Register(IWebSocketSessionHandle session)
     {
-        if (!_sessions.TryAdd(session.Id, session))
+        lock (_sessionsGate)
         {
-            throw new InvalidOperationException($"Session '{session.Id}' is already registered.");
+            if (!_sessions.TryAdd(session.Id, session))
+            {
+                throw new InvalidOperationException(
+                    $"Session '{session.Id}' is already registered."
+                );
+            }
+
+            return _shutdown;
         }
     }
 
     internal void Unregister(IWebSocketSessionHandle session) =>
         _sessions.TryRemove(new KeyValuePair<Guid, IWebSocketSessionHandle>(session.Id, session));
 
+    /// <summary>
+    /// Starts closing every registered session and every session registered from now on, without
+    /// waiting for any of them.
+    /// </summary>
+    internal void BeginShutdown(WebSocketCloseStatus status, string reason)
+    {
+        ValidateReason(reason);
+        IWebSocketSessionHandle[] sessions;
+        lock (_sessionsGate)
+        {
+            _shutdown ??= (status, reason);
+            sessions = [.. _sessions.Values];
+        }
+
+        foreach (var session in sessions)
+        {
+            session.RequestDisconnect(status, reason);
+        }
+    }
+
+    /// <summary>Closes every session as <see cref="BeginShutdown"/> does and waits for them.</summary>
     internal async Task DisconnectAllAsync(
         WebSocketCloseStatus status,
         string reason,
         CancellationToken cancellationToken
     )
     {
-        ValidateReason(reason);
-        var sessions = _sessions.Values.ToArray();
-        foreach (var session in sessions)
-        {
-            session.RequestDisconnect(status, reason);
-        }
-
-        await Task.WhenAll(sessions.Select(static session => session.Completion))
+        BeginShutdown(status, reason);
+        await Task.WhenAll(_sessions.Values.Select(static session => session.Completion))
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
     }

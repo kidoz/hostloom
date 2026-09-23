@@ -165,6 +165,7 @@ headers must be configured earlier in the middleware pipeline.
 | `MaximumRequestsPerSecond` | 100 |
 | `SnapshotInitializationTimeout` | 30 s |
 | `MaximumSessionLifetime` | 12 h |
+| `CloseTimeout` | 5 s |
 | `SubjectClaimType` | `ClaimTypes.NameIdentifier` |
 | `DefaultRequestTimeout` | 10 s |
 | `MaximumRequestTimeout` | 30 s |
@@ -199,8 +200,24 @@ negotiated protocol, connection and expiry times, and the current subscription c
 `IWebSocketSessionControl.DisconnectAsync(Guid sessionId, reason)` and
 `DisconnectSubjectAsync(subject, reason)` close matched sessions with 1008 and wait for their
 lifecycle to finish. Use them when logout or a role change must revoke an already upgraded socket.
-The reason must fit the WebSocket 123-byte UTF-8 close-description limit. During host shutdown the
-gateway closes all sessions with 1001 `server_shutdown` before HostLoom's broker listeners stop.
+The reason must fit the WebSocket 123-byte UTF-8 close-description limit.
+
+Every close the gateway starts (expiry, administrative disconnect, rate limiting, a protocol
+violation, or shutdown) uses the WebSocket close handshake. The session stops request and snapshot
+work, sends the frames already queued followed by its close frame, and keeps reading until the
+peer's close frame arrives; frames the client sent before reading the close are discarded. The
+pending receive is never cancelled to stop a session: the runtime's socket aborts when it is, and
+the client would see an abnormal closure (1006) instead of the status. If the peer does not answer
+within `CloseTimeout`, the connection is aborted, logged as `WebSocketCloseTimedOut`, and recorded
+with close reason `aborted`. An administrative disconnect therefore finishes once the client
+answers or the timeout elapses.
+
+When the host begins stopping, the gateway sends 1001 `server_shutdown` to every session before any
+hosted service stops. A `WebApplication` registers its web server last, so the server stops first
+and waits for upgraded requests; closing earlier lets the sessions end during that wait instead of
+holding it open until the host's shutdown timeout aborts them. Sessions accepted while the host is
+stopping are closed the same way, and all of them are joined before HostLoom's broker listeners
+stop.
 
 Client control frames are bounded independently from request concurrency. More than
 `MaximumControlFramesPerSecond` `cancel`, `subscribe`, `credit`, `ack`, `unsubscribe`, `ping`, or
@@ -320,10 +337,11 @@ the framework's authorization metrics for that path.
 
 ## Structured logs
 
-`WebSocketEvents` publishes stable event ids `4100`–`4110` for session open and close,
+`WebSocketEvents` publishes stable event ids `4100`–`4111` for session open and close,
 subscription denial, slow-client abort, handshake rejection, operation failure, snapshot failure,
-snapshot stall, authorization failure, expiry-timer failure, and oversized responses. Session
-close logs use the same normalized reason vocabulary as the duration metric.
+snapshot stall, authorization failure, expiry-timer failure, oversized responses, and close
+handshakes the peer did not answer in time. Session close logs use the same normalized reason
+vocabulary as the duration metric.
 
 Lifecycle entries carry a session id, protocol, optional configured subject, and bounded reason;
 subscription entries carry only a registered topic and never echo an unknown client topic. The
