@@ -81,6 +81,55 @@ public sealed class KafkaTransportTests : IAsyncLifetime
     }
 
     [Fact(Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(Available))]
+    public async Task Replicas_sharing_a_client_id_and_response_topic_each_get_their_replies()
+    {
+        var address = await CreateTopicAsync("replicas");
+        var responses = await CreateTopicAsync("responses");
+        var group = Unique("group");
+        using var server = await StartAsync(hostLoom =>
+            hostLoom.AddHandler<Greet, Greeting, GreetHandler>(address)
+        );
+        // Two instances of one calling service configured alike, as replicas of one deployment
+        // are: the same group prefix, response topic, and client id.
+        using var first = await StartAsync(
+            hostLoom => hostLoom.AddRequestClient<Greet, Greeting>(),
+            consumerGroup: group,
+            clientId: "orders-api",
+            responseTopic: responses
+        );
+        using var second = await StartAsync(
+            hostLoom => hostLoom.AddRequestClient<Greet, Greeting>(),
+            consumerGroup: group,
+            clientId: "orders-api",
+            responseTopic: responses
+        );
+
+        // Each replica consumes the whole response topic in a reply group of its own. Sharing one,
+        // the single response partition goes to one replica once both have joined, and the other
+        // replica's requests either wait for an assignment that never comes or have their replies
+        // read by the replica that holds the partition. One request each, in turn, starts both
+        // reply consumers before the concurrent round, so the outcome does not depend on timing.
+        async Task<Greeting> AskAsync(IHost replica, string name) =>
+            await ClientOf<Greet, Greeting>(replica)
+                .GetResponseAsync(
+                    address,
+                    new Greet(name),
+                    timeout: TimeSpan.FromSeconds(20),
+                    cancellationToken: Token
+                );
+
+        await AskAsync(first, "first");
+        await AskAsync(second, "second");
+        var replies = await Task.WhenAll(
+            new[] { first, second }.SelectMany(replica =>
+                Enumerable.Range(0, 5).Select(i => AskAsync(replica, $"n{i}"))
+            )
+        );
+
+        Assert.Equal(10, replies.Length);
+    }
+
+    [Fact(Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(Available))]
     public async Task A_handler_fault_returns_as_a_remote_fault_without_a_stack_trace()
     {
         var address = await CreateTopicAsync("failures");
@@ -397,10 +446,11 @@ public sealed class KafkaTransportTests : IAsyncLifetime
         Action<HostLoomBuilder> configure,
         Received? received = null,
         string? consumerGroup = null,
-        string? clientId = null
+        string? clientId = null,
+        string? responseTopic = null
     )
     {
-        var responseTopic = await CreateTopicAsync("responses");
+        responseTopic ??= await CreateTopicAsync("responses");
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(received ?? new Received());
         configure(

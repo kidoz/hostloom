@@ -37,7 +37,7 @@ A custom transport registers with
 | `BootstrapServers` | `localhost:9092` | Broker bootstrap list |
 | `ConsumerGroup` | `hostloom` | Stable group prefix shared by instances of the same logical service |
 | `ResponseTopic` | `hostloom.responses` | Topic on which this client receives replies; provision retention ≥ the maximum request timeout, one topic per calling service |
-| `ClientId` | `{machine}-{pid}-{random}` | Client identifier reported to the broker |
+| `ClientId` | `{machine}-{pid}-{random}` | Client identifier reported to the broker. Replicas may share one; the reply consumer group is named by a random per-instance id, not by this value |
 | `EnableIdempotence` | `true` | Idempotent producer |
 | `AllowedReplyTopics` | empty | Reply topics a request may name in `hostloom-reply-to`. Empty accepts any syntactically valid topic name; otherwise the header must match an entry exactly, or the request is rejected as malformed before the handler runs |
 | `MaxRequestAge` | `null` | When set, a request record whose Kafka timestamp is older than this is rejected as malformed (committed, never handled) |

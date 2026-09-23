@@ -24,6 +24,11 @@ internal sealed class KafkaReplyConsumer : IAsyncDisposable
     private readonly object _owner;
     private readonly ConcurrentDictionary<TopicPartition, Offset> _offsets = new();
 
+    // Names the reply group. KafkaOptions.ClientId cannot: operators often give every replica the
+    // same client id for quotas and dashboards, and replicas sharing a reply group would split the
+    // response partitions, so most replies would reach an instance with no request waiting.
+    private readonly string _groupInstance = Guid.NewGuid().ToString("N");
+
     // No wait handle is used; a start racing disposal must be able to observe it safely.
 #pragma warning disable CA2213
     private readonly SemaphoreSlim _consumerGate = new(1, 1);
@@ -202,12 +207,13 @@ internal sealed class KafkaReplyConsumer : IAsyncDisposable
                 KafkaRequestBroker.CreateConsumerConfig(
                     _options,
                     clientId: $"{_options.ClientId}-replies",
-                    groupId: $"{_options.ConsumerGroup}.replies.{_options.ClientId}",
-                    enableAutoCommit: true,
-                    // The group is unique to this process, so there is never a committed offset
-                    // to resume from. Earliest would replay every retained reply on the topic on
-                    // each restart; Latest starts at the end, and a request waits for the
-                    // assignment below before producing, so no reply can precede the start.
+                    groupId: $"{_options.ConsumerGroup}.replies.{_groupInstance}",
+                    // The group is unique to this consumer, so there is never a committed offset
+                    // to resume from, and committing one would only leave a group behind on the
+                    // broker after every restart. Earliest would replay every retained reply on
+                    // the topic; Latest starts at the end, and a request waits for the assignment
+                    // below before producing, so no reply can precede the start.
+                    enableAutoCommit: false,
                     autoOffsetReset: AutoOffsetReset.Latest
                 ),
                 partitionsAssigned: OnPartitionsAssigned

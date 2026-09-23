@@ -67,7 +67,7 @@ public sealed class KafkaTransportConformanceTests
             Profile = Profile,
             RunId = runId,
             // Instances of one run share the group prefix and the response topic, like instances
-            // of one calling service; each has its own client id and so its own reply group.
+            // of one calling service; each still gets a reply group of its own.
             BrokerFactory = () =>
                 new KafkaRequestBroker(
                     Options.Create(

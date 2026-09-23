@@ -129,6 +129,54 @@ public sealed class KafkaClientConfigTests
     }
 
     [Fact]
+    public async Task Replicas_sharing_a_client_id_get_reply_groups_of_their_own()
+    {
+        // Operators often give every replica one client id; a shared reply group would split the
+        // response partitions between them and strand most replies on the wrong instance.
+        var options = new KafkaOptions { ClientId = "orders-api", ConsumerGroup = "orders" };
+        var groups = new List<ConsumerConfig>();
+        for (var replica = 0; replica < 2; replica++)
+        {
+            var kafka = new FakeReplyKafka();
+            await using var broker = new KafkaRequestBroker(
+                Options.Create(options),
+                logger: null,
+                kafka.Producer,
+                kafka.CreateConsumer
+            );
+            using var abandon = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken
+            );
+            var pending = broker
+                .RequestAsync(
+                    "orders",
+                    "ask"u8.ToArray(),
+                    Guid.NewGuid(),
+                    TimeSpan.FromSeconds(5),
+                    abandon.Token
+                )
+                .AsTask();
+
+            groups.Add(
+                await kafka.ConsumerCreated.Task.WaitAsync(
+                    TimeSpan.FromSeconds(5),
+                    TestContext.Current.CancellationToken
+                )
+            );
+            await abandon.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        }
+
+        Assert.All(
+            groups,
+            config => Assert.StartsWith("orders.replies.", config.GroupId, StringComparison.Ordinal)
+        );
+        Assert.All(groups, config => Assert.Equal("orders-api-replies", config.ClientId));
+        Assert.All(groups, config => Assert.False(config.EnableAutoCommit));
+        Assert.NotEqual(groups[0].GroupId, groups[1].GroupId);
+    }
+
+    [Fact]
     public async Task The_reply_consumer_starts_at_the_end_and_a_request_waits_for_its_assignment()
     {
         var kafka = new FakeReplyKafka();
