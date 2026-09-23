@@ -6,10 +6,11 @@ on:
       - published
   workflow_dispatch:
 
+# Least privilege by default. Only the publish job below can mint an OIDC token or write an
+# attestation, and it runs no restore, build, or test code: everything that executes third-party
+# packages runs in the build job, which can read the repository and nothing else.
 permissions:
-  attestations: write
   contents: read
-  id-token: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -58,12 +59,17 @@ jobs:
           echo "Release tag '${tag}' is well-formed and CHANGELOG.md documents ${version}."
           echo "publish_nuget=true" >> "${GITHUB_OUTPUT}"
 
-  nuget:
+  build:
     needs: validate
     if: needs.validate.outputs.publish_nuget == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: nuget
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    permissions:
+      contents: read
 
     env:
       DOTNET_NOLOGO: true
@@ -75,6 +81,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
@@ -134,13 +141,6 @@ jobs:
       - name: Verify packed composition consumer
         run: python3 scripts/verify-composition-package.py --packages artifacts/packages --version ${{ steps.version.outputs.version }}
 
-      - name: Attest package provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
-        with:
-          subject-path: |
-            artifacts/packages/*.nupkg
-            artifacts/packages/*.snupkg
-
       - name: Upload package artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -150,73 +150,119 @@ jobs:
             artifacts/packages/*.snupkg
           if-no-files-found: error
 
-      - name: NuGet login
-        id: nuget-login
-        if: github.event_name == 'release'
-        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1
-        with:
-          user: ${{ secrets.NUGET_USER }}
+  publish:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: nuget
 
-      - name: Publish to NuGet
-        if: github.event_name == 'release'
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download package artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: hostloom-release-packages
+          path: artifacts/packages
+
+      - name: Check the publish list against the packed packages
         shell: bash
         run: |
           set -euo pipefail
-          # Every packable project must appear here; the list is verified against the packed
-          # output below, because a missing id publishes nothing and fails nothing.
-          packages=(
-            HostLoom.Pipelines
-            HostLoom.Logging
-            HostLoom
-            HostLoom.Pipelines.DependencyInjection
-            HostLoom.Pipelines.Testing
-            HostLoom.Transport.InMemory
-            HostLoom.Transport.RabbitMq
-            HostLoom.Transport.Kafka
-            HostLoom.AspNetCore.WebSockets
-            HostLoom.AspNetCore.WebSockets.Testing
-            HostLoom.Analyzers
-            HostLoom.Diagnostics
-            HostLoom.Composition
-            HostLoom.Composition.Testing
-            HostLoom.Mapping
-            HostLoom.Mapping.DependencyInjection
-            HostLoom.Mapping.Testing
-            HostLoom.Caching
-            HostLoom.Caching.DependencyInjection
-            HostLoom.Caching.Testing
-            HostLoom.Caching.Pipelines
-            HostLoom.Locking
-            HostLoom.Locking.DependencyInjection
-            HostLoom.Locking.Testing
-            HostLoom.Locking.Pipelines
-            HostLoom.Scheduling
-            HostLoom.Scheduling.DependencyInjection
-            HostLoom.Scheduling.Locking
-            HostLoom.Scheduling.Testing
-            HostLoom.Scheduling.Leadership
-            HostLoom.Leadership
-            HostLoom.Leadership.DependencyInjection
-            HostLoom.Leadership.Testing
-            HostLoom.Redis
-            HostLoom.Valkey
-          )
+          # Every packable project must appear in packages.txt below, and every listed package must
+          # have been packed. Both directions are checked before the first push, because a push
+          # that fails part-way leaves a release published only in part.
+          cat > packages.txt <<'LIST'
+          HostLoom.Pipelines
+          HostLoom.Logging
+          HostLoom
+          HostLoom.Pipelines.DependencyInjection
+          HostLoom.Pipelines.Testing
+          HostLoom.Transport.InMemory
+          HostLoom.Transport.RabbitMq
+          HostLoom.Transport.Kafka
+          HostLoom.AspNetCore.WebSockets
+          HostLoom.AspNetCore.WebSockets.Testing
+          HostLoom.Analyzers
+          HostLoom.Diagnostics
+          HostLoom.Composition
+          HostLoom.Composition.Testing
+          HostLoom.Mapping
+          HostLoom.Mapping.DependencyInjection
+          HostLoom.Mapping.Testing
+          HostLoom.Caching
+          HostLoom.Caching.DependencyInjection
+          HostLoom.Caching.Testing
+          HostLoom.Caching.Pipelines
+          HostLoom.Locking
+          HostLoom.Locking.DependencyInjection
+          HostLoom.Locking.Testing
+          HostLoom.Locking.Pipelines
+          HostLoom.Scheduling
+          HostLoom.Scheduling.DependencyInjection
+          HostLoom.Scheduling.Locking
+          HostLoom.Scheduling.Testing
+          HostLoom.Scheduling.Leadership
+          HostLoom.Leadership
+          HostLoom.Leadership.DependencyInjection
+          HostLoom.Leadership.Testing
+          HostLoom.Redis
+          HostLoom.Valkey
+          LIST
 
           missing=()
           for package_file in artifacts/packages/*.nupkg; do
             packed="$(basename "${package_file}" ".${PACKAGE_VERSION}.nupkg")"
-            printf '%s\n' "${packages[@]}" | grep -qxF "${packed}" || missing+=("${packed}")
+            grep -qxF "${packed}" packages.txt || missing+=("${packed}")
           done
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::Packed but not in the publish list: ${missing[*]}"
             exit 1
           fi
-          for package_id in "${packages[@]}"; do
-            package="artifacts/packages/${package_id}.${PACKAGE_VERSION}.nupkg"
-            dotnet nuget push "${package}" \
-              --api-key "${NUGET_API_KEY}" \
-              --source https://api.nuget.org/v3/index.json
-          done
+          unpacked=()
+          while read -r package_id; do
+            [ -f "artifacts/packages/${package_id}.${PACKAGE_VERSION}.nupkg" ] || unpacked+=("${package_id}")
+          done < packages.txt
+          if [ ${#unpacked[@]} -gt 0 ]; then
+            echo "::error::In the publish list but not packed: ${unpacked[*]}"
+            exit 1
+          fi
         env:
-          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          PACKAGE_VERSION: ${{ needs.build.outputs.version }}
+
+      - name: Attest package provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+        with:
+          subject-path: |
+            artifacts/packages/*.nupkg
+            artifacts/packages/*.snupkg
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: NuGet login
+        id: nuget-login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Publish to NuGet
+        shell: bash
+        run: |
+          set -euo pipefail
+          # --skip-duplicate lets a rerun finish a release that stopped part-way.
+          while read -r package_id; do
+            dotnet nuget push "artifacts/packages/${package_id}.${PACKAGE_VERSION}.nupkg" \
+              --api-key "${NUGET_API_KEY}" \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate
+          done < packages.txt
+        env:
+          PACKAGE_VERSION: ${{ needs.build.outputs.version }}
           NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
