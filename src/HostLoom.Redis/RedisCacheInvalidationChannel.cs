@@ -1,4 +1,5 @@
 using System.Text;
+using System.Threading.Channels;
 using HostLoom.Caching;
 using HostLoom.Redis.Internal;
 using Microsoft.Extensions.Logging;
@@ -28,6 +29,9 @@ namespace HostLoom.Redis;
 /// retried with exponential backoff while Redis is unreachable, and a mode that cannot be enabled
 /// after <see cref="RedisOptions.MaxClientCommandRetries"/> attempts leaves the explicit channel
 /// as the only fan-out until a later reconnect or topology refresh retries registration.
+/// Each subscription attaches one handler owned by this channel; a failed attempt detaches its
+/// handler before the next, and disposal detaches every handler the channel attached while leaving
+/// other subscriptions on a shared multiplexer in place.
 /// </remarks>
 public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, IAsyncDisposable
 {
@@ -51,10 +55,19 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     private readonly List<Action<CacheInvalidation>> _handlers = [];
     private readonly CancellationTokenSource _disposal = new();
     private Task? _subscribing;
+    private Task? _receiving;
     private Task? _disposing;
     private readonly SemaphoreSlim _trackingRefresh = new(0, 1);
-    private readonly List<ChannelMessageQueue> _queues = [];
-    private ChannelMessageQueue? _trackingQueue;
+
+    // Everything the subscriptions deliver, applied by one reader. The subscription worker alone
+    // attaches and records handlers until disposal has joined it.
+    private readonly Channel<ReceivedMessage> _received = Channel.CreateUnbounded<ReceivedMessage>(
+        new UnboundedChannelOptions { SingleReader = true, AllowSynchronousContinuations = false }
+    );
+    private readonly List<OwnedSubscription> _owned = [];
+    private readonly HashSet<string> _keyspacePatterns = new(StringComparer.Ordinal);
+    private OwnedSubscription? _explicitSubscription;
+    private OwnedSubscription? _trackingSubscription;
     private long _trackingInitialisations;
     private int _trackingRecoveryPending;
     private long _malformed;
@@ -130,6 +143,10 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
             _handlers.Add(handler);
+            _receiving ??= Task.Run(
+                () => ApplyReceivedAsync(_disposal.Token),
+                CancellationToken.None
+            );
             _subscribing ??= Task.Run(
                 () => SubscribeWithRetryAsync(_disposal.Token),
                 CancellationToken.None
@@ -178,28 +195,22 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             }
         }
 
-        // Queues belong to this channel even while the externally owned multiplexer
-        // is disconnected. Detach them so the SDK cannot restore them after disposal.
-        foreach (var queue in _queues)
-        {
-            try
-            {
-                await queue.UnsubscribeAsync().ConfigureAwait(false);
-            }
-            catch (Exception exception)
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(
-                        exception,
-                        "Unsubscribe from {Channel} failed during disposal.",
-                        ChannelName
-                    );
-                }
-            }
-        }
-        _queues.Clear();
+        // Handlers belong to this channel even while the externally owned multiplexer is
+        // disconnected. Detach exactly them so the SDK cannot restore them after disposal;
+        // other components' subscriptions to the same channels stay attached.
+        OwnedSubscription[] owned = [.. _owned];
+        _owned.Clear();
+        _explicitSubscription = null;
+        _trackingSubscription = null;
+        _keyspacePatterns.Clear();
+        await Task.WhenAll(owned.Select(DetachAsync)).ConfigureAwait(false);
         IsSubscribed = false;
+
+        _received.Writer.TryComplete();
+        if (_receiving is { } receiving)
+        {
+            await receiving.ConfigureAwait(false);
+        }
 
         lock (_gate)
         {
@@ -311,10 +322,10 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
                 var multiplexer = await _connection
                     .GetMultiplexerAsync(cancellationToken)
                     .ConfigureAwait(false);
-                await SubscribeOwnedAsync(
+                _explicitSubscription ??= await SubscribeOwnedAsync(
                         multiplexer.GetSubscriber(),
                         _channel,
-                        OnExplicitMessage,
+                        (_, message) => HandleExplicitMessage(message),
                         cancellationToken
                     )
                     .ConfigureAwait(false);
@@ -434,16 +445,13 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         {
             try
             {
-                if (_trackingQueue is null)
-                {
-                    _trackingQueue = await SubscribeOwnedAsync(
-                            multiplexer.GetSubscriber(),
-                            RedisChannel.Literal(RedisInvalidationDecoder.TrackingChannel),
-                            OnTrackingMessage,
-                            cancellationToken
-                        )
-                        .ConfigureAwait(false);
-                }
+                _trackingSubscription ??= await SubscribeOwnedAsync(
+                        multiplexer.GetSubscriber(),
+                        RedisChannel.Literal(RedisInvalidationDecoder.TrackingChannel),
+                        (_, message) => HandleTrackingMessage(message),
+                        cancellationToken
+                    )
+                    .ConfigureAwait(false);
 
                 var servers = multiplexer
                     .GetEndPoints()
@@ -638,13 +646,21 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             var subscriber = multiplexer.GetSubscriber();
             foreach (var pattern in KeyspacePatterns())
             {
+                // A pattern attached by an earlier, partly failed pass stays attached; a retry
+                // subscribes only the ones still missing.
+                if (_keyspacePatterns.Contains(pattern))
+                {
+                    continue;
+                }
+
                 await SubscribeOwnedAsync(
                         subscriber,
                         RedisChannel.Pattern(pattern),
-                        OnKeyspaceMessage,
+                        HandleKeyspaceMessage,
                         cancellationToken
                     )
                     .ConfigureAwait(false);
+                _keyspacePatterns.Add(pattern);
             }
 
             return true;
@@ -713,21 +729,101 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         return flags is null || RedisInvalidationDecoder.KeyspaceNotificationsCover(flags);
     }
 
-    private async Task<ChannelMessageQueue> SubscribeOwnedAsync(
+    /// <summary>
+    /// Attaches a handler owned by this channel to <paramref name="channel"/>. StackExchange.Redis
+    /// attaches a handler or queue before the server confirms the subscription and keeps it when
+    /// that fails, so a failed attempt detaches exactly its own handler before the caller retries;
+    /// nothing else subscribed to the channel on the same multiplexer is touched.
+    /// </summary>
+    private async Task<OwnedSubscription> SubscribeOwnedAsync(
         ISubscriber subscriber,
         RedisChannel channel,
-        Action<ChannelMessage> handler,
+        Action<RedisChannel, RedisValue> apply,
         CancellationToken cancellationToken
     )
     {
         cancellationToken.ThrowIfCancellationRequested();
-        // The SDK call cannot be cancelled. Join it before the worker stops so a late
-        // result is still owned and disposed instead of abandoning its subscription.
-        var queue = await subscriber.SubscribeAsync(channel).ConfigureAwait(false);
-        _queues.Add(queue);
+        var subscription = new OwnedSubscription(subscriber, channel, apply, _received.Writer);
+        // The SDK call cannot be cancelled. Record the handler first and join the call before
+        // the worker stops, so disposal detaches a late result instead of abandoning it.
+        _owned.Add(subscription);
+        try
+        {
+            await subscriber.SubscribeAsync(channel, subscription.Handler).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            _owned.Remove(subscription);
+            await DetachAsync(subscription).ConfigureAwait(false);
+            throw;
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
-        queue.OnMessage(handler);
-        return queue;
+        return subscription;
+    }
+
+    /// <summary>
+    /// Removes one handler this channel attached. The SDK drops it from its subscription at once,
+    /// connected or not, and unsubscribes on the server only when no other handler or queue is
+    /// left on that channel.
+    /// </summary>
+    private async Task DetachAsync(OwnedSubscription subscription)
+    {
+        try
+        {
+            await subscription
+                .Subscriber.UnsubscribeAsync(subscription.Channel, subscription.Handler)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    exception,
+                    "Unsubscribe from {Channel} failed.",
+                    subscription.Channel.ToString()
+                );
+            }
+        }
+    }
+
+    /// <summary>
+    /// Applies what the subscriptions deliver, one message at a time. The SDK invokes a handler on
+    /// the thread pool for each message, so a single reader keeps processing sequential and the
+    /// cost of any one message confined to it. Every message only removes entries, so the order
+    /// in which concurrent callbacks enqueue them does not change the outcome.
+    /// </summary>
+    private async Task ApplyReceivedAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (
+                var received in _received
+                    .Reader.ReadAllAsync(cancellationToken)
+                    .ConfigureAwait(false)
+            )
+            {
+                try
+                {
+                    received.Apply(received.Channel, received.Message);
+                }
+                catch (Exception exception)
+                {
+                    // One message must never end delivery for the ones behind it.
+                    _logger.LogWarning(
+                        new EventId(1320, "RedisInvalidationMessageFailed"),
+                        exception,
+                        "Applying a message received on {Channel} failed; continuing with the next.",
+                        received.Channel.ToString()
+                    );
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Disposal stops the reader; nothing left in the queue is dispatched anyway.
+        }
     }
 
     private IReadOnlyList<string> KeyspacePatterns() =>
@@ -736,9 +832,6 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             _connection.Options.DatabaseIndex,
             [.. _options.Invalidation.KeyPrefixFilters]
         );
-
-    private void OnExplicitMessage(ChannelMessage message) =>
-        HandleExplicitMessage(message.Message);
 
     /// <summary>
     /// Applies one explicit-channel payload. Anything over <see cref="MaxPayloadBytes"/> is
@@ -775,9 +868,6 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         Dispatch(invalidation);
     }
 
-    private void OnTrackingMessage(ChannelMessage message) =>
-        HandleTrackingMessage(message.Message);
-
     internal void HandleTrackingMessage(RedisValue message)
     {
         // Redis sends a null payload for FLUSHDB and FLUSHALL, without any keys.
@@ -792,16 +882,9 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         }
     }
 
-    private void OnKeyspaceMessage(ChannelMessage message)
+    private void HandleKeyspaceMessage(RedisChannel channel, RedisValue message)
     {
-        if (
-            RedisInvalidationDecoder.TryParseKeyspaceEvent(
-                _layout,
-                message.Channel,
-                message.Message,
-                out var key
-            )
-        )
+        if (RedisInvalidationDecoder.TryParseKeyspaceEvent(_layout, channel, message, out var key))
         {
             Dispatch(new CacheInvalidation([key], []));
         }
@@ -905,4 +988,44 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             }
         }
     }
+
+    /// <summary>
+    /// One handler this channel attached to the SDK. Each attempt gets its own, and the SDK
+    /// detaches by delegate equality, so unsubscribing it removes this attachment and no other.
+    /// </summary>
+    private sealed class OwnedSubscription
+    {
+        private readonly Action<RedisChannel, RedisValue> _apply;
+        private readonly ChannelWriter<ReceivedMessage> _received;
+
+        public OwnedSubscription(
+            ISubscriber subscriber,
+            RedisChannel channel,
+            Action<RedisChannel, RedisValue> apply,
+            ChannelWriter<ReceivedMessage> received
+        )
+        {
+            Subscriber = subscriber;
+            Channel = channel;
+            _apply = apply;
+            _received = received;
+            Handler = Forward;
+        }
+
+        public ISubscriber Subscriber { get; }
+
+        public RedisChannel Channel { get; }
+
+        public Action<RedisChannel, RedisValue> Handler { get; }
+
+        // Refused only once disposal has completed the queue, when nothing is dispatched.
+        private void Forward(RedisChannel channel, RedisValue message) =>
+            _received.TryWrite(new ReceivedMessage(_apply, channel, message));
+    }
+
+    private readonly record struct ReceivedMessage(
+        Action<RedisChannel, RedisValue> Apply,
+        RedisChannel Channel,
+        RedisValue Message
+    );
 }

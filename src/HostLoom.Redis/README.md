@@ -119,10 +119,13 @@ trying to subscribe with exponential backoff; a mode that cannot be enabled afte
 and retried on the next reconnect or topology refresh. `CachingProbe.Describe` reports the
 transport in effect. Registration runs serially across channels sharing a connection and checks
 existing prefixes before updating tracking. Replacing a subscriber preserves those prefixes.
-Disposing a channel removes only its own
-subscription handlers, including while the shared multiplexer is disconnected. Disposal joins
-pending subscription calls before detaching their queues. An observer that throws is logged
-without preventing delivery to the remaining observers.
+StackExchange.Redis keeps a handler attached when its subscription fails, so a failed attempt
+detaches its own handler before the next one; an outage leaves one handler per subscribed channel,
+not one per retry. Disposing a channel removes every handler it attached and only those,
+including while the shared multiplexer is disconnected; other subscriptions to the same channels
+stay in place. Disposal joins pending subscription calls before detaching their handlers. One
+reader per channel applies received messages in turn. An observer that throws is logged without
+preventing delivery to the remaining observers.
 
 Only `RemoveAsync` and `RemoveByTagAsync` publish on the explicit channel. `SetAsync`,
 `SetIfAbsentAsync`, get-or-create fills, and warmup publish nothing, so what another instance
