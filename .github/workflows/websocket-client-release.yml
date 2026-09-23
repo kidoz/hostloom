@@ -58,6 +58,11 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
             tag="${RELEASE_TAG}"
           elif [ "${PUBLISH_INPUT}" = "true" ]; then
+            # A branch can carry a tag-shaped name; only a tag ref may be published.
+            if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+              echo "::error::Publishing requires a websocket-client-vX.Y.Z tag ref; '${GITHUB_REF_NAME}' is a ${GITHUB_REF_TYPE}."
+              exit 1
+            fi
             tag="${GITHUB_REF_NAME}"
           else
             version=$(node --print "require('./package.json').version")
@@ -122,8 +127,6 @@ jobs:
       - name: Publish to npm
         env:
           PACKAGE_VERSION: ${{ needs.package.outputs.version }}
-          # npm requires a token only for the first publication because trusted publishers can be
-          # configured only after a package exists. Delete this secret after the bootstrap release;
-          # npm 11.5.1+ then authenticates this same command through GitHub OIDC.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        # Authenticated through GitHub OIDC by the package's npm trusted publisher (this workflow,
+        # environment npm); npm 11.5.1+ exchanges the job's id token, so no write token is stored.
         run: npm publish "artifacts/npm/hostloom-websocket-client-${PACKAGE_VERSION}.tgz"

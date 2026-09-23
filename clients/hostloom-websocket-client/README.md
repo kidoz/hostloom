@@ -192,16 +192,12 @@ Publishing a GitHub release for that tag runs the package gate, uploads the exac
 and publishes that artifact through the protected `npm` environment. The ordinary .NET `vX.Y.Z`
 release stream does not publish this package.
 
-For the first publication only, add a short-lived granular npm token with bypass-2FA permission as
-the `NPM_BOOTSTRAP_TOKEN` environment secret. npm cannot configure a trusted publisher until the
-package exists. After that first publication:
+Publication authenticates through the package's npm trusted publisher, configured for repository
+`kidoz/hostloom`, workflow `websocket-client-release.yml`, environment `npm`, and the `npm publish`
+action; the workflow reads no npm token. Keep two-factor authentication required and token
+publication disallowed in the npm package settings.
 
-1. Configure the package's npm trusted publisher for repository `kidoz/hostloom`, workflow
-   `websocket-client-release.yml`, environment `npm`, and the `npm publish` action.
-2. Delete `NPM_BOOTSTRAP_TOKEN` from GitHub.
-3. Require two-factor authentication and disallow token publication in the npm package settings.
-
-Subsequent releases use GitHub OIDC without a long-lived write credential and publish provenance
+Releases use GitHub OIDC without a long-lived write credential and publish provenance
 automatically. A manual run packages and uploads the current version without publishing by default;
-select a `websocket-client-vX.Y.Z` tag and explicitly enable its `publish` input only for controlled
-recovery or the bootstrap release.
+select a `websocket-client-vX.Y.Z` tag (a branch is refused) and explicitly enable its `publish`
+input only for controlled recovery.
