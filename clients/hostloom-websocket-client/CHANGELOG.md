@@ -5,6 +5,26 @@ independent [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The `maximumControlFramesPerSecond` connection option, 50 by default to match the gateway's
+  default control-frame budget.
+
+### Changed
+
+- Credit and acknowledgement frames are sent after the current task and coalesced per
+  subscription. `acknowledge()` skips sequences already covered, and a failed send fails the
+  subscription instead of throwing from `acknowledge()`.
+
+### Fixed
+
+- Automatic credit and acknowledgements no longer get a connection closed with 1008
+  `rate_limited`. They are paced by a connection-wide budget shared with every control frame, at
+  most half the gateway's limit in any second (25 by default: a burst of 5, then 20 per second). A
+  credit-2 subscription on a busy topic used to send one frame per event.
+- A `close()` during an earlier close rejects the `connect()` queued behind it with
+  `HostLoomConnectionClosedError` instead of opening a socket nobody owns.
+
 ## [0.2.0] - 2026-09-20
 
 ### Changed

@@ -16,6 +16,16 @@ are derived from release tags at publish time.
 - `IInboxStore.ReleaseAsync(string, CancellationToken)`, a default member that does nothing, and
   `InboxStore.FromClaim(tryRecord, release)`. `InMemoryInboxStore` implements the release. A
   release the store cannot complete is logged as `InboxReleaseFailed` (3312).
+- `InMemoryOutboxStore.PublishedCapacity` (1,000 by default; zero keeps none) bounds the
+  published messages the in-memory store keeps; it used to keep every frame for the life of the
+  process.
+- The `hostloom.message.kind` tag (`request` or `event`) on `hostloom.request.duration`,
+  `.active`, `.faults`, and `.retries`, and the `HandlerNotRun` fault type.
+- Log events `OutboxMarkPublishedFailed` (3305), `InMemoryHandlersAbandoned` (1404), and
+  `WebSocketSessionFailed` (4112); the WebSocket close reason `internal_error`; and the logging
+  drop reason `format_failed`.
+- The `hostloom.rabbitmq.consumers` counter and log events `RabbitMqConsumerCancelled` (1411),
+  `RabbitMqConsumerRestored` (1412), and `RabbitMqConsumerRestoreFailed` (1413).
 
 ### Changed
 
@@ -46,6 +56,34 @@ are derived from release tags at publish time.
   `KafkaOptions.ClientId`, and no longer auto-commits. Replicas configured with one client id
   used to share a reply group, so the response partitions were split between them and most of
   their requests timed out. Each process start also stops leaving a committed group behind.
+- A second `UseInbox` or `UseInMemoryInbox`, or a second `UseOutbox` or `UseInMemoryOutbox`, on
+  one service collection throws `InvalidOperationException`. A second inbox used to wrap the first
+  over the same store, so every delivery looked like a duplicate and no handler ran; a second
+  outbox was silently ignored.
+- Stopping the HostLoom endpoints waits no longer than the host's shutdown token; a stop the host
+  gave up on finishes in the background and logs any failure. Stopping an in-memory listener or
+  subscription, or disposing the transport, cancels its running handlers and waits up to five
+  seconds for them, then logs and abandons a handler that ignores cancellation.
+- A log formatter exception drops only the record being formatted, counted with reason
+  `format_failed`, and the writer keeps going; only sink failures fault the pipeline and set
+  `WriterFault`.
+- `[LogMasked]` and `Mask<T>` reveal `ShowFirst` and `ShowLast` characters only when at least as
+  many stay hidden, and otherwise write the mask text alone. A PIN under `ShowLast = 4` used to be
+  written in full; a 16-digit number under `ShowFirst = 6, ShowLast = 4` is now fully masked too.
+- A RabbitMQ listener answers clients that use direct reply-to, whose `ReplyTo` the broker
+  rewrites to `amq.rabbitmq.reply-to.<token>`; they used to be rejected as malformed although the
+  documentation said they were answered. The bare pseudo-queue name, which a listener never
+  receives from a real client, is now rejected.
+- Stopping a RabbitMQ listener or subscription waits for the handlers still running but no longer
+  for the broker to confirm the channel close: the channel closes in the background, a delivery
+  that arrives meanwhile is requeued without running its handler, and transport disposal waits at
+  most five seconds for channels still closing. Against a stalled broker each close could hold
+  host shutdown for the client's twenty-second continuation timeout, one channel after another.
+- A RabbitMQ consumer the broker cancels, for example because its queue was deleted, is detected
+  and logged, and its listener or subscription declares its queue again and resubscribes on a new
+  channel, retrying with a doubling wait up to thirty seconds. It used to stop consuming silently.
+  A cancelled reply consumer is replaced by the next request. A queue deleted on purpose while the
+  service runs is therefore re-created; stop the service before removing its queues.
 
 ### Fixed
 
@@ -60,7 +98,6 @@ are derived from release tags at publish time.
 - An exception whose `Message` getter throws no longer faults the log writer and silences every
   later record. `JsonLogFormatter` writes `[MessageUnavailable]` for it, and caps `error.message`
   at its `maxExceptionLength` like the stack trace.
-
 - The WebSocket gateway completes the close handshake for every close it starts. Session
   expiry, `IWebSocketSessionControl` disconnects, rate limiting, protocol violations, and host
   shutdown used to cancel the pending receive, which aborts the runtime's socket, so clients saw
@@ -72,7 +109,6 @@ are derived from release tags at publish time.
   drains its connections, instead of after it; a `WebApplication` with connected clients no longer
   waits out `HostOptions.ShutdownTimeout` on every stop. A session accepted after shutdown began is
   closed without a welcome.
-
 - A Redis invalidation channel whose subscription fails no longer leaves a StackExchange.Redis
   queue attached for every failed attempt. Each attempt's queue stayed subscribed without a
   reader, so after Redis recovered every invalidation was buffered in each of them for the life of
@@ -81,6 +117,25 @@ are derived from release tags at publish time.
   other subscriptions on a shared multiplexer in place, and a broadcast retry subscribes only the
   keyspace patterns still missing. Messages are applied by one reader, and a message that fails to
   apply is logged as `RedisInvalidationMessageFailed` (1320) instead of ending delivery.
+- A failed `MarkPublishedAsync` after a successful publish no longer counts an attempt, backs
+  off, republishes, and finally dead-letters a delivered message. It is logged (3305) and the
+  claim lease expires, so the next claim publishes the message again.
+- A receive filter that completes a request without running its handler answers with a
+  `HandlerNotRun` fault instead of an empty success that the client reported as
+  `MalformedEnvelopeException`.
+- A failed event handler is counted in `hostloom.request.faults`.
+- Destructured dictionary keys are capped at `MaxStringLength`, and `MaxEncodedBytesPerRecord` is
+  enforced after every element: the element that would exceed it is replaced by the truncation
+  marker. A 1 MB key used to produce a field over 1 MB.
+- The WebSocket gateway endpoint accepts the HTTP/2 extended `CONNECT` handshake as well as the
+  HTTP/1.1 `GET` upgrade; a browser reusing an HTTP/2 connection used to get 405.
+- A Protocol Buffers frame with a negative or implausible length, or with groups nested past
+  protobuf-net's limit, closes the WebSocket session with 1007, and any other unexpected failure
+  while decoding or handling a frame closes it with 1011 `internal_error`. Both used to end as a
+  normal closure, with an error logged on every attempt.
+- Disposing the Kafka transport ends a publication still waiting for its delivery report with
+  `ObjectDisposedException` instead of possibly waiting forever. As with any transport failure,
+  the event may still have been delivered.
 
 ### Security
 
