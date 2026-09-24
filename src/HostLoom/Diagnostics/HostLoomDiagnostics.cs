@@ -10,6 +10,16 @@ public static class HostLoomDiagnostics
     /// <summary>Meter name to enable when configuring OpenTelemetry.</summary>
     public const string MeterName = "HostLoom";
 
+    /// <summary>
+    /// Tag on the <c>hostloom.request.*</c> instruments naming what was received, because
+    /// requests and event deliveries share them: <see cref="RequestKind"/> or <see cref="EventKind"/>.
+    /// </summary>
+    internal const string MessageKindTag = "hostloom.message.kind";
+
+    internal const string RequestKind = "request";
+
+    internal const string EventKind = "event";
+
     internal static readonly ActivitySource ActivitySource = new(ActivitySourceName);
 
     private static readonly Meter Meter = new(MeterName);
@@ -17,19 +27,19 @@ public static class HostLoomDiagnostics
     internal static readonly Histogram<double> RequestDuration = Meter.CreateHistogram<double>(
         "hostloom.request.duration",
         "s",
-        "Time spent handling one inbound request, including any receive-pipeline retries."
+        "Time spent handling one inbound request or event delivery, including any receive-pipeline retries."
     );
 
     internal static readonly UpDownCounter<long> ActiveRequests = Meter.CreateUpDownCounter<long>(
         "hostloom.request.active",
         "{request}",
-        "Inbound requests currently being handled."
+        "Inbound requests and event deliveries currently being handled."
     );
 
     internal static readonly Counter<long> Faults = Meter.CreateCounter<long>(
         "hostloom.request.faults",
         "{fault}",
-        "Inbound requests answered with a fault envelope instead of a response."
+        "Inbound requests answered with a fault envelope instead of a response, and event deliveries whose handlers failed."
     );
 
     internal static readonly Counter<long> Retries = Meter.CreateCounter<long>(

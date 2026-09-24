@@ -37,13 +37,16 @@ not yet propagate W3C trace context to a consumer process.
 
 ## Messaging instruments (`HostLoom`)
 
-Tagged by destination and message type.
+The `hostloom.request.*` instruments are tagged `messaging.destination.name`
+(the endpoint or topic) and `messaging.message.type`. Inbound requests and
+event deliveries share them, so each measurement also carries
+`hostloom.message.kind`: `request` or `event`.
 
 | Instrument | Type | Meaning |
 | --- | --- | --- |
-| `hostloom.request.duration` | histogram (s) | Request handling duration |
-| `hostloom.request.active` | up-down counter | In-flight requests |
-| `hostloom.request.faults` | counter | Failed requests |
+| `hostloom.request.duration` | histogram (s) | Handling duration of a request or an event delivery, receive-pipeline retries included |
+| `hostloom.request.active` | up-down counter | Requests and event deliveries in flight |
+| `hostloom.request.faults` | counter | Requests answered with a fault envelope, framework faults such as `HandlerNotFound` and `HandlerNotRun` included, and event deliveries whose handlers failed; a delivery cancelled because its listener stopped is not a fault |
 | `hostloom.request.retries` | counter | Receive-pipeline retry attempts |
 | `hostloom.outbox.published` | counter | Outbox messages the relay published and marked, tagged `messaging.destination.name` |
 | `hostloom.outbox.failed` | counter | Outbox publish attempts that failed and left the message pending; a publish the store failed to mark is not counted |

@@ -188,6 +188,46 @@ public sealed class DiagnosticsTests
     }
 
     [Fact]
+    public async Task A_failed_event_is_counted_as_a_fault_and_every_measurement_names_its_kind()
+    {
+        const string endpoint = "metrics-kind-request";
+        const string topic = "metrics-kind-event";
+        using var requests = new MetricRecorder(endpoint);
+        using var events = new MetricRecorder(topic);
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(new Attempts());
+        builder
+            .Services.AddHostLoom()
+            .UseInMemory()
+            .AddHandler<Ping, Pong, PingHandler>(endpoint)
+            .AddSubscriber<Pinged, FailingSubscriber>(topic, subscription: "audit");
+        using var host = builder.Build();
+        await host.StartAsync(TestContext.Current.CancellationToken);
+
+        await ClientOf(host)
+            .GetResponseAsync(
+                endpoint,
+                new Ping(),
+                cancellationToken: TestContext.Current.CancellationToken
+            );
+        // The in-memory transport logs a subscriber's failure instead of failing the publisher,
+        // and it awaits the delivery, so the measurements are in once this returns.
+        await host
+            .Services.GetRequiredService<IPublishEndpoint>()
+            .PublishAsync(topic, new Pinged(), TestContext.Current.CancellationToken);
+
+        Assert.Equal([1], events.Values("hostloom.request.faults"));
+        Assert.Single(events.Values("hostloom.request.duration"));
+        Assert.Equal([1, -1], events.Values("hostloom.request.active"));
+        Assert.Empty(requests.Values("hostloom.request.faults"));
+        Assert.Single(requests.Values("hostloom.request.duration"));
+        // Both kinds share the instruments, so every measurement says which one it is.
+        Assert.Equal(["event", "event", "event", "event"], events.Kinds());
+        Assert.Equal(["request", "request", "request"], requests.Kinds());
+        await host.StopAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Receive_pipeline_retries_are_counted()
     {
         const string endpoint = "metrics-retry";
@@ -268,6 +308,12 @@ public sealed class DiagnosticsTests
             ValueTask.CompletedTask;
     }
 
+    public sealed class FailingSubscriber : IEventHandler<Pinged>
+    {
+        public ValueTask HandleAsync(Pinged @event, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("subscriber failed");
+    }
+
     public sealed record Pong(string Value);
 
     public sealed class Attempts
@@ -295,7 +341,7 @@ public sealed class DiagnosticsTests
     {
         private readonly string _endpoint;
         private readonly MeterListener _listener = new();
-        private readonly List<(string Name, double Value)> _measurements = [];
+        private readonly List<(string Name, double Value, string? Kind)> _measurements = [];
         private readonly Lock _gate = new();
 
         public MetricRecorder(string endpoint)
@@ -328,6 +374,15 @@ public sealed class DiagnosticsTests
             }
         }
 
+        /// <summary>The message kind tag of every measurement, in the order they were recorded.</summary>
+        public List<string?> Kinds()
+        {
+            lock (_gate)
+            {
+                return _measurements.Select(m => m.Kind).ToList();
+            }
+        }
+
         public void Dispose() => _listener.Dispose();
 
         private void Record(
@@ -336,16 +391,25 @@ public sealed class DiagnosticsTests
             ReadOnlySpan<KeyValuePair<string, object?>> tags
         )
         {
+            var matched = false;
+            string? kind = null;
             foreach (var tag in tags)
             {
                 if (tag.Key == "messaging.destination.name" && (tag.Value as string) == _endpoint)
                 {
-                    lock (_gate)
-                    {
-                        _measurements.Add((instrument.Name, value));
-                    }
+                    matched = true;
+                }
+                else if (tag.Key == "hostloom.message.kind")
+                {
+                    kind = tag.Value as string;
+                }
+            }
 
-                    return;
+            if (matched)
+            {
+                lock (_gate)
+                {
+                    _measurements.Add((instrument.Name, value, kind));
                 }
             }
         }

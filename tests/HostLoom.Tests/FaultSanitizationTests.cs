@@ -152,7 +152,11 @@ public sealed class FaultSanitizationTests
         ) => ValueTask.FromResult(new Greeting($"Hello, {request.Name}!"));
     }
 
-    /// <summary>Collects the <c>messaging.message.type</c> tag of every fault counted on "orders".</summary>
+    /// <summary>
+    /// Collects the <c>messaging.message.type</c> tag of every request fault counted on "orders".
+    /// Other test classes fail events on an "orders" topic in parallel, and the meter is
+    /// process-wide, so the kind tag keeps their faults out.
+    /// </summary>
     private sealed class FaultTagRecorder : IDisposable
     {
         private readonly MeterListener _listener = new();
@@ -176,6 +180,7 @@ public sealed class FaultSanitizationTests
                 {
                     string? destination = null;
                     string? type = null;
+                    string? kind = null;
                     foreach (var tag in tags)
                     {
                         switch (tag.Key)
@@ -186,10 +191,13 @@ public sealed class FaultSanitizationTests
                             case "messaging.message.type":
                                 type = tag.Value as string;
                                 break;
+                            case "hostloom.message.kind":
+                                kind = tag.Value as string;
+                                break;
                         }
                     }
 
-                    if (destination == "orders" && type is not null)
+                    if (destination == "orders" && kind == "request" && type is not null)
                     {
                         lock (_gate)
                         {

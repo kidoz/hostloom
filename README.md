@@ -455,9 +455,9 @@ endpoints are not listening or the transport says the broker is unreachable.
 A transport reports reachability by implementing `IBrokerHealthProbe`. One that does not
 is treated as reachable, because "cannot tell" must not read as "broken".
 
-Metrics are published on a `Meter` named `HostLoom`, tagged by destination and message
-type: `hostloom.request.duration`, `hostloom.request.active`, `hostloom.request.faults`,
-and `hostloom.request.retries`.
+Metrics are published on a `Meter` named `HostLoom`, tagged by destination, message
+type, and `hostloom.message.kind` (`request` or `event`): `hostloom.request.duration`,
+`hostloom.request.active`, `hostloom.request.faults`, and `hostloom.request.retries`.
 
 `HostLoomProbe` returns the receive pipeline's structure without executing it, which suits
 a debug endpoint:

@@ -78,6 +78,7 @@ internal sealed class MessageDispatcher
             {
                 { "messaging.destination.name", endpoint.Value },
                 { "messaging.message.type", UnknownMessageTypeTag },
+                { HostLoomDiagnostics.MessageKindTag, HostLoomDiagnostics.RequestKind },
             };
             _logger.LogWarning(
                 "No handler is registered for '{MessageType}' on endpoint '{Endpoint}'.",
@@ -98,6 +99,7 @@ internal sealed class MessageDispatcher
         {
             { "messaging.destination.name", endpoint.Value },
             { "messaging.message.type", request.MessageType },
+            { HostLoomDiagnostics.MessageKindTag, HostLoomDiagnostics.RequestKind },
         };
 
         var registeredResponseType = MessageTypeName.For(registration.ResponseType);

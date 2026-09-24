@@ -40,8 +40,9 @@ parameters of `AddHealthChecks` if you need different ones.
 ## 2. Subscribe to the metrics
 
 Metrics are published on a `Meter` named `HostLoom`, tagged by
-destination and message type — `hostloom.request.duration`, `.active`,
-`.faults`, and `.retries` (full list in the
+destination, message type, and `hostloom.message.kind` (`request` or
+`event`) — `hostloom.request.duration`, `.active`, `.faults`, and
+`.retries` (full list in the
 [observability reference](../reference/observability.md)):
 
 ```csharp

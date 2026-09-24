@@ -51,6 +51,7 @@ internal sealed class EventDispatcher(
         {
             { "messaging.destination.name", topic.Value },
             { "messaging.message.type", envelope.MessageType },
+            { HostLoomDiagnostics.MessageKindTag, HostLoomDiagnostics.EventKind },
         };
 
         var message =
@@ -80,9 +81,15 @@ internal sealed class EventDispatcher(
                 HostLoomDiagnostics.Retries.Add(attempt.Number, tags);
             }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The listener is stopping; like a cancelled request, that is not a fault.
+            throw;
+        }
         catch (Exception exception)
         {
             activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
+            HostLoomDiagnostics.Faults.Add(1, tags);
 
             // No fault envelope exists for an event: there is nobody to answer. The failure goes
             // back to the transport, which decides whether to redeliver or dead-letter.
