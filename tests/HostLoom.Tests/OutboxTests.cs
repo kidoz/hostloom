@@ -276,6 +276,55 @@ public sealed class OutboxTests
                 : builder.UseOutbox<ScopedStore>(options => options.BatchSize = 5);
     }
 
+    [Fact]
+    public async Task The_in_memory_store_keeps_only_the_most_recent_published_messages()
+    {
+        var clock = new TestClock();
+        var bounded = new InMemoryOutboxStore(clock) { PublishedCapacity = 2 };
+        var none = new InMemoryOutboxStore(clock) { PublishedCapacity = 0 };
+        var unbounded = new InMemoryOutboxStore(clock);
+        List<Guid> ids = [];
+        for (var i = 0; i < 3; i++)
+        {
+            var message = Message("orders", clock, payload: (byte)i);
+            ids.Add(message.MessageId);
+            foreach (var store in new[] { bounded, none })
+            {
+                await store.AppendAsync(message, TestContext.Current.CancellationToken);
+                await store.MarkPublishedAsync(
+                    message.MessageId,
+                    TestContext.Current.CancellationToken
+                );
+            }
+        }
+
+        // The oldest published message is forgotten first; a published message is never claimed
+        // again, so forgetting it changes nothing the relay depends on.
+        Assert.Equal(ids[1..], bounded.Published.Select(m => m.MessageId));
+        Assert.Empty(none.Published);
+        Assert.Empty(bounded.Pending);
+        Assert.Empty(none.Pending);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new InMemoryOutboxStore { PublishedCapacity = -1 }
+        );
+
+        // The default is bounded too, so a long-running single-process deployment does not keep
+        // every frame it ever relayed.
+        var capacity = unbounded.PublishedCapacity;
+        Assert.InRange(capacity, 1, 100_000);
+        for (var i = 0; i <= capacity; i++)
+        {
+            var message = Message("orders", clock);
+            await unbounded.AppendAsync(message, TestContext.Current.CancellationToken);
+            await unbounded.MarkPublishedAsync(
+                message.MessageId,
+                TestContext.Current.CancellationToken
+            );
+        }
+
+        Assert.Equal(capacity, unbounded.Published.Count);
+    }
+
     private static OutboxMessage Message(string topic, TimeProvider clock, byte payload = 0) =>
         new()
         {

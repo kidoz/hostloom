@@ -5,15 +5,34 @@ namespace HostLoom;
 /// <see cref="TimeProvider"/>, so tests and single-process deployments exercise the relay's state
 /// machine without a database. It joins no transaction: an append is stored at once, whether or
 /// not the caller's own write later commits, which is the guarantee a database-backed store adds.
+/// It keeps only the most recent <see cref="PublishedCapacity"/> published messages, so a
+/// long-running process does not hold every frame it ever relayed.
 /// </summary>
 public sealed class InMemoryOutboxStore(TimeProvider? timeProvider = null) : IOutboxStore
 {
     private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
     private readonly Lock _gate = new();
     private readonly Dictionary<Guid, Entry> _entries = [];
-    private readonly List<OutboxMessage> _published = [];
+    private readonly Queue<OutboxMessage> _published = new();
     private readonly List<OutboxMessage> _deadLettered = [];
     private long _sequence;
+
+    /// <summary>
+    /// How many published messages <see cref="Published"/> keeps: marking one more forgets the
+    /// oldest. A published message is never claimed again, so forgetting it changes nothing the
+    /// relay depends on. Defaults to 1,000; zero keeps none. To change it for
+    /// <c>UseInMemoryOutbox</c>, register a configured store as a singleton before calling it.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The value is negative.</exception>
+    public int PublishedCapacity
+    {
+        get;
+        init
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            field = value;
+        }
+    } = 1_000;
 
     /// <summary>Messages appended and neither published nor dead-lettered, oldest first, including those waiting out a backoff.</summary>
     public IReadOnlyList<OutboxMessage> Pending
@@ -32,7 +51,10 @@ public sealed class InMemoryOutboxStore(TimeProvider? timeProvider = null) : IOu
         }
     }
 
-    /// <summary>Messages marked published, in the order they were marked.</summary>
+    /// <summary>
+    /// The most recent <see cref="PublishedCapacity"/> messages marked published, in the order
+    /// they were marked.
+    /// </summary>
     public IReadOnlyList<OutboxMessage> Published
     {
         get
@@ -122,9 +144,14 @@ public sealed class InMemoryOutboxStore(TimeProvider? timeProvider = null) : IOu
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
-            if (_entries.Remove(messageId, out var entry))
+            if (_entries.Remove(messageId, out var entry) && PublishedCapacity > 0)
             {
-                _published.Add(entry.Message);
+                if (_published.Count == PublishedCapacity)
+                {
+                    _published.Dequeue();
+                }
+
+                _published.Enqueue(entry.Message);
             }
         }
 
