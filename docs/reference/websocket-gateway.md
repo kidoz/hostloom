@@ -219,6 +219,11 @@ within `CloseTimeout`, the connection is aborted, logged as `WebSocketCloseTimed
 with close reason `aborted`. An administrative disconnect therefore finishes once the client
 answers or the timeout elapses.
 
+A frame that cannot be decoded closes the session with 1007. An unexpected exception while decoding
+or handling a frame closes it with 1011 `internal_error` through the same handshake, logged as
+`WebSocketSessionFailed` and recorded with close reason `internal_error`, rather than as a normal
+closure.
+
 When the host begins stopping, the gateway sends 1001 `server_shutdown` to every session before any
 hosted service stops. A `WebApplication` registers its web server last, so the server stops first
 and waits for upgraded requests; closing earlier lets the sessions end during that wait instead of
@@ -344,10 +349,10 @@ the framework's authorization metrics for that path.
 
 ## Structured logs
 
-`WebSocketEvents` publishes stable event ids `4100`–`4111` for session open and close,
+`WebSocketEvents` publishes stable event ids `4100`–`4112` for session open and close,
 subscription denial, slow-client abort, handshake rejection, operation failure, snapshot failure,
-snapshot stall, authorization failure, expiry-timer failure, oversized responses, and close
-handshakes the peer did not answer in time. Session close logs use the same normalized reason
+snapshot stall, authorization failure, expiry-timer failure, oversized responses, close
+handshakes the peer did not answer in time, and unexpected session failures. Session close logs use the same normalized reason
 vocabulary as the duration metric.
 
 Lifecycle entries carry a session id, protocol, optional configured subject, and bounded reason;

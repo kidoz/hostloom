@@ -207,21 +207,17 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                     continue;
                 }
 
-                HubFrame frame;
                 try
                 {
-                    frame = _protocol.Decode(inbound.Payload.Span);
+                    await ProcessAsync(inbound.Payload).ConfigureAwait(false);
                 }
-                catch (InvalidDataException)
+                catch (Exception exception) when (IsUnexpected(exception, cancellationToken))
                 {
-                    RequestDisconnect(
-                        WebSocketCloseStatus.InvalidPayloadData,
-                        "The application frame could not be decoded."
-                    );
-                    continue;
+                    // A defect in a codec or in frame handling ends the session through the close
+                    // handshake like any other close started here, so the loop keeps reading
+                    // until the peer answers.
+                    Fail(exception);
                 }
-
-                await HandleAsync(frame).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
@@ -235,6 +231,13 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         catch (WebSocketException)
         {
             Abort();
+        }
+        catch (Exception exception)
+        {
+            // Last resort for a failure outside frame processing. The writer still sends the
+            // close frame below, so the peer sees 1011 instead of a normal closure, and the
+            // exception does not reach the server as an unhandled request failure.
+            Fail(exception);
         }
         finally
         {
@@ -462,6 +465,44 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             _configuration.Options.CloseTimeout.TotalMilliseconds
         );
         Abort();
+    }
+
+    private async ValueTask ProcessAsync(ReadOnlyMemory<byte> payload)
+    {
+        HubFrame frame;
+        try
+        {
+            frame = _protocol.Decode(payload.Span);
+        }
+        catch (InvalidDataException)
+        {
+            RequestDisconnect(
+                WebSocketCloseStatus.InvalidPayloadData,
+                "The application frame could not be decoded."
+            );
+            return;
+        }
+
+        await HandleAsync(frame).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// False for the failures the receive loop already handles: the host's cancellation, the
+    /// aftermath of an abort, and transport errors.
+    /// </summary>
+    private bool IsUnexpected(Exception exception, CancellationToken cancellationToken) =>
+        exception switch
+        {
+            OperationCanceledException when cancellationToken.IsCancellationRequested => false,
+            OperationCanceledException or ObjectDisposedException when IsAborted => false,
+            WebSocketException => false,
+            _ => true,
+        };
+
+    private void Fail(Exception exception)
+    {
+        WebSocketLog.SessionFailed(_logger, Id, exception);
+        RequestDisconnect(WebSocketCloseStatus.InternalServerError, "internal_error");
     }
 
     private async ValueTask HandleAsync(HubFrame frame)
@@ -1254,6 +1295,7 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             or "The fragmented message was invalid." => "invalid_payload",
             "Peer closed the session." => "peer_closed",
             "Session completed." => "completed",
+            _ when close.Status is WebSocketCloseStatus.InternalServerError => "internal_error",
             _ when close.Status is WebSocketCloseStatus.PolicyViolation => "policy_violation",
             _ when close.Status is WebSocketCloseStatus.EndpointUnavailable =>
                 "endpoint_unavailable",

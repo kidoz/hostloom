@@ -242,7 +242,10 @@ violation, or shutdown) uses the WebSocket close handshake: request and snapshot
 writer sends the frames already queued followed by the close frame, and the session keeps reading
 until the peer's close frame arrives, discarding frames the client sent before it read the close.
 The pending receive is never cancelled to stop a session, because the runtime's socket aborts when
-it is and the client would see 1006 instead of the status. A peer that does not answer within
+it is and the client would see 1006 instead of the status. A frame that cannot be decoded closes
+with 1007. An unexpected exception while decoding or handling a frame closes with 1011
+`internal_error` through the same handshake and logs `WebSocketSessionFailed`, rather than ending
+the session as a normal closure. A peer that does not answer within
 `CloseTimeout` (5 seconds by default) is aborted and logged as `WebSocketCloseTimedOut`, so
 `DisconnectAsync` and `DisconnectSubjectAsync` return once the client answers or that timeout
 elapses.
@@ -350,7 +353,7 @@ never reused within a session.
 | server → client | `pong` | `streamId` | Echoes the ping `streamId`. |
 
 For JSON, enum names are camelCase (for example `"request"`). Malformed frames close the
-connection. A decodable frame kind that is not valid from a client returns an `invalid_frame`
+connection with 1007. A decodable frame kind that is not valid from a client returns an `invalid_frame`
 fault. Route errors are returned as `fault` frames with codes from `HubFaultCodes`:
 `invalid_frame`, `invalid_payload`, `operation_not_found`, `topic_not_found`, `forbidden`,
 `request_timeout`, `request_failed`, `canceled`, `duplicate_stream`, `capacity_exceeded`,
@@ -507,8 +510,8 @@ Drop reasons are bounded to `no_credit`, `message_too_large`, `queue_capacity`,
 `queue_unavailable`, and `subscription_stopped`. Handshake reasons are `unauthenticated`,
 `not_websocket`, `origin`, and `subprotocol`. Close reasons are normalized to `aborted`,
 `session_expired`, `server_shutdown`, `rate_limited`, `message_too_large`,
-`invalid_message_type`, `invalid_payload`, `peer_closed`, `completed`, `policy_violation`,
-`endpoint_unavailable`, or `other`; an application-supplied administrative close description is
+`invalid_message_type`, `invalid_payload`, `peer_closed`, `completed`, `internal_error`,
+`policy_violation`, `endpoint_unavailable`, or `other`; an application-supplied administrative close description is
 never used as a tag.
 
 Tags contain only negotiated protocol, registered public topic, and library-controlled reason or
@@ -536,6 +539,7 @@ use cached `LoggerMessage` delegates.
 | `4109` / `WebSocketSessionExpiryFailed` | Error | `SessionId`, exception |
 | `4110` / `WebSocketResponseTooLarge` | Warning | `SessionId`, `Operation`, `EncodedBytes`, `MaximumMessageSize` |
 | `4111` / `WebSocketCloseTimedOut` | Warning | `SessionId`, `TimeoutMilliseconds` |
+| `4112` / `WebSocketSessionFailed` | Error | `SessionId`, exception |
 
 Session close reasons use the same normalized vocabulary as
 `hostloom.websocket.session.duration`. Subscription-denial reasons are `topic_not_found`,
@@ -545,7 +549,8 @@ Only a registered topic is logged; an unknown client-supplied topic is represent
 payloads, credentials, handshake headers, caller-supplied close text, and remote fault messages are
 never added as structured properties. `Subject` is the configured subject claim and should remain
 a non-secret identifier. Exceptions on operation and snapshot-provider failures originate from
-application code and remain subject to the application's exception-message policy.
+application code and remain subject to the application's exception-message policy, as does an
+unexpected session failure raised by a custom codec.
 
 Codec throughput and allocations can be measured with the repository's BenchmarkDotNet project:
 

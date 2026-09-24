@@ -279,6 +279,115 @@ public sealed partial class WebSocketGatewayTests
         );
     }
 
+    [Theory]
+    [InlineData(MalformedProtobuf.NegativeLengthOfAnUnknownField)]
+    [InlineData(MalformedProtobuf.NegativeLengthOfAKnownField)]
+    [InlineData(MalformedProtobuf.ImplausibleLengthOfAKnownField)]
+    [InlineData(MalformedProtobuf.GroupsNestedBeyondTheDepthLimit)]
+    public async Task Malformed_protobuf_frame_closes_a_real_client_with_invalid_payload(
+        MalformedProtobuf shape
+    )
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var logs = new WebSocketLogRecorder();
+        await using var provider = BuildClockedGateway(new TestClock(), logs: logs);
+        await using var connection = await LoopbackSession.StartAsync(
+            provider,
+            new ClaimsPrincipal(),
+            new ProtobufWebSocketHubProtocol(),
+            cancellationToken
+        );
+
+        await connection
+            .Client.SendAsync(
+                MalformedProtobufFrame(shape).AsMemory(),
+                WebSocketMessageType.Binary,
+                true,
+                cancellationToken
+            )
+            .AsTask()
+            .WaitAsync(RealSocketBound, cancellationToken);
+
+        var close = await ReceiveCloseAsync(connection.Client, cancellationToken);
+        Assert.Equal(WebSocketCloseStatus.InvalidPayloadData, close.Status);
+        Assert.Equal(
+            WebSocketState.Closed,
+            await AnswerCloseAsync(connection, close, cancellationToken)
+        );
+        Assert.DoesNotContain(logs.Entries, entry => entry.Level >= LogLevel.Error);
+        var closed = Assert.Single(
+            logs.Entries,
+            entry => entry.Event == WebSocketEvents.SessionClosed
+        );
+        Assert.Equal("invalid_payload", closed.Property("CloseReason"));
+    }
+
+    [Fact]
+    public async Task Unexpected_failure_closes_a_real_client_with_internal_error()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var logs = new WebSocketLogRecorder();
+        await using var provider = BuildClockedGateway(new TestClock(), logs: logs);
+        await using var connection = await LoopbackSession.StartAsync(
+            provider,
+            new ClaimsPrincipal(),
+            new PingFailingProtocol(),
+            cancellationToken
+        );
+
+        await SendRealFrameAsync(
+            connection,
+            new HubFrame { Kind = HubFrameKind.Ping, StreamId = Stream(1) },
+            cancellationToken
+        );
+
+        var close = await ReceiveCloseAsync(connection.Client, cancellationToken);
+        Assert.Equal(WebSocketCloseStatus.InternalServerError, close.Status);
+        Assert.Equal("internal_error", close.Description);
+
+        // The session answers through the close handshake and ends normally; the exception must
+        // not escape to the server as an unhandled request failure.
+        Assert.Equal(
+            WebSocketState.Closed,
+            await AnswerCloseAsync(connection, close, cancellationToken)
+        );
+        Assert.True(connection.Run.IsCompletedSuccessfully);
+        var failed = Assert.Single(
+            logs.Entries,
+            entry => entry.Event == WebSocketEvents.SessionFailed
+        );
+        Assert.Equal(LogLevel.Error, failed.Level);
+        Assert.Equal(connection.Session.Id, failed.Property("SessionId"));
+        var closed = Assert.Single(
+            logs.Entries,
+            entry => entry.Event == WebSocketEvents.SessionClosed
+        );
+        Assert.Equal("internal_error", closed.Property("CloseReason"));
+        Assert.Equal(WebSocketCloseStatus.InternalServerError, closed.Property("CloseStatus"));
+    }
+
+    [Fact]
+    public async Task Unexpected_receive_failure_still_closes_with_internal_error()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var logs = new WebSocketLogRecorder();
+        await using var provider = BuildClockedGateway(new TestClock(), logs: logs);
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, new JsonWebSocketHubProtocol(), new ClaimsPrincipal());
+
+        // A failure outside frame processing leaves no receive loop to finish the handshake, so
+        // the close frame is the last thing the session can still give the peer.
+        socket.EnqueueReceiveFailure(new InvalidOperationException("The transport has a defect."));
+        await session.RunAsync(cancellationToken).WaitAsync(RealSocketBound, cancellationToken);
+
+        Assert.Equal(WebSocketCloseStatus.InternalServerError, socket.CloseStatus);
+        Assert.Equal("internal_error", socket.CloseStatusDescription);
+        Assert.Single(logs.Entries, entry => entry.Event == WebSocketEvents.SessionFailed);
+        Assert.Equal(0, provider.GetRequiredService<IWebSocketSessionDirectory>().Count);
+    }
+
     [Fact]
     public async Task Unanswered_close_is_aborted_when_the_close_timeout_elapses()
     {
@@ -423,7 +532,7 @@ public sealed partial class WebSocketGatewayTests
 
     private static async Task<HubFrame> ReceiveRealFrameAsync(
         WebSocket socket,
-        JsonWebSocketHubProtocol protocol,
+        IWebSocketHubProtocol protocol,
         CancellationToken cancellationToken
     )
     {
@@ -466,6 +575,68 @@ public sealed partial class WebSocketGatewayTests
         }
     }
 
+    public enum MalformedProtobuf
+    {
+        NegativeLengthOfAnUnknownField,
+        NegativeLengthOfAKnownField,
+        ImplausibleLengthOfAKnownField,
+        GroupsNestedBeyondTheDepthLimit,
+    }
+
+    /// <summary>
+    /// Frames protobuf-net rejects with <see cref="InvalidOperationException"/> rather than a
+    /// <c>ProtoException</c>. Field 20 is not part of the frame contract, so the reader skips it;
+    /// field 4 is <c>operation</c> and field 13 is <c>payload</c>.
+    /// </summary>
+    private static byte[] MalformedProtobufFrame(MalformedProtobuf shape) =>
+        shape switch
+        {
+            // Field 20, length-delimited, with -1 as a ten-byte varint.
+            MalformedProtobuf.NegativeLengthOfAnUnknownField => Convert.FromHexString(
+                "A201" + "FFFFFFFFFFFFFFFFFF01"
+            ),
+
+            // Field 4, length-delimited, with -1 as a five-byte varint.
+            MalformedProtobuf.NegativeLengthOfAKnownField => Convert.FromHexString(
+                "22" + "FFFFFFFF0F"
+            ),
+
+            // Field 13 claims int.MaxValue bytes and supplies none.
+            MalformedProtobuf.ImplausibleLengthOfAKnownField => Convert.FromHexString(
+                "6A" + "FFFFFFFF07"
+            ),
+
+            // 600 start-group tags for field 20, past protobuf-net's nesting limit of 512.
+            MalformedProtobuf.GroupsNestedBeyondTheDepthLimit => Convert.FromHexString(
+                string.Concat(Enumerable.Repeat("A301", 600))
+            ),
+            _ => throw new ArgumentOutOfRangeException(nameof(shape)),
+        };
+
+    /// <summary>
+    /// JSON with a decoder that fails on <c>ping</c> the way a defect would, with an exception
+    /// other than <see cref="InvalidDataException"/>. Server frames still decode, so the test
+    /// client can read the welcome.
+    /// </summary>
+    private sealed class PingFailingProtocol : IWebSocketHubProtocol
+    {
+        private readonly JsonWebSocketHubProtocol _json = new();
+
+        public string SubProtocol => _json.SubProtocol;
+
+        public WebSocketMessageType MessageType => _json.MessageType;
+
+        public HubFrame Decode(ReadOnlySpan<byte> payload)
+        {
+            var frame = _json.Decode(payload);
+            return frame.Kind is HubFrameKind.Ping
+                ? throw new InvalidOperationException("The codec has a defect.")
+                : frame;
+        }
+
+        public byte[] Encode(HubFrame frame) => _json.Encode(frame);
+    }
+
     /// <summary>
     /// Answers the server's close frame as a compliant client does and returns the server socket's
     /// state when the session ended: <c>Closed</c> after a completed handshake, <c>Aborted</c>
@@ -500,7 +671,7 @@ public sealed partial class WebSocketGatewayTests
         private LoopbackSession(
             WebSocket server,
             WebSocket client,
-            JsonWebSocketHubProtocol protocol,
+            IWebSocketHubProtocol protocol,
             WebSocketSession session,
             Task run
         )
@@ -516,19 +687,25 @@ public sealed partial class WebSocketGatewayTests
 
         public WebSocket Client { get; }
 
-        public JsonWebSocketHubProtocol Protocol { get; }
+        public IWebSocketHubProtocol Protocol { get; }
 
         public WebSocketSession Session { get; }
 
         public Task Run { get; }
 
-        public static async Task<LoopbackSession> StartAsync(
+        public static Task<LoopbackSession> StartAsync(
             IServiceProvider services,
             ClaimsPrincipal user,
             CancellationToken cancellationToken
+        ) => StartAsync(services, user, new JsonWebSocketHubProtocol(), cancellationToken);
+
+        public static async Task<LoopbackSession> StartAsync(
+            IServiceProvider services,
+            ClaimsPrincipal user,
+            IWebSocketHubProtocol protocol,
+            CancellationToken cancellationToken
         )
         {
-            var protocol = new JsonWebSocketHubProtocol();
             using var listener = new TcpListener(IPAddress.Loopback, 0);
             listener.Start();
             var accepted = listener.AcceptSocketAsync(cancellationToken).AsTask();

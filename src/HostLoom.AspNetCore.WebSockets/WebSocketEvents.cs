@@ -57,4 +57,10 @@ public static class WebSocketEvents
     /// timeout and the session was aborted.
     /// </summary>
     public static readonly EventId CloseTimedOut = new(4111, "WebSocketCloseTimedOut");
+
+    /// <summary>
+    /// Error: an unexpected exception ended a session, which was closed with 1011
+    /// <c>internal_error</c> instead of letting the exception escape.
+    /// </summary>
+    public static readonly EventId SessionFailed = new(4112, "WebSocketSessionFailed");
 }

@@ -134,6 +134,13 @@ internal static class WebSocketLog
             "WebSocket session {SessionId} did not receive the peer's close frame within {TimeoutMilliseconds} ms and was aborted."
         );
 
+    private static readonly Action<ILogger, Guid, Exception?> SessionFailedMessage =
+        LoggerMessage.Define<Guid>(
+            LogLevel.Error,
+            WebSocketEvents.SessionFailed,
+            "WebSocket session {SessionId} failed unexpectedly and is closing with status 1011."
+        );
+
     public static void SessionOpened(
         ILogger logger,
         Guid sessionId,
@@ -230,4 +237,7 @@ internal static class WebSocketLog
 
     public static void CloseTimedOut(ILogger logger, Guid sessionId, double timeoutMilliseconds) =>
         CloseTimedOutMessage(logger, sessionId, timeoutMilliseconds, null);
+
+    public static void SessionFailed(ILogger logger, Guid sessionId, Exception exception) =>
+        SessionFailedMessage(logger, sessionId, exception);
 }

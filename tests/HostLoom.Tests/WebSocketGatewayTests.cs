@@ -503,6 +503,7 @@ public sealed partial class WebSocketGatewayTests
             WebSocketEvents.ResponseTooLarge
         );
         Assert.Equal(new EventId(4111, "WebSocketCloseTimedOut"), WebSocketEvents.CloseTimedOut);
+        Assert.Equal(new EventId(4112, "WebSocketSessionFailed"), WebSocketEvents.SessionFailed);
     }
 
     [Fact]
@@ -511,6 +512,23 @@ public sealed partial class WebSocketGatewayTests
         var protocol = new ProtobufWebSocketHubProtocol();
 
         _ = Assert.Throws<InvalidDataException>(() => protocol.Decode(new byte[] { 0x80 }));
+    }
+
+    [Theory]
+    [InlineData(MalformedProtobuf.NegativeLengthOfAnUnknownField)]
+    [InlineData(MalformedProtobuf.NegativeLengthOfAKnownField)]
+    [InlineData(MalformedProtobuf.ImplausibleLengthOfAKnownField)]
+    [InlineData(MalformedProtobuf.GroupsNestedBeyondTheDepthLimit)]
+    public void Protobuf_protocol_rejects_lengths_and_nesting_the_reader_cannot_follow(
+        MalformedProtobuf shape
+    )
+    {
+        var protocol = new ProtobufWebSocketHubProtocol();
+
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            protocol.Decode(MalformedProtobufFrame(shape))
+        );
+        Assert.IsType<InvalidOperationException>(exception.InnerException);
     }
 
     [Fact]
@@ -2946,6 +2964,10 @@ public sealed partial class WebSocketGatewayTests
                 new Inbound([], WebSocketMessageType.Close, WebSocketCloseStatus.NormalClosure)
             );
 
+        /// <summary>Fails the next receive with an exception the runtime's socket never throws.</summary>
+        public void EnqueueReceiveFailure(Exception exception) =>
+            _inbound.Writer.TryWrite(new Inbound([], WebSocketMessageType.Binary, null, exception));
+
         public void BlockSends() => Volatile.Write(ref _blockSends, 1);
 
         public Task WaitForBlockedSendAsync(CancellationToken cancellationToken) =>
@@ -3005,6 +3027,11 @@ public sealed partial class WebSocketGatewayTests
         )
         {
             var inbound = await _inbound.Reader.ReadAsync(cancellationToken);
+            if (inbound.Failure is { } failure)
+            {
+                throw failure;
+            }
+
             if (inbound.MessageType is WebSocketMessageType.Close)
             {
                 _state = _state switch
@@ -3045,7 +3072,8 @@ public sealed partial class WebSocketGatewayTests
         private readonly record struct Inbound(
             byte[] Payload,
             WebSocketMessageType MessageType,
-            WebSocketCloseStatus? CloseStatus
+            WebSocketCloseStatus? CloseStatus,
+            Exception? Failure = null
         );
     }
 

@@ -19,8 +19,17 @@ public sealed class ProtobufWebSocketHubProtocol : IWebSocketHubProtocol
             return ProtobufHubFrame.ToHubFrame(Serializer.Deserialize<ProtobufHubFrame>(payload));
         }
         catch (Exception exception)
-            when (exception is ProtoException or EndOfStreamException or OverflowException)
+            when (exception
+                    is ProtoException
+                        or EndOfStreamException
+                        or OverflowException
+                        or InvalidOperationException
+                        or ArgumentException
+            )
         {
+            // protobuf-net reports a negative or implausible length prefix, and groups nested
+            // beyond its depth limit, as InvalidOperationException rather than ProtoException.
+            // The model is fixed and valid, so every one of these describes the client's bytes.
             throw new InvalidDataException("The Protocol Buffers frame was invalid.", exception);
         }
     }
