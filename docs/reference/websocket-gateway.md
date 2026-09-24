@@ -108,9 +108,16 @@ The ingress contract is:
 | Input | Proxy responsibility |
 | --- | --- |
 | `Upgrade` and `Connection` | Support and preserve the HTTP/1.1 WebSocket upgrade. |
+| HTTP/2 extended `CONNECT` | Forward it to an HTTP/2 backend, or convert it to an HTTP/1.1 upgrade. |
 | `Sec-WebSocket-Protocol` | Preserve the offered HostLoom protocol so the endpoint can select it. |
 | Authentication and `Origin` headers | Preserve the values used by the application's authentication and origin policy. |
 | Public scheme and host | Set forwarding headers; configure trusted ASP.NET Core forwarded-header middleware before authentication and the gateway endpoint. |
+
+The endpoint is mapped for both `GET` and `CONNECT`. An HTTP/1.1 client upgrades with `GET`; over
+HTTP/2 a WebSocket opens with an extended `CONNECT` (RFC 8441) that keeps `CONNECT` as its method,
+which Kestrel accepts by default. Browsers that implement it use it when they already hold an
+HTTP/2 connection to the host. Both forms pass the same origin, authentication, and subprotocol
+checks.
 
 The gateway reads ASP.NET Core's effective `Request.Scheme` and `Request.Host`; it does not process
 forwarding headers itself. With the default 20-second keep-alive interval, set the proxy idle

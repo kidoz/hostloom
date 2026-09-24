@@ -70,6 +70,13 @@ For HTTP/1.1 WebSocket connections, the reverse proxy must support the upgrade a
 also preserve the application's selected authentication material and `Origin` when those values
 participate in authentication or origin validation.
 
+`MapHostLoomWebSocketHub` maps both `GET` and `CONNECT`. Over HTTP/2 a WebSocket opens with an
+extended `CONNECT` (RFC 8441) that keeps `CONNECT` as its request method, and Kestrel accepts it by
+default; a browser that implements it and already holds an HTTP/2 connection to the host opens
+its WebSocket that way. A proxy that terminates HTTP/2 must either forward the extended `CONNECT` to an HTTP/2
+backend or turn it into an HTTP/1.1 upgrade; the endpoint accepts both, with the same origin,
+authentication, and subprotocol checks.
+
 When TLS terminates at a proxy, have that proxy set the forwarded scheme and host and configure
 ASP.NET Core forwarded-header middleware to trust and apply those values before authentication and
 the gateway endpoint. The gateway evaluates ASP.NET Core's effective `Request.Scheme` and

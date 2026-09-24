@@ -8,6 +8,11 @@ namespace HostLoom.AspNetCore.WebSockets;
 
 public static class EndpointRouteBuilderExtensions
 {
+    // An HTTP/1.1 upgrade is a GET. Over HTTP/2 the WebSocket handshake is an extended CONNECT
+    // (RFC 8441), which Kestrel advertises by default and keeps as the request method, so a
+    // browser that already holds an HTTP/2 connection to the host would get 405 from a GET route.
+    private static readonly string[] UpgradeMethods = [HttpMethods.Get, HttpMethods.Connect];
+
     public static IEndpointConventionBuilder MapHostLoomWebSocketHub(
         this IEndpointRouteBuilder endpoints,
         string pattern = "/hostloom"
@@ -17,7 +22,7 @@ public static class EndpointRouteBuilderExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
 
         var configuration = endpoints.ServiceProvider.GetRequiredService<GatewayConfiguration>();
-        var route = endpoints.MapGet(pattern, HandleAsync);
+        var route = endpoints.MapMethods(pattern, UpgradeMethods, HandleAsync);
         return configuration.Options.RequireAuthenticatedUser
             ? route.RequireAuthorization()
             : route;
