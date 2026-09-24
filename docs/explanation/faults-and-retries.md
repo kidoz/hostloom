@@ -92,10 +92,13 @@ with a delivery this process could not handle is stated, not unified:
   cancelled — the listener is stopping, or the client library cancelled
   it — is nacked with requeue, because the process, not the message, is
   the reason it was not handled.
-- **Kafka** rewinds a transiently failed record and re-consumes it up to a
-  cap, then commits past it; a malformed record, or a request whose reply
-  could not be produced after the handler ran, is committed past at once
-  without re-running the handler. Exhaustion is logged, not dead-lettered.
+- **Kafka** rewinds a record whose handling failed and consumes it again
+  after a short backoff. An event is retried until it is handled or the
+  subscription stops, and holds up the rest of its partition meanwhile. A
+  request is retried until its fifth failed attempt, then logged and
+  committed past. A malformed record, or a request whose reply could not be
+  produced after the handler ran, is committed past at once without
+  re-running the handler. Nothing is dead-lettered.
 
 Plan poison-message handling around those statements and the broker's own
 configuration; this page states the boundary so that plan can be made

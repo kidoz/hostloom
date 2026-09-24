@@ -46,11 +46,12 @@ transport maps it onto its own fan-out primitive:
   Two behaviors differ from the networked brokers, both deliberate for a
   transport whose job is tests and local composition: cross-subscription
   delivery order is unspecified (subscriptions live in a concurrent map),
-  and `PublishAsync` attempts *every* subscription even when an earlier
-  one throws, then propagates the failures to the publisher as an
-  `AggregateException` — so a local run surfaces handler failures instead
-  of swallowing them. A networked broker decouples the publisher from its
-  subscribers entirely; a publish there never observes a handler failure.
+  and `PublishAsync` waits for *every* subscription's attempt, even when an
+  earlier one throws. A subscriber's failure is logged and the publication
+  still succeeds: failing it would make an outbox relay publish the event
+  again to every subscription, the healthy ones included. A networked broker
+  goes further and decouples the publisher from its subscribers entirely;
+  a publish there never waits for a handler at all.
 - **RabbitMQ** — a fanout exchange per topic and a durable V2 queue derived from
   the topic/subscription pair bound to it, so subscriptions accumulate their own
   backlog rather than competing for one queue. Events publish with no
