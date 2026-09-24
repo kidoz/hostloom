@@ -508,6 +508,12 @@ export class HostLoomConnection {
             if (this.#closeDisposition !== "protocol") {
                 this.#closeDisposition = "manual";
             }
+
+            // A connect() queued behind the earlier close would open a socket once this one
+            // closes. This close is the caller's later decision, so it cancels that connect.
+            this.#rejectQueuedConnect(
+                new HostLoomConnectionClosedError({ code, reason, wasClean: true }),
+            );
             return;
         }
 

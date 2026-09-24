@@ -562,6 +562,41 @@ test("connect during a manual close waits for teardown before opening one replac
     ]);
 });
 
+test("a second close while closing cancels the connect queued behind the first", async () => {
+    const firstSocket = new FakeWebSocket();
+    const secondSocket = new FakeWebSocket();
+    const sockets = [firstSocket, secondSocket];
+    const states: HostLoomConnectionState[] = [];
+    const connection = new HostLoomConnection("wss://inventory.example.com/realtime", {
+        webSocketFactory: () => nextSocket(sockets),
+    });
+    await connectHarness(connection, firstSocket);
+    connection.onStateChange(({ state }) => states.push(state));
+
+    connection.close(3001, "client_shutdown");
+    const queued = connection.connect();
+    connection.close(3002, "client_exit");
+    firstSocket.closed(1000, "closed", true);
+
+    assert.equal(sockets.length, 1, "the later close must stop the queued replacement socket");
+    assert.equal(connection.state, "disconnected");
+    assert.deepEqual(states, ["closing", "disconnected"]);
+    assert.deepEqual(firstSocket.closeCalls, [{ code: 3001, reason: "client_shutdown" }]);
+    await assert.rejects(
+        queued,
+        (error) =>
+            error instanceof HostLoomConnectionClosedError &&
+            error.close.code === 3002 &&
+            error.close.reason === "client_exit",
+    );
+
+    // A connect after the teardown is a new decision and opens the replacement.
+    const reopened = connection.connect();
+    secondSocket.open();
+    secondSocket.message(welcomeJson);
+    assert.equal((await reopened).kind, "welcome");
+});
+
 test("a queued reconnect rejects if the manual close cannot start", async () => {
     const closeFailure = new Error("close failed");
     const { connection, socket } = createHarness();
