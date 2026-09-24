@@ -3,7 +3,13 @@ using Microsoft.Extensions.Logging;
 
 namespace HostLoom.Logging;
 
-/// <summary>Turns one record into bytes. Formatters write UTF-8 and never build a string.</summary>
+/// <summary>
+/// Turns one record into bytes. Formatters write UTF-8 and never build a string. An exception from
+/// <see cref="Format"/> or <see cref="OwnsFieldName"/> costs only the record being formatted: the
+/// pipeline cuts that record's partial output from its batch, counts it as dropped with reason
+/// <c>format_failed</c>, and keeps formatting later records with the same instance, so a formatter
+/// must remain usable after it throws.
+/// </summary>
 public interface ILogFormatter
 {
     void Format(in LogRecord record, IBufferWriter<byte> writer);

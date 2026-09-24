@@ -18,6 +18,7 @@ internal sealed class LoggingMetrics : IDisposable
     public const string ReasonWriterFault = "writer_fault";
     public const string ReasonProviderDisposed = "provider_disposed";
     public const string ReasonShutdownTimeout = "shutdown_timeout";
+    public const string ReasonFormatFailed = "format_failed";
 
     public const string ComponentFormatter = "formatter";
     public const string ComponentSink = "sink";

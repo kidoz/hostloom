@@ -5,16 +5,18 @@ using Microsoft.Extensions.Logging;
 
 namespace HostLoom.Logging;
 
-/// <summary>
-/// Single-reader queue plus a background writer on a dedicated thread. The calling thread renders
-/// and enqueues; all formatting and I/O happens off it, which is what keeps a log call off the
-/// tail latency path. An unexpected formatter or sink failure faults the pipeline instead of
-/// silently killing the writer: the channel closes, queued and in-flight records are counted as
-/// dropped, and no caller is ever left waiting on a writer that has stopped reading.
-/// </summary>
 /// <summary>One static enrichment field, its value encoded once for the provider's lifetime.</summary>
 internal readonly record struct StaticField(string Name, byte[] Value);
 
+/// <summary>
+/// Single-reader queue plus a background writer on a dedicated thread. The calling thread renders
+/// and enqueues; all formatting and I/O happens off it, which is what keeps a log call off the
+/// tail latency path. A record the formatter fails on is cut from its batch and dropped alone, so
+/// one unformattable record never costs the records around it. An unexpected sink failure faults
+/// the pipeline instead of silently killing the writer: the channel closes, queued and in-flight
+/// records are counted as dropped, and no caller is ever left waiting on a writer that has
+/// stopped reading.
+/// </summary>
 internal sealed class LogPipeline : IAsyncDisposable
 {
     private const int StateRunning = 0;
@@ -84,7 +86,7 @@ internal sealed class LogPipeline : IAsyncDisposable
     /// <summary>Records dropped for any reason. Surfaced so overload is visible, not silent.</summary>
     public long Dropped => Interlocked.Read(ref _dropped);
 
-    /// <summary>The failure that faulted the background writer. Null while it is healthy.</summary>
+    /// <summary>The sink failure that faulted the background writer. Null while it is healthy.</summary>
     public Exception? WriterFault => _writerFault;
 
     /// <summary>Serializes '@' hole values on the producer thread; shared by every logger.</summary>
@@ -343,7 +345,7 @@ internal sealed class LogPipeline : IAsyncDisposable
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
         {
             // The shutdown deadline expired and disposal cancelled the sink mid-batch. Any other
-            // OperationCanceledException is a component failure and faults the pipeline below —
+            // OperationCanceledException is a sink failure and faults the pipeline below —
             // treating it as shutdown would leave producers facing an open channel nobody reads.
             DiscardBatch(LoggingMetrics.ReasonShutdownTimeout);
             DiscardQueued(LoggingMetrics.ReasonShutdownTimeout);
@@ -367,15 +369,37 @@ internal sealed class LogPipeline : IAsyncDisposable
         _component = LoggingMetrics.ComponentFormatter;
         while (_batch.Count < _options.BatchSize && reader.TryRead(out var entry))
         {
-            // Added before formatting: if the formatter throws, the entry is still accounted.
+            // Added before formatting, so the entry is accounted for however formatting ends.
             _batch.Add(entry);
-            entry.NormalizeFields(
-                _options.MaxFieldNameLength,
-                _options.MaxFieldsPerRecord,
-                _formatter,
-                _metrics
-            );
-            _formatter.Format(new LogRecord(entry), buffer);
+            var start = buffer.WrittenCount;
+            try
+            {
+                entry.NormalizeFields(
+                    _options.MaxFieldNameLength,
+                    _options.MaxFieldsPerRecord,
+                    _formatter,
+                    _metrics
+                );
+                _formatter.Format(new LogRecord(entry), buffer);
+            }
+            catch (Exception)
+            {
+                // A failure while formatting one record costs that record, never the pipeline:
+                // its partial output is cut from the batch and it is dropped and counted, while
+                // the records before and after it are written as usual.
+                buffer.Truncate(start);
+                _batch.RemoveAt(_batch.Count - 1);
+                _metrics.RecordFailure(LoggingMetrics.ComponentFormatter);
+                if (_abandoned)
+                {
+                    // Disposal already counted this record in aggregate when it gave up.
+                    LogEntryPool.Return(entry);
+                }
+                else
+                {
+                    Discard(entry, LoggingMetrics.ReasonFormatFailed);
+                }
+            }
         }
     }
 

@@ -235,18 +235,18 @@ public sealed class LoggingTests
         await provider.DisposeAsync();
     }
 
-    [Fact]
-    public async Task A_formatter_failure_faults_the_pipeline_and_never_strands_a_caller()
+    [Fact(Timeout = 30_000)]
+    public async Task A_sink_failure_faults_the_pipeline_and_never_strands_a_caller()
     {
-        var sink = NewBufferSink();
+        var sink = NewFailingSink(new InvalidOperationException("the sink broke"));
         await using var provider = new HostLoomLoggerProvider(
-            new ThrowingFormatter(),
+            new JsonLogFormatter(),
             sink,
             new HostLoomLoggerOptions { QueueFullPolicy = QueueFullPolicy.Block }
         );
         var logger = provider.CreateLogger("Faulty");
 
-        logger.LogFast(LogLevel.Information, $"first entry breaks the formatter");
+        logger.LogFast(LogLevel.Information, $"first entry breaks the sink");
 
         var deadline = Stopwatch.StartNew();
         while (provider.WriterFault is null && deadline.Elapsed < TimeSpan.FromSeconds(10))
@@ -264,15 +264,146 @@ public sealed class LoggingTests
         Assert.Equal(before + 1, provider.Dropped);
 
         await provider.DisposeAsync();
-        Assert.Empty(sink.Lines());
     }
 
-    [Fact]
-    public async Task A_stray_cancellation_faults_the_pipeline_instead_of_vanishing()
+    [Fact(Timeout = 30_000)]
+    public async Task A_formatter_failure_drops_only_that_record_and_the_writer_keeps_running()
     {
+        var reasons = new List<string>();
+        var components = new List<string>();
+        var gate = new Lock();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (
+                instrument.Meter.Name == "HostLoom.Logging"
+                && instrument.Name
+                    is "hostloom.logging.records.dropped"
+                        or "hostloom.logging.failures"
+            )
+            {
+                l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>(
+            (instrument, measurement, tags, state) =>
+            {
+                lock (gate)
+                {
+                    foreach (var tag in tags)
+                    {
+                        if (tag.Key == "reason" && tag.Value is string reason)
+                        {
+                            reasons.Add(reason);
+                        }
+                        else if (tag.Key == "component" && tag.Value is string component)
+                        {
+                            components.Add(component);
+                        }
+                    }
+                }
+            }
+        );
+        listener.Start();
+
+        using var formatter = new PoisonFormatter();
+        var sink = NewRecordingSink();
+        await using var provider = new HostLoomLoggerProvider(
+            formatter,
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        var logger = provider.CreateLogger("Isolated");
+
+        // The writer holds the first record inside Format while three more queue up behind it,
+        // so the poisoned record lands in the middle of one batch.
+        logger.LogFast(LogLevel.Information, $"gate");
+        Assert.True(formatter.WaitUntilGated(TimeSpan.FromSeconds(10)), "the writer never started");
+        logger.LogFast(LogLevel.Information, $"before");
+        logger.LogFast(LogLevel.Information, $"poison");
+        logger.LogFast(LogLevel.Information, $"after");
+        formatter.Release();
+
+        var deadline = Stopwatch.StartNew();
+        while (
+            sink.Payloads().Count < 1
+            && provider.WriterFault is null
+            && deadline.Elapsed < TimeSpan.FromSeconds(10)
+        )
+        {
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+
+        Assert.Null(provider.WriterFault);
+        logger.LogFast(LogLevel.Information, $"later");
+        await provider.DisposeAsync();
+
+        // The batch reached the sink in one write, without the bytes the formatter wrote before
+        // it threw, and every line in it is intact JSON.
+        var payloads = sink.Payloads();
+        Assert.NotEmpty(payloads);
+        Assert.Equal(3, payloads[0].Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+        Assert.All(
+            payloads,
+            payload => Assert.DoesNotContain("partial", payload, StringComparison.Ordinal)
+        );
+        var messages = payloads
+            .SelectMany(payload => payload.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            .Select(line => JsonDocument.Parse(line).RootElement.GetProperty("message").GetString())
+            .ToArray();
+        Assert.Equal(["gate", "before", "after", "later"], messages);
+        Assert.Null(provider.WriterFault);
+        Assert.Equal(1, provider.Dropped);
+        // The meter is process-wide, so only reasons no parallel test produces are asserted here;
+        // WriterFault and Dropped above are this provider's own.
+        lock (gate)
+        {
+            Assert.Contains("format_failed", reasons);
+            Assert.Contains("formatter", components);
+        }
+    }
+
+    [Theory(Timeout = 30_000)]
+    [InlineData("throwing")]
+    [InlineData("cancelling")]
+    public async Task A_formatter_that_always_fails_costs_records_but_never_the_writer(string kind)
+    {
+        ILogFormatter formatter =
+            kind == "throwing" ? new ThrowingFormatter() : new CancellingFormatter();
         var sink = NewBufferSink();
         await using var provider = new HostLoomLoggerProvider(
-            new CancellingFormatter(),
+            formatter,
+            sink,
+            new HostLoomLoggerOptions { QueueFullPolicy = QueueFullPolicy.Block }
+        );
+        var logger = provider.CreateLogger("Unformattable");
+
+        for (var i = 0; i < 3; i++)
+        {
+            logger.LogFast(LogLevel.Information, $"unformattable {i}");
+        }
+
+        var deadline = Stopwatch.StartNew();
+        while (provider.Dropped < 3 && deadline.Elapsed < TimeSpan.FromSeconds(10))
+        {
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+
+        // Each record is counted as it fails; a stray cancellation from a formatter is a failure
+        // of that record, not a shutdown, and neither kind stops the writer.
+        Assert.Equal(3, provider.Dropped);
+        Assert.Null(provider.WriterFault);
+        await provider.DisposeAsync();
+        Assert.Empty(sink.Lines());
+        Assert.Equal(3, provider.Dropped);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task A_stray_cancellation_faults_the_pipeline_instead_of_vanishing()
+    {
+        var sink = NewFailingSink(new OperationCanceledException("a stray cancellation"));
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
             sink,
             new HostLoomLoggerOptions()
         );
@@ -968,6 +1099,10 @@ public sealed class LoggingTests
     private static StuckSink NewStuckSink() => new();
 
     private static HangingDisposeSink NewHangingDisposeSink() => new();
+
+    private static RecordingSink NewRecordingSink() => new();
+
+    private static FailingSink NewFailingSink(Exception failure) => new(failure);
 #pragma warning restore CA2000
 
     private static int Expensive(ref int counter)
@@ -1001,6 +1136,86 @@ public sealed class LoggingTests
                     .UTF8.GetString(_stream.ToArray())
                     .Split('\n', StringSplitOptions.RemoveEmptyEntries);
             }
+        }
+    }
+
+    /// <summary>Keeps every batch the writer handed over, one payload per Write call.</summary>
+    private sealed class RecordingSink : ILogSink
+    {
+        private readonly List<string> _payloads = [];
+        private readonly Lock _gate = new();
+
+        public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken)
+        {
+            lock (_gate)
+            {
+                _payloads.Add(Encoding.UTF8.GetString(payload));
+            }
+        }
+
+        public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public IReadOnlyList<string> Payloads()
+        {
+            lock (_gate)
+            {
+                return [.. _payloads];
+            }
+        }
+    }
+
+    /// <summary>Fails every write — the sink failure that must still fault the pipeline.</summary>
+    private sealed class FailingSink(Exception failure) : ILogSink
+    {
+        public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken) =>
+            throw failure;
+
+        public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// Formats through the JSON formatter, holds the writer inside the record whose message is
+    /// "gate" until released, and fails on "poison" after committing partial output to the
+    /// batch buffer — the bytes the pipeline must cut again.
+    /// </summary>
+    private sealed class PoisonFormatter : ILogFormatter, IDisposable
+    {
+        private readonly JsonLogFormatter _inner = new();
+        private readonly ManualResetEventSlim _gated = new(false);
+        private readonly ManualResetEventSlim _released = new(false);
+
+        public void Format(in LogRecord record, System.Buffers.IBufferWriter<byte> writer)
+        {
+            if (record.Message.SequenceEqual("gate"u8))
+            {
+                _gated.Set();
+                _released.Wait(TimeSpan.FromSeconds(10));
+            }
+
+            if (record.Message.SequenceEqual("poison"u8))
+            {
+                System.Buffers.BuffersExtensions.Write(writer, "{\"partial\":"u8);
+                throw new InvalidOperationException("this record cannot be formatted");
+            }
+
+            _inner.Format(record, writer);
+        }
+
+        public bool OwnsFieldName(ReadOnlySpan<byte> name) => _inner.OwnsFieldName(name);
+
+        public bool WaitUntilGated(TimeSpan timeout) => _gated.Wait(timeout);
+
+        public void Release() => _released.Set();
+
+        public void Dispose()
+        {
+            _released.Set();
+            _gated.Dispose();
+            _released.Dispose();
         }
     }
 

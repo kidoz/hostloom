@@ -102,6 +102,14 @@ construction, and the configuration overload rejects them at host startup.
 | `JsonLogFormatter(int maxExceptionLength = 32 * 1024)` | ECS-style compact JSON, one object per line; the hosted default |
 | `ClefLogFormatter(int maxExceptionLength = 32 * 1024)` | CLEF (`@t`, `@mt`, `@l`, `@x`, `@tr`, `@sp`, …); the bootstrap default |
 
+The background writer isolates formatter failures to a single record. If `Format` or
+`OwnsFieldName` throws, the writer removes that record's partial output from the batch and
+counts the record as dropped with reason `format_failed`. It then formats the rest of the batch
+and later records with the same formatter instance, so a custom formatter must stay usable
+after throwing. A formatter that throws on every record therefore loses every record without
+stopping the writer, so watch the `format_failed` drop count. Only a sink failure faults the
+pipeline (see [Health](#health)).
+
 ## Masking attributes
 
 Fail-closed protection on destructured (`{@...}`) members:
@@ -216,3 +224,20 @@ neither replays nor duplicates.
 `HostLoomLoggerProvider` exposes `Dropped` and `WriterFault`, and the
 `HostLoom.Logging` meter publishes seven instruments — see the
 [observability reference](observability.md#logging-instruments-hostloomlogging).
+
+`WriterFault` holds the sink failure that stopped the background writer. After a fault the
+provider drops every record it receives. A formatter failure never sets `WriterFault`: it costs
+only the record being formatted. `hostloom.logging.records.dropped` carries a `level` tag and one
+of these `reason` values:
+
+| Reason | Record dropped because |
+| --- | --- |
+| `queue_full` | the queue was full and the policy discards the record |
+| `enqueue_timeout` | a blocking enqueue reached `EnqueueTimeout` |
+| `format_failed` | the formatter threw while formatting this record |
+| `writer_fault` | a sink failure faulted the writer while the record was queued or in its batch, or before it arrived |
+| `provider_disposed` | it arrived after disposal started |
+| `shutdown_timeout` | disposal reached its deadline before the record was written |
+
+`hostloom.logging.failures` counts the underlying failures by `component`: `formatter`, `sink`,
+`destructurer`, `enricher`, or `scope`.
