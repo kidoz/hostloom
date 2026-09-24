@@ -27,7 +27,7 @@ A custom transport registers with
 | `DurableRequestQueues` | `true` | Request queues survive a broker restart |
 | `DurableTopics` | `true` | Topic exchanges/queues are durable and event messages are persistent |
 | `QueueNaming` | `RabbitMqQueueNaming.Version2` | Role-qualified hashed request/subscription names; explicit `Legacy` supports migration |
-| `AllowNamedReplyQueues` | `false` | Answer a request whose `ReplyTo` names a declared queue. Off, only server-named queues (`amq.gen-…`) and `amq.rabbitmq.reply-to` are answered, which is what HostLoom's own client uses; anything else is rejected as malformed before the handler runs |
+| `AllowNamedReplyQueues` | `false` | Answer a request whose `ReplyTo` names a declared queue. Off, only server-named queues (`amq.gen-…`), which HostLoom's own client uses, and direct reply-to addresses are answered: a client that sets `amq.rabbitmq.reply-to` reaches the listener as `amq.rabbitmq.reply-to.<token>`. Anything else, the bare pseudo-queue name included, is rejected as malformed before the handler runs |
 | `DeadLetterExchange` | `null` | When set, request and subscription queues are declared with `x-dead-letter-exchange`, so rejected deliveries are routed there. Declare the exchange yourself; changing it on an existing queue fails the declaration |
 
 ## KafkaOptions

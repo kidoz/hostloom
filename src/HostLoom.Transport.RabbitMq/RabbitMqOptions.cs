@@ -39,10 +39,11 @@ public sealed class RabbitMqOptions
 
     /// <summary>
     /// Whether a request may name any queue in its <c>ReplyTo</c> property. Off by default: a
-    /// listener then answers only server-named reply queues (<c>amq.gen-…</c>) and the direct
-    /// reply-to pseudo-queue (<c>amq.rabbitmq.reply-to</c>), which is what HostLoom's own client
-    /// uses, and rejects any other request as malformed before its handler runs. Turn it on only
-    /// for a foreign client that replies through a queue it declared itself.
+    /// listener then answers only server-named reply queues (<c>amq.gen-…</c>), which is what
+    /// HostLoom's own client uses, and clients using direct reply-to (<c>amq.rabbitmq.reply-to</c>,
+    /// which the broker hands the listener as <c>amq.rabbitmq.reply-to.</c> followed by a token),
+    /// and rejects any other request as malformed before its handler runs. Turn it on only for a
+    /// foreign client that replies through a queue it declared itself.
     /// </summary>
     public bool AllowNamedReplyQueues { get; set; }
 

@@ -10,16 +10,31 @@ namespace HostLoom.Tests;
 
 /// <summary>
 /// A request's <c>ReplyTo</c> is caller-controlled and becomes a default-exchange routing key.
-/// By default only server-named reply queues are answered, which is what HostLoom's own client
-/// declares; a cancelled or stopping delivery is handed back to the queue instead of dropped; and
-/// a configured dead-letter exchange reaches every queue the broker declares.
+/// By default only server-named reply queues and direct reply-to addresses are answered, which
+/// is what HostLoom's own client and a direct reply-to client send; a cancelled or stopping
+/// delivery is handed back to the queue instead of dropped; and a configured dead-letter exchange
+/// reaches every queue the broker declares.
 /// </summary>
 public sealed class RabbitMqReplyValidationTests
 {
+    /// <summary>
+    /// What the broker puts in <c>ReplyTo</c> for a client that asked for direct reply-to: the
+    /// pseudo-queue's name, a dot, and a token for the client's channel.
+    /// </summary>
+    private const string DirectReplyTo =
+        "amq.rabbitmq.reply-to.g1h2AA5yZXBseUAxMzI4MDQ0NgAAQ7cAAAAAAAAAAQ==.ON6MEq4mFnMs2FvxCYHO8A==";
+
     [Theory]
     [InlineData("amq.gen-hostloom-reply", false, true)]
     [InlineData("amq.gen-hostloom-reply", true, true)]
-    [InlineData("amq.rabbitmq.reply-to", false, true)]
+    [InlineData(DirectReplyTo, false, true)]
+    [InlineData("amq.rabbitmq.reply-to.x", false, true)]
+    // The bare pseudo-queue never reaches a listener: the broker rewrites it, and a reply routed
+    // to it goes nowhere. Without a token after the dot there is no channel to reach either.
+    [InlineData("amq.rabbitmq.reply-to", false, false)]
+    [InlineData("amq.rabbitmq.reply-to.", false, false)]
+    [InlineData("amq.rabbitmq.reply-to", true, true)]
+    [InlineData("amq.rabbitmq.reply-tox", false, false)]
     [InlineData("orders.replies", false, false)]
     [InlineData("orders.replies", true, true)]
     [InlineData("amq.gen", false, false)]
@@ -80,6 +95,40 @@ public sealed class RabbitMqReplyValidationTests
         Assert.Empty(channel.Publishes);
         Assert.Equal([(3ul, false)], channel.Rejects);
         Assert.Empty(channel.Nacks);
+    }
+
+    [Fact]
+    public async Task A_request_from_a_direct_reply_to_client_is_answered_on_the_address_the_broker_gave_it()
+    {
+        var rabbit = new FakeRabbit();
+        await using var broker = Create(rabbit, new RabbitMqOptions());
+        var handled = 0;
+
+        await using var listener = await broker.ListenAsync(
+            "orders",
+            (_, _) =>
+            {
+                handled++;
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>("handled"u8.ToArray());
+            },
+            TestContext.Current.CancellationToken
+        );
+
+        var channel = rabbit.Channels[0];
+        await channel.DeliverAsync(
+            "corr-1",
+            replyTo: DirectReplyTo,
+            deliveryTag: 9,
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(1, handled);
+        var published = Assert.Single(channel.Publishes);
+        Assert.Equal(string.Empty, published.Exchange);
+        Assert.Equal(DirectReplyTo, published.RoutingKey);
+        Assert.Equal("corr-1", published.CorrelationId);
+        Assert.Equal([9ul], channel.Acks);
+        Assert.Empty(channel.Rejects);
     }
 
     [Fact]

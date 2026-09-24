@@ -29,6 +29,9 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 {
     private const string ContentType = "application/vnd.hostloom.envelope+json";
 
+    /// <summary>What the broker rewrites a request's direct reply-to address to begin with.</summary>
+    private const string DirectReplyToPrefix = "amq.rabbitmq.reply-to.";
+
     /// <summary>
     /// How long disposal waits for channels that are still closing before it disposes the
     /// connection, which closes whatever is left.
@@ -335,7 +338,10 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 
         return allowNamedQueues
             || replyTo.StartsWith("amq.gen-", StringComparison.Ordinal)
-            || string.Equals(replyTo, "amq.rabbitmq.reply-to", StringComparison.Ordinal);
+            || (
+                replyTo.Length > DirectReplyToPrefix.Length
+                && replyTo.StartsWith(DirectReplyToPrefix, StringComparison.Ordinal)
+            );
     }
 
     /// <summary>

@@ -212,6 +212,83 @@ public sealed class RabbitMqTransportTests : IAsyncLifetime
         await PublisherOf(host).PublishAsync(Unique("unheard"), new OrderPlaced("A-3"), Token);
     }
 
+    [Fact(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
+    public async Task A_foreign_client_using_direct_reply_to_is_answered()
+    {
+        var address = Unique("direct-reply");
+        await using var server = new RabbitMqRequestBroker(
+            Options.Create(
+                new RabbitMqOptions
+                {
+                    Uri = Broker,
+                    ClientProvidedName = "it-direct-reply-" + Guid.NewGuid().ToString("N"),
+                }
+            )
+        );
+        await using var listener = await server.ListenAsync(
+            address,
+            (frame, _) =>
+                ValueTask.FromResult<ReadOnlyMemory<byte>>(
+                    Encoding.UTF8.GetBytes("answered " + Encoding.UTF8.GetString(frame.Span))
+                ),
+            Token
+        );
+
+        // A client of another stack: a raw connection consuming the direct reply-to
+        // pseudo-queue, which replies can reach only through the channel consuming it.
+        await using var connection = await new ConnectionFactory
+        {
+            Uri = Broker,
+        }.CreateConnectionAsync(Token);
+        await using var channel = await connection.CreateChannelAsync(cancellationToken: Token);
+        var reply = new TaskCompletionSource<(string? CorrelationId, string Body)>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var consumer = new AsyncEventingBasicConsumer(channel);
+        consumer.ReceivedAsync += (_, delivery) =>
+        {
+            reply.TrySetResult(
+                (
+                    delivery.BasicProperties.CorrelationId,
+                    Encoding.UTF8.GetString(delivery.Body.Span)
+                )
+            );
+            return Task.CompletedTask;
+        };
+        await channel.BasicConsumeAsync("amq.rabbitmq.reply-to", autoAck: true, consumer, Token);
+
+        // What a listener finds in ReplyTo is not the pseudo-queue's name but the address the
+        // broker rewrote it to, seen here through a server-named queue of the test's own.
+        var spy = await channel.QueueDeclareAsync(cancellationToken: Token);
+        await channel.BasicPublishAsync(
+            string.Empty,
+            spy.QueueName,
+            mandatory: true,
+            new BasicProperties { ReplyTo = "amq.rabbitmq.reply-to" },
+            "spy"u8.ToArray(),
+            Token
+        );
+        var rewritten = await GetOneAsync(channel, spy.QueueName);
+        Assert.StartsWith(
+            "amq.rabbitmq.reply-to.",
+            rewritten.BasicProperties.ReplyTo,
+            StringComparison.Ordinal
+        );
+
+        await channel.BasicPublishAsync(
+            string.Empty,
+            RabbitMqQueueNames.Request(address),
+            mandatory: true,
+            new BasicProperties { CorrelationId = "invoice-7", ReplyTo = "amq.rabbitmq.reply-to" },
+            "invoice 7"u8.ToArray(),
+            Token
+        );
+
+        var (correlationId, body) = await reply.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
+        Assert.Equal("invoice-7", correlationId);
+        Assert.Equal("answered invoice 7", body);
+    }
+
     [Theory(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
     [InlineData(false)]
     [InlineData(true)]

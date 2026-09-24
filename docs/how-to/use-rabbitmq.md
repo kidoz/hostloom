@@ -49,12 +49,13 @@ All options and defaults: [transports reference](../reference/transports.md#rabb
 
 A request's `ReplyTo` becomes a routing key on the default exchange, so it
 decides which queue the handler's reply is written to. By default a
-listener answers only server-named reply queues (`amq.gen-…`) and the
-direct reply-to pseudo-queue (`amq.rabbitmq.reply-to`), which is what
-HostLoom's own client declares; a request naming any other queue is
-rejected as malformed before its handler runs. Set
-`AllowNamedReplyQueues` only for a foreign client that replies through a
-queue it declared itself.
+listener answers only server-named reply queues (`amq.gen-…`), which is
+what HostLoom's own client declares, and clients using direct reply-to:
+a client that sets `amq.rabbitmq.reply-to` reaches the listener as
+`amq.rabbitmq.reply-to.<token>`, the address the broker rewrote it to. A
+request naming any other queue is rejected as malformed before its
+handler runs. Set `AllowNamedReplyQueues` only for a foreign client that
+replies through a queue it declared itself.
 
 A rejected delivery — a handler that failed, a malformed frame, a request
 with an unacceptable `ReplyTo` — is dropped unless the queue has a
@@ -142,7 +143,8 @@ Events without any subscriptions retain ordinary fan-out discard behavior.
   `RemoteFaultException` or `HostLoomOptions.IncludeFaultDetails` is on.
   The real exception is in the handler application's log.
 - **Requests rejected without the handler running** — the caller's
-  `ReplyTo` is not a server-named queue; a foreign client needs
+  `ReplyTo` is neither a server-named queue nor a direct reply-to address;
+  a foreign client replying through a queue it declared needs
   `AllowNamedReplyQueues`.
 - **`RabbitMqConsumerCancelled` warnings** — something deleted a
   listener's or subscription's queue, or made it unavailable, and the
