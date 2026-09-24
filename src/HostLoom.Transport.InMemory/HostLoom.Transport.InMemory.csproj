@@ -6,4 +6,8 @@
   <ItemGroup>
     <ProjectReference Include="../HostLoom/HostLoom.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The tests drive the handler drain bound on a test clock. -->
+    <InternalsVisibleTo Include="HostLoom.Tests" />
+  </ItemGroup>
 </Project>

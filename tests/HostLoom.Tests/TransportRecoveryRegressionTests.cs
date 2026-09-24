@@ -1,6 +1,10 @@
 using System.Net;
 using HostLoom.Redis;
 using HostLoom.Transport.InMemory;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using StackExchange.Redis;
 using Xunit;
@@ -9,6 +13,8 @@ namespace HostLoom.Tests;
 
 public sealed class TransportRecoveryRegressionTests
 {
+    private static readonly TimeSpan Bounded = TimeSpan.FromSeconds(10);
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -199,6 +205,126 @@ public sealed class TransportRecoveryRegressionTests
         );
     }
 
+    [Theory(Timeout = 30_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_stopping_listener_and_the_transport_wait_for_the_handler_they_cancelled(
+        bool events
+    )
+    {
+        var token = TestContext.Current.CancellationToken;
+        var clock = new TestClock();
+        await using var broker = new InMemoryRequestBroker(logger: null, clock);
+        var handler = new StubbornHandler();
+        var listener = await handler.AttachAsync(broker, events, token);
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var pending = StubbornHandler.SendAsync(broker, events, caller.Token);
+        var handlerToken = await handler.Entered.Task.WaitAsync(Bounded, token);
+
+        // The caller walks away; the work it started is the listener's to finish or cancel.
+        await caller.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 0);
+
+        var stopping = listener.DisposeAsync().AsTask();
+        await handler.Cancelled.Task.WaitAsync(Bounded, token);
+        Assert.True(handlerToken.IsCancellationRequested);
+
+        // The handler ignores its cancellation. The stop either returned under it, which would
+        // let it run on after its container is gone, or waits for it on the transport's clock.
+        await SchedulingTests.WaitUntilAsync(() =>
+            stopping.IsCompleted || clock.PendingTimers == 1
+        );
+        Assert.False(stopping.IsCompleted);
+        // Disposing the transport waits for the same handler, although its listener has already
+        // left the transport's routing table.
+        var disposing = broker.DisposeAsync().AsTask();
+        Assert.False(disposing.IsCompleted);
+
+        handler.Release.SetResult();
+        await stopping.WaitAsync(Bounded, token);
+        await disposing.WaitAsync(Bounded, token);
+        Assert.True(handler.Returned.Task.IsCompleted);
+        Assert.Equal(0, clock.PendingTimers);
+        await listener.DisposeAsync().AsTask().WaitAsync(Bounded, token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task A_stopping_listener_gives_up_on_a_stubborn_handler_after_its_bound()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var clock = new TestClock();
+        var logger = new RecordingLogger<InMemoryRequestBroker>();
+        await using var broker = new InMemoryRequestBroker(logger, clock);
+        var handler = new StubbornHandler();
+        var listener = await handler.AttachAsync(broker, events: false, token);
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var pending = StubbornHandler.SendAsync(broker, events: false, caller.Token);
+        await handler.Entered.Task.WaitAsync(Bounded, token);
+        await caller.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 0);
+
+        var stopping = listener.DisposeAsync().AsTask();
+        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 1);
+        clock.Advance(InMemoryRequestBroker.HandlerDrainBound - TimeSpan.FromTicks(1));
+        Assert.False(stopping.IsCompleted);
+        clock.Advance(TimeSpan.FromTicks(1));
+
+        // Cleanup is bounded: the stop returns with the handler still running, and says so.
+        await stopping.WaitAsync(Bounded, token);
+        Assert.False(handler.Returned.Task.IsCompleted);
+        var warning = Assert.Single(logger.Entries, entry => entry.Event.Id == 1404);
+        Assert.Equal(LogLevel.Warning, warning.Level);
+        // The transport does not wait for it a second time.
+        await broker.DisposeAsync().AsTask().WaitAsync(Bounded, token);
+        Assert.Equal(0, clock.PendingTimers);
+
+        handler.Release.SetResult();
+        await handler.Returned.Task.WaitAsync(Bounded, token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task Stopping_the_host_returns_when_its_token_ends_though_a_listener_is_still_closing()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var builder = Host.CreateApplicationBuilder();
+        builder
+            .Services.AddHostLoom()
+            .UseTransport<StallingBroker>()
+            .AddHealthChecks()
+            .AddHandler<Lookup, Found, LookupHandler>("catalog");
+        using var host = builder.Build();
+        await host.StartAsync(token);
+        var broker = (StallingBroker)host.Services.GetRequiredService<IRequestBroker>();
+        try
+        {
+            using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var stopping = host.StopAsync(shutdown.Token);
+            await broker.Closing.Task.WaitAsync(Bounded, token);
+            Assert.False(stopping.IsCompleted);
+
+            // The host's shutdown timeout runs out while the listener is still closing.
+            await shutdown.CancelAsync();
+
+            await stopping.WaitAsync(Bounded, token);
+            Assert.False(broker.Closed.Task.IsCompleted);
+            var ready = await host
+                .Services.GetRequiredService<HealthCheckService>()
+                .CheckHealthAsync(check => check.Tags.Contains("ready"), token);
+            Assert.Equal(HealthStatus.Unhealthy, ready.Status);
+        }
+        finally
+        {
+            broker.Release.TrySetResult();
+        }
+
+        // The listener finishes closing on its own; disposal does not close it a second time.
+        await broker.Closed.Task.WaitAsync(Bounded, token);
+        await ((IAsyncDisposable)host).DisposeAsync().AsTask().WaitAsync(Bounded, token);
+        Assert.Equal(1, broker.Closes);
+    }
+
     [Fact]
     public async Task Failed_subscriber_does_not_make_outbox_republish_to_healthy_subscribers()
     {
@@ -261,5 +387,133 @@ public sealed class TransportRecoveryRegressionTests
         );
         Assert.Contains("UseHashTags", exception.Message, StringComparison.Ordinal);
         mux.DidNotReceive().GetDatabase(Arg.Any<int>(), Arg.Any<object>());
+    }
+
+    public sealed record Lookup : IRequest<Found>;
+
+    public sealed record Found;
+
+    public sealed class LookupHandler : IRequestHandler<Lookup, Found>
+    {
+        public ValueTask<Found> HandleAsync(Lookup request, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(new Found());
+    }
+
+    /// <summary>
+    /// A handler that notices its cancellation and carries on until released, as one blocked in
+    /// a call that takes no token does.
+    /// </summary>
+    private sealed class StubbornHandler
+    {
+        public TaskCompletionSource<CancellationToken> Entered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Cancelled { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Release { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Returned { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>Listens on, or subscribes to, <c>catalog</c> with this handler.</summary>
+        public ValueTask<IAsyncDisposable> AttachAsync(
+            InMemoryRequestBroker broker,
+            bool events,
+            CancellationToken cancellationToken
+        ) =>
+            events
+                ? broker.SubscribeAsync(
+                    "catalog",
+                    "audit",
+                    async (_, token) => await RunAsync(token),
+                    cancellationToken
+                )
+                : broker.ListenAsync(
+                    "catalog",
+                    async (_, token) =>
+                    {
+                        await RunAsync(token);
+                        return new byte[] { 2 };
+                    },
+                    cancellationToken
+                );
+
+        /// <summary>Sends a request to, or publishes an event on, <c>catalog</c>.</summary>
+        public static Task SendAsync(
+            InMemoryRequestBroker broker,
+            bool events,
+            CancellationToken cancellationToken
+        ) =>
+            events
+                ? broker.PublishAsync("catalog", new byte[] { 1 }, cancellationToken).AsTask()
+                : broker
+                    .RequestAsync(
+                        "catalog",
+                        new byte[] { 1 },
+                        Guid.NewGuid(),
+                        TimeSpan.FromHours(1),
+                        cancellationToken
+                    )
+                    .AsTask();
+
+        private async Task RunAsync(CancellationToken cancellationToken)
+        {
+            using var registration = cancellationToken.Register(() => Cancelled.TrySetResult());
+            Entered.TrySetResult(cancellationToken);
+            await Release.Task;
+            Returned.TrySetResult();
+        }
+    }
+
+    /// <summary>A transport whose listener, once asked to stop, does not finish until released.</summary>
+    private sealed class StallingBroker : IRequestBroker
+    {
+        private int _closes;
+
+        public TaskCompletionSource Closing { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Release { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Closed { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int Closes => Volatile.Read(ref _closes);
+
+        public ValueTask<IAsyncDisposable> ListenAsync(
+            RequestAddress address,
+            RequestFrameHandler handler,
+            CancellationToken cancellationToken
+        )
+        {
+            // CA2000: ownership of the listener transfers to the caller, which stops it.
+#pragma warning disable CA2000
+            return ValueTask.FromResult<IAsyncDisposable>(new Listener(this));
+#pragma warning restore CA2000
+        }
+
+        public ValueTask<ReadOnlyMemory<byte>> RequestAsync(
+            RequestAddress address,
+            ReadOnlyMemory<byte> request,
+            Guid requestId,
+            TimeSpan timeout,
+            CancellationToken cancellationToken
+        ) => throw new NotSupportedException();
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        private sealed class Listener(StallingBroker owner) : IAsyncDisposable
+        {
+            public async ValueTask DisposeAsync()
+            {
+                Interlocked.Increment(ref owner._closes);
+                owner.Closing.TrySetResult();
+                await owner.Release.Task;
+                owner.Closed.TrySetResult();
+            }
+        }
     }
 }

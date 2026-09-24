@@ -243,6 +243,14 @@ window and store. Metric: `hostloom.inbox.duplicates`; log events in
   limits) span deliveries.
 - Handlers under the same subscription name share one delivery and one
   scope; distinct subscription names receive independent deliveries.
+- Stopping the host stops every listener and subscription, cancelling the
+  handlers still running, and waits no longer than the host's shutdown token
+  (`HostOptions.ShutdownTimeout`). A handler that ignores its token can outlive
+  that wait; the stop then finishes in the background and logs any failure.
+  The in-memory transport waits up to five seconds for the handlers it
+  cancelled when a listener or subscription stops or the transport is
+  disposed, then logs a warning (`InMemoryHandlersAbandoned`, 1404) and
+  returns.
 
 ## Example
 

@@ -19,12 +19,21 @@ namespace HostLoom.Transport.InMemory;
 /// Disposing the transport ends every waiting request with <see cref="ObjectDisposedException"/>.
 /// </para>
 /// <para>
+/// Stopping a listener or subscription, and disposing the transport, cancel the handlers still
+/// running and wait for them to return, for up to <see cref="HandlerDrainBound"/> on the
+/// transport's clock, so a handler does not outlive the services it was resolved from. A handler
+/// that ignores its cancellation longer than that is logged and left running.
+/// </para>
+/// <para>
 /// The health probe answers from local state only: <see cref="IsReachable"/> and whether the
 /// transport has been disposed.
 /// </para>
 /// </remarks>
 public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBrokerHealthProbe
 {
+    /// <summary>How long stopping waits for the handlers it cancelled before it gives up on them.</summary>
+    internal static readonly TimeSpan HandlerDrainBound = TimeSpan.FromSeconds(5);
+
     private readonly ConcurrentDictionary<RequestAddress, RequestSubscription> _handlers = new();
     private readonly ConcurrentDictionary<
         TaskCompletionSource<ReadOnlyMemory<byte>>,
@@ -34,6 +43,12 @@ public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBroke
         (RequestAddress Topic, string Name),
         EventSubscription
     > _topics = new();
+
+    // Every subscription until its stop has finished, including one that has already left the
+    // routing tables above, so disposing the transport also waits for the handlers it is draining.
+    private readonly ConcurrentDictionary<Subscription, byte> _open = new(
+        ReferenceEqualityComparer.Instance
+    );
     private readonly ILogger<InMemoryRequestBroker> _logger;
     private readonly TimeProvider _clock;
     private volatile bool _disposed;
@@ -144,6 +159,12 @@ public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBroke
 
     private async Task DeliverEventAsync(EventSubscription subscription, byte[] frame)
     {
+        // A subscription that has begun to stop takes no new delivery, as if already detached.
+        if (!subscription.TryEnter())
+        {
+            return;
+        }
+
         try
         {
             await Task.Run(async () =>
@@ -160,6 +181,10 @@ public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBroke
                 "In-memory event subscription {Subscription} failed; the publication remains accepted.",
                 subscription.Key.Name
             );
+        }
+        finally
+        {
+            subscription.Exit();
         }
     }
 
@@ -188,7 +213,8 @@ public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBroke
         {
             // Without a listener nothing ever completes the reply, so the wait below runs out
             // the whole budget on the clock, the same timeout a broker gives an unbound address.
-            if (_handlers.TryGetValue(address, out var subscription))
+            // A listener that has begun to stop counts as none.
+            if (_handlers.TryGetValue(address, out var subscription) && subscription.TryEnter())
             {
                 _ = DeliverRequestAsync(subscription, request.ToArray(), reply);
             }
@@ -236,8 +262,16 @@ public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBroke
                 _ = reply.Task.Exception;
             }
         }
+        finally
+        {
+            subscription.Exit();
+        }
     }
 
+    /// <summary>
+    /// Ends every waiting request, then stops every listener and subscription, those already
+    /// stopping included, and waits for their handlers as a stop does.
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
         lock (_lifecycleGate)
@@ -249,34 +283,135 @@ public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBroke
                 _ = reply.Task.Exception;
             }
         }
-        foreach (var subscription in _handlers.Values)
-            await subscription.DisposeAsync().ConfigureAwait(false);
-        foreach (var subscription in _topics.Values)
-            await subscription.DisposeAsync().ConfigureAwait(false);
+        // Concurrently, so the handlers of every subscription share one drain bound.
+        await Task.WhenAll(_open.Keys.Select(static subscription => subscription.StopAsync()))
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Waits for <paramref name="drained"/>, the handlers <paramref name="subscription"/>
+    /// cancelled, for up to <see cref="HandlerDrainBound"/>.
+    /// </summary>
+    private async Task DrainAsync(Subscription subscription, Task drained, int running)
+    {
+        try
+        {
+            await drained.WaitAsync(HandlerDrainBound, _clock).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning(
+                new EventId(1404, "InMemoryHandlersAbandoned"),
+                "The in-memory {Subscription} stopped without its handlers: of the {Running} it cancelled, some were still running after {Bound} and may outlive the transport.",
+                subscription.Name,
+                running,
+                HandlerDrainBound
+            );
+        }
     }
 
     private abstract class Subscription : IAsyncDisposable
     {
         private readonly CancellationTokenSource _stopping = new();
-        private int _disposed;
+        private readonly Lock _gate = new();
+        private Task? _stopped;
+        private int _running;
+        private TaskCompletionSource? _drained;
+
+        protected Subscription(InMemoryRequestBroker owner)
+        {
+            Owner = owner;
+            Token = _stopping.Token;
+            owner._open.TryAdd(this, 0);
+        }
+
         public CancellationToken Token { get; }
 
-        protected Subscription() => Token = _stopping.Token;
+        protected InMemoryRequestBroker Owner { get; }
+
+        /// <summary>What a log line calls this subscription.</summary>
+        public abstract string Name { get; }
 
         protected abstract void Remove();
 
-        public async ValueTask DisposeAsync()
+        /// <summary>
+        /// Admits one delivery, which must call <see cref="Exit"/> when its handler returns.
+        /// Refused once the subscription has begun to stop, so no handler starts after the
+        /// stop's wait began.
+        /// </summary>
+        public bool TryEnter()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0)
-                return;
-            Remove();
+            lock (_gate)
+            {
+                if (_stopped is not null)
+                    return false;
+                _running++;
+                return true;
+            }
+        }
+
+        public void Exit()
+        {
+            lock (_gate)
+            {
+                if (--_running == 0)
+                    _drained?.TrySetResult();
+            }
+        }
+
+        public ValueTask DisposeAsync() => new(StopAsync());
+
+        /// <summary>The one stop, shared by every disposal and by the transport's.</summary>
+        public Task StopAsync()
+        {
+            TaskCompletionSource stopped;
+            var drained = Task.CompletedTask;
+            int running;
+            lock (_gate)
+            {
+                if (_stopped is not null)
+                    return _stopped;
+                stopped = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously
+                );
+                _stopped = stopped.Task;
+                running = _running;
+                if (running > 0)
+                {
+                    _drained = new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously
+                    );
+                    drained = _drained.Task;
+                }
+            }
+
+            // Run outside the gate, so a handler's Exit is never blocked behind the cancellation.
+            _ = RunStopAsync(stopped, drained, running);
+            return stopped.Task;
+        }
+
+        private async Task RunStopAsync(TaskCompletionSource stopped, Task drained, int running)
+        {
             try
             {
-                await _stopping.CancelAsync().ConfigureAwait(false);
+                Remove();
+                try
+                {
+                    await _stopping.CancelAsync().ConfigureAwait(false);
+                }
+                finally
+                {
+                    if (!drained.IsCompleted)
+                        await Owner.DrainAsync(this, drained, running).ConfigureAwait(false);
+                    _stopping.Dispose();
+                    Owner._open.TryRemove(this, out _);
+                }
+
+                stopped.TrySetResult();
             }
-            finally
+            catch (Exception exception)
             {
-                _stopping.Dispose();
+                stopped.TrySetException(exception);
             }
         }
     }
@@ -285,22 +420,26 @@ public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBroke
         InMemoryRequestBroker owner,
         RequestAddress address,
         RequestFrameHandler handler
-    ) : Subscription
+    ) : Subscription(owner)
     {
         public RequestFrameHandler Handler { get; } = handler;
 
-        protected override void Remove() => owner._handlers.TryRemove(new(address, this));
+        public override string Name => $"listener on '{address}'";
+
+        protected override void Remove() => Owner._handlers.TryRemove(new(address, this));
     }
 
     private sealed class EventSubscription(
         InMemoryRequestBroker owner,
         (RequestAddress Topic, string Name) key,
         EventFrameHandler handler
-    ) : Subscription
+    ) : Subscription(owner)
     {
         public (RequestAddress Topic, string Name) Key { get; } = key;
         public EventFrameHandler Handler { get; } = handler;
 
-        protected override void Remove() => owner._topics.TryRemove(new(Key, this));
+        public override string Name => $"subscription '{Key.Name}' on '{Key.Topic}'";
+
+        protected override void Remove() => Owner._topics.TryRemove(new(Key, this));
     }
 }

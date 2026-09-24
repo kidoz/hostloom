@@ -105,6 +105,7 @@ this table: it fails host startup with the client library's own exception.
 | The listener's frame handler throws, which the HostLoom dispatcher does only for a malformed frame | That exception, unchanged: nothing sits between the two |
 | The transport is disposed while a request waits, bound or not | `ObjectDisposedException` at once |
 | A subscriber fails | Nothing: the failure is logged and the publication stays accepted |
+| A listener or subscription stops, or the transport is disposed, while a handler runs | The handler's token is cancelled and the stop waits up to five seconds for it; a handler still running then is logged (`InMemoryHandlersAbandoned`, 1404) and left running |
 
 ### RabbitMQ
 
