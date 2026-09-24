@@ -19,4 +19,10 @@ public static class OutboxEvents
 
     /// <summary>Error: a message exhausted <c>Outbox:MaxAttempts</c> and was dead-lettered; no claim returns it again.</summary>
     public static readonly EventId DeadLettered = new(3304, "OutboxDeadLettered");
+
+    /// <summary>
+    /// Warning: a message was published but the store failed to mark it. No attempt is counted;
+    /// the claim lease expires and the next claim publishes the message again.
+    /// </summary>
+    public static readonly EventId MarkPublishedFailed = new(3305, "OutboxMarkPublishedFailed");
 }

@@ -8,7 +8,9 @@ namespace HostLoom;
 /// Moves events from an <see cref="IOutboxStore"/> to the transport: claims a batch, publishes
 /// each frame unchanged through the <see cref="IEventBroker"/>, and marks it published, or marks
 /// it failed with a backoff and leaves it for a later claim. A message that fails
-/// <see cref="OutboxOptions.MaxAttempts"/> times is dead-lettered and never claimed again.
+/// <see cref="OutboxOptions.MaxAttempts"/> times is dead-lettered and never claimed again. A
+/// message published but not marked, because the store failed, is not a failed attempt: it stays
+/// under its claim lease, and the next claim after the lease publishes it again.
 /// Drains when woken by a publish and every <see cref="OutboxOptions.PollInterval"/> regardless,
 /// so a message appended by another process or committed after the wake is still relayed.
 /// Composes without a container: <c>new OutboxRelay(store, broker, options)</c>, then
@@ -60,7 +62,7 @@ public sealed class OutboxRelay : IAsyncDisposable
         _logger = logger ?? NullLogger<OutboxRelay>.Instance;
     }
 
-    /// <summary>Messages this relay published since it was created.</summary>
+    /// <summary>Messages this relay published and marked since it was created.</summary>
     public long Published => Interlocked.Read(ref _published);
 
     /// <summary>Publish attempts this relay recorded as failed since it was created, dead-lettering attempts included.</summary>
@@ -138,8 +140,8 @@ public sealed class OutboxRelay : IAsyncDisposable
 
     /// <summary>
     /// Drains the store once: claims batches and publishes them until a batch comes back short or
-    /// a publish fails. Returns how many messages were published. The loop calls this; a test or
-    /// a manual relay may call it directly.
+    /// a publish or mark fails. Returns how many messages were published and marked. The loop
+    /// calls this; a test or a manual relay may call it directly.
     /// </summary>
     public async ValueTask<int> DrainAsync(CancellationToken cancellationToken = default)
     {
@@ -200,6 +202,10 @@ public sealed class OutboxRelay : IAsyncDisposable
     private static string Describe(Exception exception) =>
         exception.GetType().FullName ?? exception.GetType().Name;
 
+    /// <summary>
+    /// Publishes one claimed message and marks it. Returns <see langword="false"/> when either
+    /// step failed, which ends the drain after the current batch.
+    /// </summary>
     private async Task<bool> PublishAsync(
         OutboxMessage message,
         CancellationToken cancellationToken
@@ -211,16 +217,6 @@ public sealed class OutboxRelay : IAsyncDisposable
             await _broker
                 .PublishAsync(new RequestAddress(message.Topic), message.Frame, cancellationToken)
                 .ConfigureAwait(false);
-            await _store
-                .MarkPublishedAsync(message.MessageId, cancellationToken)
-                .ConfigureAwait(false);
-            Interlocked.Increment(ref _published);
-            HostLoomDiagnostics.OutboxPublished.Add(1, tags);
-            HostLoomDiagnostics.OutboxLag.Record(
-                (_clock.GetUtcNow() - message.EnqueuedAt).TotalSeconds,
-                tags
-            );
-            return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -228,38 +224,83 @@ public sealed class OutboxRelay : IAsyncDisposable
         }
         catch (Exception exception)
         {
-            Interlocked.Increment(ref _failed);
-            HostLoomDiagnostics.OutboxFailed.Add(1, tags);
-            var attempts = message.Attempts + 1;
-            try
-            {
-                if (attempts >= _options.MaxAttempts)
-                {
-                    await DeadLetterAsync(message, attempts, exception, tags, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                else
-                {
-                    await HoldBackAsync(message, attempts, exception, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception storeException)
-            {
-                // The lease expires on its own; the message is retried then.
-                _logger.LogWarning(
-                    OutboxEvents.StoreFailed,
-                    storeException,
-                    "The outbox store failed to record the failure of message {MessageId}.",
-                    message.MessageId
-                );
-            }
-
+            await RecordFailureAsync(message, exception, tags, cancellationToken)
+                .ConfigureAwait(false);
             return false;
+        }
+
+        try
+        {
+            await _store
+                .MarkPublishedAsync(message.MessageId, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            // The transport has the frame, so this is not a failed attempt: counting it would
+            // back the message off and in the end dead-letter a message that was delivered.
+            // Nothing is recorded; the claim lease expires and the next claim publishes the
+            // message again, a duplicate an inbox on the receiving side absorbs.
+            _logger.LogWarning(
+                OutboxEvents.MarkPublishedFailed,
+                exception,
+                "Outbox message {MessageId} was published to '{Topic}', but the store failed to mark it; it is published again when its claim lease expires.",
+                message.MessageId,
+                message.Topic
+            );
+            return false;
+        }
+
+        Interlocked.Increment(ref _published);
+        HostLoomDiagnostics.OutboxPublished.Add(1, tags);
+        HostLoomDiagnostics.OutboxLag.Record(
+            (_clock.GetUtcNow() - message.EnqueuedAt).TotalSeconds,
+            tags
+        );
+        return true;
+    }
+
+    /// <summary>Counts a failed publish attempt and backs the message off or dead-letters it.</summary>
+    private async ValueTask RecordFailureAsync(
+        OutboxMessage message,
+        Exception exception,
+        TagList tags,
+        CancellationToken cancellationToken
+    )
+    {
+        Interlocked.Increment(ref _failed);
+        HostLoomDiagnostics.OutboxFailed.Add(1, tags);
+        var attempts = message.Attempts + 1;
+        try
+        {
+            if (attempts >= _options.MaxAttempts)
+            {
+                await DeadLetterAsync(message, attempts, exception, tags, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                await HoldBackAsync(message, attempts, exception, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception storeException)
+        {
+            // The lease expires on its own; the message is retried then.
+            _logger.LogWarning(
+                OutboxEvents.StoreFailed,
+                storeException,
+                "The outbox store failed to record the failure of message {MessageId}.",
+                message.MessageId
+            );
         }
     }
 

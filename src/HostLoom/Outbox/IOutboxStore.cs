@@ -9,8 +9,9 @@ namespace HostLoom;
 /// <remarks>
 /// A store must make <see cref="ClaimAsync"/> atomic against concurrent relays: two instances
 /// must not receive the same message inside one lease. Delivery is at-least-once: a relay that
-/// dies between publishing and marking lets the next claim publish the message again after the
-/// lease, which is what the inbox on the receiving side is for. A message the relay has given up
+/// dies between publishing and marking, or a <see cref="MarkPublishedAsync"/> that throws, lets
+/// the next claim publish the message again after the lease, which is what the inbox on the
+/// receiving side is for. A failed mark does not count as a failed attempt. A message the relay has given up
 /// on is dead-lettered and never claimed again; an operator requeues it from the store.
 /// </remarks>
 public interface IOutboxStore

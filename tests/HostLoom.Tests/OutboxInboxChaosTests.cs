@@ -7,11 +7,11 @@ namespace HostLoom.Tests;
 
 /// <summary>
 /// Controlled faults across the store-and-forward path: two relays draining one store at once, a
-/// transport that refuses every publish and then recovers, a store that cannot record a failure,
-/// a relay killed with a message claimed, and a redelivery storm on the receiving side. The
-/// hypothesis is the one the outbox exists for: nothing is lost while the transport is down,
-/// nothing is published twice inside a claim, a relay that dies leaves its work to the next one,
-/// and the inbox turns the at-least-once delivery that follows into one run per subscription.
+/// transport that refuses every publish and then recovers, a store that cannot record a failure
+/// or a publish, a relay killed with a message claimed, and a redelivery storm on the receiving
+/// side. The hypothesis is the one the outbox exists for: nothing is lost while the transport is
+/// down, nothing is published twice inside a claim, a relay that dies leaves its work to the next
+/// one, and the inbox turns the at-least-once delivery that follows into one run per subscription.
 /// </summary>
 public sealed class OutboxInboxChaosTests
 {
@@ -132,6 +132,61 @@ public sealed class OutboxInboxChaosTests
         Assert.Equal(1, await relay.DrainAsync(token));
         Assert.Single(broker.Frames);
         Assert.Empty(inner.Pending);
+    }
+
+    [Fact]
+    public async Task A_store_that_cannot_mark_a_publish_leaves_the_lease_to_expire_without_counting_an_attempt()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var clock = new TestClock();
+        var inner = new InMemoryOutboxStore(clock);
+        var store = new FlakyOutboxStore(inner);
+        var broker = new OutageBroker();
+        var logger = new RecordingLogger<OutboxRelay>();
+        // One attempt: counting a publish the store failed to mark would dead-letter a message
+        // the transport already has.
+        var options = new OutboxOptions
+        {
+            BatchSize = 10,
+            MaxAttempts = 1,
+            ClaimLease = TimeSpan.FromSeconds(30),
+        };
+        await using var relay = new OutboxRelay(store, broker, options, clock, logger);
+        await inner.AppendAsync(Message("orders", clock, 0), token);
+        await inner.AppendAsync(Message("orders", clock, 1), token);
+
+        // The transport takes both frames; the store refuses to record that it did.
+        store.FailMarkPublished = true;
+        Assert.Equal(0, await relay.DrainAsync(token));
+
+        Assert.Equal(2, broker.Frames.Count);
+        Assert.Empty(inner.DeadLettered);
+        Assert.Equal(2, inner.Pending.Count);
+        Assert.All(inner.Pending, message => Assert.Equal(0, message.Attempts));
+        Assert.All(inner.Pending, message => Assert.Null(message.NextAttemptAt));
+        Assert.Equal(0, relay.Failed);
+        Assert.Equal(0, relay.Published);
+        Assert.Equal(
+            2,
+            logger.Entries.Count(entry => entry.Event.Id == OutboxEvents.MarkPublishedFailed.Id)
+        );
+        Assert.False(logger.Has(OutboxEvents.PublishFailed));
+        Assert.False(logger.Has(OutboxEvents.DeadLettered));
+
+        // Still leased to this relay, so nothing goes out a second time inside the lease.
+        Assert.Equal(0, await relay.DrainAsync(token));
+        Assert.Equal(2, broker.Frames.Count);
+
+        // Recovery: the lease expires and the next claim publishes both again. That duplicate is
+        // the at-least-once delivery the inbox on the receiving side absorbs.
+        store.FailMarkPublished = false;
+        clock.Advance(options.ClaimLease + TimeSpan.FromSeconds(1));
+        Assert.Equal(2, await relay.DrainAsync(token));
+        Assert.Equal([0, 1, 0, 1], broker.Frames.Select(frame => frame.Span[0]));
+        Assert.Empty(inner.Pending);
+        Assert.Equal(2, inner.Published.Count);
+        Assert.Empty(inner.DeadLettered);
+        Assert.Equal(0, relay.Failed);
     }
 
     [Fact]
@@ -283,6 +338,8 @@ public sealed class OutboxInboxChaosTests
     {
         public bool FailMarkFailed { get; set; }
 
+        public bool FailMarkPublished { get; set; }
+
         public ValueTask AppendAsync(
             OutboxMessage message,
             CancellationToken cancellationToken = default
@@ -297,7 +354,10 @@ public sealed class OutboxInboxChaosTests
         public ValueTask MarkPublishedAsync(
             Guid messageId,
             CancellationToken cancellationToken = default
-        ) => inner.MarkPublishedAsync(messageId, cancellationToken);
+        ) =>
+            FailMarkPublished
+                ? ValueTask.FromException(new IOException("the outbox database refused the update"))
+                : inner.MarkPublishedAsync(messageId, cancellationToken);
 
         public ValueTask MarkFailedAsync(
             Guid messageId,

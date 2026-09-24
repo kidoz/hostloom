@@ -132,8 +132,12 @@ clamped to `Outbox:MaxRetryDelay` (the same arithmetic as
 stops after that batch. A message that fails `Outbox:MaxAttempts` times is
 dead-lettered: logged at error, counted, and never claimed again until an
 operator requeues it in the store (`InMemoryOutboxStore.Requeue` does this for
-the in-memory store). Delivery is at-least-once: a relay that dies between
-publishing and marking lets the next claim publish again after the lease.
+the in-memory store). A publish that succeeds but that the store fails to mark
+is not a failed attempt, because the transport has the frame: the relay logs a warning
+(`OutboxMarkPublishedFailed`, 3305), counts nothing, and leaves the message
+under its claim lease. Delivery is at-least-once: that message, like one whose
+relay died between publishing and marking, is published again by the next claim
+after the lease.
 
 | Key | Default |
 | --- | --- |
@@ -148,7 +152,7 @@ publishing and marking lets the next claim publish again after the lease.
 A transport without publish/subscribe fails the host at startup, as it does for
 a subscription. Metrics: `hostloom.outbox.published`, `hostloom.outbox.failed`,
 `hostloom.outbox.dead_lettered`, and `hostloom.outbox.lag`; log events in
-`OutboxEvents` (3300 to 3304).
+`OutboxEvents` (3300 to 3305).
 
 ## Inbox
 

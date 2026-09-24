@@ -46,7 +46,7 @@ Tagged by destination and message type.
 | `hostloom.request.faults` | counter | Failed requests |
 | `hostloom.request.retries` | counter | Receive-pipeline retry attempts |
 | `hostloom.outbox.published` | counter | Outbox messages the relay published and marked, tagged `messaging.destination.name` |
-| `hostloom.outbox.failed` | counter | Outbox publish attempts that failed and left the message pending |
+| `hostloom.outbox.failed` | counter | Outbox publish attempts that failed and left the message pending; a publish the store failed to mark is not counted |
 | `hostloom.outbox.dead_lettered` | counter | Outbox messages that exhausted `Outbox:MaxAttempts` and are no longer claimed |
 | `hostloom.outbox.lag` | histogram (s) | Time between appending an outbox message and publishing it |
 | `hostloom.inbox.duplicates` | counter | Redelivered events the inbox recognised, tagged destination and `messaging.consumer.group.name` |
