@@ -144,6 +144,13 @@ Events without any subscriptions retain ordinary fan-out discard behavior.
 - **Requests rejected without the handler running** — the caller's
   `ReplyTo` is not a server-named queue; a foreign client needs
   `AllowNamedReplyQueues`.
+- **`RabbitMqConsumerCancelled` warnings** — something deleted a
+  listener's or subscription's queue, or made it unavailable, and the
+  broker cancelled the consumer. The transport declares the queue again
+  and resubscribes; `hostloom.rabbitmq.consumers` counts both events.
+  Messages that were in a deleted queue are lost. Repeated
+  `RabbitMqConsumerRestoreFailed` warnings mean the queue cannot be
+  declared yet, for example because the node that hosts it is down.
 - **A broker outage after startup is not reflected in readiness** — the
   RabbitMQ adapter does not yet implement `IBrokerHealthProbe`; see
   [health checks](health-and-metrics.md).
@@ -174,6 +181,9 @@ rather than after the close, which waits for the broker's reply for up to the cl
 library's 20-second continuation timeout. At most `MaxConcurrentPublishes` such channels may
 still be closing before a publication that needs a new channel waits for one to finish,
 again within its own deadline; `hostloom.rabbitmq.channels.closing` reports how many are.
+Stopping a listener or subscription closes its channel the same way: it waits for the
+handlers in flight, whose deliveries go back to the queue, but not for the broker, so a host
+stopping against an unresponsive broker does not wait twenty seconds per consumer.
 Disposing the transport waits at most five seconds for channels still closing, then
 disposes the connection, which closes the rest.
 

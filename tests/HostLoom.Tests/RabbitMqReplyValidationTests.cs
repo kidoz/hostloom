@@ -189,8 +189,14 @@ public sealed class RabbitMqReplyValidationTests
         await using var broker = Create(rabbit, new RabbitMqOptions());
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
         async ValueTask Handle(CancellationToken token)
         {
+            // Callbacks run in reverse order of registration, so this one signals after the
+            // failing one below has run.
+            using var signal = token.Register(() => cancelled.TrySetResult());
             using var registration = token.Register(() =>
                 throw new InvalidOperationException("callback failed")
             );
@@ -231,9 +237,19 @@ public sealed class RabbitMqReplyValidationTests
                 TimeSpan.FromSeconds(5),
                 TestContext.Current.CancellationToken
             );
-            await Assert.ThrowsAsync<AggregateException>(() =>
-                subscription.DisposeAsync().AsTask()
+            var disposing = subscription.DisposeAsync().AsTask();
+            await cancelled.Task.WaitAsync(
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken
             );
+            // Disposal waits for the handler in flight, which ignores its token until released.
+            Assert.False(disposing.IsCompleted);
+            release.TrySetResult();
+            await Assert.ThrowsAsync<AggregateException>(() =>
+                disposing.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken)
+            );
+            // The channel closes in the background rather than on the disposing caller's path.
+            await SchedulingTests.WaitUntilAsync(() => broker.ClosingChannelCount == 0);
             await channel.Channel.Received(1).DisposeAsync();
             await subscription.DisposeAsync();
             await channel.Channel.Received(1).DisposeAsync();
@@ -261,6 +277,7 @@ public sealed class RabbitMqReplyValidationTests
         );
         await subscription.DisposeAsync();
         await subscription.DisposeAsync();
+        await SchedulingTests.WaitUntilAsync(() => broker.ClosingChannelCount == 0);
         await rabbit.Channels[0].Channel.Received(1).DisposeAsync();
     }
 

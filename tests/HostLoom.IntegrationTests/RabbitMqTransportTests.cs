@@ -1,7 +1,13 @@
+using System.Collections.Concurrent;
+using System.Text;
 using HostLoom.IntegrationTests.Infrastructure;
 using HostLoom.Transport.RabbitMq;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 using Xunit;
 
 namespace HostLoom.IntegrationTests;
@@ -206,7 +212,155 @@ public sealed class RabbitMqTransportTests : IAsyncLifetime
         await PublisherOf(host).PublishAsync(Unique("unheard"), new OrderPlaced("A-3"), Token);
     }
 
+    [Theory(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_consumer_whose_queue_is_deleted_is_restored_and_consumes_again(
+        bool eventSubscription
+    )
+    {
+        var name = eventSubscription
+            ? Unique("restored-events", "audit")
+            : Unique("restored-requests");
+        var queue = eventSubscription
+            ? RabbitMqQueueNames.Subscription(name, "audit")
+            : RabbitMqQueueNames.Request(name);
+        var role = eventSubscription ? "event" : "request";
+        var client = "it-restore-" + Guid.NewGuid().ToString("N");
+        using var meters = new MeterCapture(RabbitMqDiagnostics.MeterName, ClientTag, client);
+        var log = new EventLog();
+        await using var broker = new RabbitMqRequestBroker(
+            Options.Create(new RabbitMqOptions { Uri = Broker, ClientProvidedName = client }),
+            log
+        );
+        var arrivals = System.Threading.Channels.Channel.CreateUnbounded<string>();
+        await using var consumer = eventSubscription
+            ? await broker.SubscribeAsync(
+                name,
+                "audit",
+                (frame, _) =>
+                {
+                    arrivals.Writer.TryWrite(Encoding.UTF8.GetString(frame.Span));
+                    return ValueTask.CompletedTask;
+                },
+                Token
+            )
+            : await broker.ListenAsync(
+                name,
+                (frame, _) =>
+                {
+                    arrivals.Writer.TryWrite(Encoding.UTF8.GetString(frame.Span));
+                    return ValueTask.FromResult(frame);
+                },
+                Token
+            );
+
+        await SendAsync("orders:before");
+        Assert.Equal("orders:before", await NextAsync(arrivals));
+
+        // Deleted from another connection, as an operator would: the broker cancels the
+        // consumer, and the transport has to notice, declare the queue again, and resubscribe.
+        await using (
+            var admin = await new ConnectionFactory { Uri = Broker }.CreateConnectionAsync(Token)
+        )
+        {
+            await using var channel = await admin.CreateChannelAsync(cancellationToken: Token);
+            await channel.QueueDeleteAsync(queue, cancellationToken: Token);
+        }
+
+        using (var restoring = CancellationTokenSource.CreateLinkedTokenSource(Token))
+        {
+            restoring.CancelAfter(Bound);
+            await meters.WaitForAsync(
+                Consumers,
+                1,
+                restoring.Token,
+                (EventTag, "restored"),
+                (RoleTag, role)
+            );
+        }
+
+        Assert.Equal(1d, meters.Sum(Consumers, (EventTag, "cancelled"), (RoleTag, role)));
+        Assert.Contains(1411, log.EventIds);
+        Assert.Contains(1412, log.EventIds);
+        Assert.DoesNotContain(1413, log.EventIds);
+
+        await SendAsync("orders:after");
+        Assert.Equal("orders:after", await NextAsync(arrivals));
+
+        async Task SendAsync(string text)
+        {
+            var frame = Encoding.UTF8.GetBytes(text);
+            if (eventSubscription)
+            {
+                await broker.PublishAsync(name, frame, Token);
+            }
+            else
+            {
+                var answer = await broker.RequestAsync(
+                    name,
+                    frame,
+                    Guid.NewGuid(),
+                    TimeSpan.FromSeconds(10),
+                    Token
+                );
+                Assert.Equal(text, Encoding.UTF8.GetString(answer.Span));
+            }
+        }
+    }
+
+    private const string ClientTag = "hostloom.rabbitmq.client";
+    private const string EventTag = "hostloom.rabbitmq.event";
+    private const string RoleTag = "hostloom.rabbitmq.role";
+    private const string Consumers = "hostloom.rabbitmq.consumers";
+
+    private static readonly Uri Broker = new("amqp://guest:guest@localhost:5672/");
+
     private static CancellationToken Token => TestContext.Current.CancellationToken;
+
+    private static async Task<string> NextAsync(System.Threading.Channels.Channel<string> arrivals)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        deadline.CancelAfter(Bound);
+        return await arrivals.Reader.ReadAsync(deadline.Token);
+    }
+
+    /// <summary>Takes the next message from a queue, polling within the bound until one is there.</summary>
+    private static async Task<BasicGetResult> GetOneAsync(IChannel channel, string queue)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        deadline.CancelAfter(Bound);
+        while (true)
+        {
+            if (await channel.BasicGetAsync(queue, autoAck: true, deadline.Token) is { } result)
+            {
+                return result;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(20), deadline.Token);
+        }
+    }
+
+    /// <summary>Records the event ids the transport logs.</summary>
+    private sealed class EventLog : ILogger<RabbitMqRequestBroker>
+    {
+        private readonly ConcurrentQueue<int> _events = new();
+
+        public IReadOnlyList<int> EventIds => [.. _events];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        ) => _events.Enqueue(eventId.Id);
+    }
 
     /// <summary>
     /// Mints a name no other run can collide with and records what it may become on the broker:

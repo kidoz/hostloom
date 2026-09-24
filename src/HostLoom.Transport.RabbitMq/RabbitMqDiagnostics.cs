@@ -18,6 +18,7 @@ public static class RabbitMqDiagnostics
     internal const string OutcomeTag = "hostloom.rabbitmq.outcome";
     internal const string ReasonTag = "hostloom.rabbitmq.reason";
     internal const string EventTag = "hostloom.rabbitmq.event";
+    internal const string RoleTag = "hostloom.rabbitmq.role";
 
     private static readonly Meter Meter = new(MeterName);
 
@@ -55,6 +56,12 @@ public static class RabbitMqDiagnostics
         "Connections opened, and recoveries the client library completed on them."
     );
 
+    internal static readonly Counter<long> Consumers = Meter.CreateCounter<long>(
+        "hostloom.rabbitmq.consumers",
+        "{consumer}",
+        "Consumers the broker cancelled, as it does when their queue is deleted, and consumption resumed after it, tagged by event and role."
+    );
+
 #pragma warning disable CA1823 // observable instruments are kept alive by the meter, not read.
     private static readonly ObservableGauge<long> PendingRequests = Meter.CreateObservableGauge(
         "hostloom.rabbitmq.requests.pending",
@@ -67,7 +74,7 @@ public static class RabbitMqDiagnostics
         "hostloom.rabbitmq.channels.closing",
         static () => Observe(static broker => broker.ClosingChannelCount),
         "{channel}",
-        "Channels closing in the background, such as a publisher channel given up after a failed publication."
+        "Channels closing in the background, such as a publisher channel given up after a failed publication or the channel of a stopped listener or subscription."
     );
 #pragma warning restore CA1823
 

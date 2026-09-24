@@ -24,29 +24,25 @@ internal sealed class PublisherChannelPool
 {
     private readonly int _capacity;
     private readonly object _owner;
-    private readonly ILogger _logger;
-    private readonly TimeProvider _clock;
+    private readonly ChannelCloser _closer;
 
     // Waiters observe shutdown through their tokens; the semaphore is never disposed.
     private readonly SemaphoreSlim _permits;
     private readonly ConcurrentQueue<IChannel> _idle = new();
     private readonly Lock _gate = new();
-    private TaskCompletionSource _closeFinished = NewSignal();
-    private int _closing;
     private bool _shutDown;
 
-    public PublisherChannelPool(int capacity, object owner, ILogger logger, TimeProvider clock)
+    public PublisherChannelPool(int capacity, object owner, ILogger logger)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(capacity, 1);
         _capacity = capacity;
         _owner = owner;
-        _logger = logger;
-        _clock = clock;
+        _closer = new ChannelCloser("publisher", logger);
         _permits = new SemaphoreSlim(capacity, capacity);
     }
 
     /// <summary>Channels whose close was started and has not finished; read by the closing-channels gauge.</summary>
-    public int ClosingCount => Volatile.Read(ref _closing);
+    public int ClosingCount => _closer.ClosingCount;
 
     /// <summary>
     /// Waits for a permit, then hands out an open idle channel or, once fewer than
@@ -75,10 +71,12 @@ internal sealed class PublisherChannelPool
                 }
 
                 // The connection or the broker closed it while it was idle.
-                _ = StartClose(idle, logFailure: true);
+                _ = _closer.Start(idle);
             }
 
-            await WaitForClosingSlotAsync(cancellationToken).ConfigureAwait(false);
+            await _closer
+                .WaitUntilFewerThanAsync(_capacity, cancellationToken)
+                .ConfigureAwait(false);
             return await open(cancellationToken).ConfigureAwait(false);
         }
         catch
@@ -106,7 +104,7 @@ internal sealed class PublisherChannelPool
 
         if (!pooled)
         {
-            _ = StartClose(channel, logFailure: true);
+            _ = _closer.Start(channel);
         }
 
         _permits.Release();
@@ -118,17 +116,16 @@ internal sealed class PublisherChannelPool
     /// </summary>
     public void Discard(IChannel channel)
     {
-        _ = StartClose(channel, logFailure: true);
+        _ = _closer.Start(channel);
         _permits.Release();
     }
 
     /// <summary>
-    /// Stops renting and joins every publication still holding a channel, then closes the idle
-    /// channels and <paramref name="alsoClose"/>, and waits at most <paramref name="bound"/> for
-    /// every close still running, discarded channels included. Returns the failures of the
-    /// closes it started; a discarded channel's failure was logged when it happened.
+    /// Stops renting and joins every publication still holding a channel, then starts closing
+    /// the idle channels and <paramref name="alsoClose"/>. Returns those closes, which never
+    /// fault: each completes with its failure, or with none.
     /// </summary>
-    public async Task<IReadOnlyList<Exception>> ShutdownAsync(IChannel? alsoClose, TimeSpan bound)
+    public async Task<IReadOnlyList<Task<Exception?>>> ShutdownAsync(IChannel? alsoClose)
     {
         lock (_gate)
         {
@@ -147,34 +144,15 @@ internal sealed class PublisherChannelPool
             List<Task<Exception?>> closes = [];
             while (_idle.TryDequeue(out var idle))
             {
-                closes.Add(StartClose(idle, logFailure: false));
+                closes.Add(_closer.Start(idle, logFailure: false));
             }
 
             if (alsoClose is not null)
             {
-                closes.Add(StartClose(alsoClose, logFailure: false));
+                closes.Add(_closer.Start(alsoClose, logFailure: false));
             }
 
-            if (!await WaitForClosesAsync(bound).ConfigureAwait(false))
-            {
-                _logger.LogWarning(
-                    new EventId(1403, "RabbitMqChannelsStillClosing"),
-                    "{Count} RabbitMQ channels were still closing after {Bound}; disposing the connection without waiting for them.",
-                    ClosingCount,
-                    bound
-                );
-            }
-
-            List<Exception> failures = [];
-            foreach (var close in closes)
-            {
-                if (close.IsCompleted && await close.ConfigureAwait(false) is { } failure)
-                {
-                    failures.Add(failure);
-                }
-            }
-
-            return failures;
+            return closes;
         }
         finally
         {
@@ -183,98 +161,10 @@ internal sealed class PublisherChannelPool
         }
     }
 
-    private async ValueTask WaitForClosingSlotAsync(CancellationToken cancellationToken)
-    {
-        while (true)
-        {
-            Task finished;
-            lock (_gate)
-            {
-                if (_closing < _capacity)
-                {
-                    return;
-                }
-
-                finished = _closeFinished.Task;
-            }
-
-            await finished.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    /// <summary>Whether every close finished within <paramref name="bound"/>.</summary>
-    private async ValueTask<bool> WaitForClosesAsync(TimeSpan bound)
-    {
-        using var bounded = new CancellationTokenSource(bound, _clock);
-        try
-        {
-            while (true)
-            {
-                Task finished;
-                lock (_gate)
-                {
-                    if (_closing == 0)
-                    {
-                        return true;
-                    }
-
-                    finished = _closeFinished.Task;
-                }
-
-                await finished.WaitAsync(bounded.Token).ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException) when (bounded.IsCancellationRequested)
-        {
-            return false;
-        }
-    }
-
     /// <summary>
-    /// Starts closing <paramref name="channel"/> on the thread pool and returns at once. The
-    /// task never faults: it completes with the close's failure, or with none once logged.
+    /// Whether every publisher channel close still running, discarded channels included, finished
+    /// before <paramref name="deadline"/> was cancelled.
     /// </summary>
-    private Task<Exception?> StartClose(IChannel channel, bool logFailure)
-    {
-        lock (_gate)
-        {
-            _closing++;
-        }
-
-        return Task.Run(() => CloseAsync(channel, logFailure));
-    }
-
-    private async Task<Exception?> CloseAsync(IChannel channel, bool logFailure)
-    {
-        try
-        {
-            await channel.DisposeAsync().ConfigureAwait(false);
-            return null;
-        }
-        catch (Exception exception)
-        {
-            if (!logFailure)
-            {
-                return exception;
-            }
-
-            _logger.LogWarning(exception, "RabbitMQ publisher channel cleanup failed.");
-            return null;
-        }
-        finally
-        {
-            TaskCompletionSource finished;
-            lock (_gate)
-            {
-                _closing--;
-                finished = _closeFinished;
-                _closeFinished = NewSignal();
-            }
-
-            finished.TrySetResult();
-        }
-    }
-
-    private static TaskCompletionSource NewSignal() =>
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public ValueTask<bool> WaitForClosesAsync(CancellationToken deadline) =>
+        _closer.WaitForAllAsync(deadline);
 }

@@ -234,6 +234,81 @@ public sealed class RabbitMqOutageTests
         Assert.Equal(0d, meters.Observe(PendingRequests));
     }
 
+    [Fact(Timeout = 60_000, Skip = Skip, SkipUnless = nameof(Enabled))]
+    public async Task HeldReplies_DoNotHoldUpStoppingListenersAndSubscriptions()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var suffix = Guid.NewGuid().ToString("N");
+        var address = "outage-returns-" + suffix;
+        var topic = "outage-shipments-" + suffix;
+        var client = "outage-consumer-" + suffix;
+        await using var scope = new RabbitMqTopologyScope();
+        scope.Request(address);
+        scope.Subscription(topic, "audit");
+        scope.Subscription(topic, "billing");
+        using var meters = new MeterCapture(RabbitMqDiagnostics.MeterName, ClientTag, client);
+        await using var proxy = new TcpFaultProxy("localhost", 5672);
+        var broker = new RabbitMqRequestBroker(
+            Options.Create(
+                new RabbitMqOptions { Uri = Through(proxy), ClientProvidedName = client }
+            )
+        );
+        try
+        {
+            IAsyncDisposable[] consumers =
+            [
+                await broker.ListenAsync(address, (frame, _) => ValueTask.FromResult(frame), token),
+                await broker.SubscribeAsync(
+                    topic,
+                    "audit",
+                    (_, _) => ValueTask.CompletedTask,
+                    token
+                ),
+                await broker.SubscribeAsync(
+                    topic,
+                    "billing",
+                    (_, _) => ValueTask.CompletedTask,
+                    token
+                ),
+            ];
+
+            proxy.HoldReplies();
+            try
+            {
+                // Each close waits for a close-ok the proxy holds, up to the client library's
+                // 20-second continuation timeout; stopping the consumers one after another, as a
+                // host does, must not add those waits up.
+                var started = Stopwatch.GetTimestamp();
+                foreach (var consumer in consumers)
+                {
+                    await consumer.DisposeAsync().AsTask().WaitAsync(Bound, token);
+                }
+
+                var stoppedAfter = Stopwatch.GetElapsedTime(started);
+                Log($"Three consumers stopped after {stoppedAfter.TotalSeconds:F2} s.");
+                Assert.True(stoppedAfter < TimeSpan.FromSeconds(3), stoppedAfter.ToString());
+                // Their closes carry on in the background, still waiting for the held close-oks.
+                Assert.Equal(3d, meters.Observe(ClosingChannels));
+            }
+            finally
+            {
+                proxy.ReleaseReplies();
+            }
+
+            // Once the broker answers, the closes finish and nothing is left closing, well inside
+            // the time one close could have waited.
+            await WaitForGaugeAsync(meters, ClosingChannels, 0d, token);
+            await broker.DisposeAsync().AsTask().WaitAsync(Bound, token);
+        }
+        finally
+        {
+            await broker.DisposeAsync();
+        }
+    }
+
+    private static void Log(string message) =>
+        TestContext.Current.TestOutputHelper?.WriteLine(message);
+
     /// <summary>
     /// Polls an observable gauge, which raises no event to wait on, until it reads
     /// <paramref name="expected"/> or <see cref="Bound"/> passes.

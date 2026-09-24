@@ -1570,6 +1570,17 @@ public sealed partial class RabbitMqBrokerTests
                     )
                 )
                 .Do(call => Rejects.Add(call.ArgAt<ulong>(0)));
+
+            Channel
+                .When(c =>
+                    c.BasicNackAsync(
+                        Arg.Any<ulong>(),
+                        Arg.Any<bool>(),
+                        Arg.Any<bool>(),
+                        Arg.Any<CancellationToken>()
+                    )
+                )
+                .Do(call => Nacks.Add(call.ArgAt<ulong>(0)));
         }
 
         public IChannel Channel { get; }
@@ -1579,6 +1590,19 @@ public sealed partial class RabbitMqBrokerTests
         public List<ulong> Acks { get; } = [];
 
         public List<ulong> Rejects { get; } = [];
+
+        /// <summary>Deliveries nacked with requeue.</summary>
+        public List<ulong> Nacks { get; } = [];
+
+        /// <summary>
+        /// Delivers the broker's <c>basic.cancel</c> for this channel's consumer, as the broker
+        /// sends when the queue it consumes is deleted.
+        /// </summary>
+        public Task CancelByBrokerAsync() =>
+            (
+                Consumer
+                ?? throw new InvalidOperationException("No consumer has been registered yet.")
+            ).HandleBasicCancelAsync("consumer-tag", CancellationToken.None);
 
         public List<DeclaredExchange> Exchanges { get; } = [];
 

@@ -121,7 +121,9 @@ this table: it fails host startup with the client library's own exception.
 
 A publication that was not confirmed never returns its channel to the pool; the channel is
 closed in the background, so each of these returns at its deadline or failure, not after the
-close.
+close. Stopping a listener or subscription closes its channel in the background too: it waits
+for the handlers in flight, whose deliveries are requeued, but not for the broker's reply to
+the close. Disposing the transport waits at most five seconds for channels still closing.
 
 ### Kafka
 
@@ -167,3 +169,13 @@ close.
   is stopping, or the client library cancelled it) is nacked with requeue;
   every other failure is rejected without requeue, to
   `DeadLetterExchange` when one is set.
+- **RabbitMQ consumer cancellation**: the broker cancels a consumer when
+  its queue is deleted or becomes unavailable. The transport logs a
+  warning (`RabbitMqConsumerCancelled`) and counts it in
+  `hostloom.rabbitmq.consumers`. A listener or subscription then declares
+  its queue again, with the topic exchange and binding for a subscription,
+  and consumes it on a new channel. A failed attempt is logged
+  (`RabbitMqConsumerRestoreFailed`) and retried after one second, doubling
+  up to 30 seconds, until it succeeds or the listener stops. Messages that
+  were in a deleted queue are gone. A cancelled reply consumer is replaced
+  by the next request; requests still waiting for a reply there time out.
