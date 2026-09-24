@@ -132,6 +132,7 @@ close.
 | The reply consumer fails to start, for example its high-watermark query times out | `MessagingTransportException` around the client library's `KafkaException`; nothing is produced, the health probe reports it, and the next request retries the start |
 | The producer cannot deliver a request | `MessagingTransportException` around `ProduceException` |
 | The producer cannot deliver an event | `MessagingTransportException` around `ProduceException`. Publication has no deadline of its own: a produce that cannot be delivered fails when the producer's `message.timeout.ms` (five minutes by default, set through `ConfigureClient`) runs out |
+| The transport is disposed while an event publication waits for its delivery report | `ObjectDisposedException` at once. Disposal still flushes the producer for up to five seconds, so the event may yet be delivered |
 
 ## Behavioral differences worth knowing
 

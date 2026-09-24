@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
@@ -5,6 +7,7 @@ using HostLoom.IntegrationTests.Infrastructure;
 using HostLoom.Transport.Kafka;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace HostLoom.IntegrationTests;
@@ -378,6 +381,48 @@ public sealed class KafkaTransportTests : IAsyncLifetime
         Assert.Equal(2, listener.Sum(Skipped));
         Assert.Equal(3, listener.Sum(Consumed));
         Assert.Equal(0, listener.Sum(Rewound));
+    }
+
+    /// <summary>
+    /// Runs the real client library against a broker it cannot reach, so it needs no broker: the
+    /// producer holds the record and keeps retrying for the whole <c>message.timeout.ms</c>, and
+    /// only its delivery report, which disposal destroys with the producer, or its token can end
+    /// the call. The caller here passes no token, as a background relay might.
+    /// </summary>
+    [Fact(Timeout = 60_000)]
+    public async Task A_publish_in_flight_when_the_transport_is_disposed_ends_instead_of_hanging()
+    {
+        var token = TestContext.Current.CancellationToken;
+        int port;
+        using (var reserved = new TcpListener(IPAddress.Loopback, 0))
+        {
+            reserved.Start();
+            port = ((IPEndPoint)reserved.LocalEndpoint).Port;
+            reserved.Stop();
+        }
+
+        var name = Unique("unreachable");
+        var broker = new KafkaRequestBroker(
+            Options.Create(
+                new KafkaOptions
+                {
+                    BootstrapServers = $"127.0.0.1:{port}",
+                    ClientId = name,
+                    ConsumerGroup = name,
+                }
+            )
+        );
+        var publish = broker
+            .PublishAsync(name, "orders:unreachable"u8.ToArray(), CancellationToken.None)
+            .AsTask();
+        Assert.False(publish.IsCompleted);
+
+        // Disposal flushes for a bounded five seconds, which cannot deliver the record here.
+        await broker.DisposeAsync().AsTask().WaitAsync(Bound, token);
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            publish.WaitAsync(TimeSpan.FromSeconds(10), token)
+        );
     }
 
     public ValueTask InitializeAsync() => ValueTask.CompletedTask;

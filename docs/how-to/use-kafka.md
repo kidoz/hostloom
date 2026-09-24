@@ -107,7 +107,10 @@ disposing the transport ends pending requests with `ObjectDisposedException`. A 
 cancellation cannot retract a record already accepted by Kafka. Publishing an event has no
 deadline of its own: a record the producer cannot deliver fails with
 `MessagingTransportException` once the producer's `message.timeout.ms` runs out, five minutes
-unless `ConfigureClient` sets it.
+unless `ConfigureClient` sets it. Disposing the transport ends a publication still waiting
+for its delivery report with `ObjectDisposedException`, even one called without a
+cancellation token; the producer is still flushed for up to five seconds, so the event may
+yet be delivered.
 
 ## 4. Verify
 

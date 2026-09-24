@@ -29,7 +29,9 @@ internal delegate IConsumer<string, byte[]> KafkaConsumerFactory(
 /// producer could not deliver, as <see cref="MessagingTransportException"/> with the client
 /// library's exception inside; a failed start is retried by the next request.
 /// <see cref="PublishAsync"/> reports a failed delivery the same way. Publication has no
-/// deadline of its own beyond the producer's <c>message.timeout.ms</c>.
+/// deadline of its own beyond the producer's <c>message.timeout.ms</c>; disposing the transport
+/// ends a publication still waiting for its delivery report with
+/// <see cref="ObjectDisposedException"/>, although the flush during disposal may yet deliver it.
 /// </para>
 /// <para>
 /// The health probe answers from the reply consumer's local state and never contacts the
@@ -264,6 +266,13 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        // A produce completes only through its delivery report or its token. Disposal destroys
+        // the producer, and with it any report still owed, so without the shutdown token a
+        // publication in flight then, such as one to an unreachable broker, would never end.
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _shutdownToken
+        );
 
         try
         {
@@ -274,8 +283,9 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                 .ProduceAsync(
                     topic.Value,
                     new Message<string, byte[]> { Value = frame.ToArray() },
-                    cancellationToken
+                    lifetime.Token
                 )
+                .WaitAsync(lifetime.Token)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -285,7 +295,12 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
             throw;
         }
         catch (Exception exception)
-            when (_disposed && exception is KafkaException or ObjectDisposedException)
+            when (_disposed
+                && exception
+                    is KafkaException
+                        or ObjectDisposedException
+                        or OperationCanceledException
+            )
         {
             throw new ObjectDisposedException(nameof(KafkaRequestBroker));
         }

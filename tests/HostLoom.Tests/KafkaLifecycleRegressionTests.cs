@@ -175,6 +175,49 @@ public sealed class KafkaLifecycleRegressionTests
         delivery.SetResult(new DeliveryResult<string, byte[]>());
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task A_publish_in_flight_when_the_broker_is_disposed_ends_with_object_disposed()
+    {
+        var producing = Signal();
+        // A delivery report that never arrives, as for a record still queued when disposal
+        // destroys the producer; like a lost report, it ignores the token as well.
+        var delivery = new TaskCompletionSource<DeliveryResult<string, byte[]>>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var producer = Substitute.For<IProducer<string, byte[]>>();
+        producer
+            .ProduceAsync(
+                Arg.Any<string>(),
+                Arg.Any<Message<string, byte[]>>(),
+                Arg.Any<CancellationToken>()
+            )
+            .Returns(_ =>
+            {
+                producing.SetResult();
+                return delivery.Task;
+            });
+        await using var broker = new KafkaRequestBroker(
+            Options.Create(new KafkaOptions()),
+            null,
+            producer,
+            (_, _) => Consumer()
+        );
+        // A caller with no token of its own, such as a relay publishing in the background.
+        var publish = broker
+            .PublishAsync("orders", new byte[] { 1 }, CancellationToken.None)
+            .AsTask();
+        await producing.Task.WaitAsync(Bound, TestContext.Current.CancellationToken);
+
+        await broker
+            .DisposeAsync()
+            .AsTask()
+            .WaitAsync(Bound, TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            publish.WaitAsync(Bound, TestContext.Current.CancellationToken)
+        );
+    }
+
     [Theory(Timeout = 30_000)]
     [InlineData("request")]
     [InlineData("listen")]
