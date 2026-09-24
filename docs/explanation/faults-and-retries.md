@@ -25,7 +25,8 @@ between in-process retry and broker redelivery.
 4. On the caller's side the fault surfaces as `RemoteRequestException`,
    with `ErrorType` carrying the fault type: `HandlerFault`,
    `HandlerNotFound` (no handler for that message type on the endpoint),
-   `ResponseTypeMismatch`, or the exception type name when details were
+   `ResponseTypeMismatch`, `HandlerNotRun` (a receive filter completed the
+   request without running its handler), or the exception type name when details were
    allowed. A reply that never arrives ends as `RequestTimeoutException`
    when the request timeout elapses; an undecodable envelope raises
    `MalformedEnvelopeException`.

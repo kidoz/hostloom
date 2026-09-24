@@ -67,6 +67,12 @@ public sealed class RequestReceiveContext : ReceiveContext
 
     internal object? Response { get; private set; }
 
+    /// <summary>
+    /// Whether the handler ran to completion. A receive filter that ends the pipeline early
+    /// leaves it unset, and there is then no response to send.
+    /// </summary>
+    internal bool Handled { get; private set; }
+
     private protected override async ValueTask ExecuteAsync(
         IServiceProvider provider,
         CancellationToken cancellationToken
@@ -74,6 +80,7 @@ public sealed class RequestReceiveContext : ReceiveContext
     {
         var executor = (IRequestExecutor)provider.GetRequiredService(_executorType);
         Response = await executor.ExecuteAsync(Message, cancellationToken).ConfigureAwait(false);
+        Handled = true;
     }
 }
 

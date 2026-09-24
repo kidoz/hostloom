@@ -160,6 +160,44 @@ public sealed class ReceivePipelineTests
         Assert.Contains("Flaky", entry, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("terminal")]
+    [InlineData("conditional")]
+    [InlineData("custom")]
+    public async Task A_filter_that_short_circuits_a_request_answers_with_a_stable_fault(
+        string shortCircuit
+    )
+    {
+        var attempts = new Attempts { FailUntil = 1 };
+        using var host = await StartAsync(
+            attempts,
+            pipe =>
+                _ = shortCircuit switch
+                {
+                    "terminal" => pipe.UseTerminal(static _ => ValueTask.CompletedTask),
+                    "conditional" => pipe.UseWhen(
+                        static _ => true,
+                        static branch => branch.UseTerminal(static _ => ValueTask.CompletedTask)
+                    ),
+                    _ => pipe.Use(static (_, _) => ValueTask.CompletedTask, "gate"),
+                }
+        );
+
+        // The handler never ran, so there is no response to send. The caller is told so in a
+        // fault, rather than receiving an empty response and blaming the wire for it.
+        var exception = await Assert.ThrowsAsync<RemoteRequestException>(async () =>
+            await ClientOf(host)
+                .GetResponseAsync(
+                    "flaky",
+                    new Flaky(),
+                    cancellationToken: TestContext.Current.CancellationToken
+                )
+        );
+
+        Assert.Equal("HandlerNotRun", exception.ErrorType);
+        Assert.Equal(0, attempts.Count);
+    }
+
     private static async Task<IHost> StartAsync(
         Attempts attempts,
         Action<PipeBuilder<ReceiveContext>>? configure

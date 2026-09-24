@@ -21,6 +21,16 @@ internal sealed class MessageDispatcher
     internal const string ResponseTypeMismatchFaultType = "ResponseTypeMismatch";
 
     /// <summary>
+    /// Fault type for a request a receive filter completed without running its handler, such as
+    /// <c>UseTerminal</c> or a conditional branch that ends the pipeline.
+    /// </summary>
+    internal const string HandlerNotRunFaultType = "HandlerNotRun";
+
+    /// <summary>Fault message reported with <see cref="HandlerNotRunFaultType"/>.</summary>
+    internal const string HandlerNotRunFaultMessage =
+        "A receive filter completed the request without running its handler, so there is no response.";
+
+    /// <summary>
     /// Metric tag used in place of a message type the endpoint does not know. The wire value is
     /// caller-controlled, so tagging it verbatim would let a caller mint unbounded time series.
     /// </summary>
@@ -132,6 +142,23 @@ internal sealed class MessageDispatcher
 
             await _receivePipeline.SendAsync(receiveContext).ConfigureAwait(false);
             RecordRetries(receiveContext, tags);
+
+            if (!receiveContext.Handled)
+            {
+                // A success envelope would carry no body, and the caller would blame the wire for
+                // a malformed reply. The fault names no filter, like every framework fault.
+                activity?.SetStatus(ActivityStatusCode.Error, HandlerNotRunFaultMessage);
+                _logger.LogWarning(
+                    "A receive filter completed request '{MessageType}' on endpoint '{Endpoint}' without running its handler.",
+                    request.MessageType,
+                    endpoint.Value
+                );
+                return EncodeFault(
+                    request,
+                    tags,
+                    new RemoteFault(HandlerNotRunFaultType, HandlerNotRunFaultMessage)
+                );
+            }
 
             var envelope = new MessageEnvelope
             {

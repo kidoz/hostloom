@@ -75,7 +75,9 @@ handling side's log. The exception's own type name and message are sent
 only when it is a `RemoteFaultException` (thrown by the handler for the
 caller to read) or when `HostLoomOptions.IncludeFaultDetails` is on.
 Requests the endpoint cannot route are answered with the stable types
-`HandlerNotFound` and `ResponseTypeMismatch`. On the caller's side a fault
+`HandlerNotFound` and `ResponseTypeMismatch`, and a request a receive filter
+completed without running its handler with `HandlerNotRun`, because there is
+no response to send. On the caller's side a fault
 surfaces as `RemoteRequestException`, whose `ErrorType` is that type. An
 envelope that cannot be decoded raises `MalformedEnvelopeException`; a
 reply that never arrives within the request timeout raises
