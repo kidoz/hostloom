@@ -264,6 +264,12 @@ fixed one-second rate window; exceeding `MaximumControlFramesPerSecond` closes w
 `MaximumRequestsPerSecond` (100 by default), checked before any dependency-injection scope,
 authorization, or payload work; unregistered operations therefore cost the same as registered
 ones. Exceeding it closes with the same 1008 `rate_limited`.
+
+Every `credit` and `ack` frame counts against the control budget, so a subscriber's credit sizing
+matters. With a small credit, a busy topic, or many subscriptions on one connection, replenishing
+credit per event would exceed the budget. The TypeScript client coalesces credit and
+acknowledgements per subscription and paces them to half of the budget; its README explains how to
+size credit for a connection's event rate.
 Register a custom `IWebSocketSessionLifetimeResolver` before `AddWebSocketGateway` when credential
 expiry lives elsewhere.
 
@@ -320,7 +326,8 @@ enforces the advertised concurrency and encoded-message limits, passes gateway t
 allocation with requests, waits for `subscribed`, buffers within initial credit until a listener
 exists, replenishes credit at a configurable low watermark, acknowledges current-session progress,
 cleans up unowned subscription streams, maps cancellation to `unsubscribe`, and resubscribes
-retained logical handles after a replacement welcome. Close code `1008` retries only after the
+retained logical handles after a replacement welcome. It coalesces credit and acknowledgements and
+paces them below the gateway's control-frame budget. Close code `1008` retries only after the
 configured credential-refresh callback succeeds.
 
 The server rejects an upgrade when no supported subprotocol was offered. Changing a frame's

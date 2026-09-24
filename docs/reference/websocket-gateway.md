@@ -19,7 +19,8 @@ enforcement, gateway timeouts, local enforcement of the advertised encoded-messa
 `AbortSignal` cancellation; requests are never replayed. Its subscription API shares stream
 allocation with requests, waits for confirmation, buffers within initial credit until an event
 listener exists, replenishes credit at a configurable low watermark, acknowledges current-session
-progress, cleans up unowned subscription streams, maps cancellation to `unsubscribe`, and
+progress, coalesces and paces credit and acknowledgements below the gateway's control-frame budget,
+cleans up unowned subscription streams, maps cancellation to `unsubscribe`, and
 resubscribes retained logical handles after a replacement welcome. Close code `1008` requires a
 successful credential refresh before retry.
 
@@ -237,6 +238,18 @@ client-invalid frames in one fixed one-second window closes the session with 100
 `request` frames have a separate `MaximumRequestsPerSecond` window that is checked before any
 scope, authorization, or payload work, so unregistered operations count as well; exceeding it
 closes the same way.
+
+Because every `credit` and `ack` counts, credit sizing is part of staying within the control budget.
+A subscriber that replenished credit after every event would be closed by a small credit on a busy
+topic, or by many subscriptions on one connection. The TypeScript client sends credit and
+acknowledgements after the current task, one frame of each per subscription, and paces them to at
+most half of the budget in any second; set its `maximumControlFramesPerSecond` connection option
+when the gateway uses a limit other than 50. While paced credit is held back, the gateway drops
+that subscription's live events as `no_credit` instead of closing the session. With the client's
+default low watermark of half the credit, a subscription receiving `R` events per second needs
+about `2 × R ÷ credit` credit frames per second; keep the total across a connection's subscriptions
+well below 20, the client's sustained pace at the default budget. For example, ten subscriptions
+receiving 20 events per second each need a credit of at least 32.
 
 ## Application-level ping
 

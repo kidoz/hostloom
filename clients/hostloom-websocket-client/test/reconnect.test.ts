@@ -210,6 +210,7 @@ test("an unexpected close retries and restores a logical subscription without re
     });
     assert.equal(subscription.state, "active");
     subscription.acknowledge(3);
+    await Promise.resolve();
     assert.deepEqual(sentFrames(secondSocket).at(-1), {
         kind: "ack",
         streamId: stream(3),

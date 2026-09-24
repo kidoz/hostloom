@@ -95,6 +95,15 @@ export interface HostLoomConnectionOptions {
      * Omit it to retain manual reconnect behavior.
      */
     readonly reconnect?: HostLoomReconnectOptions;
+    /**
+     * The gateway's `MaximumControlFramesPerSecond`, 50 by default. The gateway closes a session
+     * with 1008 `rate_limited` when more `subscribe`, `credit`, `ack`, `unsubscribe`, `cancel`, and
+     * `ping` frames than this arrive in one second. Every such frame the connection sends draws
+     * on a local budget, and automatic credit and acknowledgements wait while it is spent, so they
+     * use at most half of this value, and never less than one frame, in any one-second interval.
+     * Set it to match a gateway configured with a different limit.
+     */
+    readonly maximumControlFramesPerSecond?: number;
 }
 
 export interface HostLoomRequestOptions {
@@ -208,6 +217,8 @@ export class HostLoomConnection {
     readonly #logicalSubscriptions = new Set<SubscriptionController>();
     readonly #manualSubscriptions = new Set<string>();
     readonly #orphanedSubscriptions = new Set<string>();
+    readonly #pendingControl = new Set<SubscriptionController>();
+    readonly #controlBudget: ControlFrameBudget;
 
     #state: HostLoomConnectionState = "disconnected";
     #socket: HostLoomWebSocket | undefined;
@@ -226,12 +237,17 @@ export class HostLoomConnection {
     #nextReconnectDelay: number;
     #closeDisposition: CloseDisposition | undefined;
     #reconnectClose: HostLoomCloseInfo | undefined;
+    #controlFlushQueued = false;
+    #controlTimer: number | undefined;
 
     public constructor(url: string | URL, options: HostLoomConnectionOptions = {}) {
         this.#url = url;
         this.#webSocketFactory = options.webSocketFactory ?? createBrowserWebSocket;
         this.#streamIdFactory = options.streamIdFactory ?? newStreamId;
         this.#reconnect = resolveReconnectOptions(options.reconnect);
+        this.#controlBudget = new ControlFrameBudget(
+            resolveControlFramesPerSecond(options.maximumControlFramesPerSecond),
+        );
         this.#nextReconnectDelay =
             this.#reconnect?.initialDelayMilliseconds ?? DEFAULT_RECONNECT_INITIAL_DELAY;
     }
@@ -394,7 +410,9 @@ export class HostLoomConnection {
      * Subscribes to one topic and resolves after the gateway confirms it.
      *
      * Event credit is replenished to the requested amount whenever the remaining credit reaches the
-     * low watermark. Replenishment pauses until at least one event listener is attached.
+     * low watermark. Replenishment pauses until at least one event listener is attached. Credit
+     * and acknowledgements are sent after the current task, at most one frame of each per
+     * subscription, and wait while the connection's control-frame budget is spent.
      */
     public subscribe(
         topic: string,
@@ -470,6 +488,7 @@ export class HostLoomConnection {
             send: (frame) => this.#sendClientFrame(frame),
             onProtocolError: (error) => this.#failProtocol(error),
             onTerminal: () => this.#removeSubscription(controller),
+            onControlPending: () => this.#requestControl(controller),
         });
         this.#logicalSubscriptions.add(controller);
         this.#subscriptions.set(streamId, controller);
@@ -1006,6 +1025,70 @@ export class HostLoomConnection {
                 cause: error,
             });
         }
+
+        // Requests have their own gateway budget; every other client frame shares this one.
+        if (frame.kind !== "request") {
+            this.#controlBudget.spend();
+        }
+    }
+
+    #requestControl(subscription: SubscriptionController): void {
+        this.#pendingControl.add(subscription);
+        this.#scheduleControlFlush();
+    }
+
+    #scheduleControlFlush(): void {
+        if (
+            this.#pendingControl.size === 0 ||
+            this.#controlFlushQueued ||
+            this.#controlTimer !== undefined
+        ) {
+            return;
+        }
+
+        const delay = this.#controlBudget.delay();
+        if (delay === 0) {
+            // Everything the current task consumed or acknowledged leaves together.
+            this.#controlFlushQueued = true;
+            queueMicrotask(() => {
+                this.#controlFlushQueued = false;
+                this.#flushControl();
+            });
+            return;
+        }
+
+        this.#controlTimer = globalThis.setTimeout(() => {
+            this.#controlTimer = undefined;
+            this.#flushControl();
+        }, delay);
+    }
+
+    /** Flushes waiting subscriptions in request order while the budget allows. */
+    #flushControl(): void {
+        for (const subscription of this.#pendingControl) {
+            if (this.#state !== "connected") {
+                this.#discardControl();
+                return;
+            }
+
+            if (this.#controlBudget.delay() > 0) {
+                break;
+            }
+
+            this.#pendingControl.delete(subscription);
+            subscription.flushControl();
+        }
+
+        this.#scheduleControlFlush();
+    }
+
+    /** A replacement session resubscribes with fresh credit, so nothing pending carries over. */
+    #discardControl(): void {
+        this.#pendingControl.clear();
+        if (this.#controlTimer !== undefined) {
+            globalThis.clearTimeout(this.#controlTimer);
+            this.#controlTimer = undefined;
+        }
     }
 
     #handleUnroutedSubscriptionFrame(frame: Exclude<ServerFrame, WelcomeFrame>): void {
@@ -1094,6 +1177,7 @@ export class HostLoomConnection {
             this.#subscriptions.delete(subscription.streamId);
         }
         this.#logicalSubscriptions.delete(subscription);
+        this.#pendingControl.delete(subscription);
     }
 
     #takeRequest(streamId: string): PendingRequest | undefined {
@@ -1121,6 +1205,13 @@ export class HostLoomConnection {
             return;
         }
 
+        if (state === "connected") {
+            // Each gateway session counts control frames in its own windows.
+            this.#controlBudget.reset();
+        } else if (this.#state === "connected") {
+            this.#discardControl();
+        }
+
         const change: HostLoomConnectionStateChange = {
             previousState: this.#state,
             state,
@@ -1138,6 +1229,7 @@ const DEFAULT_RECONNECT_INITIAL_DELAY = 1_000;
 const DEFAULT_RECONNECT_MAXIMUM_DELAY = 30_000;
 const DEFAULT_RECONNECT_MULTIPLIER = 2;
 const DEFAULT_RECONNECT_JITTER_RATIO = 0.2;
+const DEFAULT_MAXIMUM_CONTROL_FRAMES_PER_SECOND = 50;
 const UTF8_ENCODER = new TextEncoder();
 
 function resolveReconnectOptions(
@@ -1191,6 +1283,72 @@ function resolveReconnectOptions(
         jitterRatio,
         refreshCredentials: options.refreshCredentials,
     };
+}
+
+function resolveControlFramesPerSecond(value: number | undefined): number {
+    const framesPerSecond = value ?? DEFAULT_MAXIMUM_CONTROL_FRAMES_PER_SECOND;
+    if (!Number.isSafeInteger(framesPerSecond) || framesPerSecond <= 0) {
+        throw new RangeError(
+            "The maximum control frames per second must be a positive safe integer.",
+        );
+    }
+
+    return framesPerSecond;
+}
+
+/**
+ * A token bucket for control frames. Every control frame spends a token, and frames the
+ * application sends directly may overdraw it; automatic credit and acknowledgements wait for a
+ * whole token. The capacity plus one second of refill is half the gateway's budget, or one
+ * frame for a budget below four, so no one-second interval carries more automatic frames than
+ * that, whatever the event rate or the number of subscriptions.
+ */
+class ControlFrameBudget {
+    readonly #capacity: number;
+    readonly #refillPerMillisecond: number;
+    #tokens: number;
+    #refilledAt: number;
+
+    public constructor(framesPerSecond: number) {
+        this.#capacity = Math.max(1, Math.floor(framesPerSecond / 10));
+        const refillPerSecond = Math.max(
+            framesPerSecond / 2 - this.#capacity,
+            framesPerSecond / 10,
+        );
+        this.#refillPerMillisecond = refillPerSecond / 1_000;
+        this.#tokens = this.#capacity;
+        this.#refilledAt = monotonicNow();
+    }
+
+    public reset(): void {
+        this.#tokens = this.#capacity;
+        this.#refilledAt = monotonicNow();
+    }
+
+    public spend(): void {
+        this.#refill();
+        this.#tokens -= 1;
+    }
+
+    /** Milliseconds until an automatic frame may be sent; zero when one may be sent now. */
+    public delay(): number {
+        this.#refill();
+        return this.#tokens >= 1 ? 0 : Math.ceil((1 - this.#tokens) / this.#refillPerMillisecond);
+    }
+
+    #refill(): void {
+        const now = monotonicNow();
+        const elapsed = Math.max(0, now - this.#refilledAt);
+        this.#refilledAt = now;
+        this.#tokens = Math.min(
+            this.#capacity,
+            this.#tokens + elapsed * this.#refillPerMillisecond,
+        );
+    }
+}
+
+function monotonicNow(): number {
+    return globalThis.performance.now();
 }
 
 function createBrowserWebSocket(

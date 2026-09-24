@@ -16,7 +16,8 @@ This package currently provides:
   cancellation;
 - a subscription API with shared stream allocation, confirmation gating, bounded pre-listener event
   buffering, automatic low-watermark credit replenishment, acknowledgements, typed terminal faults,
-  `AbortSignal` unsubscription, and automatic resubscription on a replacement socket;
+  `AbortSignal` unsubscription, and automatic resubscription on a replacement socket, with credit
+  and acknowledgements coalesced and paced below the gateway's control-frame budget;
 - client `ping` and server `pong` frames for application-level liveness and round-trip time;
 - conformance tests against the schema and exact fixtures shipped by
   `HostLoom.AspNetCore.WebSockets`.
@@ -120,6 +121,34 @@ the client restores the requested credit whenever the remaining amount reaches `
 gateway replies `complete`. An `AbortSignal` follows the same wire shutdown; aborting before
 confirmation rejects the pending call with `HostLoomSubscriptionCanceledError`.
 
+### Credit and the control-frame budget
+
+The gateway closes a session with 1008 `rate_limited` when more `subscribe`, `credit`, `ack`,
+`unsubscribe`, `cancel`, and `ping` frames than its `MaximumControlFramesPerSecond` (50 by default)
+arrive in one second. Credit replenished after every event would reach that limit with a small
+credit on a busy topic, or with many subscriptions on one connection, so the client:
+
+- sends credit and acknowledgements after the current task, at most one `credit` frame per
+  subscription carrying everything consumed and one `ack` frame carrying the highest sequence
+  acknowledged;
+- counts every control frame it sends, including `subscribe`, `unsubscribe`, `cancel`, and `ping`,
+  against a connection-wide budget, and holds automatic credit and acknowledgements back while
+  that budget is spent. With the default gateway limit they use at most 25 frames in any
+  one-second interval: a burst of 5, then 20 per second. Subscriptions waiting for the budget are
+  served in turn.
+
+Set `maximumControlFramesPerSecond` in the connection options when the gateway is configured with a
+different limit; the pacing is half of it, and never less than one frame per second.
+
+Pacing prevents the rate-limit close, not event loss. While a subscription's credit is held back
+the gateway has no credit for it and drops its live events, counting them as `no_credit`. Size
+credit so that the automatic frames stay below the pace. With the default low watermark, a
+subscription receiving `R` events per second needs about `2 × R ÷ credit` credit frames per
+second; keep the total across the connection well below 20. For example, ten subscriptions receiving 20
+events per second each need a credit of at least 32, which needs about 12 credit frames per second.
+An acknowledgement adds up to one `ack` frame per flush, so acknowledging every event on busy
+subscriptions takes budget from credit; acknowledge as often as progress tracking needs.
+
 Several streams may subscribe to the same `(topic, key)` pair. They remain independent: each
 receives its own event frame and unsubscribing one leaves its siblings registered. `unsubscribe()`
 is idempotent after a subscription has already reached `closed`, including after a remote fault or
@@ -127,7 +156,8 @@ connection loss. An unsubscribe that was already waiting for `complete` still re
 failure interrupts that in-flight operation.
 
 `acknowledge(sequence)` records positive live-event progress in the current gateway session; it
-does not enable replay. An acknowledgement made while the subscription is `reconnecting` is a
+does not enable replay. The gateway keeps only the highest acknowledged sequence, so the client
+sends it after the current task and skips a sequence no higher than one already sent. An acknowledgement made while the subscription is `reconnecting` is a
 no-op because an old session's sequence cannot be applied to its replacement. Other invalid
 lifecycle states throw `HostLoomSubscriptionStateError` with the current public state. With
 automatic reconnect enabled, a logical subscription and its listeners enter `reconnecting`,

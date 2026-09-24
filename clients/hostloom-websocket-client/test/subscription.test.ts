@@ -256,6 +256,9 @@ test("events buffer until observed and replenish credit at the low watermark", a
             [1, stream(0x1001)],
         ],
     );
+
+    // Credit leaves once the current task ends, so everything it consumed shares one frame.
+    await Promise.resolve();
     assert.deepEqual(sentFrames(socket).at(-1), {
         kind: "credit",
         streamId: stream(1),
@@ -263,8 +266,10 @@ test("events buffer until observed and replenish credit at the low watermark", a
     });
 
     socket.message(event(stream(1), 2));
+    await Promise.resolve();
     assert.equal(socket.sent.length, 2);
     socket.message(event(stream(1), 3));
+    await Promise.resolve();
     assert.deepEqual(sentFrames(socket).at(-1), {
         kind: "credit",
         streamId: stream(1),
@@ -465,6 +470,7 @@ test("acknowledge validates positive sequences and sends an ack while active", a
 
     assert.throws(() => subscription.acknowledge(0), RangeError);
     subscription.acknowledge(7);
+    await Promise.resolve();
     assert.deepEqual(sentFrames(socket).at(-1), {
         kind: "ack",
         streamId: stream(1),

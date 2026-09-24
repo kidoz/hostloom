@@ -61,6 +61,8 @@ interface SubscriptionControllerOptions {
     readonly send: (frame: ClientFrame) => void;
     readonly onProtocolError: (error: HostLoomProtocolError) => void;
     readonly onTerminal: () => void;
+    /** Asks the connection to call `flushControl()` when its control-frame budget allows. */
+    readonly onControlPending: () => void;
 }
 
 type InternalSubscriptionState = "subscribing" | "resubscribing" | HostLoomSubscriptionState;
@@ -76,6 +78,7 @@ export class SubscriptionController {
     readonly #send: (frame: ClientFrame) => void;
     readonly #onProtocolError: (error: HostLoomProtocolError) => void;
     readonly #onTerminal: () => void;
+    readonly #onControlPending: () => void;
     readonly #eventListeners = new Set<HostLoomSubscriptionEventListener>();
     readonly #closeListeners = new Set<HostLoomSubscriptionCloseListener>();
     readonly #bufferedEvents: EventFrame[] = [];
@@ -85,6 +88,8 @@ export class SubscriptionController {
 
     #state: InternalSubscriptionState = "subscribing";
     #remainingCredit: number;
+    #pendingAcknowledgement = 0;
+    #sentAcknowledgement = 0;
     #readySettled = false;
     #resolveReady: (subscription: HostLoomSubscription) => void;
     #rejectReady: (error: Error) => void;
@@ -104,6 +109,7 @@ export class SubscriptionController {
         this.#send = options.send;
         this.#onProtocolError = options.onProtocolError;
         this.#onTerminal = options.onTerminal;
+        this.#onControlPending = options.onControlPending;
 
         let resolveReady: (subscription: HostLoomSubscription) => void;
         let rejectReady: (error: Error) => void;
@@ -178,6 +184,7 @@ export class SubscriptionController {
         this.#state = "reconnecting";
         this.#remainingCredit = this.#credit;
         this.#bufferedEvents.length = 0;
+        this.#resetAcknowledgements();
     }
 
     public restart(streamId: string): boolean {
@@ -187,6 +194,7 @@ export class SubscriptionController {
 
         this.#streamId = streamId;
         this.#remainingCredit = this.#credit;
+        this.#resetAcknowledgements();
         this.#state = this.#readySettled ? "resubscribing" : "subscribing";
         return this.#sendSubscribe();
     }
@@ -277,7 +285,7 @@ export class SubscriptionController {
         }
 
         this.#notifyEvent(event);
-        this.#replenishCredit();
+        this.#requestCredit();
     }
 
     public complete(): void {
@@ -317,7 +325,7 @@ export class SubscriptionController {
                 }
                 this.#notifyEvent(event);
             }
-            this.#replenishCredit();
+            this.#requestCredit();
         }
 
         return () => this.#eventListeners.delete(listener);
@@ -349,7 +357,11 @@ export class SubscriptionController {
             );
         }
 
-        this.#send({ kind: "ack", streamId: this.#streamId, sequence });
+        // The gateway keeps only the highest acknowledgement, so one frame per flush carries it.
+        if (sequence > Math.max(this.#pendingAcknowledgement, this.#sentAcknowledgement)) {
+            this.#pendingAcknowledgement = sequence;
+            this.#onControlPending();
+        }
     }
 
     #unsubscribe(): Promise<void> {
@@ -412,24 +424,56 @@ export class SubscriptionController {
         }
     }
 
-    #replenishCredit(): void {
-        if (
-            this.#state !== "active" ||
-            this.#eventListeners.size === 0 ||
-            this.#remainingCredit > this.#lowWatermark
-        ) {
+    /**
+     * Sends the credit consumed and the highest acknowledgement made since the last flush, at
+     * most one frame of each. The connection calls it when its control-frame budget allows, so
+     * events that arrive while a frame is held back add to it instead of sending another.
+     */
+    public flushControl(): void {
+        const acknowledgement = this.#pendingAcknowledgement;
+        this.#pendingAcknowledgement = 0;
+        if (this.#needsCredit) {
+            const amount = this.#credit - this.#remainingCredit;
+            const previousCredit = this.#remainingCredit;
+            this.#remainingCredit = this.#credit;
+            try {
+                this.#send({ kind: "credit", streamId: this.#streamId, credit: amount });
+            } catch (error) {
+                this.#remainingCredit = previousCredit;
+                this.fail(asError(error));
+                return;
+            }
+        }
+
+        if (this.#state !== "active" || acknowledgement <= this.#sentAcknowledgement) {
             return;
         }
 
-        const amount = this.#credit - this.#remainingCredit;
-        const previousCredit = this.#remainingCredit;
-        this.#remainingCredit = this.#credit;
         try {
-            this.#send({ kind: "credit", streamId: this.#streamId, credit: amount });
+            this.#send({ kind: "ack", streamId: this.#streamId, sequence: acknowledgement });
+            this.#sentAcknowledgement = acknowledgement;
         } catch (error) {
-            this.#remainingCredit = previousCredit;
             this.fail(asError(error));
         }
+    }
+
+    #requestCredit(): void {
+        if (this.#needsCredit) {
+            this.#onControlPending();
+        }
+    }
+
+    get #needsCredit(): boolean {
+        return (
+            this.#state === "active" &&
+            this.#eventListeners.size > 0 &&
+            this.#remainingCredit <= this.#lowWatermark
+        );
+    }
+
+    #resetAcknowledgements(): void {
+        this.#pendingAcknowledgement = 0;
+        this.#sentAcknowledgement = 0;
     }
 
     #notifyEvent(event: EventFrame): void {
