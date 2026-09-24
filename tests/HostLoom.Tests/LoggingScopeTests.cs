@@ -166,11 +166,23 @@ public sealed class LoggingScopeTests
         await using var provider = new HostLoomLoggerProvider(
             new JsonLogFormatter(),
             sink,
-            new HostLoomLoggerOptions { Destructuring = { MaxEncodedBytesPerRecord = 16 } }
+            new HostLoomLoggerOptions { Destructuring = { MaxEncodedBytesPerRecord = 128 } }
         );
         var logger = provider.CreateLogger("Budgeted");
+        var filler = new string('x', 20);
 
-        using (logger.BeginScope("first {@First}", new { Filler = new string('x', 64) }))
+        using (
+            logger.BeginScope(
+                "first {@First}",
+                new
+                {
+                    A = filler,
+                    B = filler,
+                    C = filler,
+                    D = filler,
+                }
+            )
+        )
         using (logger.BeginScope("second {@Second}", new { Value = 1 }))
         {
             logger.LogInformation("inside");
@@ -179,9 +191,13 @@ public sealed class LoggingScopeTests
         await provider.DisposeAsync();
 
         var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
-        // The outer scope spent the record's budget; the inner one degrades to the sentinel in
-        // its field and in its text rather than growing the record without bound.
-        Assert.Equal(JsonValueKind.Object, root.GetProperty("First").ValueKind);
+        // The outer scope spent the record's budget, cut at the member that would have overrun
+        // it; the inner one degrades to the sentinel in its field and in its text rather than
+        // growing the record without bound.
+        var first = root.GetProperty("First");
+        Assert.Equal(JsonValueKind.Object, first.ValueKind);
+        Assert.False(first.TryGetProperty("D", out _));
+        Assert.True(Encoding.UTF8.GetByteCount(first.GetRawText()) <= 128);
         Assert.Equal("…", root.GetProperty("Second").GetString());
         var scope = root.GetProperty("Scope").EnumerateArray().Select(e => e.GetString()).ToArray();
         Assert.Equal("second …", scope[1]);

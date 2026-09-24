@@ -97,6 +97,14 @@ internal sealed class EventCapture(
 
         // The span points into thread-local scratch; AddFieldJson copies it out immediately.
         var json = destructurer.Destructure(value!, remaining);
+        if (json.Length > remaining)
+        {
+            // Not even the cut fragment fits what is left, so the record's destructured bytes
+            // can never exceed the budget: the hole degrades like one past it, spending nothing.
+            entry.AddFieldText(name, "…", source);
+            return;
+        }
+
         // Clamped at zero: a negative budget means "not yet initialized", never "overspent".
         entry.DestructuringBudget = Math.Max(0, remaining - json.Length);
         entry.AddFieldJson(name, json, source);

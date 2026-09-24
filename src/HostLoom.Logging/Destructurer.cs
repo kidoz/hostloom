@@ -10,19 +10,32 @@ namespace HostLoom.Logging;
 /// <summary>
 /// Serializes one <c>{@...}</c> hole value into a complete, valid JSON fragment on the producer
 /// thread, so the object is snapshotted at capture time. Bounded everywhere: depth, collection
-/// items, object members, string length, and encoded bytes all cap with explicit non-sensitive
-/// sentinels; cycles cut with <c>"[Cycle]"</c>. Protection is fail-closed: exclusion and masking
-/// decisions come from a cached per-type plan applied before a member is ever read, an excluded
-/// member simply does not exist to this walker, and any getter or serializer failure emits
-/// <c>"[DestructuringFailed]"</c> — never the value's <c>ToString()</c>.
+/// items, object members, the length of string values and dictionary keys, and encoded bytes all
+/// cap with explicit non-sensitive sentinels; cycles cut with <c>"[Cycle]"</c>. Protection is
+/// fail-closed: exclusion and masking decisions come from a cached per-type plan applied before a
+/// member is ever read, an excluded member simply does not exist to this walker, and any getter
+/// or serializer failure emits <c>"[DestructuringFailed]"</c> — never the value's
+/// <c>ToString()</c>.
 /// </summary>
 internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics? metrics)
 {
+    /// <summary>
+    /// Bytes the budget keeps free until a cut is marked, so the marker always fits: the longest
+    /// one a container writes at an element boundary, <c>,"\u2026":"[DestructuringFailed]"</c>.
+    /// </summary>
+    private const int MarkerReserve = 33;
+
     private static readonly JsonWriterOptions WriterOptions = new()
     {
         Indented = false,
         SkipValidation = true,
     };
+
+    /// <summary>What <c>WriteString("…", "[Truncated]")</c> emits, for a cut written raw.</summary>
+    private static ReadOnlySpan<byte> TruncatedMember => "\"\\u2026\":\"[Truncated]\""u8;
+
+    /// <summary>What <c>WriteStringValue("…")</c> emits, for a cut written raw.</summary>
+    private static ReadOnlySpan<byte> TruncatedItem => "\"\\u2026\""u8;
 
     private readonly ConcurrentDictionary<Type, TypePlan> _plans = new();
 
@@ -45,7 +58,10 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
     /// <summary>
     /// Serializes one value into a complete JSON fragment and returns it as a span over
     /// thread-local scratch. The caller must copy the span before the next call on this thread —
-    /// the entry writers do, immediately.
+    /// the entry writers do, immediately. A container is cut at the element that would outgrow
+    /// <paramref name="byteBudget"/>, so the fragment stays within it; only a budget too small
+    /// for the cut marker itself, or a single scalar larger than the budget, can return more,
+    /// and the caller must check the length.
     /// </summary>
     public ReadOnlySpan<byte> Destructure(object value, int byteBudget)
     {
@@ -102,7 +118,8 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
     {
         try
         {
-            WriteValue(writer, value, 0, new Walk(ancestors, byteBudget));
+            var walk = new Walk(ancestors, buffer, byteBudget);
+            WriteValue(writer, value, 0, ref walk);
             writer.Flush();
             return true;
         }
@@ -117,13 +134,64 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         }
     }
 
-    private readonly record struct Walk(object?[] Ancestors, int ByteLimit)
+    /// <summary>
+    /// The state of one walk. Positions come from the buffer plus the writer's pending bytes,
+    /// not from the writer's own commit counter, which a cut leaves stale.
+    /// </summary>
+    private struct Walk(object?[] ancestors, ArrayBufferWriter<byte> buffer, int byteLimit)
     {
-        public bool OverBudget(Utf8JsonWriter writer) =>
-            writer.BytesCommitted + writer.BytesPending >= ByteLimit;
+        public readonly object?[] Ancestors = ancestors;
+
+        public readonly ArrayBufferWriter<byte> Buffer = buffer;
+
+        public readonly int ByteLimit = byteLimit;
+
+        /// <summary>Set once the budget cut an element: every enclosing container then closes
+        /// without writing anything more.</summary>
+        public bool Truncated;
+
+        public readonly int Position(Utf8JsonWriter writer) =>
+            Buffer.WrittenCount + writer.BytesPending;
     }
 
-    private void WriteValue(Utf8JsonWriter writer, object? value, int depth, Walk walk)
+    /// <summary>
+    /// Checks the byte budget after an element of the container at <paramref name="depth"/>.
+    /// The fragment must still have room to close that container and every one around it and,
+    /// until a cut is marked, to mark one. An element that leaves less is removed again and the
+    /// marker takes its place, so a finished fragment never outgrows the budget. Returns whether
+    /// the container may write another element.
+    /// </summary>
+    private static bool Admit(
+        Utf8JsonWriter writer,
+        ref Walk walk,
+        int depth,
+        int mark,
+        bool first,
+        ReadOnlySpan<byte> marker
+    )
+    {
+        var room = walk.ByteLimit - (depth + 1) - (walk.Truncated ? 0 : MarkerReserve);
+        if (walk.Position(writer) <= room)
+        {
+            // A cut inside this element is already marked there, and nothing fits after it.
+            return !walk.Truncated;
+        }
+
+        // The writer still counts the removed element as written, which the marker now stands
+        // in for, so the marker goes straight to the buffer with the separator the element had.
+        writer.Flush();
+        walk.Buffer.Truncate(mark);
+        if (!first)
+        {
+            walk.Buffer.Write(","u8);
+        }
+
+        walk.Buffer.Write(marker);
+        walk.Truncated = true;
+        return false;
+    }
+
+    private void WriteValue(Utf8JsonWriter writer, object? value, int depth, ref Walk walk)
     {
         if (TryWriteScalar(writer, value))
         {
@@ -149,13 +217,13 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         switch (value)
         {
             case IDictionary dictionary:
-                WriteDictionary(writer, dictionary, depth, walk);
+                WriteDictionary(writer, dictionary, depth, ref walk);
                 break;
             case IEnumerable sequence:
-                WriteSequence(writer, sequence, depth, walk);
+                WriteSequence(writer, sequence, depth, ref walk);
                 break;
             default:
-                WriteObject(writer, value!, depth, walk);
+                WriteObject(writer, value!, depth, ref walk);
                 break;
         }
 
@@ -262,57 +330,68 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         }
     }
 
-    private void WriteCappedString(Utf8JsonWriter writer, string text)
-    {
-        if (text.Length <= options.MaxStringLength)
-        {
-            writer.WriteStringValue(text);
-            return;
-        }
+    private void WriteCappedString(Utf8JsonWriter writer, string text) =>
+        writer.WriteStringValue(Capped(text));
 
-        writer.WriteStringValue(string.Concat(text.AsSpan(0, options.MaxStringLength), "…"));
-    }
+    /// <summary>Keeps <see cref="DestructuringOptions.MaxStringLength"/> characters and marks a
+    /// cut with a trailing "…" — for string values and dictionary keys alike.</summary>
+    private string Capped(string text) =>
+        text.Length <= options.MaxStringLength
+            ? text
+            : string.Concat(text.AsSpan(0, options.MaxStringLength), "…");
 
-    private void WriteObject(Utf8JsonWriter writer, object value, int depth, Walk walk)
+    private void WriteObject(Utf8JsonWriter writer, object value, int depth, ref Walk walk)
     {
         var plan = _plans.GetOrAdd(value.GetType(), BuildPlan);
         writer.WriteStartObject();
         var written = 0;
         foreach (var member in plan.Members)
         {
-            if (written == options.MaxObjectMembers || walk.OverBudget(writer))
+            if (written == options.MaxObjectMembers)
             {
                 writer.WriteString("…"u8, "[Truncated]");
                 break;
             }
 
+            var mark = walk.Position(writer);
             writer.WritePropertyName(member.Name);
             if (member.Mask is { } mask)
             {
                 WriteMasked(writer, member, mask, value);
             }
+            else if (TryRead(member, value, out var memberValue))
+            {
+                WriteValue(writer, memberValue, depth + 1, ref walk);
+            }
             else
             {
-                object? memberValue;
-                try
-                {
-                    memberValue = member.Read(value);
-                }
-                catch (Exception)
-                {
-                    metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
-                    writer.WriteStringValue("[DestructuringFailed]");
-                    written++;
-                    continue;
-                }
+                writer.WriteStringValue("[DestructuringFailed]");
+            }
 
-                WriteValue(writer, memberValue, depth + 1, walk);
+            if (!Admit(writer, ref walk, depth, mark, written == 0, TruncatedMember))
+            {
+                break;
             }
 
             written++;
         }
 
         writer.WriteEndObject();
+    }
+
+    private bool TryRead(MemberPlan member, object owner, out object? value)
+    {
+        try
+        {
+            value = member.Read(owner);
+            return true;
+        }
+        catch (Exception)
+        {
+            metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
+            value = null;
+            return false;
+        }
     }
 
     /// <summary>
@@ -354,7 +433,12 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         );
     }
 
-    private void WriteSequence(Utf8JsonWriter writer, IEnumerable sequence, int depth, Walk walk)
+    private void WriteSequence(
+        Utf8JsonWriter writer,
+        IEnumerable sequence,
+        int depth,
+        ref Walk walk
+    )
     {
         writer.WriteStartArray();
         var items = 0;
@@ -362,13 +446,19 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         {
             foreach (var item in sequence)
             {
-                if (items == options.MaxCollectionItems || walk.OverBudget(writer))
+                if (items == options.MaxCollectionItems)
                 {
                     writer.WriteStringValue("…");
                     break;
                 }
 
-                WriteValue(writer, item, depth + 1, walk);
+                var mark = walk.Position(writer);
+                WriteValue(writer, item, depth + 1, ref walk);
+                if (!Admit(writer, ref walk, depth, mark, items == 0, TruncatedItem))
+                {
+                    break;
+                }
+
                 items++;
             }
         }
@@ -386,7 +476,7 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         Utf8JsonWriter writer,
         IDictionary dictionary,
         int depth,
-        Walk walk
+        ref Walk walk
     )
     {
         writer.WriteStartObject();
@@ -395,14 +485,21 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         {
             foreach (DictionaryEntry pair in dictionary)
             {
-                if (members == options.MaxObjectMembers || walk.OverBudget(writer))
+                if (members == options.MaxObjectMembers)
                 {
                     writer.WriteString("…"u8, "[Truncated]");
                     break;
                 }
 
-                writer.WritePropertyName(ToInvariantString(pair.Key));
-                WriteValue(writer, pair.Value, depth + 1, walk);
+                var mark = walk.Position(writer);
+                // A key is caller data just like a value, so it is capped the same way.
+                writer.WritePropertyName(Capped(ToInvariantString(pair.Key)));
+                WriteValue(writer, pair.Value, depth + 1, ref walk);
+                if (!Admit(writer, ref walk, depth, mark, members == 0, TruncatedMember))
+                {
+                    break;
+                }
+
                 members++;
             }
         }

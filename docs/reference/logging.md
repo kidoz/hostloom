@@ -62,6 +62,17 @@ programmatic redaction for types you cannot annotate —
 `Mask<T>(string member, string text = "***", int showFirst = 0, int showLast = 0)`,
 which follows the same reveal rule as [`[LogMasked]`](#masking-attributes).
 
+`MaxStringLength` counts UTF-16 characters and applies to dictionary keys as well as string
+values: a longer key or value keeps that many characters and ends in `…`.
+`MaxEncodedBytesPerRecord` is a hard limit on the encoded JSON of all destructured values in
+one record, event holes and scope values together. The walk checks it after every element. An
+element that would take the record past the limit is removed and the cut is marked the same
+way as the item and member caps: a `"…": "[Truncated]"` member in an object or dictionary, a
+trailing `"…"` element in a collection, and the containers around the cut close without further
+members. The walk keeps a few dozen bytes of the remaining budget free until it marks a cut, so
+a value that only just fits may already be cut. A hole that does not fit even when cut, and any
+hole after the budget is spent, is written as a `…` text field.
+
 ### Record size caps
 
 Every cap is enforced on the producer thread, is measured in UTF-8 bytes, cuts on a character
@@ -77,9 +88,9 @@ construction, and the configuration overload rejects them at host startup.
   field inputs do not leave input-sized arrays in queued records.
 - `MaxTextFieldLength` bounds each plain text field (`{Name}` and `{$Name}` holes, string
   holes on the `LogFast` path, enricher values, the static `MachineName`/`ServiceName` fields)
-  and each entry of the `Scope` array. Strings inside a destructured object are bounded by
-  `Destructuring.MaxStringLength` instead, and the encoded size of all destructured values in a
-  record by `Destructuring.MaxEncodedBytesPerRecord`.
+  and each entry of the `Scope` array. Strings and dictionary keys inside a destructured value
+  are bounded by `Destructuring.MaxStringLength` instead, and the encoded size of all
+  destructured values in a record by `Destructuring.MaxEncodedBytesPerRecord`.
 
 ## Sinks and formatters
 

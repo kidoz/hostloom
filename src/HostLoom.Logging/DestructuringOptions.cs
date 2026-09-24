@@ -28,12 +28,16 @@ public sealed class DestructuringOptions
     /// <summary>Members serialized per object or dictionary; the cut is marked with a "…" member.</summary>
     public int MaxObjectMembers { get; set; } = 64;
 
-    /// <summary>Characters kept per string value; longer strings are truncated with a "…" suffix.</summary>
+    /// <summary>Characters kept per string value and per dictionary key; longer strings are
+    /// truncated with a "…" suffix.</summary>
     public int MaxStringLength { get; set; } = 4096;
 
     /// <summary>
-    /// Encoded destructured bytes one record may carry across all its <c>{@...}</c> holes,
-    /// enforced at element boundaries. Holes past the budget degrade to a "…" field.
+    /// Encoded destructured bytes one record may carry across all its <c>{@...}</c> holes and
+    /// scope values, checked after every element. An element that would outgrow the budget is
+    /// removed and the cut is marked like the other caps: a "…" member set to "[Truncated]" in an
+    /// object or dictionary, a trailing "…" element in a collection. A hole that does not fit even
+    /// when cut, and every hole once the budget is spent, degrades to a "…" field.
     /// </summary>
     public int MaxEncodedBytesPerRecord { get; set; } = 64 * 1024;
 

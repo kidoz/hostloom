@@ -296,19 +296,162 @@ namespace HostLoom.Tests
         [Fact]
         public async Task The_record_byte_budget_degrades_later_holes_to_a_sentinel()
         {
+            var filler = new string('x', 20);
             var (root, _) = await LogAsync(
                 logger =>
                     logger.LogInformation(
                         "two {@First} {@Second}",
-                        new { Filler = new string('x', 64) },
+                        new
+                        {
+                            A = filler,
+                            B = filler,
+                            C = filler,
+                            D = filler,
+                        },
                         new { Value = 1 }
                     ),
-                options => options.Destructuring.MaxEncodedBytesPerRecord = 16
+                options => options.Destructuring.MaxEncodedBytesPerRecord = 128
             );
 
-            // The first hole consumed the record's budget; the second degrades explicitly.
-            Assert.Equal(JsonValueKind.Object, root.GetProperty("First").ValueKind);
+            // The first hole is cut at the member that would have overrun the record's budget,
+            // with room kept for the marker; the second no longer fits and degrades explicitly.
+            var first = root.GetProperty("First");
+            Assert.Equal(JsonValueKind.Object, first.ValueKind);
+            Assert.Equal(filler, first.GetProperty("C").GetString());
+            Assert.False(first.TryGetProperty("D", out _));
+            Assert.Equal("[Truncated]", first.EnumerateObject().Last().Value.GetString());
+            Assert.True(Encoding.UTF8.GetByteCount(first.GetRawText()) <= 128);
             Assert.Equal("…", root.GetProperty("Second").GetString());
+        }
+
+        [Fact]
+        public async Task An_oversized_dictionary_key_is_capped_like_a_string_value()
+        {
+            var map = new Dictionary<string, int> { [new string('k', 1_000_000)] = 1 };
+            var (root, line) = await LogAsync(logger => logger.LogInformation("keys {@Map}", map));
+
+            // The key keeps MaxStringLength characters and the "…" marker, exactly like a value.
+            var member = Assert.Single(root.GetProperty("Map").EnumerateObject());
+            Assert.Equal(string.Concat(new string('k', 4096), "…"), member.Name);
+            Assert.Equal(1, member.Value.GetInt32());
+            Assert.True(
+                Encoding.UTF8.GetByteCount(line) < 64 * 1024,
+                $"a 1 MB key produced a {Encoding.UTF8.GetByteCount(line)}-byte record"
+            );
+        }
+
+        [Fact]
+        public async Task Many_dictionary_keys_stop_inside_the_record_byte_budget()
+        {
+            var map = Enumerable
+                .Range(0, 500)
+                .ToDictionary(i => $"key-{i:D4}-{new string('k', 40)}", _ => new string('v', 40));
+            var (root, _) = await LogAsync(
+                logger => logger.LogInformation("keys {@Map}", map),
+                options =>
+                {
+                    options.Destructuring.MaxObjectMembers = 10_000;
+                    options.Destructuring.MaxEncodedBytesPerRecord = 2048;
+                }
+            );
+
+            // The budget, not the member cap, ends the walk: every kept member is intact, the
+            // cut is marked, and the fragment never grows past the budget.
+            var logged = root.GetProperty("Map");
+            Assert.True(
+                Encoding.UTF8.GetByteCount(logged.GetRawText()) <= 2048,
+                $"the field is {Encoding.UTF8.GetByteCount(logged.GetRawText())} bytes"
+            );
+            var members = logged.EnumerateObject().ToArray();
+            Assert.True(members.Length > 2, $"only {members.Length} members were kept");
+            Assert.Equal("…", members[^1].Name);
+            Assert.Equal("[Truncated]", members[^1].Value.GetString());
+            Assert.All(
+                members[..^1],
+                member => Assert.Equal(new string('v', 40), member.Value.GetString())
+            );
+        }
+
+        [Fact]
+        public async Task A_nested_dictionary_is_capped_and_bounded_by_the_same_budget()
+        {
+            var inventory = Enumerable
+                .Range(0, 200)
+                .ToDictionary(
+                    i => string.Concat(new string('s', 5000), i.ToString("D3", null)),
+                    i => i
+                );
+            var value = new Dictionary<string, object?>
+            {
+                ["region"] = "eu",
+                ["inventory"] = inventory,
+                ["trailer"] = "done",
+            };
+            var (root, _) = await LogAsync(
+                logger => logger.LogInformation("stock {@Stock}", value),
+                options => options.Destructuring.MaxEncodedBytesPerRecord = 16 * 1024
+            );
+
+            var logged = root.GetProperty("Stock");
+            Assert.True(
+                Encoding.UTF8.GetByteCount(logged.GetRawText()) <= 16 * 1024,
+                $"the field is {Encoding.UTF8.GetByteCount(logged.GetRawText())} bytes"
+            );
+            Assert.Equal("eu", logged.GetProperty("region").GetString());
+            var nested = logged.GetProperty("inventory").EnumerateObject().ToArray();
+            Assert.Equal(string.Concat(new string('s', 4096), "…"), nested[0].Name);
+            Assert.Equal("…", nested[^1].Name);
+            Assert.Equal("[Truncated]", nested[^1].Value.GetString());
+        }
+
+        [Fact]
+        public void Every_budget_yields_valid_json_that_stays_within_it()
+        {
+            var value = new Dictionary<string, object?>
+            {
+                ["region"] = "eu",
+                ["items"] = new object?[]
+                {
+                    1,
+                    "книга",
+                    null,
+                    new { Name = "notebook", Categories = new[] { "books", "music" } },
+                    new Dictionary<string, int> { ["x"] = 1, ["y"] = 2 },
+                },
+                ["nested"] = new { Inner = new { Deep = new[] { new string('z', 50), "ä" } } },
+                ["empty"] = new Dictionary<string, int>(),
+                ["long"] = new string('q', 300),
+            };
+            var destructurer = new Destructurer(new DestructuringOptions(), null);
+            var full = destructurer.Destructure(value, int.MaxValue).ToArray();
+            var rootMarker = "{\"\\u2026\":\"[Truncated]\"}"u8.ToArray();
+
+            for (var budget = 1; budget <= full.Length + 64; budget++)
+            {
+                var json = destructurer.Destructure(value, budget).ToArray();
+                using var document = JsonDocument.Parse(json);
+                if (json.AsSpan().SequenceEqual(full))
+                {
+                    continue;
+                }
+
+                // A cut is always marked, and the fragment stays within the budget unless the
+                // budget cannot hold even the root's marker — which the capture layer then
+                // degrades to a "…" field.
+                Assert.Contains(
+                    "\\u2026",
+                    Encoding.ASCII.GetString(json),
+                    StringComparison.Ordinal
+                );
+                Assert.True(
+                    json.Length <= budget || json.AsSpan().SequenceEqual(rootMarker),
+                    $"budget {budget} produced {json.Length} bytes"
+                );
+            }
+
+            // The walk keeps room to mark a cut, so only a budget that much larger than the value
+            // is guaranteed to leave it whole.
+            Assert.Equal(full, destructurer.Destructure(value, full.Length + 64).ToArray());
         }
 
         private static async Task<(JsonElement Root, string Line)> LogAsync(
@@ -328,7 +471,12 @@ namespace HostLoom.Tests
                 options
             );
             log(provider.CreateLogger("Destructuring"));
-            await provider.DisposeAsync();
+            // Disposal drains the writer; bounded so a stalled writer fails the test instead of
+            // hanging the run.
+            await provider
+                .DisposeAsync()
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
             var line = Assert.Single(sink.Lines());
             return (JsonDocument.Parse(line).RootElement.Clone(), line);
