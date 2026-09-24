@@ -161,7 +161,10 @@ present marks the delivery with an `InboxDuplicate` payload and skips the
 handlers. The names are length-prefixed because either may contain `:`, and a
 bare join would let two subscriptions share a key. The message id is the
 sender's; the codec rejects an empty one before the filter sees it. Requests pass through untouched, because a
-request that is not answered leaves its caller waiting for a timeout.
+request that is not answered leaves its caller waiting for a timeout. An
+application has one inbox: a second call to any of the three methods throws
+`InvalidOperationException`, because a second filter over the same store would
+take every delivery the first recorded for a duplicate and run no handler.
 
 | `IInboxStore` member | Contract |
 | --- | --- |

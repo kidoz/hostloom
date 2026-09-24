@@ -14,8 +14,47 @@ internal sealed class HostLoomConfiguration
         Dictionary<string, SubscriberRegistration>
     > _subscriptions = [];
     private readonly HashSet<string> _messageTypes = new(StringComparer.Ordinal);
+    private bool _inbox;
+    private bool _outbox;
 
     public IReadOnlyCollection<RequestAddress> Endpoints => _endpoints.Keys;
+
+    /// <summary>
+    /// Records the one inbox registration. A second would append another filter over the same
+    /// store, and the inner filter would take every delivery the outer one recorded for a
+    /// duplicate, so no event handler would ever run.
+    /// </summary>
+    public void EnableInbox()
+    {
+        if (_inbox)
+        {
+            throw new InvalidOperationException(
+                "The inbox is already enabled for this HostLoom application. Call UseInbox or "
+                    + "UseInMemoryInbox once: a second inbox filter would take every delivery for a "
+                    + "duplicate, and its store and window would not replace the first ones."
+            );
+        }
+
+        _inbox = true;
+    }
+
+    /// <summary>
+    /// Records the one outbox registration. A second would keep the first store without a word
+    /// and merge its options into the first's.
+    /// </summary>
+    public void EnableOutbox()
+    {
+        if (_outbox)
+        {
+            throw new InvalidOperationException(
+                "The outbox is already enabled for this HostLoom application. Call UseOutbox or "
+                    + "UseInMemoryOutbox once, with every option in its configure delegate: a second "
+                    + "call's store would be ignored."
+            );
+        }
+
+        _outbox = true;
+    }
 
     /// <summary>
     /// Receive-pipeline filters, in registration order. Composed once when the dispatcher is

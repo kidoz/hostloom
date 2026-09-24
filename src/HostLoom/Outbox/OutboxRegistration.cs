@@ -6,7 +6,10 @@ using Microsoft.Extensions.Options;
 
 namespace HostLoom;
 
-/// <summary>Turns on the transactional outbox for every publish.</summary>
+/// <summary>
+/// Turns on the transactional outbox for every publish. An application has one outbox: each of
+/// these methods may be called once, and a second call, of either of them, throws.
+/// </summary>
 public static class OutboxHostLoomBuilderExtensions
 {
     /// <summary>
@@ -18,6 +21,7 @@ public static class OutboxHostLoomBuilderExtensions
     /// <param name="builder">The HostLoom builder.</param>
     /// <param name="configure">Configures <see cref="OutboxOptions"/>; validated when the host starts.</param>
     /// <param name="lifetime">The store's lifetime.</param>
+    /// <exception cref="InvalidOperationException">The outbox is already enabled.</exception>
     public static HostLoomBuilder UseOutbox<TStore>(
         this HostLoomBuilder builder,
         Action<OutboxOptions>? configure = null,
@@ -26,6 +30,7 @@ public static class OutboxHostLoomBuilderExtensions
         where TStore : class, IOutboxStore
     {
         ArgumentNullException.ThrowIfNull(builder);
+        builder.Configuration.EnableOutbox();
         builder.Services.TryAdd(
             new ServiceDescriptor(typeof(IOutboxStore), typeof(TStore), lifetime)
         );
@@ -36,12 +41,14 @@ public static class OutboxHostLoomBuilderExtensions
     /// Routes every publish through a per-process <see cref="InMemoryOutboxStore"/>, for tests and
     /// single-process deployments. It joins no transaction.
     /// </summary>
+    /// <exception cref="InvalidOperationException">The outbox is already enabled.</exception>
     public static HostLoomBuilder UseInMemoryOutbox(
         this HostLoomBuilder builder,
         Action<OutboxOptions>? configure = null
     )
     {
         ArgumentNullException.ThrowIfNull(builder);
+        builder.Configuration.EnableOutbox();
         builder.Services.TryAddSingleton(TimeProvider.System);
         builder.Services.TryAddSingleton<InMemoryOutboxStore>(
             static provider => new InMemoryOutboxStore(provider.GetRequiredService<TimeProvider>())

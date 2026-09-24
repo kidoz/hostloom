@@ -6,7 +6,10 @@ using Microsoft.Extensions.Logging;
 
 namespace HostLoom;
 
-/// <summary>Adds the inbox filter to the receive pipeline.</summary>
+/// <summary>
+/// Adds the inbox filter to the receive pipeline. An application has one inbox: each of these
+/// methods may be called once, and a second call, of any of them, throws.
+/// </summary>
 public static class InboxHostLoomBuilderExtensions
 {
     /// <summary>
@@ -17,14 +20,17 @@ public static class InboxHostLoomBuilderExtensions
     /// <c>ConfigureReceivePipeline</c> adds a retry to keep in-process retries inside one
     /// recorded run.
     /// </summary>
+    /// <exception cref="InvalidOperationException">The inbox is already enabled.</exception>
     public static HostLoomBuilder UseInbox<
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TStore
     >(this HostLoomBuilder builder, TimeSpan window)
         where TStore : class, IInboxStore
     {
         ArgumentNullException.ThrowIfNull(builder);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(window, TimeSpan.Zero);
+        builder.Configuration.EnableInbox();
         builder.Services.TryAddSingleton<IInboxStore, TStore>();
-        return builder.UseInbox(
+        return builder.AddInboxFilter(
             static provider => provider.GetRequiredService<IInboxStore>(),
             window
         );
@@ -37,6 +43,7 @@ public static class InboxHostLoomBuilderExtensions
     /// <see cref="InboxStore.FromClaim(Func{string, TimeSpan, CancellationToken, ValueTask{bool}}, Func{string, CancellationToken, ValueTask})"/>
     /// over a cache.
     /// </summary>
+    /// <exception cref="InvalidOperationException">The inbox is already enabled.</exception>
     public static HostLoomBuilder UseInbox(
         this HostLoomBuilder builder,
         Func<IServiceProvider, IInboxStore> store,
@@ -46,19 +53,20 @@ public static class InboxHostLoomBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(store);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(window, TimeSpan.Zero);
-        return builder.ConfigureReceivePipeline(
-            (pipe, provider) =>
-                pipe.UseInbox(store(provider), window, provider.GetService<ILogger<InboxFilter>>())
-        );
+        builder.Configuration.EnableInbox();
+        return builder.AddInboxFilter(store, window);
     }
 
     /// <summary>
     /// Deduplicates redeliveries to this process with an <see cref="InMemoryInboxStore"/>, for
     /// tests and single-process deployments.
     /// </summary>
+    /// <exception cref="InvalidOperationException">The inbox is already enabled.</exception>
     public static HostLoomBuilder UseInMemoryInbox(this HostLoomBuilder builder, TimeSpan window)
     {
         ArgumentNullException.ThrowIfNull(builder);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(window, TimeSpan.Zero);
+        builder.Configuration.EnableInbox();
         builder.Services.TryAddSingleton(TimeProvider.System);
         builder.Services.TryAddSingleton<InMemoryInboxStore>(
             static provider => new InMemoryInboxStore(provider.GetRequiredService<TimeProvider>())
@@ -66,11 +74,21 @@ public static class InboxHostLoomBuilderExtensions
         builder.Services.TryAddSingleton<IInboxStore>(static provider =>
             provider.GetRequiredService<InMemoryInboxStore>()
         );
-        return builder.UseInbox(
+        return builder.AddInboxFilter(
             static provider => provider.GetRequiredService<IInboxStore>(),
             window
         );
     }
+
+    private static HostLoomBuilder AddInboxFilter(
+        this HostLoomBuilder builder,
+        Func<IServiceProvider, IInboxStore> store,
+        TimeSpan window
+    ) =>
+        builder.ConfigureReceivePipeline(
+            (pipe, provider) =>
+                pipe.UseInbox(store(provider), window, provider.GetService<ILogger<InboxFilter>>())
+        );
 }
 
 /// <summary>Adds the inbox filter to a receive pipe composed by hand.</summary>

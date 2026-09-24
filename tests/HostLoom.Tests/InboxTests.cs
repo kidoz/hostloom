@@ -460,6 +460,39 @@ public sealed class InboxTests
         );
     }
 
+    [Theory]
+    [InlineData("in-memory", "in-memory")]
+    [InlineData("in-memory", "typed")]
+    [InlineData("typed", "delegate")]
+    [InlineData("delegate", "in-memory")]
+    public void Enabling_the_inbox_twice_is_refused(string first, string second)
+    {
+        var hostLoom = new ServiceCollection().AddHostLoom();
+        Enable(hostLoom, first);
+
+        // A second filter over the same store would take every delivery the first one recorded
+        // for a duplicate, so no handler would ever run. Another builder over the same services
+        // composes the same receive pipeline and is refused too.
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            Enable(hostLoom.Services.AddHostLoom(), second)
+        );
+
+        Assert.Contains("UseInbox", exception.Message, StringComparison.Ordinal);
+        using var composed = hostLoom.Services.BuildServiceProvider();
+        var probe = composed
+            .GetRequiredService<HostLoomProbe>()
+            .ReceivePipeline(TestContext.Current.CancellationToken);
+        Assert.Single(Flatten(probe), result => result.Name == "inbox");
+
+        static void Enable(HostLoomBuilder builder, string kind) =>
+            _ = kind switch
+            {
+                "in-memory" => builder.UseInMemoryInbox(TimeSpan.FromHours(1)),
+                "typed" => builder.UseInbox<InMemoryInboxStore>(TimeSpan.FromHours(1)),
+                _ => builder.UseInbox(_ => new InMemoryInboxStore(), TimeSpan.FromHours(1)),
+            };
+    }
+
     private static IEnumerable<ProbeResult> Flatten(ProbeResult result)
     {
         yield return result;

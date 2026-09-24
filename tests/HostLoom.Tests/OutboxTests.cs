@@ -252,6 +252,30 @@ public sealed class OutboxTests
         );
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void Enabling_the_outbox_twice_is_refused(bool firstInMemory, bool secondInMemory)
+    {
+        var services = new ServiceCollection();
+        Enable(services.AddHostLoom(), firstInMemory);
+
+        // The second call's store would be dropped without a word and its options merged into
+        // the first's, so it is refused like a second inbox.
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            Enable(services.AddHostLoom(), secondInMemory)
+        );
+
+        Assert.Contains("UseOutbox", exception.Message, StringComparison.Ordinal);
+        Assert.Single(services, descriptor => descriptor.ServiceType == typeof(IOutboxStore));
+
+        static void Enable(HostLoomBuilder builder, bool inMemory) =>
+            _ = inMemory
+                ? builder.UseInMemoryOutbox()
+                : builder.UseOutbox<ScopedStore>(options => options.BatchSize = 5);
+    }
+
     private static OutboxMessage Message(string topic, TimeProvider clock, byte payload = 0) =>
         new()
         {
