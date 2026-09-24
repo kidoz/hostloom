@@ -315,9 +315,16 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         writer.WriteEndObject();
     }
 
+    /// <summary>
+    /// Reveals <c>ShowFirst</c>/<c>ShowLast</c> characters around the mask only while at least as
+    /// many characters stay hidden as are shown: a value shorter than twice the requested reveal
+    /// — a four-digit PIN under <c>ShowLast = 4</c> — is written as the mask text alone.
+    /// </summary>
     private void WriteMasked(Utf8JsonWriter writer, MemberPlan member, MaskRule mask, object owner)
     {
-        if (mask.ShowFirst <= 0 && mask.ShowLast <= 0)
+        var first = Math.Max(mask.ShowFirst, 0);
+        var last = Math.Max(mask.ShowLast, 0);
+        if (first == 0 && last == 0)
         {
             // Full mask: the protected value is never read at all.
             writer.WriteStringValue(mask.Text);
@@ -336,8 +343,12 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
             return;
         }
 
-        var first = Math.Min(Math.Max(mask.ShowFirst, 0), text.Length);
-        var last = Math.Min(Math.Max(mask.ShowLast, 0), text.Length - first);
+        if (2L * (first + (long)last) > text.Length)
+        {
+            writer.WriteStringValue(mask.Text);
+            return;
+        }
+
         writer.WriteStringValue(
             string.Concat(text.AsSpan(0, first), mask.Text, text.AsSpan(text.Length - last))
         );

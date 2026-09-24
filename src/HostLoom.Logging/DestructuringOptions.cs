@@ -6,7 +6,8 @@ internal sealed record MemberRule(bool Excluded, MaskRule? Mask)
     public static readonly MemberRule NotLogged = new(true, null);
 }
 
-/// <summary>Deterministic masking: reveal that many leading/trailing characters around the text.</summary>
+/// <summary>Deterministic masking: reveal that many leading/trailing characters around the text,
+/// but never more characters than stay hidden.</summary>
 internal sealed record MaskRule(string Text, int ShowFirst, int ShowLast);
 
 /// <summary>
@@ -58,7 +59,9 @@ public sealed class DestructuringOptions
     }
 
     /// <summary>Masks one member of <typeparamref name="T"/> (and derived types) like
-    /// <see cref="LogMaskedAttribute"/> would.</summary>
+    /// <see cref="LogMaskedAttribute"/> would, including its rule that a value shorter than twice
+    /// <paramref name="showFirst"/> + <paramref name="showLast"/> is written as
+    /// <paramref name="text"/> alone.</summary>
     public DestructuringOptions Mask<T>(
         string member,
         string text = "***",

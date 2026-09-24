@@ -97,6 +97,66 @@ namespace HostLoom.Tests
             Assert.DoesNotContain("1234567890123456", line, StringComparison.Ordinal);
         }
 
+        [Theory]
+        [InlineData("", "***", "***", "***")]
+        [InlineData("1234", "***", "***", "***")]
+        [InlineData("123456", "***", "123***", "***")]
+        [InlineData("1234567", "***", "123***", "***")]
+        [InlineData("12345678", "***5678", "123***", "12***78")]
+        [InlineData("1234567890123456", "***3456", "123***", "12***56")]
+        public async Task LogMasked_never_reveals_more_than_half_of_a_value(
+            string value,
+            string lastFour,
+            string firstThree,
+            string firstAndLastTwo
+        )
+        {
+            var secrets = new Secrets
+            {
+                LastFour = value,
+                FirstThree = value,
+                FirstAndLastTwo = value,
+            };
+            var (root, _) = await LogAsync(logger =>
+                logger.LogInformation("secrets {@Secrets}", secrets)
+            );
+
+            // A value shorter than twice the requested reveal is written as the mask text alone:
+            // ShowLast = 4 on a four-digit PIN would otherwise print the whole PIN after "***".
+            var logged = root.GetProperty("Secrets");
+            Assert.Equal(lastFour, logged.GetProperty("LastFour").GetString());
+            Assert.Equal(firstThree, logged.GetProperty("FirstThree").GetString());
+            Assert.Equal(firstAndLastTwo, logged.GetProperty("FirstAndLastTwo").GetString());
+            if (value.Length is > 0 and < 8)
+            {
+                // The safe-rendered message is built from the same masked representation.
+                Assert.DoesNotContain(
+                    value,
+                    root.GetProperty("message").GetString(),
+                    StringComparison.Ordinal
+                );
+                Assert.DoesNotContain(value, logged.GetRawText(), StringComparison.Ordinal);
+            }
+        }
+
+        [Fact]
+        public async Task The_per_type_mask_hides_a_value_too_short_to_reveal()
+        {
+            var dto = new ThirdPartyDto { Name = "ada", Card = "4071" };
+            var (root, _) = await LogAsync(
+                logger => logger.LogInformation("3p {@Dto}", dto),
+                options =>
+                    options.Destructuring.Mask<ThirdPartyDto>(
+                        nameof(ThirdPartyDto.Card),
+                        showLast: 4
+                    )
+            );
+
+            var logged = root.GetProperty("Dto");
+            Assert.Equal("***", logged.GetProperty("Card").GetString());
+            Assert.DoesNotContain("4071", logged.GetRawText(), StringComparison.Ordinal);
+        }
+
         [Fact]
         public async Task NotLogged_wins_when_both_attributes_are_present()
         {
@@ -342,6 +402,18 @@ namespace HostLoom.Tests
 
             [LogMasked(ShowFirst = 2, ShowLast = 2)]
             public string Card { get; set; } = "";
+        }
+
+        private sealed class Secrets
+        {
+            [LogMasked(ShowLast = 4)]
+            public string LastFour { get; set; } = "";
+
+            [LogMasked(ShowFirst = 3)]
+            public string FirstThree { get; set; } = "";
+
+            [LogMasked(ShowFirst = 2, ShowLast = 2)]
+            public string FirstAndLastTwo { get; set; } = "";
         }
 
         private sealed class Contested

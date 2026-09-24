@@ -59,7 +59,8 @@ release its resources.
 `MaxEncodedBytesPerRecord` 64 KiB, `MapLegacyAttributes` true; plus
 programmatic redaction for types you cannot annotate —
 `NotLogged<T>(params string[] members)` and
-`Mask<T>(string member, string text = "***", int showFirst = 0, int showLast = 0)`.
+`Mask<T>(string member, string text = "***", int showFirst = 0, int showLast = 0)`,
+which follows the same reveal rule as [`[LogMasked]`](#masking-attributes).
 
 ### Record size caps
 
@@ -98,6 +99,18 @@ Fail-closed protection on destructured (`{@...}`) members:
 | --- | --- |
 | `[NotLogged]` | member never emitted; wins over `[LogMasked]` |
 | `[LogMasked]` | `Text = "***"`, `ShowFirst = 0`, `ShowLast = 0` |
+
+With `ShowFirst` and `ShowLast` at zero, the member is never read and only `Text` is written.
+Otherwise the value's invariant string is shown as its first `ShowFirst` and last `ShowLast`
+characters around `Text`, but only while at least as many characters stay hidden as are
+shown. A value shorter than twice `ShowFirst + ShowLast` is written as `Text` alone:
+
+| Value | `ShowLast = 4` | `ShowFirst = 2, ShowLast = 2` |
+| --- | --- | --- |
+| `4071` | `***` | `***` |
+| `407152` | `***` | `***` |
+| `40715236` | `***5236` | `40***36` |
+| `4000123412341234` | `***1234` | `40***34` |
 
 Both attributes are found through the inheritance chain: a member annotated on a base class
 stays protected on a derived instance, including when the derived class overrides the

@@ -17,7 +17,10 @@ public sealed class NotLoggedAttribute : Attribute { }
 /// Replaces a property or field value with <see cref="Text"/> ("***" by default) in destructured
 /// log output. <see cref="ShowFirst"/> and <see cref="ShowLast"/> deterministically reveal that
 /// many leading and trailing characters of the value's invariant string representation around the
-/// mask; with both at zero the member is never read at all.
+/// mask, but only while at least as many characters stay hidden as are shown: a value shorter than
+/// twice <c>ShowFirst + ShowLast</c> is written as <see cref="Text"/> alone, so
+/// <c>ShowLast = 4</c> never prints a four-digit PIN. With both at zero the member is never read
+/// at all.
 /// </summary>
 [AttributeUsage(
     AttributeTargets.Property | AttributeTargets.Field,
