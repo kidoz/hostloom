@@ -150,9 +150,15 @@ Events without any subscriptions retain ordinary fan-out discard behavior.
   listener's or subscription's queue, or made it unavailable, and the
   broker cancelled the consumer. The transport declares the queue again
   and resubscribes; `hostloom.rabbitmq.consumers` counts both events.
-  Messages that were in a deleted queue are lost. Repeated
+  Messages that were in the deleted queue are lost, and so is whatever is
+  sent before the transport has declared and bound the queue again. Event
+  publication is not mandatory, so an event published in that gap is
+  confirmed by the broker and dropped by the fanout exchange, which has no
+  queue to route it to; the publisher sees a success. A request sent then
+  returns as unroutable and times out. Repeated
   `RabbitMqConsumerRestoreFailed` warnings mean the queue cannot be
-  declared yet, for example because the node that hosts it is down.
+  declared yet, for example because the node that hosts it is down, and
+  the gap lasts until one attempt succeeds.
 - **`RabbitMqHandlersAbandoned` and `RabbitMqDeliveryUnsettled` warnings
   at shutdown** — a handler ignored its cancellation for longer than the
   five seconds a stop waits, so its listener or subscription stopped

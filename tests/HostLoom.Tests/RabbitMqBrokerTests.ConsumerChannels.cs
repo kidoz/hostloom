@@ -364,6 +364,13 @@ public sealed partial class RabbitMqBrokerTests
         var warning = Assert.Single(logger.Entries, entry => entry.Event.Id == 1411);
         Assert.Equal(LogLevel.Warning, warning.Level);
         Assert.Contains(queue, warning.Message, StringComparison.Ordinal);
+        // Restoring recovers neither what the queue held nor what was sent while it was gone,
+        // and the warning must not suggest otherwise.
+        Assert.Contains(
+            "whatever is sent before the queue is declared again",
+            warning.Message,
+            StringComparison.Ordinal
+        );
         await SchedulingTests.WaitUntilAsync(() => logger.Has(new EventId(1412)));
         var restored = Assert.Single(
             rabbit.Channels,

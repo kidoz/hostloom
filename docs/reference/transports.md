@@ -193,5 +193,10 @@ closing the connection in the background, which takes it about 25 seconds.
   and consumes it on a new channel. A failed attempt is logged
   (`RabbitMqConsumerRestoreFailed`) and retried after one second, doubling
   up to 30 seconds, until it succeeds or the listener stops. Messages that
-  were in a deleted queue are gone. A cancelled reply consumer is replaced
-  by the next request; requests still waiting for a reply there time out.
+  were in a deleted queue are gone, and so is whatever is sent before the
+  queue is declared and bound again: event publication is not mandatory,
+  so the broker confirms an event published in that gap and the fanout
+  exchange, with no queue bound, drops it; a request sent then returns as
+  unroutable and times out. The loss therefore lasts as long as the
+  restoration does. A cancelled reply consumer is replaced by the next
+  request; requests still waiting for a reply there time out.

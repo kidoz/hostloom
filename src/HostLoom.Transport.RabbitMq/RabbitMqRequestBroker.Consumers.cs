@@ -64,7 +64,7 @@ public sealed partial class RabbitMqRequestBroker
 
         _logger.LogWarning(
             new EventId(1411, "RabbitMqConsumerCancelled"),
-            "The broker cancelled the RabbitMQ {Role} consumer of queue {Queue}, as it does when the queue is deleted; declaring the queue again and resubscribing.",
+            "The broker cancelled the RabbitMQ {Role} consumer of queue {Queue}, as it does when the queue is deleted; declaring the queue again and resubscribing. What the deleted queue held is lost, and so is whatever is sent before the queue is declared again: the broker confirms an event and the exchange drops it, and a request returns as unroutable and times out.",
             role,
             queue
         );
