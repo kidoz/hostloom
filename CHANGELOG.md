@@ -8,6 +8,38 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-25
+
+This release fixes what a review of every package found after 0.10.0: deliveries the inbox
+dropped after a failed or cancelled run, a Kafka record without a message type that stalled its
+partition, Kafka replicas sharing one reply group, WebSocket closes that reached clients as
+abnormal closures, a logging provider that was never flushed or disposed, cron schedules that
+repeated during the daylight-saving fall-back hour, and failed Redis subscriptions that leaked a
+queue each. It also keeps the outbox relay from dead-lettering the backlog during a broker outage,
+bounds RabbitMQ consumer shutdown and transport disposal and restores consumers the broker
+cancels, answers RabbitMQ direct reply-to clients, gives every transport log line an event id,
+accepts HTTP/2 WebSocket connections, bounds log records and isolates formatter failures, and
+moves the NuGet publishing identity into a job that runs no build or test code.
+
+Upgrading from 0.10.0 changes behaviour an application can observe; each change is stated under
+**Changed**. The inbox releases a delivery's key when its handlers fail or are cancelled, so a
+custom `IInboxStore` should implement the new `ReleaseAsync`, and registering the inbox or the
+outbox a second time throws. An envelope without a message type, a request without a response
+type, and an incomplete fault are rejected as malformed, and a request that a receive filter
+completes without its handler is answered with the new `HandlerNotRun` fault. A registered
+pipeline's retry runs every attempt in a new DI scope. A composition rule's policy no longer
+collides with the rule's own entries. The Kafka reply group is named per instance, so replicas may
+share a `ClientId`. A WebSocket close the server starts now completes the close handshake, bounded
+by `CloseTimeout`; a RabbitMQ consumer the broker cancels is restored by declaring its queue again;
+and the bare `amq.rabbitmq.reply-to` reply address is rejected. Stopping a RabbitMQ listener or
+subscription waits up to five seconds for its handlers, and a delivery its closing channel cannot
+settle is logged as a warning and redelivered rather than logged as a rejection. The outbox relay
+stops a drain at its first failed publish and backs off as a whole, so an outage costs one attempt
+per failed drain instead of one per pending message. `[LogMasked]` writes only the mask
+for a value too short to keep at least half of it hidden, which includes a sixteen-digit number
+shown as its first six and last four digits, and a formatter failure drops only that record. No
+package is published for the first time.
+
 ### Added
 
 - `HostLoomWebSocketOptions.CloseTimeout` (5 seconds) bounds how long a session this side is
@@ -1512,7 +1544,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/kidoz/hostloom/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/kidoz/hostloom/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/kidoz/hostloom/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/kidoz/hostloom/compare/v0.7.0...v0.8.0
