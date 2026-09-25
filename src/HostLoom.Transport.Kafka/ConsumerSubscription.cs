@@ -107,6 +107,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
         {
             RecordFault("loop");
             _logger.LogError(
+                KafkaEvents.LoopFaulted,
                 exception,
                 "HostLoom Kafka consumer loop for '{Topic}' faulted before shutdown.",
                 _topic
@@ -124,6 +125,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
             {
                 RecordFault("close");
                 _logger.LogError(
+                    KafkaEvents.ConsumerCloseFailed,
                     exception,
                     "HostLoom Kafka consumer for '{Topic}' failed to close cleanly.",
                     _topic
@@ -158,6 +160,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
             {
                 RecordFault("consume");
                 _logger.LogError(
+                    KafkaEvents.ConsumeFailed,
                     exception,
                     "HostLoom Kafka consume failed on '{Topic}'; retrying.",
                     _topic
@@ -194,6 +197,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                 // Poison record: it can never be decoded, so committing past it keeps the
                 // partition moving instead of blocking every later request behind it.
                 _logger.LogError(
+                    KafkaEvents.RecordMalformed,
                     exception,
                     "HostLoom Kafka record at {Offset} on '{Topic}' is malformed; skipping it.",
                     record.TopicPartitionOffset,
@@ -209,6 +213,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                 // handler again for an answer that still has nowhere to go, so the record is
                 // committed past like a poison one and the caller's timeout reports the loss.
                 _logger.LogError(
+                    KafkaEvents.ReplyUnroutable,
                     exception,
                     "HostLoom Kafka record at {Offset} on '{Topic}' was handled but its reply to '{ReplyTopic}' could not be produced ({ExceptionType}); skipping it without re-running the handler.",
                     record.TopicPartitionOffset,
@@ -237,6 +242,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                 if (!_retryIndefinitely && attempts >= MaxRedeliveryAttempts)
                 {
                     _logger.LogError(
+                        KafkaEvents.RecordAttemptsExhausted,
                         exception,
                         "HostLoom Kafka record at {Offset} on '{Topic}' failed {Attempts} times; skipping it.",
                         record.TopicPartitionOffset,
@@ -250,6 +256,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                 }
 
                 _logger.LogError(
+                    KafkaEvents.RecordRewound,
                     exception,
                     "HostLoom Kafka record at {Offset} on '{Topic}' failed on attempt {Attempts}; rewinding to retry it.",
                     record.TopicPartitionOffset,
@@ -288,6 +295,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
         {
             RecordFault("seek");
             _logger.LogError(
+                KafkaEvents.SeekFailed,
                 exception,
                 "HostLoom Kafka consumer could not rewind to {Offset} on '{Topic}'.",
                 record.TopicPartitionOffset,
@@ -308,6 +316,7 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
         {
             RecordFault("commit");
             _logger.LogError(
+                KafkaEvents.CommitFailed,
                 exception,
                 "HostLoom Kafka commit failed at {Offset} on '{Topic}'.",
                 record.TopicPartitionOffset,

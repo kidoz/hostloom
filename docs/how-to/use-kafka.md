@@ -135,14 +135,20 @@ HOSTLOOM_KAFKA_CHAOS=1 dotnet test tests/HostLoom.IntegrationTests/HostLoom.Inte
   is missing so replies have nowhere to go. When the inner exception says
   the reply consumer was not assigned any partition, the response topic
   does not exist or this client may not read it.
-- **Requests skipped with "hostloom-reply-to" in the handler's log** —
-  the caller's response topic is not a legal topic name or is not in
-  `AllowedReplyTopics`; the request is committed without running the
-  handler.
-- **"could not be produced" in the handler's log** — the handler ran but
-  the reply could not be written to the caller's response topic (missing
-  topic, no `Write` ACL); the request is committed and not re-run, and the
-  caller times out.
+- **Requests skipped as malformed (`KafkaRecordMalformed`, 1422) naming
+  "hostloom-reply-to"** — the caller's response topic is not a legal topic
+  name or is not in `AllowedReplyTopics`; the request is committed without
+  running the handler.
+- **`KafkaReplyUnroutable` (1423) in the handler's log** — the handler ran
+  but the reply could not be written to the caller's response topic
+  (missing topic, no `Write` ACL); the request is committed and not re-run,
+  and the caller times out.
+- **Repeated `KafkaRecordRewound` (1424)** — a handler keeps failing on the
+  same record, which holds its partition. A request is skipped after five
+  attempts (`KafkaRecordAttemptsExhausted`, 1425); an event is retried until
+  it succeeds or the subscription stops. Every consumer-loop log line has
+  an event id of its own, listed in the
+  [observability reference](../reference/observability.md#transport-log-events).
 - **`MessagingTransportException`** — the producer could not deliver the
   request or event, or the reply consumer could not start; the client
   library's `KafkaException` or `ProduceException` is `InnerException`. A
@@ -173,7 +179,7 @@ HOSTLOOM_KAFKA_CHAOS=1 dotnet test tests/HostLoom.IntegrationTests/HostLoom.Inte
   `tests/HostLoom.IntegrationTests`.
 
 Successful handling and offset commit are separate failure boundaries: a commit error is logged
-without locally rewinding completed work. Kafka can still redeliver uncommitted records after
+(`KafkaCommitFailed`, 1427) without locally rewinding completed work. Kafka can still redeliver uncommitted records after
 reassignment, so handlers must tolerate duplicates. Event application failures retry until
 shutdown; the adapter does not discard them after five attempts. A failing event can hold its
 partition behind that offset. Malformed records remain logged and skipped.

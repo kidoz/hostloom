@@ -94,7 +94,12 @@ internal sealed class ChannelCloser
                 return exception;
             }
 
-            _logger.LogWarning(exception, "RabbitMQ {Kind} channel cleanup failed.", _kind);
+            _logger.LogWarning(
+                new EventId(1408, "RabbitMqChannelCloseFailed"),
+                exception,
+                "RabbitMQ {Kind} channel cleanup failed.",
+                _kind
+            );
             return null;
         }
         finally

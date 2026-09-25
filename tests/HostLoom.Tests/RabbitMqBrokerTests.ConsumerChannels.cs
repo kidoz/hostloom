@@ -537,6 +537,34 @@ public sealed partial class RabbitMqBrokerTests
         }
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task A_channel_close_that_fails_in_the_background_is_logged_with_its_stable_event_id()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var rabbit = new FakeRabbit();
+        var logger = new RecordingLogger<RabbitMqRequestBroker>();
+        await using var broker = CreateLogged(rabbit, logger, new TestClock(), UniqueClient());
+        var listener = await broker.ListenAsync(
+            "catalog",
+            (frame, _) => ValueTask.FromResult(frame),
+            token
+        );
+        rabbit
+            .Channels[0]
+            .Channel.DisposeAsync()
+            .Returns(ValueTask.FromException(new IOException("connection reset")));
+
+        await listener.DisposeAsync().AsTask().WaitAsync(Bound, token);
+
+        await SchedulingTests.WaitUntilAsync(() => logger.Has(new EventId(1408)));
+        var failed = Assert.Single(logger.Entries, entry => entry.Event.Id == 1408);
+        Assert.Equal(
+            ("RabbitMqChannelCloseFailed", LogLevel.Warning),
+            (failed.Event.Name, failed.Level)
+        );
+        Assert.IsType<IOException>(failed.Exception);
+    }
+
     private static RabbitMqRequestBroker CreateLogged(
         FakeRabbit rabbit,
         RecordingLogger<RabbitMqRequestBroker> logger,

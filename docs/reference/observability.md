@@ -197,6 +197,36 @@ are on the `HostLoom` meter, not here.
 | `hostloom.kafka.reply_consumer.initializations` | counter | Attempts to start the reply consumer and wait for its assignment, tagged `hostloom.kafka.outcome` (`succeeded`, `failed`); more than one per process means the reply consumer had to be re-initialized |
 | `hostloom.kafka.requests.pending` | observable gauge | Requests produced and still awaiting a reply |
 
+## Transport log events
+
+Every line the transports log carries a stable event id and name, so a logging pipeline can
+filter or alert on one condition without matching message text. The Kafka consumer-loop lines
+come from listeners, subscriptions, and the reply consumer alike and name the topic.
+
+| Id | Name | Level | Meaning |
+| --- | --- | --- | --- |
+| 1401 | `RabbitMqDeliveryRejected` | Error | A delivery failed and was rejected without requeue, to `DeadLetterExchange` when one is set |
+| 1402 | `InMemoryEventFailed` | Error | An in-memory subscriber failed; the publication stays accepted |
+| 1403 | `RabbitMqChannelsStillClosing` | Warning | Disposal stopped waiting, after five seconds, for channels still closing |
+| 1404 | `InMemoryHandlersAbandoned` | Warning | An in-memory stop gave up, after five seconds, on handlers that ignored their cancellation |
+| 1405 | `RabbitMqDeliveryUnsettled` | Warning | A closing channel refused a delivery's reply, acknowledgement, or rejection; the broker redelivers it, so its handler may run again |
+| 1406 | `RabbitMqHandlersAbandoned` | Warning | A listener or subscription stopped after five seconds without handlers that ignored their cancellation; their deliveries are redelivered |
+| 1407 | `RabbitMqConnectionStillClosing` | Warning | Disposal stopped waiting, after two seconds, for the connection to close, which finishes in the background; also a failure of that background close |
+| 1408 | `RabbitMqChannelCloseFailed` | Warning | A channel closed in the background failed to close cleanly |
+| 1411 | `RabbitMqConsumerCancelled` | Warning | The broker cancelled a consumer, as it does when its queue is deleted; what the queue held, and what is sent before it is declared again, is lost |
+| 1412 | `RabbitMqConsumerRestored` | Information | Consumption resumed after such a cancellation |
+| 1413 | `RabbitMqConsumerRestoreFailed` | Warning | An attempt to restore consumption failed and is retried |
+| 1421 | `KafkaConsumeFailed` | Error | Consuming failed; the loop waits and consumes again |
+| 1422 | `KafkaRecordMalformed` | Error | A record could not be decoded, or a request named an unacceptable reply topic or was too old; it is committed past without being handled |
+| 1423 | `KafkaReplyUnroutable` | Error | A request was handled but its reply could not be produced; it is committed past without running the handler again |
+| 1424 | `KafkaRecordRewound` | Error | Handling a record failed; the loop rewinds to it and retries after a backoff |
+| 1425 | `KafkaRecordAttemptsExhausted` | Error | A request record failed on every attempt and is committed past |
+| 1426 | `KafkaSeekFailed` | Error | Rewinding to a failed record failed; whoever is next assigned the partition redelivers it |
+| 1427 | `KafkaCommitFailed` | Error | Committing a handled or skipped record failed; the handler is not run again |
+| 1428 | `KafkaConsumerLoopFaulted` | Error | The consumer loop itself faulted, a defect, and had stopped consuming |
+| 1429 | `KafkaConsumerCloseFailed` | Error | Closing a stopped consumer failed, so its group may wait out the session timeout before rebalancing |
+| 1430 | `KafkaConsumerCleanupFailed` | Debug | Disposing a consumer whose subscription failed at startup failed too; the startup failure is the one reported |
+
 ## Health checks
 
 `AddHealthChecks()` on the HostLoom builder registers:

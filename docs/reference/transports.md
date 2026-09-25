@@ -175,9 +175,13 @@ closing the connection in the background, which takes it about 25 seconds.
 - **Kafka reply routing**: the `hostloom-reply-to` header is validated
   against Kafka's topic-name rules and `AllowedReplyTopics` before the
   handler runs. A reply that cannot be produced after the handler ran is
-  logged with the exception type and the request is committed past, not
-  re-run: the handler's side effects would repeat for an answer that
-  still had nowhere to go.
+  logged with the exception type (`KafkaReplyUnroutable`, 1423) and the
+  request is committed past, not re-run: the handler's side effects would
+  repeat for an answer that still had nowhere to go.
+
+Every log line a transport writes carries a stable event id: RabbitMQ and the in-memory
+transport use 1401 to 1413, and Kafka uses 1421 to 1430. The
+[observability reference](observability.md#transport-log-events) lists them.
 - **RabbitMQ cancellation**: a delivery cancelled in flight (the listener
   is stopping, or the client library cancelled it) is nacked with requeue;
   every other failure is rejected without requeue, to

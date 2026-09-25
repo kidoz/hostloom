@@ -562,7 +562,15 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
             }
             catch (Exception exception)
             {
-                logger.LogDebug(exception, "Consumer cleanup failed during startup.");
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    logger.LogDebug(
+                        KafkaEvents.ConsumerCleanupFailed,
+                        exception,
+                        "HostLoom Kafka consumer for '{Topic}' failed to dispose after its subscription failed at startup.",
+                        topic
+                    );
+                }
             }
             throw;
         }
