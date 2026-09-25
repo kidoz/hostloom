@@ -114,6 +114,9 @@ See [Outbox](../reference/messaging.md#outbox) and
 [Inbox](../reference/messaging.md#inbox). The outbox relay retries a
 message the transport refuses with an exponential backoff and, after
 `Outbox:MaxAttempts`, moves it to a dead-letter state in the store that no
-claim returns; an operator requeues it from there. Neither changes what a
+claim returns; an operator requeues it from there. A refusal also stops the
+drain, and the relay backs off as a whole, probing with one message at a time,
+so a transport outage costs one attempt per failed drain instead of charging
+every waiting message until the backlog is dead-lettered. Neither changes what a
 broker guarantees: the outbox relay itself delivers at least once, and the
 inbox is what absorbs the duplicate.

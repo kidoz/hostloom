@@ -5,7 +5,10 @@ namespace HostLoom;
 /// <summary>How the outbox relay drains the store. <see cref="Validate"/> names the option key at fault.</summary>
 public sealed class OutboxOptions
 {
-    /// <summary>How long the relay waits between drains when nothing wakes it earlier.</summary>
+    /// <summary>
+    /// How long the relay waits between drains when nothing wakes it earlier. After a drain that
+    /// ends on a failed publish, the relay's pause applies instead.
+    /// </summary>
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(5);
 
     /// <summary>Messages claimed per store round trip.</summary>
@@ -13,7 +16,10 @@ public sealed class OutboxOptions
 
     /// <summary>
     /// How long a claim keeps a message from other relays. A relay that dies inside the lease
-    /// leaves the message to be claimed again when it expires.
+    /// leaves the message to be claimed again when it expires. A drain that stops at a failed
+    /// publish holds the messages it claimed and did not try, and publishes them once a later
+    /// publish succeeds if that is within the first half of the lease; otherwise they, too, are
+    /// claimed again when it expires.
     /// </summary>
     public TimeSpan ClaimLease { get; set; } = TimeSpan.FromMinutes(1);
 
@@ -23,13 +29,17 @@ public sealed class OutboxOptions
     /// </summary>
     public int MaxAttempts { get; set; } = 10;
 
-    /// <summary>Delay before the first retry of a failed message; later retries grow by <see cref="RetryBackoffFactor"/>.</summary>
+    /// <summary>
+    /// Delay before the first retry of a failed message; later retries grow by
+    /// <see cref="RetryBackoffFactor"/>. The relay pauses by the same arithmetic after each
+    /// consecutive drain that ends on a failed publish; zero turns both off.
+    /// </summary>
     public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(5);
 
-    /// <summary>Upper bound on the delay between two attempts of one message.</summary>
+    /// <summary>Upper bound on the delay between two attempts of one message, and on the relay's pause after a failed drain.</summary>
     public TimeSpan MaxRetryDelay { get; set; } = TimeSpan.FromMinutes(5);
 
-    /// <summary>Multiplier applied to the retry delay per failed attempt. One disables the growth.</summary>
+    /// <summary>Multiplier applied to the retry delay per failed attempt, and to the relay's pause per consecutive failed drain. One disables the growth.</summary>
     public double RetryBackoffFactor { get; set; } = 2;
 
     /// <summary>Every violation, each naming the option key at fault. Empty when the options are usable.</summary>

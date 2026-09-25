@@ -134,11 +134,46 @@ Within a drain it claims `Outbox:BatchSize` messages under an
 with the failure's type name and a `NextAttemptAt` computed from
 `Outbox:RetryDelay` grown by `Outbox:RetryBackoffFactor` per attempt and
 clamped to `Outbox:MaxRetryDelay` (the same arithmetic as
-`RetryPolicy.Exponential`); the rest of the batch still goes out, and the drain
-stops after that batch. A message that fails `Outbox:MaxAttempts` times is
-dead-lettered: logged at error, counted, and never claimed again until an
-operator requeues it in the store (`InMemoryOutboxStore.Requeue` does this for
-the in-memory store). A publish that succeeds but that the store fails to mark
+`RetryPolicy.Exponential`), and the drain stops there. The rest of the claimed
+batch is neither tried nor charged an attempt. The relay holds it, up to
+`Outbox:BatchSize` messages, under the claim it was taken with, and publishes
+it, oldest first, as soon as a later publish succeeds, provided less than half
+of `Outbox:ClaimLease` has run since the claim. The other half is left for that
+publish and its mark to finish before another relay may claim the message. A
+held message past that point, and everything a relay holds when it stops, goes
+back to the store when its lease expires.
+
+After a drain that ends on a failed publish, the hosted relay pauses before it
+drains again and ignores wakes and the poll interval meanwhile. The pause uses
+the same arithmetic per consecutive failed drain, so it starts at
+`Outbox:RetryDelay` and grows to `Outbox:MaxRetryDelay`; a zero
+`Outbox:RetryDelay` turns it off, leaving the relay to drain again when woken or
+polled. `DrainAsync` on a manual relay drains at once. The first drain after a
+failure claims a single message as a probe. The message that failed is due
+again just as the pause ends, so when the probe claim returns it and another
+message is due, the relay claims that one too and tries it first; if that
+publish fails as well, the relay holds the message that failed before, untried,
+with the rest. When nothing new is due, the probe is the oldest message the
+relay holds. The first publish that succeeds ends the backoff, the held messages
+go out, and the drain continues in full batches.
+
+An outage therefore costs one attempt per failed drain, spread over the oldest
+waiting messages, instead of one attempt per pending message per drain, and
+the transport's recovery is noticed within `Outbox:MaxRetryDelay`. The backlog
+goes out as soon as it is; only messages the relay has held for more than half
+a lease wait for that lease to expire, at most half a lease longer. A long
+enough outage can still dead-letter the oldest messages, since every failed
+drain adds an attempt to one of them. A message that keeps failing while others
+publish drops out of claims until its `NextAttemptAt`, so the messages behind it
+keep flowing while it is retried and, in the end, dead-lettered. The relay logs
+`OutboxPublishFailed` (3301) for each failed drain, and `OutboxRelayBackingOff`
+(3306) and `OutboxRelayRecovered` (3307) once each when a backoff begins and
+ends.
+
+A message that fails `Outbox:MaxAttempts` times is dead-lettered: logged at
+error, counted, and never claimed again until an operator requeues it in the
+store (`InMemoryOutboxStore.Requeue` does this for the in-memory store). A
+publish that succeeds but that the store fails to mark
 is not a failed attempt, because the transport has the frame: the relay logs a warning
 (`OutboxMarkPublishedFailed`, 3305), counts nothing, and leaves the message
 under its claim lease. Delivery is at-least-once: that message, like one whose
@@ -158,7 +193,7 @@ after the lease.
 A transport without publish/subscribe fails the host at startup, as it does for
 a subscription. Metrics: `hostloom.outbox.published`, `hostloom.outbox.failed`,
 `hostloom.outbox.dead_lettered`, and `hostloom.outbox.lag`; log events in
-`OutboxEvents` (3300 to 3305).
+`OutboxEvents` (3300 to 3307).
 
 ## Inbox
 

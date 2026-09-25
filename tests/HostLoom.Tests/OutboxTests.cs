@@ -67,7 +67,7 @@ public sealed class OutboxTests
     }
 
     [Fact]
-    public async Task Drain_publishes_frames_unchanged_and_stops_after_a_failure()
+    public async Task Drain_publishes_frames_unchanged_and_stops_at_a_failure()
     {
         var clock = new TestClock();
         var store = new InMemoryOutboxStore(clock);
@@ -97,29 +97,38 @@ public sealed class OutboxTests
         Assert.Equal(5, relay.Published);
 
         broker.FailNext = new InvalidOperationException("broker down");
-        await store.AppendAsync(Message("orders", clock), TestContext.Current.CancellationToken);
-        await store.AppendAsync(Message("orders", clock), TestContext.Current.CancellationToken);
-        await store.AppendAsync(Message("orders", clock), TestContext.Current.CancellationToken);
+        var failed = Message("orders", clock, payload: 5);
+        var untried = Message("orders", clock, payload: 6);
+        var unclaimed = Message("orders", clock, payload: 7);
+        await store.AppendAsync(failed, TestContext.Current.CancellationToken);
+        await store.AppendAsync(untried, TestContext.Current.CancellationToken);
+        await store.AppendAsync(unclaimed, TestContext.Current.CancellationToken);
 
-        // The failed message stays pending with the failure's type (never its message), the rest
-        // of its batch still goes out, and the drain stops after that batch so the third message
-        // waits for the next one.
-        Assert.Equal(1, await relay.DrainAsync(TestContext.Current.CancellationToken));
-        Assert.Equal(2, store.Pending.Count);
-        Assert.Equal(1, store.Pending[0].Attempts);
+        // The failed message stays pending with the failure's type (never its message), and the
+        // drain stops at it: the second message of its batch is neither tried nor charged an
+        // attempt, and the third was never claimed.
+        Assert.Equal(0, await relay.DrainAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(5, broker.Published.Count);
+        Assert.Equal([1, 0, 0], store.Pending.Select(m => m.Attempts));
+        Assert.Equal([true, false, false], store.Pending.Select(m => m.NextAttemptAt is not null));
         Assert.Equal(typeof(InvalidOperationException).FullName, store.LastError);
         Assert.Equal(1, relay.Failed);
 
-        // The failed message is held back for the first retry delay; the third goes out now.
+        // The failed message is held back for the first retry delay, and the untried one is still
+        // under this relay's claim, so the next drain's single-message probe finds only the third.
+        // Once that goes out, the relay publishes the untried one it holds without waiting for
+        // its lease to expire.
         Assert.Equal(
             clock.GetUtcNow() + new OutboxOptions().RetryDelay,
             store.Pending[0].NextAttemptAt
         );
-        Assert.Equal(1, await relay.DrainAsync(TestContext.Current.CancellationToken));
-        Assert.Single(store.Pending);
+        Assert.Equal(2, await relay.DrainAsync(TestContext.Current.CancellationToken));
+        Assert.Equal([failed.MessageId], store.Pending.Select(m => m.MessageId));
         clock.Advance(new OutboxOptions().RetryDelay);
         Assert.Equal(1, await relay.DrainAsync(TestContext.Current.CancellationToken));
         Assert.Empty(store.Pending);
+        Assert.Equal([0, 1, 2, 3, 4, 7, 6, 5], broker.Published.Select(p => p.Frame.Span[0]));
+        Assert.Equal(1, relay.Failed);
     }
 
     [Fact]
