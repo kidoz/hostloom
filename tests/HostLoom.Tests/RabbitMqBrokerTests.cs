@@ -1438,11 +1438,33 @@ public sealed partial class RabbitMqBrokerTests
         public CreateChannelOptions? Options { get; set; }
         private readonly Lock _gate = new();
         private readonly List<Published> _publishes = [];
+        private readonly TaskCompletionSource _deliveriesStopped = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        private readonly TaskCompletionSource _closeStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        private bool _refuseOnceClosing;
+        private bool _closed;
 
         public FakeChannel()
         {
             Channel = Substitute.For<IChannel>();
-            Channel.IsOpen.Returns(true);
+            Channel.IsOpen.Returns(_ => !Volatile.Read(ref _closed));
+            Channel
+                .When(c => c.DisposeAsync())
+                .Do(_ =>
+                {
+                    MarkClosing();
+                    _closeStarted.TrySetResult();
+                });
+            Channel
+                .BasicCancelAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+                .Returns(_ =>
+                {
+                    _deliveriesStopped.TrySetResult();
+                    return Task.CompletedTask;
+                });
 
             Channel
                 .QueueDeclareAsync(
@@ -1494,6 +1516,7 @@ public sealed partial class RabbitMqBrokerTests
                 )
                 .Do(call =>
                 {
+                    ThrowIfClosed();
                     var properties = call.ArgAt<BasicProperties>(3);
                     var body = call.ArgAt<ReadOnlyMemory<byte>>(4);
                     lock (_gate)
@@ -1559,7 +1582,11 @@ public sealed partial class RabbitMqBrokerTests
                 .When(c =>
                     c.BasicAckAsync(Arg.Any<ulong>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
                 )
-                .Do(call => Acks.Add(call.ArgAt<ulong>(0)));
+                .Do(call =>
+                {
+                    ThrowIfClosed();
+                    Acks.Add(call.ArgAt<ulong>(0));
+                });
 
             Channel
                 .When(c =>
@@ -1569,7 +1596,11 @@ public sealed partial class RabbitMqBrokerTests
                         Arg.Any<CancellationToken>()
                     )
                 )
-                .Do(call => Rejects.Add(call.ArgAt<ulong>(0)));
+                .Do(call =>
+                {
+                    ThrowIfClosed();
+                    Rejects.Add(call.ArgAt<ulong>(0));
+                });
 
             Channel
                 .When(c =>
@@ -1580,12 +1611,58 @@ public sealed partial class RabbitMqBrokerTests
                         Arg.Any<CancellationToken>()
                     )
                 )
-                .Do(call => Nacks.Add(call.ArgAt<ulong>(0)));
+                .Do(call =>
+                {
+                    ThrowIfClosed();
+                    Nacks.Add(call.ArgAt<ulong>(0));
+                });
         }
 
         public IChannel Channel { get; }
 
         public IAsyncBasicConsumer? Consumer { get; private set; }
+
+        /// <summary>
+        /// Makes the channel behave as the client library's does once its close begins: it
+        /// reports itself closed, and every later publication, acknowledgement, nack, or rejection
+        /// throws <see cref="AlreadyClosedException"/>. Off by default, so a test that does not
+        /// ask for it can still settle on a channel it has started closing.
+        /// </summary>
+        public void RefuseSettlementsOnceClosing() => Volatile.Write(ref _refuseOnceClosing, true);
+
+        /// <summary>Closes the channel underneath its consumer now, as a dropped connection does.</summary>
+        public void CloseUnderneath()
+        {
+            RefuseSettlementsOnceClosing();
+            MarkClosing();
+        }
+
+        /// <summary>Completes once the consumer asks the broker to stop delivering to it.</summary>
+        public Task DeliveriesStopped => _deliveriesStopped.Task;
+
+        /// <summary>
+        /// Completes once the channel's close begins. Not for a test that also calls
+        /// <see cref="HoldClose"/>, whose setup would complete it.
+        /// </summary>
+        public Task CloseStarted => _closeStarted.Task;
+
+        private void MarkClosing()
+        {
+            if (Volatile.Read(ref _refuseOnceClosing))
+            {
+                Volatile.Write(ref _closed, true);
+            }
+        }
+
+        private void ThrowIfClosed()
+        {
+            if (Volatile.Read(ref _closed))
+            {
+                throw new AlreadyClosedException(
+                    new ShutdownEventArgs(ShutdownInitiator.Application, 200, "channel closed")
+                );
+            }
+        }
 
         public List<ulong> Acks { get; } = [];
 
@@ -1663,6 +1740,8 @@ public sealed partial class RabbitMqBrokerTests
                 .DisposeAsync()
                 .Returns(_ =>
                 {
+                    // Marked before the signal, so a test that waits for it sees the channel closing.
+                    MarkClosing();
                     started.TrySetResult();
                     return new ValueTask(finish.Task);
                 });

@@ -66,7 +66,7 @@ public sealed partial class RabbitMqBrokerTests
     [Theory(Timeout = 30_000)]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Stopping_a_consumer_waits_for_its_handler_in_flight_and_requeues_later_deliveries(
+    public async Task Stopping_a_consumer_waits_for_its_handler_in_flight_before_closing_and_requeues_later_deliveries(
         bool eventSubscription
     )
     {
@@ -98,10 +98,13 @@ public sealed partial class RabbitMqBrokerTests
         await started.Task.WaitAsync(Bound, token);
 
         var disposing = consumer.DisposeAsync().AsTask();
-        // The close starts at once, so the broker stops delivering, and disposal waits for the
-        // handler rather than for the close.
-        await closeStarted.WaitAsync(Bound, token);
-        Assert.False(disposing.IsCompleted);
+        // The broker is asked at once to stop delivering, without waiting for its answer, and
+        // the handler is cancelled.
+        await channel.DeliveriesStopped.WaitAsync(Bound, token);
+        await channel
+            .Channel.Received(1)
+            .BasicCancelAsync("consumer-tag", true, Arg.Any<CancellationToken>());
+        await cancelled.Task.WaitAsync(Bound, token);
 
         // A delivery already on its way goes back to the queue without reaching the handler.
         await channel
@@ -109,16 +112,171 @@ public sealed partial class RabbitMqBrokerTests
             .WaitAsync(Bound, token);
         Assert.Equal(1, Volatile.Read(ref entered));
         Assert.Equal([2ul], channel.Nacks);
+        // The channel stays open while the handler runs, so what it settles reaches the broker.
+        Assert.False(closeStarted.IsCompleted);
+        Assert.False(disposing.IsCompleted);
 
-        await cancelled.Task.WaitAsync(Bound, token);
         release.SetResult();
-        await disposing.WaitAsync(Bound, token);
         await first.WaitAsync(Bound, token);
+        await closeStarted.WaitAsync(Bound, token);
+        await disposing.WaitAsync(Bound, token);
         // Once released, the handler saw its cancellation, so its delivery was requeued too.
         Assert.Equal([2ul, 1ul], channel.Nacks);
         Assert.Empty(channel.Rejects);
         Assert.Empty(channel.Acks);
         finishClose.SetResult();
+    }
+
+    [Theory(Timeout = 30_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_handler_that_finishes_in_spite_of_the_stop_is_settled_before_its_channel_closes(
+        bool eventSubscription
+    )
+    {
+        var token = TestContext.Current.CancellationToken;
+        var rabbit = new FakeRabbit();
+        var logger = new RecordingLogger<RabbitMqRequestBroker>();
+        var client = UniqueClient();
+        using var metrics = new MetricRecorder(client);
+        await using var broker = CreateLogged(rabbit, logger, new TestClock(), client);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var consumer = await StartConsumerAsync(
+            broker,
+            eventSubscription,
+            async (_, _) =>
+            {
+                started.TrySetResult();
+                // Ignores its cancellation and succeeds, as a handler finishing work it cannot
+                // abandon halfway.
+                await release.Task.WaitAsync(Bound, token);
+            }
+        );
+        var channel = rabbit.Channels[0];
+        // As the client library does: once the close begins, nothing more can be settled.
+        channel.RefuseSettlementsOnceClosing();
+        var delivery = channel.DeliverAsync("c1", "amq.gen-reply", [1], deliveryTag: 1);
+        await started.Task.WaitAsync(Bound, token);
+
+        var disposing = consumer.DisposeAsync().AsTask();
+        // Released once the stop has done whatever it does first: ask the broker to stop
+        // delivering, or begin closing the channel.
+        await Task.WhenAny(channel.DeliveriesStopped, channel.CloseStarted).WaitAsync(Bound, token);
+        release.SetResult();
+        await delivery.WaitAsync(Bound, token);
+        await disposing.WaitAsync(Bound, token);
+        await channel.CloseStarted.WaitAsync(Bound, token);
+
+        // The work completed, so it is answered and acknowledged, not redelivered and run again.
+        Assert.Equal([1ul], channel.Acks);
+        if (!eventSubscription)
+        {
+            Assert.Equal("c1", Assert.Single(channel.Publishes).CorrelationId);
+        }
+
+        Assert.Empty(channel.Rejects);
+        Assert.Empty(channel.Nacks);
+        Assert.DoesNotContain(logger.Entries, entry => entry.Level >= LogLevel.Warning);
+        Assert.Equal(0, metrics.Sum("hostloom.rabbitmq.deliveries.rejected"));
+        Assert.Equal(0, metrics.Sum("hostloom.rabbitmq.deliveries.requeued"));
+    }
+
+    [Theory(Timeout = 30_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_handler_still_running_after_the_drain_bound_is_left_behind_and_its_late_settlement_is_not_a_rejection(
+        bool eventSubscription
+    )
+    {
+        var token = TestContext.Current.CancellationToken;
+        var clock = new TestClock();
+        var rabbit = new FakeRabbit();
+        var logger = new RecordingLogger<RabbitMqRequestBroker>();
+        var client = UniqueClient();
+        using var metrics = new MetricRecorder(client);
+        await using var broker = CreateLogged(rabbit, logger, clock, client);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var consumer = await StartConsumerAsync(
+            broker,
+            eventSubscription,
+            async (_, _) =>
+            {
+                started.TrySetResult();
+                await release.Task.WaitAsync(Bound, token);
+            }
+        );
+        var channel = rabbit.Channels[0];
+        channel.RefuseSettlementsOnceClosing();
+        var delivery = channel.DeliverAsync("c1", "amq.gen-reply", [1], deliveryTag: 1);
+        await started.Task.WaitAsync(Bound, token);
+
+        var disposing = consumer.DisposeAsync().AsTask();
+        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 1);
+        Assert.False(channel.CloseStarted.IsCompleted);
+        clock.Advance(RabbitMqRequestBroker.HandlerDrainBound);
+
+        // The stop gives up on the handler, closes the channel without it, and returns.
+        await disposing.WaitAsync(Bound, token);
+        await channel.CloseStarted.WaitAsync(Bound, token);
+        var abandoned = Assert.Single(logger.Entries, entry => entry.Event.Id == 1406);
+        Assert.Equal(LogLevel.Warning, abandoned.Level);
+        Assert.Equal("RabbitMqHandlersAbandoned", abandoned.Event.Name);
+
+        // Finishing late, the handler cannot settle on the closed channel. That is not a
+        // failure of the delivery: the broker redelivers it, and nothing escapes into the client
+        // library's dispatcher.
+        release.SetResult();
+        await delivery.WaitAsync(Bound, token);
+        var unsettled = Assert.Single(logger.Entries, entry => entry.Event.Id == 1405);
+        Assert.Equal(LogLevel.Warning, unsettled.Level);
+        Assert.Equal("RabbitMqDeliveryUnsettled", unsettled.Event.Name);
+        Assert.IsType<AlreadyClosedException>(unsettled.Exception);
+        Assert.Contains(
+            eventSubscription ? "acknowledged" : "answered",
+            unsettled.Message,
+            StringComparison.Ordinal
+        );
+        Assert.DoesNotContain(logger.Entries, entry => entry.Event.Id == 1401);
+        Assert.Equal(0, metrics.Sum("hostloom.rabbitmq.deliveries.rejected"));
+        Assert.Equal(1, metrics.Sum("hostloom.rabbitmq.deliveries.requeued"));
+        Assert.Empty(channel.Acks);
+        Assert.Empty(channel.Rejects);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task A_rejection_a_closed_channel_refuses_is_reported_as_unsettled_and_does_not_escape()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var rabbit = new FakeRabbit();
+        var logger = new RecordingLogger<RabbitMqRequestBroker>();
+        var client = UniqueClient();
+        using var metrics = new MetricRecorder(client);
+        await using var broker = CreateLogged(rabbit, logger, new TestClock(), client);
+        await using var subscription = await StartConsumerAsync(
+            broker,
+            eventSubscription: true,
+            (_, _) => throw new InvalidOperationException("inventory unavailable")
+        );
+        var channel = rabbit.Channels[0];
+        // The connection dropped under a delivery already dispatched to the handler.
+        channel.CloseUnderneath();
+
+        await channel
+            .DeliverAsync("c1", "amq.gen-reply", [1], deliveryTag: 1)
+            .WaitAsync(Bound, token);
+
+        // Neither rejected nor dead-lettered: the broker redelivers it.
+        var unsettled = Assert.Single(logger.Entries, entry => entry.Event.Id == 1405);
+        Assert.Equal(LogLevel.Warning, unsettled.Level);
+        Assert.Contains("rejected", unsettled.Message, StringComparison.Ordinal);
+        var causes = Assert.IsType<AggregateException>(unsettled.Exception).InnerExceptions;
+        Assert.IsType<InvalidOperationException>(causes[0]);
+        Assert.IsType<AlreadyClosedException>(causes[1]);
+        Assert.DoesNotContain(logger.Entries, entry => entry.Event.Id == 1401);
+        Assert.Equal(0, metrics.Sum("hostloom.rabbitmq.deliveries.rejected"));
+        Assert.Equal(1, metrics.Sum("hostloom.rabbitmq.deliveries.requeued"));
     }
 
     [Theory(Timeout = 30_000)]

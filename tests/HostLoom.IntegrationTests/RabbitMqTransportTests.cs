@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using HostLoom.IntegrationTests.Infrastructure;
 using HostLoom.Transport.RabbitMq;
@@ -386,10 +388,190 @@ public sealed class RabbitMqTransportTests : IAsyncLifetime
         }
     }
 
+    [Theory(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_handler_that_finishes_after_its_consumer_began_stopping_is_settled_not_rejected(
+        bool eventSubscription
+    )
+    {
+        var name = eventSubscription ? Unique("drain-events", "audit") : Unique("drain-requests");
+        var queue = eventSubscription
+            ? RabbitMqQueueNames.Subscription(name, "audit")
+            : RabbitMqQueueNames.Request(name);
+        var client = "it-drain-" + Guid.NewGuid().ToString("N");
+        using var meters = new MeterCapture(RabbitMqDiagnostics.MeterName, ClientTag, client);
+        var log = new EventLog();
+        await using var server = new RabbitMqRequestBroker(
+            Options.Create(new RabbitMqOptions { Uri = Broker, ClientProvidedName = client }),
+            log
+        );
+        await using var caller = new RabbitMqRequestBroker(
+            Options.Create(
+                new RabbitMqOptions { Uri = Broker, ClientProvidedName = client + "-caller" }
+            )
+        );
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var consumer = eventSubscription
+            ? await server.SubscribeAsync(
+                name,
+                "audit",
+                async (_, handlerToken) =>
+                {
+                    entered.TrySetResult();
+                    await FinishAfterTheStopAsync(handlerToken);
+                },
+                Token
+            )
+            : await server.ListenAsync(
+                name,
+                async (frame, handlerToken) =>
+                {
+                    entered.TrySetResult();
+                    await FinishAfterTheStopAsync(handlerToken);
+                    return frame;
+                },
+                Token
+            );
+
+        Task<ReadOnlyMemory<byte>>? reply = null;
+        if (eventSubscription)
+        {
+            await caller.PublishAsync(name, "orders:late"u8.ToArray(), Token);
+        }
+        else
+        {
+            reply = caller
+                .RequestAsync(
+                    name,
+                    "orders:late"u8.ToArray(),
+                    Guid.NewGuid(),
+                    TimeSpan.FromSeconds(20),
+                    Token
+                )
+                .AsTask();
+        }
+
+        await entered.Task.WaitAsync(Bound, Token);
+        await consumer.DisposeAsync().AsTask().WaitAsync(Bound, Token);
+
+        // The channel stayed open until the handler returned, so its work was answered and
+        // acknowledged, not rejected and not handed back to run again.
+        if (reply is not null)
+        {
+            Assert.Equal(
+                "orders:late",
+                Encoding.UTF8.GetString((await reply.WaitAsync(Bound, Token)).Span)
+            );
+        }
+
+        Assert.DoesNotContain(1401, log.EventIds);
+        Assert.DoesNotContain(1405, log.EventIds);
+        Assert.Equal(0d, meters.Sum(Rejected));
+        Assert.Equal(0d, meters.Sum(Requeued));
+        Assert.Equal(0u, await ReadyMessagesAsync(queue));
+
+        // Ignores the cancellation the stop sends and finishes its work shortly after it.
+        static async Task FinishAfterTheStopAsync(CancellationToken handlerToken)
+        {
+            var stopping = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously
+            );
+            using (handlerToken.Register(() => stopping.TrySetResult()))
+            {
+                await stopping.Task.WaitAsync(Bound, Token);
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(300), Token);
+        }
+    }
+
+    [Fact(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
+    public async Task A_handler_that_outlives_the_drain_bound_is_left_behind_and_its_event_redelivered()
+    {
+        var topic = Unique("drain-abandoned", "audit");
+        var client = "it-abandoned-" + Guid.NewGuid().ToString("N");
+        using var meters = new MeterCapture(RabbitMqDiagnostics.MeterName, ClientTag, client);
+        var log = new EventLog();
+        await using var server = new RabbitMqRequestBroker(
+            Options.Create(new RabbitMqOptions { Uri = Broker, ClientProvidedName = client }),
+            log
+        );
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var subscription = await server.SubscribeAsync(
+            topic,
+            "audit",
+            async (_, _) =>
+            {
+                entered.TrySetResult();
+                // Ignores its cancellation altogether, for longer than a stop waits.
+                await release.Task.WaitAsync(Bound, Token);
+            },
+            Token
+        );
+        await server.PublishAsync(topic, "shipments:late"u8.ToArray(), Token);
+        await entered.Task.WaitAsync(Bound, Token);
+
+        var started = Stopwatch.GetTimestamp();
+        await subscription.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(15), Token);
+        var stoppedAfter = Stopwatch.GetElapsedTime(started);
+        TestContext.Current.TestOutputHelper?.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"The subscription stopped after {stoppedAfter.TotalSeconds:F2} s."
+            )
+        );
+        // The documented five-second drain bound, and no longer than a few seconds beyond it.
+        Assert.InRange(stoppedAfter, TimeSpan.FromSeconds(4.5), TimeSpan.FromSeconds(8));
+        Assert.Contains(1406, log.EventIds);
+
+        // Its channel closed without the handler, so the broker handed the event back, and the
+        // next consumer of the subscription receives it.
+        await using var successor = new RabbitMqRequestBroker(
+            Options.Create(
+                new RabbitMqOptions { Uri = Broker, ClientProvidedName = client + "-successor" }
+            )
+        );
+        var redelivered = new TaskCompletionSource<string>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        await using var again = await successor.SubscribeAsync(
+            topic,
+            "audit",
+            (frame, _) =>
+            {
+                redelivered.TrySetResult(Encoding.UTF8.GetString(frame.Span));
+                return ValueTask.CompletedTask;
+            },
+            Token
+        );
+        Assert.Equal("shipments:late", await redelivered.Task.WaitAsync(Bound, Token));
+
+        // Finishing late, the abandoned handler cannot acknowledge on the closed channel. That is
+        // reported as an unsettled delivery at warning level, not as a rejection.
+        release.SetResult();
+        using (var reported = CancellationTokenSource.CreateLinkedTokenSource(Token))
+        {
+            reported.CancelAfter(Bound);
+            while (!log.EventIds.Contains(1405))
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(20), reported.Token);
+            }
+        }
+
+        Assert.Equal(LogLevel.Warning, log.LevelOf(1405));
+        Assert.DoesNotContain(1401, log.EventIds);
+        Assert.Equal(0d, meters.Sum(Rejected));
+        Assert.Equal(1d, meters.Sum(Requeued));
+    }
+
     private const string ClientTag = "hostloom.rabbitmq.client";
     private const string EventTag = "hostloom.rabbitmq.event";
     private const string RoleTag = "hostloom.rabbitmq.role";
     private const string Consumers = "hostloom.rabbitmq.consumers";
+    private const string Rejected = "hostloom.rabbitmq.deliveries.rejected";
+    private const string Requeued = "hostloom.rabbitmq.deliveries.requeued";
 
     private static readonly Uri Broker = new("amqp://guest:guest@localhost:5672/");
 
@@ -418,12 +600,24 @@ public sealed class RabbitMqTransportTests : IAsyncLifetime
         }
     }
 
-    /// <summary>Records the event ids the transport logs.</summary>
+    /// <summary>Counts the messages ready in a queue, through a connection of the test's own.</summary>
+    private static async Task<uint> ReadyMessagesAsync(string queue)
+    {
+        await using var admin = await new ConnectionFactory { Uri = Broker }.CreateConnectionAsync(
+            Token
+        );
+        await using var channel = await admin.CreateChannelAsync(cancellationToken: Token);
+        return (await channel.QueueDeclarePassiveAsync(queue, Token)).MessageCount;
+    }
+
+    /// <summary>Records the event ids the transport logs, and the level of each.</summary>
     private sealed class EventLog : ILogger<RabbitMqRequestBroker>
     {
-        private readonly ConcurrentQueue<int> _events = new();
+        private readonly ConcurrentQueue<(int Id, LogLevel Level)> _events = new();
 
-        public IReadOnlyList<int> EventIds => [.. _events];
+        public IReadOnlyList<int> EventIds => [.. _events.Select(entry => entry.Id)];
+
+        public LogLevel LevelOf(int eventId) => _events.First(entry => entry.Id == eventId).Level;
 
         public IDisposable? BeginScope<TState>(TState state)
             where TState : notnull => null;
@@ -436,7 +630,7 @@ public sealed class RabbitMqTransportTests : IAsyncLifetime
             TState state,
             Exception? exception,
             Func<TState, Exception?, string> formatter
-        ) => _events.Enqueue(eventId.Id);
+        ) => _events.Enqueue((eventId.Id, logLevel));
     }
 
     /// <summary>

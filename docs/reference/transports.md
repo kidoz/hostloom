@@ -121,9 +121,16 @@ this table: it fails host startup with the client library's own exception.
 
 A publication that was not confirmed never returns its channel to the pool; the channel is
 closed in the background, so each of these returns at its deadline or failure, not after the
-close. Stopping a listener or subscription closes its channel in the background too: it waits
-for the handlers in flight, whose deliveries are requeued, but not for the broker's reply to
-the close. Disposing the transport waits at most five seconds for channels still closing.
+close.
+
+Stopping a listener or subscription asks the broker to stop delivering to it, cancels the
+handlers in flight, and waits up to five seconds for them with the channel still open. A
+handler that honours its cancellation has its delivery requeued; one that finishes all the same
+is answered and acknowledged, not run again. A handler still running after five seconds is
+logged (`RabbitMqHandlersAbandoned`, 1406) and left running, and the channel closes without
+it: the broker redelivers its delivery, and the reply or acknowledgement the handler attempts
+later is logged as unsettled (`RabbitMqDeliveryUnsettled`, 1405) rather than as a rejection.
+The stop does not wait for the broker's reply to the close, which runs in the background.
 
 ### Kafka
 
@@ -168,7 +175,10 @@ the close. Disposing the transport waits at most five seconds for channels still
 - **RabbitMQ cancellation**: a delivery cancelled in flight (the listener
   is stopping, or the client library cancelled it) is nacked with requeue;
   every other failure is rejected without requeue, to
-  `DeadLetterExchange` when one is set.
+  `DeadLetterExchange` when one is set. A reply, acknowledgement, or
+  rejection that a closing channel refuses is not a rejection: the delivery
+  stays unacknowledged, the broker redelivers it, and the transport logs
+  `RabbitMqDeliveryUnsettled` (1405) and counts it as requeued.
 - **RabbitMQ consumer cancellation**: the broker cancels a consumer when
   its queue is deleted or becomes unavailable. The transport logs a
   warning (`RabbitMqConsumerCancelled`) and counts it in

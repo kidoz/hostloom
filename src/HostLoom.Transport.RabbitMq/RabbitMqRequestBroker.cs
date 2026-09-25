@@ -177,7 +177,7 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     /// Opens a channel that declares the request queue and consumes it: how a listener starts,
     /// and how it is restored after the broker cancels its consumer.
     /// </summary>
-    private async Task<IChannel> ConsumeRequestsAsync(
+    private async Task<Consumption> ConsumeRequestsAsync(
         ConsumerSubscription owner,
         string queue,
         RequestFrameHandler handler,
@@ -210,10 +210,10 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             var consumer = owner.CreateConsumer(channel);
             consumer.ReceivedAsync += (_, delivery) =>
                 HandleRequestAsync(channel, owner, delivery, handler);
-            await channel
+            var consumerTag = await channel
                 .BasicConsumeAsync(queue, autoAck: false, consumer, cancellationToken)
                 .ConfigureAwait(false);
-            return channel;
+            return new Consumption(channel, consumerTag);
         }
         catch
         {
@@ -237,52 +237,75 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 
         try
         {
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-                delivery.CancellationToken,
-                owner.Stopping
-            );
+            string replyTo;
+            ReadOnlyMemory<byte> response;
+            using (
+                var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                    delivery.CancellationToken,
+                    owner.Stopping
+                )
+            )
+            {
+                try
+                {
+                    // Checked before the handler runs: the property is caller-controlled and
+                    // becomes a default-exchange routing key, so a request naming any other
+                    // queue must not be executed and then answered into it.
+                    var requested = delivery.BasicProperties.ReplyTo;
+                    if (!IsAcceptableReplyQueue(requested, _options.AllowNamedReplyQueues))
+                    {
+                        throw new MalformedEnvelopeException(
+                            "RabbitMQ request did not name a server-named reply queue; set RabbitMqOptions.AllowNamedReplyQueues to answer declared queues."
+                        );
+                    }
+
+                    replyTo = requested;
+                    response = await handler(delivery.Body, linked.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (linked.IsCancellationRequested)
+                {
+                    await RequeueAsync(channel, delivery.DeliveryTag).ConfigureAwait(false);
+                    return;
+                }
+                catch (Exception exception)
+                {
+                    await RejectAsync(channel, owner, delivery, exception).ConfigureAwait(false);
+                    return;
+                }
+            }
+
+            // Answered and acknowledged on the delivery's own token, not the listener's: a stop
+            // keeps the channel open until its handlers return, so a handler that finished in
+            // spite of its cancellation is answered rather than run again.
             try
             {
-                // Checked before the handler runs: the property is caller-controlled and
-                // becomes a default-exchange routing key, so a request naming any other
-                // queue must not be executed and then answered into it.
-                var replyTo = delivery.BasicProperties.ReplyTo;
-                if (!IsAcceptableReplyQueue(replyTo, _options.AllowNamedReplyQueues))
-                {
-                    throw new MalformedEnvelopeException(
-                        "RabbitMQ request did not name a server-named reply queue; set RabbitMqOptions.AllowNamedReplyQueues to answer declared queues."
-                    );
-                }
-
-                var response = await handler(delivery.Body, linked.Token).ConfigureAwait(false);
-
-                var properties = new BasicProperties
-                {
-                    ContentType = ContentType,
-                    CorrelationId = delivery.BasicProperties.CorrelationId,
-                };
                 await channel
                     .BasicPublishAsync(
                         exchange: string.Empty,
                         routingKey: replyTo,
                         mandatory: true,
-                        basicProperties: properties,
+                        basicProperties: new BasicProperties
+                        {
+                            ContentType = ContentType,
+                            CorrelationId = delivery.BasicProperties.CorrelationId,
+                        },
                         body: response,
-                        cancellationToken: linked.Token
+                        cancellationToken: delivery.CancellationToken
                     )
                     .ConfigureAwait(false);
-                await channel
-                    .BasicAckAsync(delivery.DeliveryTag, multiple: false, linked.Token)
-                    .ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (linked.IsCancellationRequested)
+            catch (Exception exception) when (IsChannelClosing(channel, exception, delivery))
             {
-                await RequeueAsync(channel, delivery.DeliveryTag).ConfigureAwait(false);
+                ReportUnsettled(owner, delivery, "answered", exception);
+                return;
             }
             catch (Exception exception)
             {
-                await RejectAsync(channel, delivery.DeliveryTag, exception).ConfigureAwait(false);
+                await RejectAsync(channel, owner, delivery, exception).ConfigureAwait(false);
+                return;
             }
+
+            await AcknowledgeAsync(channel, owner, delivery).ConfigureAwait(false);
         }
         finally
         {
@@ -291,22 +314,112 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     }
 
     /// <summary>
-    /// Logs why a delivery failed and rejects it without requeue, which routes it to the
-    /// dead-letter exchange when one is configured.
+    /// Acknowledges a delivery its handler completed. An acknowledgement a closing channel
+    /// refuses is reported, not thrown: the broker hands the delivery back when the channel
+    /// closes. One an open channel refuses is rejected, as a failed reply is.
     /// </summary>
-    private async ValueTask RejectAsync(IChannel channel, ulong deliveryTag, Exception exception)
+    private async ValueTask AcknowledgeAsync(
+        IChannel channel,
+        ConsumerSubscription owner,
+        BasicDeliverEventArgs delivery
+    )
     {
+        try
+        {
+            await channel
+                .BasicAckAsync(delivery.DeliveryTag, multiple: false, delivery.CancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsChannelClosing(channel, exception, delivery))
+        {
+            ReportUnsettled(owner, delivery, "acknowledged", exception);
+        }
+        catch (Exception exception)
+        {
+            await RejectAsync(channel, owner, delivery, exception).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Rejects a delivery without requeue, which routes it to the dead-letter exchange when one
+    /// is configured, then logs why. A rejection that cannot be sent is reported instead: the
+    /// delivery was neither rejected nor dead-lettered, and the broker redelivers it.
+    /// </summary>
+    private async ValueTask RejectAsync(
+        IChannel channel,
+        ConsumerSubscription owner,
+        BasicDeliverEventArgs delivery,
+        Exception exception
+    )
+    {
+        try
+        {
+            await channel
+                .BasicRejectAsync(delivery.DeliveryTag, requeue: false, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception failure)
+        {
+            ReportUnsettled(
+                owner,
+                delivery,
+                "rejected",
+                new AggregateException(exception, failure)
+            );
+            return;
+        }
+
         RecordRejection(exception);
         _logger.LogError(
             new EventId(1401, "RabbitMqDeliveryRejected"),
             exception,
             "RabbitMQ delivery {DeliveryTag} failed and is rejected without requeue. Dead-letter exchange configured: {HasDeadLetterExchange}.",
-            deliveryTag,
+            delivery.DeliveryTag,
             !string.IsNullOrEmpty(_options.DeadLetterExchange)
         );
-        await channel
-            .BasicRejectAsync(deliveryTag, requeue: false, CancellationToken.None)
-            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Whether a reply or acknowledgement failed because its channel is closing or closed, in
+    /// which case the delivery is left for the broker to hand back rather than rejected: neither
+    /// the handler nor the message is what failed, and a rejection could not be sent either.
+    /// </summary>
+    private static bool IsChannelClosing(
+        IChannel channel,
+        Exception exception,
+        BasicDeliverEventArgs delivery
+    ) =>
+        exception is AlreadyClosedException or ObjectDisposedException
+        || (
+            exception is OperationCanceledException
+            && delivery.CancellationToken.IsCancellationRequested
+        )
+        || !channel.IsOpen;
+
+    /// <summary>
+    /// Reports a delivery whose reply, acknowledgement, or rejection could not be sent because its
+    /// channel is closing or closed, as it is once a stop gave up on a handler, the transport is
+    /// being disposed, or the connection dropped. The broker hands an unacknowledged delivery
+    /// back to its queue when the channel closes, so the delivery is counted as requeued; it is
+    /// redelivered, and a handler that already ran may run again.
+    /// </summary>
+    private void ReportUnsettled(
+        ConsumerSubscription owner,
+        BasicDeliverEventArgs delivery,
+        string settlement,
+        Exception exception
+    )
+    {
+        RabbitMqDiagnostics.DeliveriesRequeued.Add(1, _clientTag);
+        _logger.LogWarning(
+            new EventId(1405, "RabbitMqDeliveryUnsettled"),
+            exception,
+            "RabbitMQ delivery {DeliveryTag} from queue {Queue} could not be {Settlement} because its channel is closing; the broker redelivers it, so its handler may run again. Consumer stopping: {Stopping}.",
+            delivery.DeliveryTag,
+            owner.Queue,
+            settlement,
+            owner.Stopping.IsCancellationRequested || _shutdownToken.IsCancellationRequested
+        );
     }
 
     /// <summary>
@@ -367,7 +480,7 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 
     /// <summary>
     /// Counts a delivery rejected without requeue. A malformed frame or an unacceptable reply
-    /// queue is the message's fault; anything else, including a reply or acknowledgement the
+    /// queue is the message's fault; anything else, including a reply or acknowledgement an open
     /// channel refused, is counted against the handler side.
     /// </summary>
     private void RecordRejection(Exception exception) =>
@@ -423,7 +536,7 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     /// cancels its consumer. A restoration declares the exchange again even when this broker
     /// already has, because whatever deleted the queue may have deleted the exchange with it.
     /// </summary>
-    private async Task<IChannel> ConsumeEventsAsync(
+    private async Task<Consumption> ConsumeEventsAsync(
         ConsumerSubscription owner,
         RequestAddress topic,
         string queue,
@@ -469,10 +582,10 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             var consumer = owner.CreateConsumer(channel);
             consumer.ReceivedAsync += (_, delivery) =>
                 HandleEventAsync(channel, owner, delivery, handler);
-            await channel
+            var consumerTag = await channel
                 .BasicConsumeAsync(queue, autoAck: false, consumer, cancellationToken)
                 .ConfigureAwait(false);
-            return channel;
+            return new Consumption(channel, consumerTag);
         }
         catch
         {
@@ -496,25 +609,31 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 
         try
         {
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-                delivery.CancellationToken,
-                owner.Stopping
-            );
-            try
+            using (
+                var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                    delivery.CancellationToken,
+                    owner.Stopping
+                )
+            )
             {
-                await handler(delivery.Body, linked.Token).ConfigureAwait(false);
-                await channel
-                    .BasicAckAsync(delivery.DeliveryTag, multiple: false, linked.Token)
-                    .ConfigureAwait(false);
+                try
+                {
+                    await handler(delivery.Body, linked.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (linked.IsCancellationRequested)
+                {
+                    await RequeueAsync(channel, delivery.DeliveryTag).ConfigureAwait(false);
+                    return;
+                }
+                catch (Exception exception)
+                {
+                    await RejectAsync(channel, owner, delivery, exception).ConfigureAwait(false);
+                    return;
+                }
             }
-            catch (OperationCanceledException) when (linked.IsCancellationRequested)
-            {
-                await RequeueAsync(channel, delivery.DeliveryTag).ConfigureAwait(false);
-            }
-            catch (Exception exception)
-            {
-                await RejectAsync(channel, delivery.DeliveryTag, exception).ConfigureAwait(false);
-            }
+
+            // On the delivery's own token, as a reply is: see HandleRequestAsync.
+            await AcknowledgeAsync(channel, owner, delivery).ConfigureAwait(false);
         }
         finally
         {

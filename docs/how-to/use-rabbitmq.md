@@ -153,6 +153,13 @@ Events without any subscriptions retain ordinary fan-out discard behavior.
   Messages that were in a deleted queue are lost. Repeated
   `RabbitMqConsumerRestoreFailed` warnings mean the queue cannot be
   declared yet, for example because the node that hosts it is down.
+- **`RabbitMqHandlersAbandoned` and `RabbitMqDeliveryUnsettled` warnings
+  at shutdown** — a handler ignored its cancellation for longer than the
+  five seconds a stop waits, so its listener or subscription stopped
+  without it. The broker redelivers that delivery, and the acknowledgement
+  or reply the handler sends when it finishes is refused by the closed
+  channel, which is what the second warning reports; the handler's work
+  may run twice. Make long-running handlers observe their token.
 - **A broker outage after startup is not reflected in readiness** — the
   RabbitMQ adapter does not yet implement `IBrokerHealthProbe`; see
   [health checks](health-and-metrics.md).
@@ -183,11 +190,16 @@ rather than after the close, which waits for the broker's reply for up to the cl
 library's 20-second continuation timeout. At most `MaxConcurrentPublishes` such channels may
 still be closing before a publication that needs a new channel waits for one to finish,
 again within its own deadline; `hostloom.rabbitmq.channels.closing` reports how many are.
-Stopping a listener or subscription closes its channel the same way: it waits for the
-handlers in flight, whose deliveries go back to the queue, but not for the broker, so a host
-stopping against an unresponsive broker does not wait twenty seconds per consumer.
 Disposing the transport waits at most five seconds for channels still closing, then
 disposes the connection, which closes the rest.
+
+Stopping a listener or subscription asks the broker to stop delivering to it and cancels the
+handlers in flight, then waits up to five seconds for them before it closes the channel. A
+handler that honours its cancellation has its delivery requeued; one that finishes anyway is
+answered and acknowledged as usual, because the channel is still open. A handler still
+running after five seconds is left running, and its delivery goes back to the queue when the
+channel closes. The close itself runs in the background, like a discarded publisher channel's,
+so a host stopping against an unresponsive broker does not wait twenty seconds per consumer.
 
 On the consuming side, `RequestDispatchConcurrency` (default 16) is how many deliveries a
 request listener's channel hands to its handler at once, and `EventDispatchConcurrency`
