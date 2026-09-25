@@ -1,5 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Net.Http.Headers;
+using System.Net.NetworkInformation;
+using System.Text.Json;
 using HostLoom.Transport.RabbitMq;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
@@ -135,6 +138,199 @@ public sealed class RabbitMqDurabilityTests
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             await Docker(cleanup.Token, "stop", "--time", "5", id);
         }
+    }
+
+    [Fact(
+        Skip = "Set HOSTLOOM_RABBITMQ_DURABILITY=1 to start and pause an owned disposable RabbitMQ container.",
+        SkipUnless = nameof(Enabled)
+    )]
+    public async Task Disposal_against_a_paused_broker_returns_within_its_bound_and_leaves_no_connection()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken
+        );
+        deadline.CancelAfter(TimeSpan.FromMinutes(4));
+        var token = deadline.Token;
+        var run = Guid.NewGuid().ToString("N");
+        // Only the container created here is ever paused; no shared endpoint fallback.
+        var id = await Docker(
+            token,
+            "run",
+            "--detach",
+            "--name",
+            "hostloom-chaos-" + run,
+            "--label",
+            "hostloom.chaos=" + run,
+            "--publish",
+            "127.0.0.1::5672",
+            "--publish",
+            "127.0.0.1::15672",
+            "--health-cmd",
+            "rabbitmq-diagnostics -q check_port_connectivity",
+            "--health-interval",
+            "2s",
+            "--health-timeout",
+            "5s",
+            "--health-retries",
+            "30",
+            "rabbitmq:4-management"
+        );
+        var paused = false;
+        try
+        {
+            await Healthy(id, token);
+            var amqp = await Port(id, "5672/tcp", token);
+            using var management = new HttpClient
+            {
+                BaseAddress = new Uri($"http://127.0.0.1:{await Port(id, "15672/tcp", token)}/"),
+            };
+            management.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+                "Basic",
+                Convert.ToBase64String("guest:guest"u8)
+            );
+            var client = "hostloom-paused-" + run;
+            // Disposed explicitly below, where it is timed; disposing again is a no-op.
+            await using var broker = new RabbitMqRequestBroker(
+                Options.Create(
+                    new RabbitMqOptions
+                    {
+                        Uri = new Uri($"amqp://guest:guest@127.0.0.1:{amqp}/"),
+                        ClientProvidedName = client,
+                    }
+                )
+            );
+            var listener = await broker.ListenAsync(
+                "invoices",
+                (frame, _) => ValueTask.FromResult(frame),
+                token
+            );
+            var subscription = await broker.SubscribeAsync(
+                "shipments",
+                "audit",
+                (_, _) => ValueTask.CompletedTask,
+                token
+            );
+            // Every kind of channel is open: two consumers, the reply path, and a publisher.
+            await broker.RequestAsync(
+                "invoices",
+                "invoice-1"u8.ToArray(),
+                Guid.NewGuid(),
+                TimeSpan.FromSeconds(10),
+                token
+            );
+            await broker.PublishAsync("shipments", "shipment-1"u8.ToArray(), token);
+            await ConnectionsNamed(management, client, expected: 1, token);
+
+            await Docker(token, "pause", id);
+            paused = true;
+            var started = Stopwatch.GetTimestamp();
+            await listener.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(60), token);
+            await subscription.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(60), token);
+            var stopped = Stopwatch.GetElapsedTime(started);
+            await broker.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(90), token);
+            var disposed = Stopwatch.GetElapsedTime(started) - stopped;
+            var took = string.Create(
+                CultureInfo.InvariantCulture,
+                $"Against the paused broker the consumers stopped after {stopped.TotalSeconds:F2} s and the transport was disposed {disposed.TotalSeconds:F2} s later."
+            );
+            TestContext.Current.TestOutputHelper?.WriteLine(took);
+
+            await Docker(token, "unpause", id);
+            paused = false;
+            // Resumed, the broker reads the close the transport sent and drops the connection;
+            // nothing of it outlives the disposal.
+            await ConnectionsNamed(management, client, expected: 0, token);
+            var established = IPGlobalProperties
+                .GetIPGlobalProperties()
+                .GetActiveTcpConnections()
+                .Count(connection =>
+                    connection.RemoteEndPoint.Port == amqp
+                    && connection.State == TcpState.Established
+                );
+            Assert.Equal(0, established);
+
+            Assert.True(stopped < TimeSpan.FromSeconds(2), took);
+            // Five seconds for closing channels, two for the connection, and slack for the host.
+            Assert.True(disposed < TimeSpan.FromSeconds(5 + 2 + 2), took);
+        }
+        finally
+        {
+            // Cleanup has its own deadline even after the experiment times out.
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            if (paused)
+            {
+                await Docker(cleanup.Token, "unpause", id);
+            }
+
+            await Docker(cleanup.Token, "rm", "--force", "--volumes", id);
+        }
+    }
+
+    /// <summary>
+    /// Waits until the broker's management API lists exactly <paramref name="expected"/>
+    /// connections named <paramref name="client"/>. The list is refreshed every few seconds, so
+    /// a change takes that long to appear.
+    /// </summary>
+    private static async Task ConnectionsNamed(
+        HttpClient management,
+        string client,
+        int expected,
+        CancellationToken token
+    )
+    {
+        using var bound = CancellationTokenSource.CreateLinkedTokenSource(token);
+        bound.CancelAfter(TimeSpan.FromSeconds(60));
+        var seen = -1;
+        while (true)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(
+                    await management.GetStringAsync(
+                        new Uri("api/connections", UriKind.Relative),
+                        bound.Token
+                    )
+                );
+                seen = document
+                    .RootElement.EnumerateArray()
+                    .Count(connection =>
+                        connection.TryGetProperty("client_properties", out var properties)
+                        && properties.TryGetProperty("connection_name", out var name)
+                        && name.GetString() == client
+                    );
+                if (seen == expected)
+                {
+                    return;
+                }
+            }
+            catch (HttpRequestException)
+            {
+                // The management plugin starts after the AMQP listener the health check probes.
+            }
+            catch (OperationCanceledException) when (bound.IsCancellationRequested)
+            {
+                Assert.Fail(
+                    $"The broker listed {seen} connections named {client}, not {expected}."
+                );
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(500), bound.Token);
+            }
+            catch (OperationCanceledException) when (bound.IsCancellationRequested)
+            {
+                Assert.Fail(
+                    $"The broker listed {seen} connections named {client}, not {expected}."
+                );
+            }
+        }
+    }
+
+    private static async Task<int> Port(string id, string containerPort, CancellationToken token)
+    {
+        var mapping = await Docker(token, "port", id, containerPort);
+        return int.Parse(mapping.Split('\n')[0].Split(':')[^1], CultureInfo.InvariantCulture);
     }
 
     private static async Task<IConnection> ConnectWhenReady(Uri uri, CancellationToken token)

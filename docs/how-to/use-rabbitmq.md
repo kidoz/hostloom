@@ -190,8 +190,6 @@ rather than after the close, which waits for the broker's reply for up to the cl
 library's 20-second continuation timeout. At most `MaxConcurrentPublishes` such channels may
 still be closing before a publication that needs a new channel waits for one to finish,
 again within its own deadline; `hostloom.rabbitmq.channels.closing` reports how many are.
-Disposing the transport waits at most five seconds for channels still closing, then
-disposes the connection, which closes the rest.
 
 Stopping a listener or subscription asks the broker to stop delivering to it and cancels the
 handlers in flight, then waits up to five seconds for them before it closes the channel. A
@@ -200,6 +198,9 @@ answered and acknowledged as usual, because the channel is still open. A handler
 running after five seconds is left running, and its delivery goes back to the queue when the
 channel closes. The close itself runs in the background, like a discarded publisher channel's,
 so a host stopping against an unresponsive broker does not wait twenty seconds per consumer.
+Disposing the transport waits at most five seconds for channels still closing and at most two
+more for the connection, so against an unresponsive broker it returns after about seven
+seconds while the client library finishes closing the connection in the background.
 
 On the consuming side, `RequestDispatchConcurrency` (default 16) is how many deliveries a
 request listener's channel hands to its handler at once, and `EventDispatchConcurrency`

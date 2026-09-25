@@ -279,6 +279,56 @@ public sealed partial class RabbitMqBrokerTests
         Assert.Equal(1, metrics.Sum("hostloom.rabbitmq.deliveries.requeued"));
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task Disposal_stops_waiting_for_a_connection_close_the_broker_never_answers()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var clock = new TestClock();
+        var rabbit = new FakeRabbit();
+        var logger = new RecordingLogger<RabbitMqRequestBroker>();
+        var broker = CreateLogged(rabbit, logger, clock, UniqueClient());
+        // Connects, so there is a connection to close.
+        await (
+            await broker.ListenAsync("catalog", (frame, _) => ValueTask.FromResult(frame), token)
+        ).DisposeAsync();
+        var closeStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var finishClose = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        // As the client library behaves against a broker that stopped answering: the close waits
+        // for a close-ok, then for channel zero, about 25 seconds in all.
+        rabbit
+            .Connection.DisposeAsync()
+            .Returns(_ =>
+            {
+                closeStarted.TrySetResult();
+                return new ValueTask(finishClose.Task);
+            });
+
+        var disposing = broker.DisposeAsync().AsTask();
+        await closeStarted.Task.WaitAsync(Bound, token);
+        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 1);
+        clock.Advance(RabbitMqRequestBroker.ConnectionCloseBound - TimeSpan.FromTicks(1));
+        Assert.False(disposing.IsCompleted);
+        clock.Advance(TimeSpan.FromTicks(1));
+
+        await disposing.WaitAsync(Bound, token);
+        var warning = Assert.Single(logger.Entries, entry => entry.Event.Id == 1407);
+        Assert.Equal(LogLevel.Warning, warning.Level);
+        Assert.Equal("RabbitMqConnectionStillClosing", warning.Event.Name);
+
+        // The close finishes in the background; a failure then is logged, never thrown.
+        finishClose.SetException(new InvalidOperationException("socket already gone"));
+        await SchedulingTests.WaitUntilAsync(() =>
+            logger.Entries.Count(entry => entry.Event.Id == 1407) == 2
+        );
+        Assert.IsType<InvalidOperationException>(
+            logger.Entries.Last(entry => entry.Event.Id == 1407).Exception
+        );
+    }
+
     [Theory(Timeout = 30_000)]
     [InlineData(false)]
     [InlineData(true)]

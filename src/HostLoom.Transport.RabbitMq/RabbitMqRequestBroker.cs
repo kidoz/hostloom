@@ -38,6 +38,15 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     /// </summary>
     internal static readonly TimeSpan ChannelCloseBound = TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// How long disposal waits for the connection to close once it has stopped waiting for
+    /// channels. A broker that answers closes it within milliseconds. Against one that does not,
+    /// the client library waits five seconds for the close-ok and then up to its 20-second
+    /// continuation timeout to close channel zero, about 25 seconds, so disposal stops waiting
+    /// after this bound, logs it, and lets the close finish in the background.
+    /// </summary>
+    internal static readonly TimeSpan ConnectionCloseBound = TimeSpan.FromSeconds(2);
+
     private readonly RabbitMqOptions _options;
     private readonly RabbitMqQueueNaming _queueNaming;
     private readonly Func<CancellationToken, ValueTask<IConnection>> _connectionFactory;
@@ -911,9 +920,10 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
 
     /// <summary>
     /// Cancels every operation, joins the publications still holding a channel, closes the idle
-    /// publisher channels and the reply channel, and waits a bounded time for them and for any
-    /// other channel still closing, a discarded publisher channel or a stopped listener's or
-    /// subscription's, before disposing the connection, which closes the rest.
+    /// publisher channels and the reply channel, and waits up to <see cref="ChannelCloseBound"/>
+    /// for them and for any other channel still closing, a discarded publisher channel or a
+    /// stopped listener's or subscription's, before disposing the connection, which closes the
+    /// rest, for up to <see cref="ConnectionCloseBound"/>.
     /// </summary>
     private async Task DisposeCoreAsync()
     {
@@ -952,16 +962,13 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                 }
             }
 
-            if (_connection is not null)
+            if (
+                _connection is not null
+                && await CloseConnectionWithinBoundAsync(_connection).ConfigureAwait(false)
+                    is { } connectionFailure
+            )
             {
-                try
-                {
-                    await _connection.DisposeAsync().ConfigureAwait(false);
-                }
-                catch (Exception exception)
-                {
-                    failures.Add(exception);
-                }
+                failures.Add(connectionFailure);
             }
             if (failures.Count > 0)
                 throw new AggregateException(failures);
@@ -971,6 +978,57 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             RabbitMqDiagnostics.Unregister(this);
             _initializationGate.Release();
             _shutdown.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Disposes the connection off the caller's path and waits for it up to
+    /// <see cref="ConnectionCloseBound"/>. Returns the close's failure, or none when it
+    /// succeeded or is still running, in which case a later failure is logged.
+    /// </summary>
+    private async Task<Exception?> CloseConnectionWithinBoundAsync(IConnection connection)
+    {
+        var closing = Task.Run(() => CloseConnectionAsync(connection));
+        try
+        {
+            return await closing.WaitAsync(ConnectionCloseBound, _clock).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning(
+                new EventId(1407, "RabbitMqConnectionStillClosing"),
+                "The RabbitMQ connection was still closing after {Bound}; disposal returns and the client library finishes closing it in the background.",
+                ConnectionCloseBound
+            );
+            _ = ReportLateConnectionFailureAsync(closing);
+            return null;
+        }
+    }
+
+    /// <summary>Disposes the connection; completes with its failure, or with none, and never faults.</summary>
+    private static async Task<Exception?> CloseConnectionAsync(IConnection connection)
+    {
+        try
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+            return null;
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+    }
+
+    /// <summary>Logs a connection close that failed after disposal stopped waiting for it.</summary>
+    private async Task ReportLateConnectionFailureAsync(Task<Exception?> closing)
+    {
+        if (await closing.ConfigureAwait(false) is { } failure)
+        {
+            _logger.LogWarning(
+                new EventId(1407, "RabbitMqConnectionStillClosing"),
+                failure,
+                "Closing the RabbitMQ connection in the background failed after disposal returned."
+            );
         }
     }
 

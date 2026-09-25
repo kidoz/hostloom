@@ -132,6 +132,12 @@ it: the broker redelivers its delivery, and the reply or acknowledgement the han
 later is logged as unsettled (`RabbitMqDeliveryUnsettled`, 1405) rather than as a rejection.
 The stop does not wait for the broker's reply to the close, which runs in the background.
 
+Disposing the transport waits at most five seconds for channels still closing
+(`RabbitMqChannelsStillClosing`, 1403, when it stops waiting) and then at most two seconds for
+the connection to close (`RabbitMqConnectionStillClosing`, 1407). Against a broker that does
+not answer, disposal returns after about seven seconds, and the client library finishes
+closing the connection in the background, which takes it about 25 seconds.
+
 ### Kafka
 
 | Situation | Caller sees |
