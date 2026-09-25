@@ -5,6 +5,8 @@ independent [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-25
+
 ### Added
 
 - The `maximumControlFramesPerSecond` connection option, 50 by default to match the gateway's
