@@ -245,7 +245,9 @@ public sealed class TransportRecoveryRegressionTests
         await stopping.WaitAsync(Bounded, token);
         await disposing.WaitAsync(Bounded, token);
         Assert.True(handler.Returned.Task.IsCompleted);
-        Assert.Equal(0, clock.PendingTimers);
+        // The bounded wait releases its timer just after it completes the task the stop awaited,
+        // so the release can land a moment after the stop returns; it must still land.
+        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 0);
         await listener.DisposeAsync().AsTask().WaitAsync(Bounded, token);
     }
 
