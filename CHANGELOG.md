@@ -26,6 +26,11 @@ are derived from release tags at publish time.
   drop reason `format_failed`.
 - The `hostloom.rabbitmq.consumers` counter and log events `RabbitMqConsumerCancelled` (1411),
   `RabbitMqConsumerRestored` (1412), and `RabbitMqConsumerRestoreFailed` (1413).
+- Log events `RabbitMqDeliveryUnsettled` (1405), `RabbitMqHandlersAbandoned` (1406),
+  `RabbitMqConnectionStillClosing` (1407), and `RabbitMqChannelCloseFailed` (1408); stable event
+  ids 1421 to 1430 for every Kafka log line, which used to log event id 0; and the outbox relay's
+  `OutboxRelayBackingOff` (3306) and `OutboxRelayRecovered` (3307), each logged once when a relay
+  backoff begins and ends.
 
 ### Changed
 
@@ -74,16 +79,38 @@ are derived from release tags at publish time.
   rewrites to `amq.rabbitmq.reply-to.<token>`; they used to be rejected as malformed although the
   documentation said they were answered. The bare pseudo-queue name, which a listener never
   receives from a real client, is now rejected.
-- Stopping a RabbitMQ listener or subscription waits for the handlers still running but no longer
-  for the broker to confirm the channel close: the channel closes in the background, a delivery
-  that arrives meanwhile is requeued without running its handler, and transport disposal waits at
-  most five seconds for channels still closing. Against a stalled broker each close could hold
-  host shutdown for the client's twenty-second continuation timeout, one channel after another.
+- Stopping a RabbitMQ listener or subscription stops the broker's deliveries, cancels its handlers,
+  and waits up to five seconds for them before closing the channel in the background; it no longer
+  waits for the broker to confirm the close. A handler that finishes within that wait is answered
+  and acknowledged; one still running is logged (1406) and left running, and the broker redelivers
+  its message. A reply, acknowledgement, or rejection that a closing channel refuses is logged as
+  `RabbitMqDeliveryUnsettled` (1405, Warning) and counted as requeued, instead of as a rejected
+  handler failure (1401, Error), and a refused rejection no longer escapes into the client library.
+  Disposing the transport waits at most five seconds for closing channels and two for the
+  connection (1407), so against an unresponsive broker it returns after about seven seconds instead
+  of about thirty; the client library finishes the close in the background. Against a stalled
+  broker each channel close could hold host shutdown for the client's twenty-second continuation
+  timeout, one channel after another.
 - A RabbitMQ consumer the broker cancels, for example because its queue was deleted, is detected
   and logged, and its listener or subscription declares its queue again and resubscribes on a new
   channel, retrying with a doubling wait up to thirty seconds. It used to stop consuming silently.
   A cancelled reply consumer is replaced by the next request. A queue deleted on purpose while the
-  service runs is therefore re-created; stop the service before removing its queues.
+  service runs is therefore re-created; stop the service before removing its queues. Events
+  published after the deletion and before the queue is bound again are confirmed by the broker and
+  dropped by the exchange, as for any topic with no bound queue.
+- The outbox relay stops a drain at the first failed publish and charges only that message an
+  attempt. It holds the rest of the claimed batch, untried and uncharged, and publishes it oldest
+  first as soon as a later publish succeeds, provided less than half of `Outbox:ClaimLease` has
+  passed; after that, or when the relay stops, lease expiry returns those messages to the store.
+  After a failed drain the relay pauses, ignoring wakes and the poll interval, for
+  `Outbox:RetryDelay` grown by `Outbox:RetryBackoffFactor` per consecutive failed drain up to
+  `Outbox:MaxRetryDelay`, then probes with one message, skipping the one that just failed when
+  another is due, and resumes full batches after the first successful publish. A transport outage
+  used to charge every pending message on every drain, which with the defaults dead-lettered the
+  whole backlog after about twenty minutes. Against RabbitMQ with 1,000 pending events, a 70-second
+  outage went from 607 dead-lettered and 6,884 failed attempts to none and 12, and a broker restart
+  from 548 failed attempts to 3, with the backlog cleared 3.4 seconds after the broker served
+  again.
 
 ### Fixed
 
