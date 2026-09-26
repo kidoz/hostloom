@@ -82,7 +82,10 @@ public sealed class LoggingShutdownTests
                 Release.Task.GetAwaiter().GetResult();
             });
             Writing.TrySetResult();
-            cancellationToken.WaitHandle.WaitOne();
+            // Wait for the callback itself, not the token's wait handle: cancellation sets the
+            // handle before it runs callbacks, so a Write woken by the handle could dispose its
+            // registration first and the blocking callback under test would never run at all.
+            Entered.Task.Wait(CancellationToken.None);
         }
 
         public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
