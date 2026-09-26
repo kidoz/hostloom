@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections;
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -837,13 +838,30 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
     }
 
     /// <summary>Reads a legacy masking attribute's options by property name, so Destructurama
-    /// annotations keep working without a package reference.</summary>
-    private static MaskRule LegacyMask(object attribute)
+    /// annotations keep working without a package reference. Options that cannot be read mask
+    /// the member whole, so it stays protected and the rest of the object is still written.
+    /// Native AOT gets there when nothing else reads the attribute's getters: it keeps the
+    /// properties but cannot call them.</summary>
+    [UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2075",
+        Justification = "The legacy attribute's options are optional; when trimming removed or "
+            + "disabled them, the member is masked whole instead."
+    )]
+    private MaskRule LegacyMask(object attribute)
     {
-        var type = attribute.GetType();
-        var text = type.GetProperty("Text")?.GetValue(attribute) as string ?? "***";
-        var first = type.GetProperty("ShowFirst")?.GetValue(attribute) as int? ?? 0;
-        var last = type.GetProperty("ShowLast")?.GetValue(attribute) as int? ?? 0;
-        return new MaskRule(text, first, last);
+        try
+        {
+            var type = attribute.GetType();
+            var text = type.GetProperty("Text")?.GetValue(attribute) as string ?? "***";
+            var first = type.GetProperty("ShowFirst")?.GetValue(attribute) as int? ?? 0;
+            var last = type.GetProperty("ShowLast")?.GetValue(attribute) as int? ?? 0;
+            return new MaskRule(text, first, last);
+        }
+        catch (Exception)
+        {
+            metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
+            return new MaskRule("***", 0, 0);
+        }
     }
 }
