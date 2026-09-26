@@ -75,15 +75,34 @@ record is dropped and counted as `enqueue_timeout`. Setting it to null makes tho
 long as the sink stalls, so a stuck stdout stalls every thread that logs a warning. Configuration
 sets null with an empty value, `"EnqueueTimeout": ""`.
 
-A process that ends without disposing the provider still gets its queued records out. The
+A process that ends without disposing the provider still attempts to drain its queued records. The
 writer is a background thread, so the queue would otherwise die with the process, taking the
 last lines before a crash with it. On `AppDomain.ProcessExit`, which `Environment.Exit`, `Main`
 returning, and a SIGTERM outside the Generic Host raise, and on `AppDomain.UnhandledException`,
-the provider waits up to `ShutdownTimeout` until everything queued so far is written and the sink
-flushed. It keeps accepting records meanwhile. An `UnhandledException` handler that logs the crash
-gets its record into that flush only if it was registered before the provider was created;
-handlers run in registration order. `Environment.FailFast`, SIGKILL, and an out-of-memory kill
-run no handlers, so whatever is still queued then is lost.
+the provider waits up to `ShutdownTimeout` for queued records to be processed and a sink flush
+attempt to complete. It keeps
+accepting records meanwhile. An `UnhandledException` handler that logs the crash gets its record
+into that flush only if it was registered before the provider was created; handlers run in
+registration order. A handler registered later can flush its own records with
+`HostLoomLoggerProvider.Flush(TimeSpan)`. It returns `true` once the writer has processed records
+queued before the flush marker and completed the sink flush attempt. This does not guarantee
+successful delivery: records may have been dropped and the sink flush may have failed. Sink
+flush failures increment `hostloom.logging.failures` with `component=sink` and do not stop the
+writer. The method returns `false` if its timeout passes first, the pipeline stops short of
+completion, or it is called from the provider's writer thread. Records queued after the marker
+are accepted as usual and not waited for:
+
+```csharp
+var provider = host.Services.GetServices<ILoggerProvider>().OfType<HostLoomLoggerProvider>().Single();
+AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+{
+    logger.LogCritical(e.ExceptionObject as Exception, "Unhandled exception");
+    provider.Flush(TimeSpan.FromSeconds(5));
+};
+```
+
+`Environment.FailFast`, SIGKILL, and an out-of-memory kill run no handlers, so whatever is still
+queued then is lost.
 
 None of the logging bounds depends on the thread pool. The shutdown deadlines are timed waits on
 a thread of their own, `DisposeAsync` returns to its caller at once, a caller blocked on a full

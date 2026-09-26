@@ -387,11 +387,12 @@ internal sealed class LogPipeline : IAsyncDisposable
     }
 
     /// <summary>
-    /// Waits, at most <paramref name="timeout"/>, until the writer has handed every record
-    /// queued before the call to the sink and flushed it. Records logged meanwhile are not
-    /// waited for, and the pipeline keeps accepting them. True when the flush completed in time;
-    /// false when the deadline passed first, the writer stopped short of it, or this is the
-    /// writer.
+    /// Waits, at most <paramref name="timeout"/>, until the writer has processed records queued
+    /// before the flush marker and completed a sink flush attempt; <see cref="Timeout.InfiniteTimeSpan"/>
+    /// waits without limit. Records queued after the marker are not waited for, and the pipeline
+    /// keeps accepting them. True means completion, not successful delivery: records may have
+    /// been dropped and the sink flush may have failed. False when the deadline passed first,
+    /// the writer stopped short of it, or this is the writer.
     /// </summary>
     internal bool Flush(TimeSpan timeout)
     {
@@ -403,7 +404,7 @@ internal sealed class LogPipeline : IAsyncDisposable
 
         var started = Stopwatch.GetTimestamp();
         long ticket;
-        if (!_flushGate.TryEnter(Milliseconds(timeout)))
+        if (!_flushGate.TryEnter(Budget(timeout, started)))
         {
             return false;
         }
@@ -411,13 +412,17 @@ internal sealed class LogPipeline : IAsyncDisposable
         try
         {
             // The marker waits for room like any record would, within what is left of the timeout.
-            var refused = WriteWhenRoom(_flushMarker, timeout, started);
+            var refused = WriteWhenRoom(
+                _flushMarker,
+                timeout == Timeout.InfiniteTimeSpan ? null : timeout,
+                started
+            );
             if (refused is not null)
             {
                 // Disposal already closed the queue and is draining it; waiting for that is the
                 // flush. A faulted or overdue pipeline has nothing left to wait for.
                 return refused == LoggingMetrics.ReasonProviderDisposed
-                    && _completion.Task.Wait(Milliseconds(Remaining(timeout, started)))
+                    && _completion.Task.Wait(Budget(timeout, started))
                     && _drained;
             }
 
@@ -432,23 +437,30 @@ internal sealed class LogPipeline : IAsyncDisposable
         {
             while (_flushesCompleted < ticket && !_completion.Task.IsCompleted)
             {
-                var remaining = Remaining(timeout, started);
-                if (remaining <= TimeSpan.Zero)
+                var wait = Budget(timeout, started);
+                if (wait == 0)
                 {
                     return false;
                 }
 
-                Monitor.Wait(_flushed, Milliseconds(remaining));
+                Monitor.Wait(_flushed, wait);
             }
 
             return _flushesCompleted >= ticket;
         }
     }
 
-    private static TimeSpan Remaining(TimeSpan timeout, long started)
+    /// <summary>Milliseconds left of <paramref name="timeout"/>, counted from
+    /// <paramref name="started"/> and never negative; an infinite timeout stays infinite.</summary>
+    private static int Budget(TimeSpan timeout, long started)
     {
+        if (timeout == Timeout.InfiniteTimeSpan)
+        {
+            return Timeout.Infinite;
+        }
+
         var remaining = timeout - Stopwatch.GetElapsedTime(started);
-        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+        return remaining > TimeSpan.Zero ? Milliseconds(remaining) : 0;
     }
 
     // The process is ending and nothing will dispose the pipeline, so nothing else would get the
@@ -506,7 +518,8 @@ internal sealed class LogPipeline : IAsyncDisposable
                 WriteBuffer(buffer);
                 if (_flushTaken)
                 {
-                    // The batch ended at a flush marker, so everything queued before it is written.
+                    // The batch ended at a flush marker, so preceding records were processed,
+                    // including any dropped on failure. Completion includes a failed flush attempt.
                     _flushTaken = false;
                     FlushSink();
                     lock (_flushed)
@@ -517,7 +530,7 @@ internal sealed class LogPipeline : IAsyncDisposable
                 }
             }
 
-            // False from WaitToRead means completed and empty: every accepted record is out.
+            // False from WaitToRead means completed and empty: every accepted record was processed.
             FlushSink();
             _drained = true;
         }

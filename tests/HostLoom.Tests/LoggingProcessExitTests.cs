@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Text;
 using System.Text.Json;
 using HostLoom.Logging;
@@ -87,6 +89,102 @@ public sealed class LoggingProcessExitTests
         Assert.True(provider.Flush(TimeSpan.FromSeconds(1)), "a drained provider has nothing left");
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Flush_reports_completion_and_counts_a_sink_flush_failure_without_stopping_logging(
+        bool faultedValueTask
+    )
+    {
+        long sinkFailures = 0;
+        var constructingThread = -1;
+        using var listener = new MeterListener();
+        // Instruments are published synchronously in the provider constructor. Listen only to
+        // this provider, so failures from parallel logging tests cannot affect the assertion.
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (
+                instrument.Meter.Name == "HostLoom.Logging"
+                && instrument.Name == "hostloom.logging.failures"
+                && Environment.CurrentManagedThreadId == Volatile.Read(ref constructingThread)
+            )
+            {
+                l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>(
+            (_, count, tags, _) =>
+            {
+                foreach (var tag in tags)
+                {
+                    if (tag.Key == "component" && tag.Value is "sink")
+                    {
+                        Interlocked.Add(ref sinkFailures, count);
+                    }
+                }
+            }
+        );
+        // Starting the listener also publishes existing instruments; exclude those providers.
+        listener.Start();
+        await using var sink = new FlushFailingSink(faultedValueTask);
+        Volatile.Write(ref constructingThread, Environment.CurrentManagedThreadId);
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+        Volatile.Write(ref constructingThread, -1);
+        var logger = provider.CreateLogger("FlushFailure");
+
+        logger.LogFast(LogLevel.Information, $"before failed flush");
+        Assert.True(provider.Flush(TimeSpan.FromSeconds(10)));
+        Assert.Equal(1, Interlocked.Read(ref sinkFailures));
+        Assert.Equal(["before failed flush"], sink.Messages());
+
+        logger.LogFast(LogLevel.Information, $"after failed flush");
+        Assert.True(provider.Flush(TimeSpan.FromSeconds(10)));
+        Assert.Equal(["before failed flush", "after failed flush"], sink.Messages());
+        Assert.Equal(1, Interlocked.Read(ref sinkFailures));
+        Assert.Equal(0, provider.Dropped);
+        Assert.Null(provider.WriterFault);
+    }
+
+    [Fact]
+    public async Task Flush_with_an_infinite_timeout_waits_for_every_record_before_it()
+    {
+        await using var sink = new SlowRecordingSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions { QueueFullPolicy = QueueFullPolicy.Block, BatchSize = 1 }
+        );
+        var logger = provider.CreateLogger("Unbounded");
+        for (var i = 0; i < 50; i++)
+        {
+            logger.LogFast(LogLevel.Information, $"record {i}");
+        }
+
+        Assert.True(provider.Flush(Timeout.InfiniteTimeSpan));
+        Assert.Equal("record 49", sink.Events().Last(e => e != "flush"));
+    }
+
+    [Theory]
+    [InlineData(-2)]
+    [InlineData(-1_000)]
+    public async Task Flush_rejects_a_negative_timeout_other_than_infinite(int milliseconds)
+    {
+        await using var sink = new SlowRecordingSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions()
+        );
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            provider.Flush(TimeSpan.FromMilliseconds(milliseconds))
+        );
+    }
+
     [Fact]
     public async Task Flush_gives_up_at_its_deadline_when_the_writer_is_stuck()
     {
@@ -152,6 +250,40 @@ public sealed class LoggingProcessExitTests
                 return [.. _events];
             }
         }
+    }
+
+    private sealed class FlushFailingSink(bool faultedValueTask) : ILogSink
+    {
+        private readonly ConcurrentQueue<string> _messages = new();
+        private bool _failNextFlush = true;
+
+        public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken)
+        {
+            foreach (
+                var line in Encoding
+                    .UTF8.GetString(payload)
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            )
+            {
+                _messages.Enqueue(Message(line));
+            }
+        }
+
+        public ValueTask FlushAsync(CancellationToken cancellationToken)
+        {
+            if (!_failNextFlush)
+            {
+                return ValueTask.CompletedTask;
+            }
+
+            _failNextFlush = false;
+            var failure = new IOException("sink flush failed");
+            return faultedValueTask ? ValueTask.FromException(failure) : throw failure;
+        }
+
+        public string[] Messages() => _messages.ToArray();
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     /// <summary>Holds the writer inside its first write until released.</summary>
