@@ -1206,12 +1206,13 @@ internal static class LogEntryPool
         }
 
         Interlocked.Decrement(ref _retained);
-        entry.Reset();
         return entry;
     }
 
     public static void Return(LogEntry entry)
     {
+        // Free entries must not keep exception graphs or other event metadata alive.
+        entry.Reset();
         if (Interlocked.Increment(ref _retained) > MaxRetained)
         {
             Interlocked.Decrement(ref _retained);
