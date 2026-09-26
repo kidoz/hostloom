@@ -49,7 +49,7 @@ runs before the provider; HostLoom does no level filtering of its own.
 | `QueueFullPolicy` | `DropBelowWarning` | `Block` \| `DropNewest` \| `DropBelowWarning` |
 | `BatchSize` | `256` | Records per writer batch |
 | `EnqueueTimeout` | null (block without limit) | Cap on how long a log call may block under `Block` |
-| `ShutdownTimeout` | 5 s | Separate budgets for draining writes and disposing the sink |
+| `ShutdownTimeout` | 5 s | Separate budgets for draining writes and disposing the sink; also bounds the flush when the process ends without disposal |
 | `MaxFieldNameLength` | `128` | UTF-8 bytes; a longer name drops the field, never the record |
 | `MaxFieldsPerRecord` | `64` | Fields past the cap are dropped and counted; the record ships. Capture itself stops at four times the cap |
 | `MaxMessageLength` | `16384` (16 KiB) | UTF-8 bytes of rendered message; see [Record size caps](#record-size-caps) |
@@ -67,6 +67,16 @@ and the entire sink disposal invocation run on dedicated background threads, so 
 stall also respects these phase budgets. A sink whose writer or callbacks remain blocked is
 abandoned without concurrent disposal. Bounded shutdown cannot force that external code to
 release its resources.
+
+A process that ends without disposing the provider still gets its queued records out. The
+writer is a background thread, so the queue would otherwise die with the process, taking the
+last lines before a crash with it. On `AppDomain.ProcessExit`, which `Environment.Exit`, `Main`
+returning, and a SIGTERM outside the Generic Host raise, and on `AppDomain.UnhandledException`,
+the provider waits up to `ShutdownTimeout` until everything queued so far is written and the sink
+flushed. It keeps accepting records meanwhile. An `UnhandledException` handler that logs the crash
+gets its record into that flush only if it was registered before the provider was created;
+handlers run in registration order. `Environment.FailFast`, SIGKILL, and an out-of-memory kill
+run no handlers, so whatever is still queued then is lost.
 
 None of the logging bounds depends on the thread pool. The shutdown deadlines are timed waits on
 a thread of their own, `DisposeAsync` returns to its caller at once, a caller blocked on a full

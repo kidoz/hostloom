@@ -15,7 +15,9 @@ internal readonly record struct StaticField(string Name, byte[] Value);
 /// one unformattable record never costs the records around it. An unexpected sink failure faults
 /// the pipeline instead of silently killing the writer: the channel closes, queued and in-flight
 /// records are counted as dropped, and no caller is ever left waiting on a writer that has
-/// stopped reading.
+/// stopped reading. A process that ends without disposing the pipeline, through
+/// Environment.Exit, Main returning, or an unhandled exception, still gets the queued records
+/// out: its exit events flush the queue within the shutdown budget.
 /// </summary>
 internal sealed class LogPipeline : IAsyncDisposable
 {
@@ -56,8 +58,28 @@ internal sealed class LogPipeline : IAsyncDisposable
     private volatile int _inFlight;
     private volatile Exception? _writerFault;
 
+    /// <summary>Set once the writer wrote and flushed everything disposal left queued.</summary>
+    private volatile bool _drained;
+
     /// <summary>Which component the writer thread is currently calling. Writer-thread only.</summary>
     private string _component = LoggingMetrics.ComponentFormatter;
+
+    private readonly Thread _writer;
+
+    /// <summary>Queued by <see cref="Flush"/> behind the records it waits for; never a record,
+    /// never pooled. The queue is FIFO, so once the writer takes it they are all written.</summary>
+    private readonly LogEntry _flushMarker = new();
+
+    // Serializes queueing markers so their order in the queue is the order of their tickets.
+    private readonly Lock _flushGate = new();
+    private long _flushesRequested;
+
+    // Monitor that flush callers wait on; the writer pulses it after each flush it completes.
+    private readonly object _flushed = new();
+    private long _flushesCompleted;
+
+    /// <summary>Whether the current batch ended at a flush marker. Writer-thread only.</summary>
+    private bool _flushTaken;
 
     public LogPipeline(ILogFormatter formatter, ILogSink sink, HostLoomLoggerOptions options)
     {
@@ -92,8 +114,15 @@ internal sealed class LogPipeline : IAsyncDisposable
         // LongRunning thread at the first incomplete await, and this writer must be able to sit
         // in a synchronous sink write without occupying a thread-pool worker. Background, so an
         // abandoned writer can never keep the process alive.
-        var writer = new Thread(Run) { IsBackground = true, Name = "HostLoom Logging Writer" };
-        writer.Start();
+        _writer = new Thread(Run) { IsBackground = true, Name = "HostLoom Logging Writer" };
+        _writer.Start();
+
+        // A process that ends without disposing the pipeline would take the queue with it, since
+        // the writer is a background thread. Environment.Exit, Main returning, and a plain
+        // SIGTERM raise ProcessExit; an unhandled exception raises UnhandledException instead.
+        // FailFast and a killed process raise neither. Removed again on disposal.
+        AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+        AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
     }
 
     /// <summary>Records dropped for any reason. Surfaced so overload is visible, not silent.</summary>
@@ -300,7 +329,22 @@ internal sealed class LogPipeline : IAsyncDisposable
         var level = entry.Level;
         _metrics.RecordBlocked(level);
         var started = Stopwatch.GetTimestamp();
-        string? dropReason = null;
+        var dropReason = WriteWhenRoom(entry, _options.EnqueueTimeout, started);
+        if (dropReason is not null)
+        {
+            Discard(entry, dropReason);
+        }
+
+        _metrics.RecordBlockedFor(Stopwatch.GetElapsedTime(started).TotalSeconds, level);
+    }
+
+    /// <summary>
+    /// Queues <paramref name="entry"/> as soon as there is room. Returns null once it is queued,
+    /// or the reason it never was: the pipeline closed, or <paramref name="limit"/>, counted from
+    /// <paramref name="started"/>, ran out first.
+    /// </summary>
+    private string? WriteWhenRoom(LogEntry entry, TimeSpan? limit, long started)
+    {
         lock (_space)
         {
             Interlocked.Increment(ref _spaceWaiters);
@@ -311,21 +355,18 @@ internal sealed class LogPipeline : IAsyncDisposable
                     var state = Volatile.Read(ref _state);
                     if (state != StateRunning)
                     {
-                        dropReason =
-                            state == StateFaulted
-                                ? LoggingMetrics.ReasonWriterFault
-                                : LoggingMetrics.ReasonProviderDisposed;
-                        break;
+                        return state == StateFaulted
+                            ? LoggingMetrics.ReasonWriterFault
+                            : LoggingMetrics.ReasonProviderDisposed;
                     }
 
                     var wait = Timeout.Infinite;
-                    if (_options.EnqueueTimeout is { } limit)
+                    if (limit is { } bound)
                     {
-                        var remaining = limit - Stopwatch.GetElapsedTime(started);
+                        var remaining = bound - Stopwatch.GetElapsedTime(started);
                         if (remaining <= TimeSpan.Zero)
                         {
-                            dropReason = LoggingMetrics.ReasonEnqueueTimeout;
-                            break;
+                            return LoggingMetrics.ReasonEnqueueTimeout;
                         }
 
                         wait = Milliseconds(remaining);
@@ -333,20 +374,87 @@ internal sealed class LogPipeline : IAsyncDisposable
 
                     Monitor.Wait(_space, wait);
                 }
+
+                return null;
             }
             finally
             {
                 Interlocked.Decrement(ref _spaceWaiters);
             }
         }
+    }
 
-        if (dropReason is not null)
+    /// <summary>
+    /// Waits, at most <paramref name="timeout"/>, until the writer has handed every record
+    /// queued before the call to the sink and flushed it. Records logged meanwhile are not
+    /// waited for, and the pipeline keeps accepting them. True when the flush completed in time;
+    /// false when the deadline passed first, the writer stopped short of it, or this is the
+    /// writer.
+    /// </summary>
+    internal bool Flush(TimeSpan timeout)
+    {
+        if (Thread.CurrentThread == _writer)
         {
-            Discard(entry, dropReason);
+            // The writer cannot wait for itself; a sink or formatter ending the process lands here.
+            return false;
         }
 
-        _metrics.RecordBlockedFor(Stopwatch.GetElapsedTime(started).TotalSeconds, level);
+        var started = Stopwatch.GetTimestamp();
+        long ticket;
+        if (!_flushGate.TryEnter(Milliseconds(timeout)))
+        {
+            return false;
+        }
+
+        try
+        {
+            // The marker waits for room like any record would, within what is left of the timeout.
+            var refused = WriteWhenRoom(_flushMarker, timeout, started);
+            if (refused is not null)
+            {
+                // Disposal already closed the queue and is draining it; waiting for that is the
+                // flush. A faulted or overdue pipeline has nothing left to wait for.
+                return refused == LoggingMetrics.ReasonProviderDisposed
+                    && _completion.Task.Wait(Milliseconds(Remaining(timeout, started)))
+                    && _drained;
+            }
+
+            ticket = ++_flushesRequested;
+        }
+        finally
+        {
+            _flushGate.Exit();
+        }
+
+        lock (_flushed)
+        {
+            while (_flushesCompleted < ticket && !_completion.Task.IsCompleted)
+            {
+                var remaining = Remaining(timeout, started);
+                if (remaining <= TimeSpan.Zero)
+                {
+                    return false;
+                }
+
+                Monitor.Wait(_flushed, Milliseconds(remaining));
+            }
+
+            return _flushesCompleted >= ticket;
+        }
     }
+
+    private static TimeSpan Remaining(TimeSpan timeout, long started)
+    {
+        var remaining = timeout - Stopwatch.GetElapsedTime(started);
+        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+    }
+
+    // The process is ending and nothing will dispose the pipeline, so nothing else would get the
+    // queue out: flush it within the same budget disposal would have had.
+    private void OnProcessExit(object? sender, EventArgs e) => Flush(_options.ShutdownTimeout);
+
+    private void OnUnhandledException(object? sender, UnhandledExceptionEventArgs e) =>
+        Flush(_options.ShutdownTimeout);
 
     /// <summary>Wakes producers blocked on a full queue, after the writer made room or the
     /// pipeline closed. Free when nobody waits.</summary>
@@ -375,6 +483,11 @@ internal sealed class LogPipeline : IAsyncDisposable
         finally
         {
             _completion.TrySetResult();
+            // A flush caller still waiting now waits for nothing: release it.
+            lock (_flushed)
+            {
+                Monitor.PulseAll(_flushed);
+            }
         }
     }
 
@@ -389,15 +502,22 @@ internal sealed class LogPipeline : IAsyncDisposable
             {
                 FormatBatch(reader, buffer);
                 WriteBuffer(buffer);
+                if (_flushTaken)
+                {
+                    // The batch ended at a flush marker, so everything queued before it is written.
+                    _flushTaken = false;
+                    FlushSink();
+                    lock (_flushed)
+                    {
+                        _flushesCompleted++;
+                        Monitor.PulseAll(_flushed);
+                    }
+                }
             }
 
             // False from WaitToRead means completed and empty: every accepted record is out.
-            _component = LoggingMetrics.ComponentSink;
-            var flush = _sink.FlushAsync(_shutdown.Token);
-            if (!flush.IsCompletedSuccessfully)
-            {
-                flush.AsTask().GetAwaiter().GetResult();
-            }
+            FlushSink();
+            _drained = true;
         }
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
         {
@@ -410,6 +530,16 @@ internal sealed class LogPipeline : IAsyncDisposable
         catch (Exception failure)
         {
             Fault(failure);
+        }
+    }
+
+    private void FlushSink()
+    {
+        _component = LoggingMetrics.ComponentSink;
+        var flush = _sink.FlushAsync(_shutdown.Token);
+        if (!flush.IsCompletedSuccessfully)
+        {
+            flush.AsTask().GetAwaiter().GetResult();
         }
     }
 
@@ -439,6 +569,13 @@ internal sealed class LogPipeline : IAsyncDisposable
         _component = LoggingMetrics.ComponentFormatter;
         while (_batch.Count < _options.BatchSize && reader.TryRead(out var entry))
         {
+            if (ReferenceEquals(entry, _flushMarker))
+            {
+                // The batch ends here, so the flush follows exactly the records queued before it.
+                _flushTaken = true;
+                break;
+            }
+
             // Added before formatting, so the entry is accounted for however formatting ends.
             _batch.Add(entry);
             var start = buffer.WrittenCount;
@@ -536,6 +673,12 @@ internal sealed class LogPipeline : IAsyncDisposable
     {
         while (_queue.Reader.TryRead(out var entry))
         {
+            if (ReferenceEquals(entry, _flushMarker))
+            {
+                // Not a record: nothing to count, and never the pool's.
+                continue;
+            }
+
             if (_abandoned)
             {
                 LogEntryPool.Return(entry);
@@ -574,6 +717,9 @@ internal sealed class LogPipeline : IAsyncDisposable
             return ValueTask.CompletedTask;
         }
 
+        // Disposal drains the queue itself, and the handlers would keep the pipeline reachable.
+        AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
+        AppDomain.CurrentDomain.UnhandledException -= OnUnhandledException;
         Interlocked.CompareExchange(ref _state, StateDisposed, StateRunning);
         _queue.Writer.TryComplete();
         SignalSpace();

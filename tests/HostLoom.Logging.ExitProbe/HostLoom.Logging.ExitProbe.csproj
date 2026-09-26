@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Ends its process without disposing the logging provider, for the process exit tests.</Description>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- It runs from the test output, where the logging abstractions come from this framework. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../../src/HostLoom.Logging/HostLoom.Logging.csproj" />
+  </ItemGroup>
+</Project>

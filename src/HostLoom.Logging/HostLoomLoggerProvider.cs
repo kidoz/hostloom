@@ -42,6 +42,9 @@ public sealed class HostLoomLoggerProvider
 
     internal IExternalScopeProvider ScopeProvider => _scopeProvider;
 
+    /// <summary>What the process exit and unhandled-exception handlers run.</summary>
+    internal bool Flush(TimeSpan timeout) => _pipeline.Flush(timeout);
+
     public void SetScopeProvider(IExternalScopeProvider scopeProvider)
     {
         ArgumentNullException.ThrowIfNull(scopeProvider);

@@ -52,6 +52,8 @@
     <ProjectReference Include="../../src/HostLoom.Transport.Kafka/HostLoom.Transport.Kafka.csproj" />
     <ProjectReference Include="../../src/HostLoom.Transport.RabbitMq/HostLoom.Transport.RabbitMq.csproj" />
     <ProjectReference Include="../HostLoom.Conformance/HostLoom.Conformance.csproj" />
+    <!-- Launched as a child process by LoggingProcessExitTests; referenced so it builds and ships beside the tests. -->
+    <ProjectReference Include="../HostLoom.Logging.ExitProbe/HostLoom.Logging.ExitProbe.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../../examples/HostLoom.Examples.CompositionDiagnostics/ApplicationCompositionLedger.cs" Link="Examples/ApplicationCompositionLedger.cs" />
