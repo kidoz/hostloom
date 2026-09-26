@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using HostLoom.Logging;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Xunit;
@@ -41,6 +42,96 @@ public sealed class LoggingRegistrationTests
         );
         Assert.True(sink.Flushed);
         Assert.True(sink.Disposed);
+    }
+
+    [Fact]
+    public async Task A_sink_factory_gives_each_container_a_sink_of_its_own()
+    {
+        var sinks = new List<RecordingSink>();
+        var services = new ServiceCollection();
+        services.AddLogging(logging =>
+            logging.AddHostLoomLogging(_ =>
+            {
+                var sink = new RecordingSink();
+                sinks.Add(sink);
+                return sink;
+            })
+        );
+
+        await using (services.BuildServiceProvider())
+        {
+            // A container that never resolves logging never creates a sink.
+        }
+
+        Assert.Empty(sinks);
+
+        foreach (var category in new[] { "first", "second" })
+        {
+            await using var provider = services.BuildServiceProvider();
+            provider
+                .GetRequiredService<ILoggerFactory>()
+                .CreateLogger(category)
+                .LogInformation("Order placed.");
+        }
+
+        Assert.Collection(
+            sinks,
+            first =>
+            {
+                Assert.Contains(
+                    "\"first\"",
+                    Assert.Single(first.Lines()),
+                    StringComparison.Ordinal
+                );
+                Assert.True(first.Disposed);
+            },
+            second =>
+            {
+                Assert.Contains(
+                    "\"second\"",
+                    Assert.Single(second.Lines()),
+                    StringComparison.Ordinal
+                );
+                Assert.True(second.Disposed);
+            }
+        );
+    }
+
+    [Fact]
+    public async Task A_sink_factory_registration_binds_its_options_from_configuration()
+    {
+        RecordingSink? sink = null;
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["ServiceName"] = "checkout" })
+            .Build();
+        var services = new ServiceCollection();
+        services.AddLogging(logging =>
+            logging.AddHostLoomLogging(_ => sink = new RecordingSink(), configuration)
+        );
+
+        await using (var provider = services.BuildServiceProvider())
+        {
+            provider
+                .GetRequiredService<ILogger<LoggingRegistrationTests>>()
+                .LogInformation("Order placed.");
+        }
+
+        Assert.NotNull(sink);
+        using var record = JsonDocument.Parse(Assert.Single(sink.Lines()));
+        Assert.Equal("checkout", record.RootElement.GetProperty("ServiceName").GetString());
+    }
+
+    [Fact]
+    public async Task A_sink_factory_that_returns_null_fails_when_logging_is_resolved()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.AddHostLoomLogging(_ => null!));
+        await using var provider = services.BuildServiceProvider();
+
+        var failure = Assert.Throws<InvalidOperationException>(() =>
+            provider.GetRequiredService<ILoggerFactory>()
+        );
+        Assert.Contains("returned null", failure.Message, StringComparison.Ordinal);
     }
 
     [Fact]

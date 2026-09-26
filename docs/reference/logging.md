@@ -16,10 +16,24 @@ ILoggingBuilder AddHostLoomLogging(ILogSink sink,
 
 ILoggingBuilder AddHostLoomLogging(ILogSink sink, IConfiguration configuration,
     Action<HostLoomLoggerOptions>? configure = null, ILogFormatter? formatter = null);
+
+ILoggingBuilder AddHostLoomLogging(Func<IServiceProvider, ILogSink> sink,
+    Action<HostLoomLoggerOptions>? configure = null, ILogFormatter? formatter = null);
+
+ILoggingBuilder AddHostLoomLogging(Func<IServiceProvider, ILogSink> sink,
+    IConfiguration configuration, Action<HostLoomLoggerOptions>? configure = null,
+    ILogFormatter? formatter = null);
 ```
 
-The provider registers as a singleton with alias `HostLoom`. The
-configuration overload binds `HostLoomLoggerOptions` (conventionally from
+The provider registers as a singleton with alias `HostLoom`. A container creates it when it
+first resolves logging and disposes it, and the sink with it, when the container is disposed.
+A sink instance passed at registration is shared by every container built from the service
+collection, each running its own background writer against it. The factory overloads call the
+factory once per container instead, so each gets a sink of its own, and CA2000 has no
+undisposed sink to report at the call site. A factory that returns null fails when logging is
+resolved.
+
+The configuration overloads bind `HostLoomLoggerOptions` (conventionally from
 the `HostLoom:Logging` section) with unknown keys treated as errors —
 typos fail startup. A code callback applies *after* configuration. When
 `formatter` is null, `JsonLogFormatter` is used.

@@ -23,6 +23,27 @@ public static class LoggingBuilderExtensions
 
         var options = new HostLoomLoggerOptions();
         configure?.Invoke(options);
+        return Register(builder, _ => sink, options, formatter);
+    }
+
+    /// <summary>
+    /// Registers the provider with a sink that <paramref name="sink"/> creates when a container
+    /// first resolves logging, so each container built from the service collection writes to,
+    /// and at disposal releases, a sink of its own. The overload taking an
+    /// <see cref="ILogSink"/> hands that one instance to every such container.
+    /// </summary>
+    public static ILoggingBuilder AddHostLoomLogging(
+        this ILoggingBuilder builder,
+        Func<IServiceProvider, ILogSink> sink,
+        Action<HostLoomLoggerOptions>? configure = null,
+        ILogFormatter? formatter = null
+    )
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(sink);
+
+        var options = new HostLoomLoggerOptions();
+        configure?.Invoke(options);
         return Register(builder, sink, options, formatter);
     }
 
@@ -48,6 +69,29 @@ public static class LoggingBuilderExtensions
         var options = new HostLoomLoggerOptions();
         BindOptions(options, configuration);
         configure?.Invoke(options);
+        return Register(builder, _ => sink, options, formatter);
+    }
+
+    /// <summary>
+    /// Registers the provider with options bound from configuration, as the overload taking an
+    /// <see cref="ILogSink"/> does, and with a sink that <paramref name="sink"/> creates for each
+    /// container when it first resolves logging.
+    /// </summary>
+    public static ILoggingBuilder AddHostLoomLogging(
+        this ILoggingBuilder builder,
+        Func<IServiceProvider, ILogSink> sink,
+        IConfiguration configuration,
+        Action<HostLoomLoggerOptions>? configure = null,
+        ILogFormatter? formatter = null
+    )
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(sink);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        var options = new HostLoomLoggerOptions();
+        BindOptions(options, configuration);
+        configure?.Invoke(options);
         return Register(builder, sink, options, formatter);
     }
 
@@ -58,7 +102,7 @@ public static class LoggingBuilderExtensions
 
     private static ILoggingBuilder Register(
         ILoggingBuilder builder,
-        ILogSink sink,
+        Func<IServiceProvider, ILogSink> sink,
         HostLoomLoggerOptions options,
         ILogFormatter? formatter
     )
@@ -70,7 +114,14 @@ public static class LoggingBuilderExtensions
         // logging is first resolved.
         builder.Services.TryAddEnumerable(
             ServiceDescriptor.Singleton<ILoggerProvider, HostLoomLoggerProvider>(
-                _ => new HostLoomLoggerProvider(formatter ?? new JsonLogFormatter(), sink, options)
+                services => new HostLoomLoggerProvider(
+                    formatter ?? new JsonLogFormatter(),
+                    sink(services)
+                        ?? throw new InvalidOperationException(
+                            "The sink factory registered with AddHostLoomLogging returned null."
+                        ),
+                    options
+                )
             )
         );
         return builder;

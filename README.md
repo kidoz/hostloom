@@ -683,7 +683,7 @@ and health metrics on the `HostLoom.Logging` meter.
 
 ```csharp
 builder.Logging.AddHostLoomLogging(
-    StreamLogSink.Console(),
+    _ => StreamLogSink.Console(),
     builder.Configuration.GetSection("HostLoom:Logging"),
     formatter: new ClefLogFormatter());
 ```
