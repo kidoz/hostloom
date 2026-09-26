@@ -8,6 +8,88 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- Every histogram advises its bucket boundaries: operation durations from 0.1 ms to 30 s, spans
+  and lags from 1 ms to a day, and WebSocket queue bytes from 256 B to 16 MiB. An exporter's
+  defaults, which end at 10 000, put every sub-millisecond cache hit into one bucket.
+- `DestructuringOptions.TypeTags` adds Serilog's `"$type"` member, the type's short name, to every
+  destructured object except anonymous and other compiler-generated types. Off by default.
+- `DestructuringOptions.IncludeFields`, on by default, can leave public fields out of destructured
+  objects, as Serilog does; value tuples are written as sequences of their items either way.
+- `ClefLogFormatter` writes `@r` for standard `ILogger` calls: one rendering per template token that
+  has a format, in template order, rendered in the invariant culture the way Serilog's
+  `CompactJsonFormatter` renders it. `LogRecord.TemplateRenderings` exposes them to other
+  formatters.
+- `AddHostLoomLogging` overloads that take a `Func<IServiceProvider, ILogSink>`. Each container
+  built from the service collection calls the factory when it first resolves logging and so gets
+  a sink of its own, where a sink instance is shared by all of them. A call site that creates its
+  sink in the factory no longer needs a CA2000 suppression.
+
+### Changed
+
+- A collection or dictionary in an event hole without an operator (`{Ids}`) is captured with its
+  structure, as Serilog captures it, instead of as its type name. An element that is neither a
+  scalar nor a collection is written as its invariant `ToString()`, and the destructuring caps and
+  record budget apply.
+- A byte array is written as Serilog's uppercase hex in every hole, summarized as its first 16
+  bytes and its length beyond 1024 bytes. A destructured byte array was Base64, and one in a plain
+  hole was its type name.
+
+### Fixed
+
+- A log call no longer throws because of the caller's values. A `ToString()` that threw in a
+  plain hole, MEL's own formatter throwing, and a template with fewer arguments than holes all
+  escaped the call, and `LoggerFactory` rethrew them to the caller; the bootstrap logger dropped
+  such an event silently. The value now reads `"[DestructuringFailed]"`, a state that throws
+  part-way keeps what was captured before it, including the template, and the message is
+  rendered from the captured fields or written as `[MessageUnavailable]`. Failures are counted
+  under the new `capture` component and under `destructurer`.
+- A destructured value no longer produces an invalid JSON line when a nested type's members cannot
+  be reflected, for example because a member attribute's constructor throws. The failure sentinel
+  was written inside the object that had already been opened; it now replaces the value, and
+  the type is not reflected again on later events.
+- Destructuring reads only properties with a public getter; `public string Password { private get;
+  set; }` was written out. Delegates, `Type` and other reflection objects, assemblies, and modules
+  are written as their names instead of being walked: a delegate exposed its closure's captured
+  locals through `Target`, and a destructured exception's `TargetSite` filled the record budget.
+  `Memory<byte>` and `ReadOnlyMemory<byte>` are written as hex, like byte arrays.
+- `@r` renders a destructured token (`{@Order:j}`) from its captured, masked JSON; it rendered the
+  value's own `ToString()`, which printed members that `[NotLogged]` and `[LogMasked]` hide. A
+  legacy `LogReplaced` attribute now masks its member whole instead of being ignored.
+- A destructured object no longer carries a key twice: a property hidden with `new` is written
+  once, from the most derived type, and dictionary keys that render alike are written once, the
+  omission marked with `"…": "[Truncated]"`.
+- `ClefLogFormatter` keeps a caller's hole named `SourceContext`, `ThreadId`, or `EventId`, as
+  Serilog does; it used to drop the caller's value for its own.
+- A collection in a plain hole is enumerated once. The MEL formatter enumerated it again to render
+  the message, so a lazy query ran twice; the message is now rendered from the captured fields.
+- A dictionary with string keys and a `(string, value)` tuple passed to `BeginScope` become fields,
+  as under Serilog, instead of the scope object's type name. `@r` skips template tokens Serilog does
+  not accept as holes, so its renderings line up with the tokens that have them.
+- Logging no longer depends on the thread pool anywhere. With every pool thread busy, a queued
+  record never reached the sink, `EnqueueTimeout` and `ShutdownTimeout` did not fire, and a
+  provider's disposal did not return, measured with 100 ms bounds over 10 s. Producers now wake
+  the writer directly, a caller blocked on a full queue waits on a monitor the writer signals
+  instead of the channel, which completes a blocked write through the pool whatever its options
+  say, and the shutdown deadlines are timed waits on a thread of their own. `DisposeAsync`
+  returns to its caller at once.
+- A record with thousands of fields no longer costs its caller and the log writer in proportion.
+  Capture stops at four times `MaxFieldsPerRecord`, counting the rest as over the cap; resolving
+  duplicate names is linear instead of quadratic; and a pooled entry sheds a field table grown by
+  such a record.
+- The built-in formatters are safe to share. The formatter passed to `AddHostLoomLogging` goes to
+  the provider of every container built from the service collection, and two providers
+  formatting through one instance corrupted each other's lines; the `ILogFormatter` contract now
+  says `Format` may run concurrently.
+- A record dropped because the provider was being disposed or had faulted is counted as such;
+  when the channel closed between the state check and the write, it was counted as a full queue.
+- A message rendered from captured fields writes a template's `}}` as `}`, as it already wrote
+  `{{` as `{`.
+- `ClefLogFormatter` writes `@t` with all seven fractional digits. The JSON writer trimmed
+  trailing zeros, so a timestamp could lose digits or its whole fraction, which a fixed-pattern
+  timestamp parser rejects.
+
 ## [0.11.0] - 2026-09-25
 
 This release fixes what a review of every package found after 0.10.0: deliveries the inbox
