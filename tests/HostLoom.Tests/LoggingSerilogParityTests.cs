@@ -159,6 +159,22 @@ namespace HostLoom.Tests
         }
 
         [Fact]
+        public async Task A_string_dictionary_and_a_pair_tuple_scope_become_fields()
+        {
+            var (root, _) = await LogAsync(logger =>
+            {
+                using (logger.BeginScope(new Dictionary<string, string> { ["Tenant"] = "eu" }))
+                using (logger.BeginScope(("OrderId", (object?)42)))
+                {
+                    logger.LogInformation("scoped");
+                }
+            });
+
+            Assert.Equal("eu", root.GetProperty("Tenant").GetString());
+            Assert.Equal(42, root.GetProperty("OrderId").GetInt32());
+        }
+
+        [Fact]
         public async Task Renderings_skip_tokens_serilog_does_not_treat_as_holes()
         {
             var (root, _) = await LogAsync(logger =>

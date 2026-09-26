@@ -219,6 +219,9 @@ an outer one. Scope values are captured as follows:
 | `{Name}` or `{@Name}` | typed field | destructured JSON under the masking policy and the record's `MaxEncodedBytesPerRecord` budget |
 | `{$Name}` | text field | `ToString()` as a text field, bounded by `MaxTextFieldLength` |
 
+A dictionary with string keys and a `(string, value)` tuple are structured scopes too, the
+tuple naming one field.
+
 No caller-side formatter renders a scope, so a non-scalar scope value is destructured even
 without `@`; only `$` opts into `ToString()`. The destructuring budget is shared between the
 event's `{@...}` holes and its scope values, outermost scope first, and a value past the budget

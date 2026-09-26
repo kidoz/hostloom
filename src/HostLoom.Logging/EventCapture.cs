@@ -399,7 +399,20 @@ internal sealed class EventCapture(
     {
         try
         {
-            if (scope is IEnumerable<KeyValuePair<string, object?>> pairs)
+            // Serilog.Extensions.Logging's scope shapes besides key/value pairs of object: any
+            // dictionary with string keys, and a (string, value) tuple naming one property.
+            var pairs = scope switch
+            {
+                IEnumerable<KeyValuePair<string, object?>> objectPairs => objectPairs,
+                IDictionary dictionary => StringKeyedPairs(dictionary),
+                ITuple { Length: 2 } tuple when tuple[0] is string key =>
+                [
+                    new KeyValuePair<string, object?>(key, tuple[1]),
+                ],
+                _ => null,
+            };
+
+            if (pairs is not null)
             {
                 if (entry.DestructuringBudget < 0)
                 {
@@ -437,6 +450,19 @@ internal sealed class EventCapture(
         {
             // One unreadable scope must not cost the event or the scopes around it.
             metrics?.RecordFailure(LoggingMetrics.ComponentScope);
+        }
+    }
+
+    private static IEnumerable<KeyValuePair<string, object?>> StringKeyedPairs(
+        IDictionary dictionary
+    )
+    {
+        foreach (DictionaryEntry item in dictionary)
+        {
+            if (item.Key is string key)
+            {
+                yield return new KeyValuePair<string, object?>(key, item.Value);
+            }
         }
     }
 
