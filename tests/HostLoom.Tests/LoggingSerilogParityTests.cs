@@ -29,6 +29,54 @@ namespace HostLoom.Tests
         }
 
         [Fact]
+        public async Task A_property_without_a_public_getter_is_not_read()
+        {
+            var (root, _) = await LogAsync(logger =>
+                logger.LogInformation(
+                    "user {@User}",
+                    new WriteOnlySecret { Name = "ada", Password = "hunter2" }
+                )
+            );
+
+            Assert.Equal("ada", root.GetProperty("User").GetProperty("Name").GetString());
+            Assert.False(root.GetProperty("User").TryGetProperty("Password", out _));
+        }
+
+        [Fact]
+        public async Task Delegates_and_reflection_types_are_written_as_their_names()
+        {
+            var secret = "PASSWORD123";
+            var value = new WithDelegateAndType
+            {
+                Id = 7,
+                OnDone = () => GC.KeepAlive(secret),
+                Kind = typeof(CardHolder),
+            };
+            var (root, line) = await LogAsync(logger => logger.LogInformation("job {@Job}", value));
+
+            var job = root.GetProperty("Job");
+            Assert.DoesNotContain("PASSWORD123", line, StringComparison.Ordinal);
+            Assert.Equal("System.Action", job.GetProperty("OnDone").GetString());
+            Assert.Equal(typeof(CardHolder).ToString(), job.GetProperty("Kind").GetString());
+            Assert.Equal(7, job.GetProperty("Id").GetInt32());
+        }
+
+        [Fact]
+        public async Task A_destructured_exception_stays_small()
+        {
+            var exception = Throw();
+            var (root, line) = await LogAsync(logger =>
+                logger.LogError("failed {@Error}", exception)
+            );
+
+            Assert.Equal(
+                JsonValueKind.String,
+                root.GetProperty("Error").GetProperty("TargetSite").ValueKind
+            );
+            Assert.True(line.Length < 16 * 1024, $"line is {line.Length} bytes");
+        }
+
+        [Fact]
         public async Task Byte_memory_is_written_as_hex()
         {
             var (root, _) = await LogAsync(logger =>
@@ -41,6 +89,18 @@ namespace HostLoom.Tests
 
             Assert.Equal("01AB", root.GetProperty("Bytes").GetString());
             Assert.Equal("02", root.GetProperty("Memory").GetString());
+        }
+
+        private static InvalidOperationException Throw()
+        {
+            try
+            {
+                throw new InvalidOperationException("boom");
+            }
+            catch (InvalidOperationException exception)
+            {
+                return exception;
+            }
         }
 
         private static async Task<(JsonElement Root, string Line)> LogAsync(Action<ILogger> log)
@@ -72,6 +132,32 @@ namespace HostLoom.Tests
             }
 
             IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+        }
+
+        private sealed record CardHolder
+        {
+            public int Id { get; init; }
+
+            [LogMasked]
+            public string Pan { get; init; } = "";
+        }
+
+        private sealed class WriteOnlySecret
+        {
+            public string Name { get; set; } = "";
+
+            public string Password { private get; set; } = "";
+
+            public int PasswordLength => Password.Length;
+        }
+
+        private sealed class WithDelegateAndType
+        {
+            public int Id { get; set; }
+
+            public Action? OnDone { get; set; }
+
+            public Type? Kind { get; set; }
         }
 
         private sealed class CollectingSink : ILogSink

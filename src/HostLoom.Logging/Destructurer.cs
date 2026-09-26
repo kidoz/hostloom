@@ -377,6 +377,11 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
             case Memory<byte> memory:
                 WriteCappedString(writer, ByteArrayText(memory.Span));
                 return true;
+            case Delegate or MemberInfo or Assembly or Module:
+                // Serilog's names for these. Walking a delegate reaches its closure's captured
+                // locals through Target, and reflection objects expand into tens of kilobytes.
+                WriteCappedString(writer, value.ToString() ?? string.Empty);
+                return true;
             case Uri uri:
                 WriteCappedString(writer, uri.ToString());
                 return true;
@@ -637,7 +642,12 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         var members = new List<MemberPlan>();
         foreach (var property in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
         {
-            if (!property.CanRead || property.GetIndexParameters().Length > 0)
+            // A public property with a private getter is not readable from outside, and Serilog
+            // does not read it either: 'public string Password { private get; set; }'.
+            if (
+                property.GetMethod is not { IsPublic: true }
+                || property.GetIndexParameters().Length > 0
+            )
             {
                 continue;
             }

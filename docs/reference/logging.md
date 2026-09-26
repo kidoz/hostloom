@@ -146,6 +146,10 @@ A collection in a plain `{Name}` hole is bounded by the same destructuring caps 
 budget as a destructured one, and is enumerated once: the message is then rendered from the
 captured fields. A byte array, `Memory<byte>`, or `ReadOnlyMemory<byte>` is a scalar in every
 hole: uppercase hex, or beyond 1024 bytes its first 16 bytes followed by `... (N bytes)`.
+Delegates, `Type` and other reflection objects, assemblies, and modules are written as their
+`ToString()`, never walked.
+
+Destructuring reads public properties with a public getter.
 
 ## Masking attributes
 
