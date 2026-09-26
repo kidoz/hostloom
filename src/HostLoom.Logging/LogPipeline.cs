@@ -119,8 +119,9 @@ internal sealed class LogPipeline : IAsyncDisposable
         _writer.Start();
 
         // A process that ends without disposing the pipeline would take the queue with it, since
-        // the writer is a background thread. Environment.Exit, Main returning, and a plain
-        // SIGTERM raise ProcessExit; an unhandled exception raises UnhandledException instead.
+        // the writer is a background thread. Environment.Exit and Main returning raise
+        // ProcessExit; an unhandled exception raises UnhandledException instead. Since .NET 10 a
+        // SIGTERM raises nothing unless the app handles the signal, as the Generic Host does.
         // FailFast and a killed process raise neither. Removed again on disposal.
         AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
         AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;

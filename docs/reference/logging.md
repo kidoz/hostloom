@@ -77,10 +77,9 @@ sets null with an empty value, `"EnqueueTimeout": ""`.
 
 A process that ends without disposing the provider still attempts to drain its queued records. The
 writer is a background thread, so the queue would otherwise die with the process, taking the
-last lines before a crash with it. On `AppDomain.ProcessExit`, which `Environment.Exit`, `Main`
-returning, and a SIGTERM outside the Generic Host raise, and on `AppDomain.UnhandledException`,
-the provider waits up to `ShutdownTimeout` for queued records to be processed and a sink flush
-attempt to complete. It keeps
+last lines before a crash with it. On `AppDomain.ProcessExit`, which `Environment.Exit` and `Main`
+returning raise, and on `AppDomain.UnhandledException`, the provider waits up to
+`ShutdownTimeout` for queued records to be processed and a sink flush attempt to complete. It keeps
 accepting records meanwhile. An `UnhandledException` handler that logs the crash gets its record
 into that flush only if it was registered before the provider was created; handlers run in
 registration order. A handler registered later can flush its own records with
@@ -103,6 +102,12 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
 
 `Environment.FailFast`, SIGKILL, and an out-of-memory kill run no handlers, so whatever is still
 queued then is lost.
+
+Since .NET 10 the runtime no longer handles SIGTERM, so a SIGTERM ends a process at once and
+raises no event. The Generic Host handles it and disposes the provider, which drains the queue.
+An application without the host must handle the signal itself for anything queued to survive
+it, for example with `PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ =>
+Environment.Exit(0))`, which raises `ProcessExit` and so runs the flush.
 
 None of the logging bounds depends on the thread pool. The shutdown deadlines are timed waits on
 a thread of their own, `DisposeAsync` returns to its caller at once, a caller blocked on a full
