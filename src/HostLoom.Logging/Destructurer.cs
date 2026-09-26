@@ -38,6 +38,9 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
     /// <summary>What <c>WriteStringValue("…")</c> emits, for a cut written raw.</summary>
     private static ReadOnlySpan<byte> TruncatedItem => "\"\\u2026\""u8;
 
+    /// <summary>Serilog's byte-array cutoff: longer arrays are summarized, not dumped.</summary>
+    private const int MaxByteArrayLength = 1024;
+
     private readonly ConcurrentDictionary<Type, TypePlan> _plans = new();
 
     /// <summary>
@@ -281,7 +284,7 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
 
     /// <summary>The deterministic scalar table, mirroring the typed capture path: numbers stay
     /// numbers, non-finite floats and date/time/Guid/enum values are strings, byte arrays are
-    /// Base64, and every string is subject to the length cap.</summary>
+    /// Serilog's uppercase hex, and every string is subject to the length cap.</summary>
     private bool TryWriteScalar(Utf8JsonWriter writer, object? value)
     {
         switch (value)
@@ -366,7 +369,13 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
                 writer.WriteStringValue(new ReadOnlySpan<char>(in letter));
                 return true;
             case byte[] bytes:
-                WriteCappedString(writer, Convert.ToBase64String(bytes));
+                WriteCappedString(writer, ByteArrayText(bytes));
+                return true;
+            case ReadOnlyMemory<byte> memory:
+                WriteCappedString(writer, ByteArrayText(memory.Span));
+                return true;
+            case Memory<byte> memory:
+                WriteCappedString(writer, ByteArrayText(memory.Span));
                 return true;
             case Uri uri:
                 WriteCappedString(writer, uri.ToString());
@@ -378,6 +387,18 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
                 return false;
         }
     }
+
+    /// <summary>
+    /// Serilog's rendering: uppercase hex, or for an array longer than 1024 bytes its first 16
+    /// bytes followed by <c>"... (N bytes)"</c>.
+    /// </summary>
+    internal static string ByteArrayText(ReadOnlySpan<byte> bytes) =>
+        bytes.Length <= MaxByteArrayLength
+            ? Convert.ToHexString(bytes)
+            : string.Create(
+                CultureInfo.InvariantCulture,
+                $"{Convert.ToHexString(bytes[..16])}... ({bytes.Length} bytes)"
+            );
 
     private void WriteCappedString(Utf8JsonWriter writer, string text) =>
         writer.WriteStringValue(Capped(text));

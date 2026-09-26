@@ -28,6 +28,21 @@ namespace HostLoom.Tests
             Assert.Equal(3, root.GetProperty("Items").GetArrayLength());
         }
 
+        [Fact]
+        public async Task Byte_memory_is_written_as_hex()
+        {
+            var (root, _) = await LogAsync(logger =>
+                logger.LogInformation(
+                    "bytes {Bytes} memory {@Memory}",
+                    new ReadOnlyMemory<byte>([1, 0xAB]),
+                    new Memory<byte>([2])
+                )
+            );
+
+            Assert.Equal("01AB", root.GetProperty("Bytes").GetString());
+            Assert.Equal("02", root.GetProperty("Memory").GetString());
+        }
+
         private static async Task<(JsonElement Root, string Line)> LogAsync(Action<ILogger> log)
         {
             // CA2000: sink ownership transfers to the provider.

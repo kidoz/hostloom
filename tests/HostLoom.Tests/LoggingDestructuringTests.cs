@@ -245,7 +245,7 @@ namespace HostLoom.Tests
             var logged = root.GetProperty("Value");
             Assert.Equal(1, logged.GetProperty("Map").GetProperty("a").GetInt32());
             Assert.Equal("Friday", logged.GetProperty("Day").GetString());
-            Assert.Equal("AQID", logged.GetProperty("Blob").GetString());
+            Assert.Equal("010203", logged.GetProperty("Blob").GetString());
             Assert.Equal(
                 "2026-08-26T10:00:00.0000000+00:00",
                 logged.GetProperty("When").GetString()
@@ -499,6 +499,27 @@ namespace HostLoom.Tests
             var ids = root.GetProperty("Ids").EnumerateArray().ToArray();
             Assert.Equal(4, ids.Length);
             Assert.Equal("…", ids[3].GetString());
+        }
+
+        [Fact]
+        public async Task Byte_arrays_render_as_serilog_hex_in_every_hole()
+        {
+            var large = Enumerable.Range(0, 2000).Select(i => (byte)i).ToArray();
+            var (root, _) = await LogAsync(logger =>
+                logger.LogInformation(
+                    "plain {Plain} destructured {@Destructured} large {Large}",
+                    new byte[] { 1, 2, 0xAB },
+                    new byte[] { 1, 2, 0xAB },
+                    large
+                )
+            );
+
+            Assert.Equal("0102AB", root.GetProperty("Plain").GetString());
+            Assert.Equal("0102AB", root.GetProperty("Destructured").GetString());
+            Assert.Equal(
+                "000102030405060708090A0B0C0D0E0F... (2000 bytes)",
+                root.GetProperty("Large").GetString()
+            );
         }
 
         private static async Task<(JsonElement Root, string Line)> LogAsync(

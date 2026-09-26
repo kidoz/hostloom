@@ -459,6 +459,15 @@ internal sealed class EventCapture(
             case char letter:
                 entry.AddFieldText(name, new ReadOnlySpan<char>(in letter), source);
                 return true;
+            case byte[] bytes:
+                entry.AddFieldText(name, Destructurer.ByteArrayText(bytes), source);
+                return true;
+            case ReadOnlyMemory<byte> memory:
+                entry.AddFieldText(name, Destructurer.ByteArrayText(memory.Span), source);
+                return true;
+            case Memory<byte> memory:
+                entry.AddFieldText(name, Destructurer.ByteArrayText(memory.Span), source);
+                return true;
             case Enum:
                 // The name, matching Serilog's scalar enum rendering, not the numeric value.
                 entry.AddFieldText(name, value.ToString() ?? string.Empty, source);
