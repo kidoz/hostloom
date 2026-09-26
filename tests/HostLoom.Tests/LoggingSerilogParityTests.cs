@@ -8,6 +8,18 @@ using Xunit;
 // CA1873: the boxing standard ILogger path is what these tests exercise on purpose.
 #pragma warning disable CA1873
 
+namespace Destructurama.Attributed
+{
+    /// <summary>Stand-in for the legacy package's regex masking attribute, recognized by name.</summary>
+    [AttributeUsage(AttributeTargets.Property | AttributeTargets.Field)]
+    public sealed class LogReplacedAttribute(string pattern, string replacement) : Attribute
+    {
+        public string Pattern { get; } = pattern;
+
+        public string Replacement { get; } = replacement;
+    }
+}
+
 namespace HostLoom.Tests
 {
     /// <summary>
@@ -111,6 +123,20 @@ namespace HostLoom.Tests
             Assert.Equal(1, Occurrences(line, "\"K\":"));
         }
 
+        [Fact]
+        public async Task A_legacy_replacing_attribute_masks_the_member()
+        {
+            var (root, line) = await LogAsync(logger =>
+                logger.LogInformation(
+                    "card {@Card}",
+                    new LegacyReplaced { Pan = "4000123412341234" }
+                )
+            );
+
+            Assert.DoesNotContain("4000123412341234", line, StringComparison.Ordinal);
+            Assert.Equal("***", root.GetProperty("Card").GetProperty("Pan").GetString());
+        }
+
         private static int Occurrences(string text, string value)
         {
             var count = 0;
@@ -208,6 +234,12 @@ namespace HostLoom.Tests
         private sealed class SameText
         {
             public override string ToString() => "K";
+        }
+
+        private sealed class LegacyReplaced
+        {
+            [Destructurama.Attributed.LogReplaced(@"^(\d{4})\d+(\d{4})$", "$1********$2")]
+            public string Pan { get; set; } = "";
         }
 
         private sealed class CollectingSink : ILogSink

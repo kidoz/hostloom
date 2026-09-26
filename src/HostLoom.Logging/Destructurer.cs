@@ -763,6 +763,13 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
                         {
                             mask = LegacyMask(attribute);
                         }
+
+                        // A regex replacement is not reproduced; the member is masked whole
+                        // instead, so the value it was meant to hide never appears.
+                        if (legacyName == "LogReplacedAttribute")
+                        {
+                            mask = new MaskRule("***", 0, 0);
+                        }
                     }
 
                     break;

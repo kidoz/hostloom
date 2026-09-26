@@ -174,6 +174,9 @@ shown. A value shorter than twice `ShowFirst + ShowLast` is written as `Text` al
 | `40715236` | `***5236` | `40***36` |
 | `4000123412341234` | `***1234` | `40***34` |
 
+Of the other legacy attributes, `LogReplaced` is honored by masking the member whole with
+`***`; its regular expression is not applied.
+
 Both attributes are found through the inheritance chain: a member annotated on a base class
 stays protected on a derived instance, including when the derived class overrides the
 annotated virtual property. The same holds for the legacy attributes recognized by name under
