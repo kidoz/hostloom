@@ -124,6 +124,21 @@ after throwing. A formatter that throws on every record therefore loses every re
 stopping the writer, so watch the `format_failed` drop count. Only a sink failure faults the
 pipeline (see [Health](#health)).
 
+## Event holes
+
+A standard `ILogger` call captures each hole of its message template as a field, following
+Serilog's capture rules:
+
+| Event hole | Scalar value | Collection or dictionary | Other object |
+| --- | --- | --- | --- |
+| `{Name}` | typed field | structure kept; an element that is neither a scalar nor a collection is its invariant `ToString()` | `ToString()` as a text field |
+| `{@Name}` | typed field | destructured JSON | destructured JSON under the masking policy |
+| `{$Name}` | text field | `ToString()` as a text field | `ToString()` as a text field |
+
+A collection in a plain `{Name}` hole is bounded by the same destructuring caps and record
+budget as a destructured one, and is enumerated once: the message is then rendered from the
+captured fields.
+
 ## Masking attributes
 
 Fail-closed protection on destructured (`{@...}`) members:
@@ -151,9 +166,10 @@ annotated virtual property. The same holds for the legacy attributes recognized 
 `MapLegacyAttributes`.
 
 The protection applies to members reached by destructuring. A plain `{Name}` hole in an
-*event* template stringifies the value through its `ToString()`, and the message the caller's
-formatter renders does the same, so a record type's generated `ToString()` prints every member
-there. Use `{@Name}` for any object carrying protected members.
+*event* template stringifies an object through its `ToString()`, including each object inside
+a collection, and the message the caller's formatter renders does the same, so a record type's
+generated `ToString()` prints every member there. Use `{@Name}` for any object carrying
+protected members.
 
 ## Scopes
 

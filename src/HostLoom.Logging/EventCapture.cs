@@ -1,5 +1,7 @@
 using System.Buffers;
+using System.Collections;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace HostLoom.Logging;
@@ -71,7 +73,31 @@ internal sealed class EventCapture(
             return true;
         }
 
-        CaptureValue(entry, name, pair.Value);
+        // A structurally captured collection renders the message from the captured fields too:
+        // the MEL formatter would enumerate it a second time, and a lazy query would run twice.
+        return CaptureValue(entry, name, pair.Value);
+    }
+
+    /// <summary>
+    /// A hole without an operator. Scalars keep their JSON types; a collection or dictionary
+    /// keeps its structure as Serilog captures it, with each element that is neither a scalar
+    /// nor a collection written as its invariant <c>ToString()</c>; any other object becomes
+    /// its invariant string.
+    /// </summary>
+    private bool CaptureValue(LogEntry entry, string name, object? value)
+    {
+        if (TryCaptureScalar(entry, name, value))
+        {
+            return false;
+        }
+
+        if (value is IEnumerable || (value is ITuple && value.GetType().IsValueType))
+        {
+            CaptureDestructured(entry, name, value, LogFieldSource.Hole, objectsAsText: true);
+            return true;
+        }
+
+        CaptureStringified(entry, name, value);
         return false;
     }
 
@@ -79,7 +105,8 @@ internal sealed class EventCapture(
         LogEntry entry,
         string name,
         object? value,
-        LogFieldSource source = LogFieldSource.Hole
+        LogFieldSource source = LogFieldSource.Hole,
+        bool objectsAsText = false
     )
     {
         if (TryCaptureScalar(entry, name, value, source))
@@ -96,7 +123,7 @@ internal sealed class EventCapture(
         }
 
         // The span points into thread-local scratch; AddFieldJson copies it out immediately.
-        var json = destructurer.Destructure(value!, remaining);
+        var json = destructurer.Destructure(value!, remaining, objectsAsText);
         if (json.Length > remaining)
         {
             // Not even the cut fragment fits what is left, so the record's destructured bytes
@@ -345,19 +372,6 @@ internal sealed class EventCapture(
             Span<byte> utf8 = stackalloc byte[512];
             var length = EncodeName(name, utf8);
             return length >= 0 && entry.TryAppendFieldValue(utf8[..length], firstField, builder);
-        }
-    }
-
-    private static void CaptureValue(
-        LogEntry entry,
-        string name,
-        object? value,
-        LogFieldSource source = LogFieldSource.Hole
-    )
-    {
-        if (!TryCaptureScalar(entry, name, value, source))
-        {
-            CaptureStringified(entry, name, value, source);
         }
     }
 

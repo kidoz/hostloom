@@ -454,6 +454,53 @@ namespace HostLoom.Tests
             Assert.Equal(full, destructurer.Destructure(value, full.Length + 64).ToArray());
         }
 
+        [Fact]
+        public async Task A_collection_in_a_plain_hole_keeps_its_structure_like_serilog()
+        {
+            var (root, _) = await LogAsync(logger =>
+                logger.LogInformation(
+                    "ids {Ids} map {Map} orders {Orders} pair {Pair} nested {Nested}",
+                    new List<long> { 10, 20 },
+                    new Dictionary<string, int> { ["a"] = 1 },
+                    new[] { new Order() },
+                    (7, "seven"),
+                    new List<List<int>>
+                    {
+                        new() { 1 },
+                        new() { 2 },
+                    }
+                )
+            );
+
+            Assert.Equal(
+                [10L, 20L],
+                root.GetProperty("Ids").EnumerateArray().Select(e => e.GetInt64())
+            );
+            Assert.Equal(1, root.GetProperty("Map").GetProperty("a").GetInt32());
+            // Without '@' an element object is its ToString(), never its members.
+            Assert.Equal(
+                typeof(Order).ToString(),
+                Assert.Single(root.GetProperty("Orders").EnumerateArray()).GetString()
+            );
+            var pair = root.GetProperty("Pair").EnumerateArray().ToArray();
+            Assert.Equal(7, pair[0].GetInt32());
+            Assert.Equal("seven", pair[1].GetString());
+            Assert.Equal(2, root.GetProperty("Nested")[1][0].GetInt32());
+        }
+
+        [Fact]
+        public async Task A_plain_collection_hole_is_bounded_like_a_destructured_one()
+        {
+            var (root, _) = await LogAsync(
+                logger => logger.LogInformation("ids {Ids}", Enumerable.Range(1, 10).ToList()),
+                options => options.Destructuring.MaxCollectionItems = 3
+            );
+
+            var ids = root.GetProperty("Ids").EnumerateArray().ToArray();
+            Assert.Equal(4, ids.Length);
+            Assert.Equal("…", ids[3].GetString());
+        }
+
         private static async Task<(JsonElement Root, string Line)> LogAsync(
             Action<ILogger> log,
             Action<HostLoomLoggerOptions>? configure = null

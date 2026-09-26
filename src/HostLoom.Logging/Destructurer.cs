@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 
 namespace HostLoom.Logging;
@@ -63,7 +64,11 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
     /// for the cut marker itself, or a single scalar larger than the budget, can return more,
     /// and the caller must check the length.
     /// </summary>
-    public ReadOnlySpan<byte> Destructure(object value, int byteBudget)
+    /// <param name="objectsAsText">Serilog's capture for a collection in a hole without an
+    /// operator: sequences and dictionaries keep their structure and scalars their types, but
+    /// every other object is written as its invariant <c>ToString()</c> instead of its
+    /// members.</param>
+    public ReadOnlySpan<byte> Destructure(object value, int byteBudget, bool objectsAsText = false)
     {
         var scratch = _scratch ??= new Scratch();
         if (scratch.Busy)
@@ -72,7 +77,14 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
             // that a throwaway buffer is fine; the thread-local one is mid-walk above us.
             var local = new ArrayBufferWriter<byte>(1024);
             using var localWriter = new Utf8JsonWriter(local, WriterOptions);
-            DestructureInto(localWriter, local, value, byteBudget, new object?[options.MaxDepth]);
+            DestructureInto(
+                localWriter,
+                local,
+                value,
+                byteBudget,
+                objectsAsText,
+                new object?[options.MaxDepth]
+            );
             return local.WrittenSpan;
         }
 
@@ -94,7 +106,16 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
             scratch.Buffer.ResetWrittenCount();
             var writer = scratch.Writer ??= new Utf8JsonWriter(Stream.Null, WriterOptions);
             writer.Reset(scratch.Buffer);
-            if (!DestructureInto(writer, scratch.Buffer, value, byteBudget, scratch.Ancestors))
+            if (
+                !DestructureInto(
+                    writer,
+                    scratch.Buffer,
+                    value,
+                    byteBudget,
+                    objectsAsText,
+                    scratch.Ancestors
+                )
+            )
             {
                 // The writer's state is unknown after a mid-write failure; rebuild it lazily.
                 scratch.Writer = null;
@@ -113,12 +134,13 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         ArrayBufferWriter<byte> buffer,
         object value,
         int byteBudget,
+        bool objectsAsText,
         object?[] ancestors
     )
     {
         try
         {
-            var walk = new Walk(ancestors, buffer, byteBudget);
+            var walk = new Walk(ancestors, buffer, byteBudget, objectsAsText);
             WriteValue(writer, value, 0, ref walk);
             writer.Flush();
             return true;
@@ -138,13 +160,20 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
     /// The state of one walk. Positions come from the buffer plus the writer's pending bytes,
     /// not from the writer's own commit counter, which a cut leaves stale.
     /// </summary>
-    private struct Walk(object?[] ancestors, ArrayBufferWriter<byte> buffer, int byteLimit)
+    private struct Walk(
+        object?[] ancestors,
+        ArrayBufferWriter<byte> buffer,
+        int byteLimit,
+        bool objectsAsText
+    )
     {
         public readonly object?[] Ancestors = ancestors;
 
         public readonly ArrayBufferWriter<byte> Buffer = buffer;
 
         public readonly int ByteLimit = byteLimit;
+
+        public readonly bool ObjectsAsText = objectsAsText;
 
         /// <summary>Set once the budget cut an element: every enclosing container then closes
         /// without writing anything more.</summary>
@@ -222,12 +251,32 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
             case IEnumerable sequence:
                 WriteSequence(writer, sequence, depth, ref walk);
                 break;
+            case ITuple tuple when value.GetType().IsValueType:
+                // Serilog writes a value tuple as a sequence of its items.
+                WriteSequence(writer, TupleItems(tuple), depth, ref walk);
+                break;
             default:
-                WriteObject(writer, value!, depth, ref walk);
+                if (walk.ObjectsAsText)
+                {
+                    WriteStringified(writer, value);
+                }
+                else
+                {
+                    WriteObject(writer, value!, depth, ref walk);
+                }
+
                 break;
         }
 
         walk.Ancestors[depth] = null;
+    }
+
+    private static IEnumerable<object?> TupleItems(ITuple tuple)
+    {
+        for (var i = 0; i < tuple.Length; i++)
+        {
+            yield return tuple[i];
+        }
     }
 
     /// <summary>The deterministic scalar table, mirroring the typed capture path: numbers stay
@@ -339,6 +388,26 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         text.Length <= options.MaxStringLength
             ? text
             : string.Concat(text.AsSpan(0, options.MaxStringLength), "…");
+
+    /// <summary>A value's own <c>ToString()</c> may throw. Caught here, before anything of the
+    /// element is written, so the sentinel lands where the value would have and the enclosing
+    /// container stays valid JSON.</summary>
+    private void WriteStringified(Utf8JsonWriter writer, object? value)
+    {
+        string text;
+        try
+        {
+            text = ToInvariantString(value);
+        }
+        catch (Exception)
+        {
+            metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
+            writer.WriteStringValue("[DestructuringFailed]");
+            return;
+        }
+
+        WriteCappedString(writer, text);
+    }
 
     private void WriteObject(Utf8JsonWriter writer, object value, int depth, ref Walk walk)
     {
