@@ -78,6 +78,9 @@ internal sealed class LogEntry
     /// <summary>Fast-path formatting failures, reported when the event reaches its provider.</summary>
     public int CaptureFailures { get; set; }
 
+    /// <summary>Whether this entry participates in its pipeline's outstanding-record count.</summary>
+    public bool AccountingPending { get; set; }
+
     public string Category { get; set; } = string.Empty;
 
     /// <summary>The <c>{OriginalFormat}</c> message template when the standard path supplied one.
@@ -468,6 +471,7 @@ internal sealed class LogEntry
     {
         _messageLength = 0;
         CaptureFailures = 0;
+        AccountingPending = false;
         _namesLength = 0;
         _valuesLength = 0;
         _fieldCount = 0;

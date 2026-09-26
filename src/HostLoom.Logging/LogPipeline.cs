@@ -55,8 +55,10 @@ internal sealed class LogPipeline : IAsyncDisposable
     private readonly object _space = new();
     private int _spaceWaiters;
     private int _disposeStarted;
-    private volatile bool _abandoned;
-    private volatile int _inFlight;
+
+    // Counts real entries owned by Enqueue, including blocked producers and formatting work.
+    // -1 atomically closes accounting at abandonment; late completion cannot count them twice.
+    private long _outstanding;
     private volatile Exception? _writerFault;
 
     /// <summary>Set once the writer wrote and flushed everything disposal left queued.</summary>
@@ -281,6 +283,12 @@ internal sealed class LogPipeline : IAsyncDisposable
                     ? LoggingMetrics.ReasonWriterFault
                     : LoggingMetrics.ReasonProviderDisposed
             );
+            return;
+        }
+
+        if (!Track(entry))
+        {
+            Discard(entry, LoggingMetrics.ReasonProviderDisposed);
             return;
         }
 
@@ -625,15 +633,7 @@ internal sealed class LogPipeline : IAsyncDisposable
                 buffer.Truncate(start);
                 _batch.RemoveAt(_batch.Count - 1);
                 _metrics.RecordFailure(LoggingMetrics.ComponentFormatter);
-                if (_abandoned)
-                {
-                    // Disposal already counted this record in aggregate when it gave up.
-                    LogEntryPool.Return(entry);
-                }
-                else
-                {
-                    Discard(entry, LoggingMetrics.ReasonFormatFailed);
-                }
+                Discard(entry, LoggingMetrics.ReasonFormatFailed);
             }
         }
     }
@@ -643,7 +643,6 @@ internal sealed class LogPipeline : IAsyncDisposable
         if (buffer.WrittenCount > 0)
         {
             _component = LoggingMetrics.ComponentSink;
-            _inFlight = _batch.Count;
             try
             {
                 _sink.Write(buffer.WrittenSpan, _shutdown.Token);
@@ -661,7 +660,6 @@ internal sealed class LogPipeline : IAsyncDisposable
             }
 
             buffer.ResetWrittenCount();
-            _inFlight = 0;
         }
 
         ReleaseBatch();
@@ -671,6 +669,7 @@ internal sealed class LogPipeline : IAsyncDisposable
     {
         for (var i = 0; i < _batch.Count; i++)
         {
+            CompleteRecord(_batch[i]);
             LogEntryPool.Return(_batch[i]);
         }
 
@@ -697,19 +696,10 @@ internal sealed class LogPipeline : IAsyncDisposable
     {
         for (var i = 0; i < _batch.Count; i++)
         {
-            if (_abandoned)
-            {
-                // Disposal already counted these in aggregate when it gave the writer up.
-                LogEntryPool.Return(_batch[i]);
-            }
-            else
-            {
-                Discard(_batch[i], reason);
-            }
+            Discard(_batch[i], reason);
         }
 
         _batch.Clear();
-        _inFlight = 0;
     }
 
     private void DiscardQueued(string reason)
@@ -722,22 +712,57 @@ internal sealed class LogPipeline : IAsyncDisposable
                 continue;
             }
 
-            if (_abandoned)
-            {
-                LogEntryPool.Return(entry);
-            }
-            else
-            {
-                Discard(entry, reason);
-            }
+            Discard(entry, reason);
         }
     }
 
     private void Discard(LogEntry entry, string reason)
     {
-        Interlocked.Increment(ref _dropped);
-        _metrics.RecordDropped(reason, entry.Level);
+        if (CompleteRecord(entry))
+        {
+            Interlocked.Increment(ref _dropped);
+            _metrics.RecordDropped(reason, entry.Level);
+        }
         LogEntryPool.Return(entry);
+    }
+
+    private bool Track(LogEntry entry)
+    {
+        while (true)
+        {
+            var count = Interlocked.Read(ref _outstanding);
+            if (count < 0)
+            {
+                return false;
+            }
+            if (Interlocked.CompareExchange(ref _outstanding, count + 1, count) == count)
+            {
+                entry.AccountingPending = true;
+                return true;
+            }
+        }
+    }
+
+    // False means shutdown already counted this entry when it abandoned outstanding work.
+    private bool CompleteRecord(LogEntry entry)
+    {
+        if (!entry.AccountingPending)
+        {
+            return true;
+        }
+        entry.AccountingPending = false;
+        while (true)
+        {
+            var count = Interlocked.Read(ref _outstanding);
+            if (count < 0)
+            {
+                return false;
+            }
+            if (Interlocked.CompareExchange(ref _outstanding, count - 1, count) == count)
+            {
+                return true;
+            }
+        }
     }
 
     private string StateName() =>
@@ -837,15 +862,14 @@ internal sealed class LogPipeline : IAsyncDisposable
         }
         else
         {
-            // The writer is stuck inside a sink call that ignores cancellation. Abandon it: the
-            // records it will never write — still queued plus the batch in flight — are counted
-            // here in aggregate, the sink is not disposed because the abandoned thread may still
+            // The writer or cancellation callbacks are stuck. Count every outstanding record,
+            // including formatting work and blocked producers, but never flush markers. The
+            // sink is not disposed because the abandoned thread may still
             // be inside Write, and the cancellation source stays undisposed for the same reason.
             // The abandoned thread is the pipeline's own dedicated background writer, never a
             // caller's, and it cannot keep the process alive.
-            _abandoned = true;
+            var stranded = Interlocked.Exchange(ref _outstanding, -1);
             _metrics.RecordFailure(LoggingMetrics.ComponentSink);
-            var stranded = _queue.Reader.Count + _inFlight;
             if (stranded > 0)
             {
                 Interlocked.Add(ref _dropped, stranded);

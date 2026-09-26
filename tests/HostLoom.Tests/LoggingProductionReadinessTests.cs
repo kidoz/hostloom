@@ -170,6 +170,63 @@ public sealed class LoggingProductionReadinessTests
     }
 
     [Theory]
+    [InlineData(false, 0)]
+    [InlineData(false, 3)]
+    [InlineData(true, 0)]
+    [InlineData(true, 3)]
+    public async Task Abandonment_counts_records_in_formatting_and_excludes_flush_markers(
+        bool holdFormatter,
+        int flushes
+    )
+    {
+        using var gate = new HeldOperation();
+        using var metrics = new ProviderMetrics();
+        await using var sink = new HeldSink(gate, !holdFormatter);
+        var formatter = new HeldFormatter(gate, holdFormatter);
+        await using var provider = metrics.Create(
+            formatter,
+            sink,
+            new()
+            {
+                QueueCapacity = 16,
+                BatchSize = 1,
+                ShutdownTimeout = TimeSpan.FromMilliseconds(20),
+            }
+        );
+        var logger = provider.CreateLogger("Shutdown");
+        try
+        {
+            logger.LogInformation("held record");
+            await gate.Entered.Task.WaitAsync(
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken
+            );
+            for (var i = 0; i < 3; i++)
+                logger.LogInformation("queued {Index}", i);
+            for (var i = 0; i < flushes; i++)
+                Assert.False(provider.Flush(TimeSpan.Zero));
+
+            await provider
+                .DisposeAsync()
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            Assert.Equal(4, provider.Dropped);
+            Assert.Equal(4, metrics.Dropped);
+        }
+        finally
+        {
+            gate.Release.Set();
+        }
+
+        // A closed pipeline waits for the writer to finish before returning false. Its late
+        // cancellation cleanup must neither leak records nor count the abandoned ones twice.
+        Assert.False(provider.Flush(TimeSpan.FromSeconds(5)));
+        Assert.Equal(4, provider.Dropped);
+        logger.LogInformation("after disposal");
+        Assert.Equal(5, provider.Dropped);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Unreadable_nested_memory_preserves_sibling_members(bool dictionary)
@@ -350,6 +407,48 @@ public sealed class LoggingProductionReadinessTests
         }
 
         public string[] Lines() => _lines.ToArray();
+
+        public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class HeldOperation : IDisposable
+    {
+        public TaskCompletionSource Entered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ManualResetEventSlim Release { get; } = new(false);
+
+        public void Wait()
+        {
+            Entered.TrySetResult();
+            if (!Release.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("test did not release operation");
+        }
+
+        public void Dispose() => Release.Dispose();
+    }
+
+    private sealed class HeldFormatter(HeldOperation gate, bool hold) : ILogFormatter
+    {
+        private readonly JsonLogFormatter _inner = new();
+
+        public void Format(in LogRecord record, IBufferWriter<byte> writer)
+        {
+            if (hold)
+                gate.Wait();
+            _inner.Format(record, writer);
+        }
+    }
+
+    private sealed class HeldSink(HeldOperation gate, bool hold) : ILogSink
+    {
+        public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken)
+        {
+            if (hold)
+                gate.Wait();
+            cancellationToken.ThrowIfCancellationRequested();
+        }
 
         public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
