@@ -502,6 +502,18 @@ namespace HostLoom.Tests
         }
 
         [Fact]
+        public async Task Safe_rendering_unescapes_doubled_braces_on_both_sides()
+        {
+            // An '@' hole makes the message render from the captured fields; MEL and Serilog both
+            // write "{{" as "{" and "}}" as "}".
+            var (root, _) = await LogAsync(logger =>
+                logger.LogInformation("Set {{a}} to {@Count} }}", 5)
+            );
+
+            Assert.Equal("Set {a} to 5 }", root.GetProperty("message").GetString());
+        }
+
+        [Fact]
         public async Task Byte_arrays_render_as_serilog_hex_in_every_hole()
         {
             var large = Enumerable.Range(0, 2000).Select(i => (byte)i).ToArray();

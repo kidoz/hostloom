@@ -563,8 +563,8 @@ internal sealed class EventCapture(
         bool Hole(ReadOnlySpan<char> name);
     }
 
-    /// <summary>The one template grammar shared by message and scope rendering: <c>{{</c>
-    /// escapes, <c>@</c>/<c>$</c> operators stripped from the name, format and alignment
+    /// <summary>The one template grammar shared by message and scope rendering: <c>{{</c> and
+    /// <c>}}</c> escapes, <c>@</c>/<c>$</c> operators stripped from the name, format and alignment
     /// specifiers ignored, and an unresolvable hole kept verbatim.</summary>
     private static void WalkTemplate<TTarget>(ReadOnlySpan<char> text, ref TTarget target)
         where TTarget : struct, ITemplateTarget
@@ -574,24 +574,24 @@ internal sealed class EventCapture(
             var open = text.IndexOf('{');
             if (open < 0)
             {
-                target.Text(text);
+                EmitText(text, ref target);
                 return;
             }
 
             if (open + 1 < text.Length && text[open + 1] == '{')
             {
-                target.Text(text[..(open + 1)]);
+                EmitText(text[..(open + 1)], ref target);
                 text = text[(open + 2)..];
                 continue;
             }
 
-            target.Text(text[..open]);
+            EmitText(text[..open], ref target);
             text = text[(open + 1)..];
             var close = text.IndexOf('}');
             if (close < 0)
             {
                 target.Text("{");
-                target.Text(text);
+                EmitText(text, ref target);
                 return;
             }
 
@@ -615,6 +615,25 @@ internal sealed class EventCapture(
                 target.Text(token);
                 target.Text("}");
             }
+        }
+    }
+
+    /// <summary>Literal template text, with its <c>}}</c> escape written as <c>}</c>, as MEL and
+    /// Serilog render it.</summary>
+    private static void EmitText<TTarget>(ReadOnlySpan<char> text, ref TTarget target)
+        where TTarget : struct, ITemplateTarget
+    {
+        while (true)
+        {
+            var escaped = text.IndexOf("}}", StringComparison.Ordinal);
+            if (escaped < 0)
+            {
+                target.Text(text);
+                return;
+            }
+
+            target.Text(text[..(escaped + 1)]);
+            text = text[(escaped + 2)..];
         }
     }
 
