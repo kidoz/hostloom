@@ -230,7 +230,9 @@ the first entry winning, and the omission is marked with a `"…": "[Truncated]"
 
 A log call never throws because of the caller's values. A `ToString()` that throws, in a plain
 hole or inside a collection, writes `"[DestructuringFailed]"` for that value only, as does a type
-whose members cannot be reflected. A state that throws part-way, such as a template with fewer
+whose members cannot be reflected. An unreadable `Memory<byte>` or `ReadOnlyMemory<byte>`
+also replaces only that value; sibling members and collection items remain intact within the
+configured destructuring caps. A state that throws part-way, such as a template with fewer
 arguments than holes, keeps the fields and template captured before the failure; the message is
 then rendered from them, and a formatter that throws is replaced the same way, or by
 `[MessageUnavailable]` when there is no template. These failures are counted under the

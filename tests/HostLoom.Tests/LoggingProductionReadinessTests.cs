@@ -141,6 +141,134 @@ public sealed class LoggingProductionReadinessTests
         Assert.Null(provider.WriterFault);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Nested_scalar_failures_keep_complete_valid_json(bool dictionary, bool clef)
+    {
+        await using var sink = new CollectingSink();
+        await using var provider = new HostLoomLoggerProvider(
+            clef ? new ClefLogFormatter() : new JsonLogFormatter(),
+            sink,
+            new()
+        );
+        object value = dictionary
+            ? new Hashtable { ["Broken"] = new ThrowingUri(), ["Region"] = "eu" }
+            : new[] { new { Broken = new ThrowingUri(), Region = "eu" } };
+
+        provider.CreateLogger("Capture").LogInformation("captured {@Value}", value);
+        Assert.True(provider.Flush(TimeSpan.FromSeconds(5)));
+        using var json = JsonDocument.Parse(Assert.Single(sink.Lines()));
+        var captured = json.RootElement.GetProperty("Value");
+        if (!dictionary)
+            captured = captured[0];
+        Assert.Equal("[DestructuringFailed]", captured.GetProperty("Broken").GetString());
+        Assert.Equal("eu", captured.GetProperty("Region").GetString());
+        Assert.Equal(0, provider.Dropped);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Unreadable_nested_memory_preserves_sibling_members(bool dictionary)
+    {
+        using var memory = new UnreadableMemory();
+        await using var sink = new CollectingSink();
+        await using var provider = new HostLoomLoggerProvider(new JsonLogFormatter(), sink, new());
+        object value = dictionary
+            ? new Hashtable { ["Payload"] = memory.Value, ["Region"] = "eu" }
+            : new[] { new { Payload = memory.Value, Region = "eu" } };
+        var logger = provider.CreateLogger("Capture");
+
+        logger.LogInformation("captured {@Value}", value);
+        logger.LogInformation("next {@Value}", new { Region = "eu" });
+        Assert.True(provider.Flush(TimeSpan.FromSeconds(5)));
+        var lines = sink.Lines();
+        Assert.Equal(2, lines.Length);
+        using var failed = JsonDocument.Parse(lines[0]);
+        var captured = failed.RootElement.GetProperty("Value");
+        if (!dictionary)
+            captured = captured[0];
+        Assert.Equal("[DestructuringFailed]", captured.GetProperty("Payload").GetString());
+        Assert.Equal("eu", captured.GetProperty("Region").GetString());
+        using var next = JsonDocument.Parse(lines[1]);
+        Assert.Equal("eu", next.RootElement.GetProperty("Value").GetProperty("Region").GetString());
+        Assert.Equal(0, provider.Dropped);
+        Assert.Null(provider.WriterFault);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task One_unreadable_memory_member_preserves_all_collection_items(
+        bool readOnly,
+        bool clef
+    )
+    {
+        using var memory = new UnreadableMemory();
+        using var metrics = new ProviderMetrics();
+        await using var sink = new CollectingSink();
+        var options = new HostLoomLoggerOptions();
+        options.Destructuring.MaxCollectionItems = 100;
+        await using var provider = metrics.Create(
+            clef ? new ClefLogFormatter() : new JsonLogFormatter(),
+            sink,
+            options
+        );
+        object broken = readOnly ? (ReadOnlyMemory<byte>)memory.Value : (object)memory.Value;
+        var items = Enumerable
+            .Range(0, 100)
+            .Select(i => new
+            {
+                Index = i,
+                Payload = i == 50 ? broken : new byte[] { (byte)i },
+                Region = "eu",
+            })
+            .ToArray();
+
+        provider.CreateLogger("Capture").LogInformation("captured {@Items}", (object)items);
+        Assert.True(provider.Flush(TimeSpan.FromSeconds(5)));
+        using var json = JsonDocument.Parse(Assert.Single(sink.Lines()));
+        var captured = json.RootElement.GetProperty("Items");
+        Assert.Equal(100, captured.GetArrayLength());
+        for (var i = 0; i < 100; i++)
+        {
+            Assert.Equal(i, captured[i].GetProperty("Index").GetInt32());
+            Assert.Equal(
+                i == 50 ? "[DestructuringFailed]" : Convert.ToHexString(new byte[] { (byte)i }),
+                captured[i].GetProperty("Payload").GetString()
+            );
+            Assert.Equal("eu", captured[i].GetProperty("Region").GetString());
+        }
+        Assert.Equal(1, metrics.DestructuringFailures);
+        Assert.Equal(0, provider.Dropped);
+        Assert.Null(provider.WriterFault);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Unreadable_scalar_memory_preserves_later_fields(bool readOnly)
+    {
+        using var memory = new UnreadableMemory();
+        using var metrics = new ProviderMetrics();
+        await using var sink = new CollectingSink();
+        await using var provider = metrics.Create(new JsonLogFormatter(), sink, new());
+        object broken = readOnly ? (ReadOnlyMemory<byte>)memory.Value : (object)memory.Value;
+
+        provider.CreateLogger("Capture").LogInformation("captured {@Payload} {Count}", broken, 42);
+        Assert.True(provider.Flush(TimeSpan.FromSeconds(5)));
+        using var json = JsonDocument.Parse(Assert.Single(sink.Lines()));
+        Assert.Equal("[DestructuringFailed]", json.RootElement.GetProperty("Payload").GetString());
+        Assert.Equal(42, json.RootElement.GetProperty("Count").GetInt32());
+        Assert.Equal(1, metrics.DestructuringFailures);
+        Assert.Equal(0, provider.Dropped);
+    }
+
     private sealed class OversizedFormattable(bool neverFits) : IUtf8SpanFormattable
     {
         public int LargestBuffer { get; private set; }
@@ -186,6 +314,25 @@ public sealed class LoggingProductionReadinessTests
             ReadOnlySpan<char> format,
             IFormatProvider? provider
         ) => throw new FormatException("format failed");
+    }
+
+    private sealed class ThrowingUri() : Uri("https://example.com")
+    {
+        public override string ToString() => throw new InvalidOperationException("uri failed");
+    }
+
+    private sealed class UnreadableMemory : MemoryManager<byte>
+    {
+        public Memory<byte> Value => CreateMemory(1);
+
+        public override Span<byte> GetSpan() =>
+            throw new InvalidOperationException("memory unavailable");
+
+        public override MemoryHandle Pin(int elementIndex = 0) => throw new NotSupportedException();
+
+        public override void Unpin() { }
+
+        protected override void Dispose(bool disposing) { }
     }
 
     private sealed class CollectingSink : ILogSink

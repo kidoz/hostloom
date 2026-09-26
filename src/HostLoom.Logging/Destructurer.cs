@@ -159,6 +159,11 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
             buffer.Write("\"[DestructuringFailed]\""u8);
             return false;
         }
+        finally
+        {
+            // A failed nested write can unwind before WriteValue clears its ancestor slot.
+            Array.Clear(ancestors);
+        }
     }
 
     /// <summary>
@@ -374,18 +379,18 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
                 WriteCappedString(writer, ByteArrayText(bytes));
                 return true;
             case ReadOnlyMemory<byte> memory:
-                WriteCappedString(writer, ByteArrayText(memory.Span));
+                WriteCappedString(writer, MemoryText(memory));
                 return true;
             case Memory<byte> memory:
-                WriteCappedString(writer, ByteArrayText(memory.Span));
+                WriteCappedString(writer, MemoryText(memory));
                 return true;
             case Delegate or MemberInfo or Assembly or Module:
                 // Serilog's names for these. Walking a delegate reaches its closure's captured
                 // locals through Target, and reflection objects expand into tens of kilobytes.
-                WriteCappedString(writer, value.ToString() ?? string.Empty);
+                WriteStringified(writer, value);
                 return true;
             case Uri uri:
-                WriteCappedString(writer, uri.ToString());
+                WriteStringified(writer, uri);
                 return true;
             case Enum:
                 writer.WriteStringValue(value.ToString());
@@ -406,6 +411,21 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
                 CultureInfo.InvariantCulture,
                 $"{Convert.ToHexString(bytes[..16])}... ({bytes.Length} bytes)"
             );
+
+    /// <summary>Accessing memory can execute a caller-owned MemoryManager. Resolve it before
+    /// writing the value so a failure replaces only this member or collection element.</summary>
+    internal string MemoryText(ReadOnlyMemory<byte> memory)
+    {
+        try
+        {
+            return ByteArrayText(memory.Span);
+        }
+        catch (Exception)
+        {
+            metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
+            return "[DestructuringFailed]";
+        }
+    }
 
     private void WriteCappedString(Utf8JsonWriter writer, string text) =>
         writer.WriteStringValue(Capped(text));
@@ -555,6 +575,7 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
     {
         writer.WriteStartArray();
         var items = 0;
+        var writingValue = false;
         try
         {
             foreach (var item in sequence)
@@ -566,8 +587,11 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
                 }
 
                 var mark = walk.Position(writer);
+                writingValue = true;
                 WriteValue(writer, item, depth + 1, ref walk);
-                if (!Admit(writer, ref walk, depth, mark, items == 0, TruncatedItem))
+                var admitted = Admit(writer, ref walk, depth, mark, items == 0, TruncatedItem);
+                writingValue = false;
+                if (!admitted)
                 {
                     break;
                 }
@@ -575,7 +599,9 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
                 items++;
             }
         }
-        catch (Exception)
+        // Only enumeration/key failures occur at a safe container boundary. A nested writer
+        // failure must reach DestructureInto, which replaces the entire partial fragment.
+        catch (Exception) when (!writingValue)
         {
             // A lazy sequence threw mid-enumeration; the array closes valid either way.
             metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
@@ -598,6 +624,7 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         // capped prefix) would otherwise produce duplicate JSON keys; the first one wins.
         var written = new HashSet<string>(StringComparer.Ordinal);
         var omitted = false;
+        var writingValue = false;
         try
         {
             var complete = true;
@@ -619,9 +646,12 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
                 }
 
                 var mark = walk.Position(writer);
+                writingValue = true;
                 writer.WritePropertyName(key);
                 WriteValue(writer, pair.Value, depth + 1, ref walk);
-                if (!Admit(writer, ref walk, depth, mark, members == 0, TruncatedMember))
+                var admitted = Admit(writer, ref walk, depth, mark, members == 0, TruncatedMember);
+                writingValue = false;
+                if (!admitted)
                 {
                     complete = false;
                     break;
@@ -637,7 +667,9 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
                 writer.WriteString("…"u8, "[Truncated]");
             }
         }
-        catch (Exception)
+        // Only enumeration/key failures occur at a safe container boundary. A nested writer
+        // failure must reach DestructureInto, which replaces the entire partial fragment.
+        catch (Exception) when (!writingValue)
         {
             metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
             writer.WriteString("…"u8, "[DestructuringFailed]");
@@ -650,7 +682,8 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         value switch
         {
             null => string.Empty,
-            IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+            IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture)
+                ?? string.Empty,
             _ => value.ToString() ?? string.Empty,
         };
 

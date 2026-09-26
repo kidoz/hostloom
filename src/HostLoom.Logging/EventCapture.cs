@@ -668,7 +668,7 @@ internal sealed class EventCapture(
         }
     }
 
-    private static bool TryCaptureScalar(
+    private bool TryCaptureScalar(
         LogEntry entry,
         string name,
         object? value,
@@ -756,10 +756,10 @@ internal sealed class EventCapture(
                 entry.AddFieldText(name, Destructurer.ByteArrayText(bytes), source);
                 return true;
             case ReadOnlyMemory<byte> memory:
-                entry.AddFieldText(name, Destructurer.ByteArrayText(memory.Span), source);
+                entry.AddFieldText(name, destructurer.MemoryText(memory), source);
                 return true;
             case Memory<byte> memory:
-                entry.AddFieldText(name, Destructurer.ByteArrayText(memory.Span), source);
+                entry.AddFieldText(name, destructurer.MemoryText(memory), source);
                 return true;
             case Enum:
                 // The name, matching Serilog's scalar enum rendering, not the numeric value.
