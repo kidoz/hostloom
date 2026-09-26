@@ -28,6 +28,11 @@ are derived from release tags at publish time.
 - `HostLoomLoggerProvider.Flush(TimeSpan)` waits until every record logged before the call is
   written and the sink flushed, for a crash handler registered after the provider: handlers run
   in registration order, so such a handler logs after the provider's own exit flush.
+- `HostLoom.Logging` is annotated for trimming and Native AOT, and
+  `examples/HostLoom.Examples.LoggingAot` publishes natively and checks its own output.
+  `DestructuringOptions.Preserve<T>()` keeps a type's members for `{@...}` in such an app, as
+  `NotLogged<T>` and `Mask<T>` now do for theirs. Under Native AOT a destructured type without
+  readable members is counted once under `component=destructurer` instead of passing unnoticed.
 
 ### Changed
 
@@ -51,6 +56,21 @@ are derived from release tags at publish time.
 
 ### Fixed
 
+- The `AddHostLoomLogging` overloads that bind options from configuration work under Native AOT.
+  The reflection binder found no options there, so every key counted as unknown and startup
+  failed; the binding is now compiled.
+- A legacy `LogMasked` attribute whose options cannot be read, as under Native AOT, masks its
+  member whole. The exception it raised made the whole object `"[DestructuringFailed]"`.
+- `LogFast` bounds UTF-8 formatting buffers and retries, keeps canonical numeric fields intact
+  even when a display format throws, and isolates throwing value formatters with a counted
+  failure sentinel.
+- Nested destructuring failures preserve valid JSON. Unreadable memory replaces only its own
+  value, preserving sibling members and collection items. Failed walks release their temporary
+  object references.
+- Returned log entries clear exception graphs and event metadata before entering the pool.
+- Shutdown loss accounting includes records being formatted and excludes flush markers;
+  late writer cleanup cannot count abandoned records twice.
+- `StreamLogSink` attempts to dispose owned streams even when its final flush throws.
 - A log call no longer throws because of the caller's values. A `ToString()` that threw in a
   plain hole, MEL's own formatter throwing, and a template with fewer arguments than holes all
   escaped the call, and `LoggerFactory` rethrew them to the caller; the bootstrap logger dropped
