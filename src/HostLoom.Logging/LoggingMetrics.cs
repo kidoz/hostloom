@@ -25,6 +25,7 @@ internal sealed class LoggingMetrics : IDisposable
     public const string ComponentDestructurer = "destructurer";
     public const string ComponentEnricher = "enricher";
     public const string ComponentScope = "scope";
+    public const string ComponentCapture = "capture";
 
     public const string FieldReasonEmptyName = "empty_name";
     public const string FieldReasonNameTooLong = "name_too_long";

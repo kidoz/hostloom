@@ -17,6 +17,66 @@ internal sealed class EventCapture(
     LoggingMetrics? metrics
 )
 {
+    /// <summary>
+    /// Captures the state and renders the message of one standard-path event, never throwing:
+    /// caller code runs here (state enumeration, <c>ToString()</c>, the MEL formatter), and a log
+    /// call must not fail because of it. State that throws part-way keeps the fields captured so
+    /// far; a formatter that throws is replaced by the template rendered from those fields, or by
+    /// <c>[MessageUnavailable]</c> when there is no template. Each failure is counted.
+    /// </summary>
+    public void CaptureEvent<TState>(
+        LogEntry entry,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter
+    )
+    {
+        bool renderFromFields;
+        try
+        {
+            renderFromFields = CaptureState(entry, state);
+        }
+        catch (Exception)
+        {
+            metrics?.RecordFailure(LoggingMetrics.ComponentCapture);
+            // The formatter would read the same state; render from what was captured instead.
+            renderFromFields = true;
+        }
+
+        if (renderFromFields && entry.Template is { } template)
+        {
+            // Safe rendering for '@' events: the MEL formatter would stringify the hole through
+            // the value's ToString(), and a record type's generated ToString prints every member
+            // — including what [NotLogged] and [LogMasked] just excluded. Render the message
+            // from the captured, protected representations instead, the way Serilog does.
+            RenderTemplate(entry, template);
+            return;
+        }
+
+        string message;
+        try
+        {
+            // Rendered exactly once, through the caller's own formatter.
+            message = formatter(state, exception);
+        }
+        catch (Exception)
+        {
+            metrics?.RecordFailure(LoggingMetrics.ComponentCapture);
+            if (entry.Template is { } fallback)
+            {
+                RenderTemplate(entry, fallback);
+            }
+            else
+            {
+                entry.AppendLiteral("[MessageUnavailable]");
+            }
+
+            return;
+        }
+
+        entry.AppendLiteral(message);
+    }
+
     /// <summary>Captures MEL structured state as typed fields; returns whether any '@' hole was
     /// destructured, which decides whether the message must be safe-rendered.</summary>
     public bool CaptureState<TState>(LogEntry entry, TState state)
@@ -28,6 +88,14 @@ internal sealed class EventCapture(
 
         if (state is IReadOnlyList<KeyValuePair<string, object?>> list)
         {
+            // MEL puts the template last and serves it without touching the arguments, so read it
+            // first: a state whose argument count does not match its template throws part-way
+            // through the pairs, and the event keeps its template all the same.
+            if (list.Count > 0 && list[^1] is { Key: "{OriginalFormat}", Value: string template })
+            {
+                entry.Template = template;
+            }
+
             for (var i = 0; i < list.Count; i++)
             {
                 destructured |= CapturePair(entry, list[i]);
@@ -657,12 +725,28 @@ internal sealed class EventCapture(
         }
     }
 
-    private static void CaptureStringified(
+    /// <summary>A value's own <c>ToString()</c> can throw; that costs this field, which carries
+    /// the destructuring failure sentinel instead, never the event.</summary>
+    private void CaptureStringified(
         LogEntry entry,
         string name,
         object? value,
         LogFieldSource source = LogFieldSource.Hole
-    ) => entry.AddFieldText(name, ToInvariantText(value), source);
+    )
+    {
+        string text;
+        try
+        {
+            text = ToInvariantText(value);
+        }
+        catch (Exception)
+        {
+            metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
+            text = "[DestructuringFailed]";
+        }
+
+        entry.AddFieldText(name, text, source);
+    }
 
     public static string ToInvariantText(object? value) =>
         value switch

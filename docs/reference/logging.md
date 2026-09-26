@@ -164,6 +164,14 @@ Destructuring reads public properties with a public getter; a hidden (`new`) pro
 once, from the most derived type. Dictionary keys that render to the same text are written once,
 the first entry winning, and the omission is marked with a `"…": "[Truncated]"` member.
 
+A log call never throws because of the caller's values. A `ToString()` that throws, in a plain
+hole or inside a collection, writes `"[DestructuringFailed]"` for that value only, as does a type
+whose members cannot be reflected. A state that throws part-way, such as a template with fewer
+arguments than holes, keeps the fields and template captured before the failure; the message is
+then rendered from them, and a formatter that throws is replaced the same way, or by
+`[MessageUnavailable]` when there is no template. These failures are counted under the
+`destructurer` and `capture` components.
+
 ## Masking attributes
 
 Fail-closed protection on destructured (`{@...}`) members:
@@ -298,4 +306,4 @@ of these `reason` values:
 | `shutdown_timeout` | disposal reached its deadline before the record was written |
 
 `hostloom.logging.failures` counts the underlying failures by `component`: `formatter`, `sink`,
-`destructurer`, `enricher`, or `scope`.
+`destructurer`, `enricher`, `scope`, or `capture`.

@@ -41,7 +41,9 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
     /// <summary>Serilog's byte-array cutoff: longer arrays are summarized, not dumped.</summary>
     private const int MaxByteArrayLength = 1024;
 
-    private readonly ConcurrentDictionary<Type, TypePlan> _plans = new();
+    /// <summary>Null marks a type whose plan could not be built, so the failure is not retried
+    /// and counted on every event.</summary>
+    private readonly ConcurrentDictionary<Type, TypePlan?> _plans = new();
 
     /// <summary>
     /// Per-thread scratch: Utf8JsonWriter demands multi-kilobyte chunks from its buffer writer,
@@ -437,7 +439,16 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
 
     private void WriteObject(Utf8JsonWriter writer, object value, int depth, ref Walk walk)
     {
-        var plan = _plans.GetOrAdd(value.GetType(), BuildPlan);
+        var plan = _plans.GetOrAdd(value.GetType(), TryBuildPlan);
+        if (plan is null)
+        {
+            // Reflection failed for this type (a member attribute that cannot be constructed, a
+            // type that cannot load). Nothing of the object is written yet, so the sentinel takes
+            // its place and the enclosing container stays valid.
+            writer.WriteStringValue("[DestructuringFailed]");
+            return;
+        }
+
         writer.WriteStartObject();
         var written = 0;
         foreach (var member in plan.Members)
@@ -654,6 +665,19 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
     {
         public object? Read(object owner) =>
             Property is not null ? Property.GetValue(owner) : Field!.GetValue(owner);
+    }
+
+    private TypePlan? TryBuildPlan(Type type)
+    {
+        try
+        {
+            return BuildPlan(type);
+        }
+        catch (Exception)
+        {
+            metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
+            return null;
+        }
     }
 
     /// <summary>Built once per runtime type: exclusion decisions happen here, so an excluded

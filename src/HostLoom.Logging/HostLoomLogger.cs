@@ -42,21 +42,7 @@ internal sealed class HostLoomLogger(
         var entry = LogEntryPool.Rent();
         entry.ApplyCaps(options);
         entry.Level = logLevel;
-        var destructured = pipeline.Capture.CaptureState(entry, state);
-        if (destructured && entry.Template is { } template)
-        {
-            // Safe rendering for '@' events: the MEL formatter would stringify the hole through
-            // the value's ToString(), and a record type's generated ToString prints every member
-            // — including what [NotLogged] and [LogMasked] just excluded. Render the message
-            // from the captured, protected representations instead, the way Serilog does.
-            EventCapture.RenderTemplate(entry, template);
-        }
-        else
-        {
-            // Rendered exactly once, through the caller's own formatter.
-            entry.AppendLiteral(formatter(state, exception));
-        }
-
+        pipeline.Capture.CaptureEvent(entry, state, exception, formatter);
         entry.FinalizeTemplate();
         Emit(entry, eventId, exception);
     }
