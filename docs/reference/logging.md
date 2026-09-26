@@ -124,9 +124,15 @@ construction, and the configuration overload rejects them at host startup.
 | `ClefLogFormatter(int maxExceptionLength = 32 * 1024)` | CLEF (`@t`, `@mt`, `@l`, `@x`, `@tr`, `@sp`, …); the bootstrap default |
 
 `ClefLogFormatter` writes the shape of Serilog's `CompactJsonFormatter`. `@t` is the UTC
-round-trip format with all seven fractional digits (`2026-09-26T14:25:46.9209690Z`).
-`SourceContext`, `ThreadId`, and `EventId` are written unless the event captured a field of the
-same name, in which case the caller's value is kept, as under Serilog.
+round-trip format with all seven fractional digits (`2026-09-26T14:25:46.9209690Z`). `@r`
+carries one rendering per template token that has a format (`{Amount:N2}`), in template
+order; a token with only an alignment, or whose name Serilog would not accept as a hole
+(`{order-id:N1}`), has none. A rendering uses the invariant culture, quotes a string unless its
+format is `l`, and applies the token's alignment; a destructured (`{@Name:fmt}`) or collection
+value renders as its captured, masked JSON. `SourceContext`, `ThreadId`, and `EventId` are
+written unless the event captured a field of the same name, in which case the caller's value
+is kept, as under Serilog. On the `LogFast`
+path, `@r` holds the renderings of formatted holes instead.
 
 The background writer isolates formatter failures to a single record. If `Format` or
 `OwnsFieldName` throws, the writer removes that record's partial output from the batch and

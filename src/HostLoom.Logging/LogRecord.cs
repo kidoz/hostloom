@@ -92,4 +92,13 @@ public readonly ref struct LogRecord
     /// </summary>
     public bool TryGetRendering(int index, out ReadOnlySpan<byte> rendering) =>
         _entry.TryGetRendering(index, out rendering);
+
+    /// <summary>
+    /// Renderings of the <see cref="Template"/>'s formatted tokens (<c>{Amount:N2}</c>), one per
+    /// token in template order, as the standard <c>ILogger</c> path captured them. Empty when the
+    /// template has none, or when the event came through the fast path, whose renderings are
+    /// per field (<see cref="TryGetRendering"/>).
+    /// </summary>
+    public IReadOnlyList<string> TemplateRenderings =>
+        (IReadOnlyList<string>?)_entry.TemplateRenderings ?? [];
 }

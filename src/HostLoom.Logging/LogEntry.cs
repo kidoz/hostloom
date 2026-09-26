@@ -329,6 +329,7 @@ internal sealed class LogEntry
         EventId = default;
         HasActivity = false;
         ScopeTexts?.Clear();
+        TemplateRenderings?.Clear();
     }
 
     /// <summary>
@@ -489,6 +490,12 @@ internal sealed class LogEntry
     public List<string>? ScopeTexts { get; private set; }
 
     public List<string> EnsureScopeTexts() => ScopeTexts ??= [];
+
+    /// <summary>Renderings of the template's formatted tokens, in template order, captured on the
+    /// standard path for CLEF <c>@r</c>. Retained with the pooled entry.</summary>
+    public List<string>? TemplateRenderings { get; private set; }
+
+    public List<string> EnsureTemplateRenderings() => TemplateRenderings ??= [];
 
     public void AddFieldFormattable<T>(
         string name,
@@ -868,6 +875,11 @@ internal sealed class LogEntry
         if (ScopeTexts is { Capacity: > 64 })
         {
             ScopeTexts = null;
+        }
+
+        if (TemplateRenderings is { Capacity: > 64 })
+        {
+            TemplateRenderings = null;
         }
     }
 }

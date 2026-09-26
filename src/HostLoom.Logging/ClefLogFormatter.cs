@@ -129,6 +129,22 @@ public sealed class ClefLogFormatter : ILogFormatter
 
     private void WriteRenderings(in LogRecord record)
     {
+        // The standard path renders per template token; renderings without the template they
+        // index would be meaningless, so they go out only next to @mt.
+        var templateRenderings = record.TemplateRenderings;
+        if (templateRenderings.Count > 0 && record.Template is not null)
+        {
+            _writer.WritePropertyName("@r"u8);
+            _writer.WriteStartArray();
+            for (var i = 0; i < templateRenderings.Count; i++)
+            {
+                _writer.WriteStringValue(templateRenderings[i]);
+            }
+
+            _writer.WriteEndArray();
+            return;
+        }
+
         var any = false;
         for (var i = 0; i < record.FieldCount; i++)
         {

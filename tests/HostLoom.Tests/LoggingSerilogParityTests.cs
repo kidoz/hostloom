@@ -7,6 +7,8 @@ using Xunit;
 
 // CA1873: the boxing standard ILogger path is what these tests exercise on purpose.
 #pragma warning disable CA1873
+// CA1727: a non-PascalCase hole name is one of the cases under test.
+#pragma warning disable CA1727
 
 namespace Destructurama.Attributed
 {
@@ -58,6 +60,19 @@ namespace HostLoom.Tests
 
             Assert.Equal(1, sequence.Enumerations);
             Assert.Equal(3, root.GetProperty("Items").GetArrayLength());
+        }
+
+        [Fact]
+        public async Task A_formatted_destructuring_token_renders_the_protected_value()
+        {
+            var (_, line) = await LogAsync(logger =>
+                logger.LogInformation(
+                    "Order {@Order:j}",
+                    new CardHolder { Id = 1, Pan = "SECRET-PAN" }
+                )
+            );
+
+            Assert.DoesNotContain("SECRET-PAN", line, StringComparison.Ordinal);
         }
 
         [Fact]
@@ -141,6 +156,19 @@ namespace HostLoom.Tests
             var (_, line) = await LogAsync(logger => logger.LogInformation("map {@Map}", map));
 
             Assert.Equal(1, Occurrences(line, "\"K\":"));
+        }
+
+        [Fact]
+        public async Task Renderings_skip_tokens_serilog_does_not_treat_as_holes()
+        {
+            var (root, _) = await LogAsync(logger =>
+                logger.LogInformation("{order-id:N1} and {Amount:N2}", 1.0, 2.0)
+            );
+
+            Assert.Equal(
+                ["2.00"],
+                root.GetProperty("@r").EnumerateArray().Select(e => e.GetString())
+            );
         }
 
         [Fact]

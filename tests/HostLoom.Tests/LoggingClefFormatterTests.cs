@@ -102,6 +102,28 @@ public sealed class LoggingClefFormatterTests
     }
 
     [Fact]
+    public async Task Standard_path_formatted_tokens_surface_renderings_in_template_order()
+    {
+        var (root, _) = await LogAsync(logger =>
+            logger.LogInformation(
+                "paid {Amount:N2} on {Day:yyyy-MM-dd} ref {Reference,8} name {Name:l} quoted {Quoted:x} count {Count,4:D2}",
+                1234.5678m,
+                new DateTime(2026, 9, 26, 13, 45, 0, DateTimeKind.Utc),
+                "abc",
+                "ada",
+                "q",
+                7
+            )
+        );
+
+        // Serilog's CompactJsonFormatter shape: formatted tokens only, a string quoted unless
+        // its format is 'l', alignment applied to the rendering.
+        var renderings = root.GetProperty("@r").EnumerateArray().Select(e => e.GetString());
+        Assert.Equal(["1,234.57", "2026-09-26", "ada", "\"q\"", "  07"], renderings);
+        Assert.Equal(1234.5678m, root.GetProperty("Amount").GetDecimal());
+    }
+
+    [Fact]
     public async Task The_timestamp_always_carries_seven_fractional_digits()
     {
         var options = new HostLoomLoggerOptions

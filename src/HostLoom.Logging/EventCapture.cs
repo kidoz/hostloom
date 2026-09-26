@@ -33,6 +33,7 @@ internal sealed class EventCapture(
                 destructured |= CapturePair(entry, list[i]);
             }
 
+            CaptureRenderings(entry, list);
             return destructured;
         }
 
@@ -42,9 +43,188 @@ internal sealed class EventCapture(
             {
                 destructured |= CapturePair(entry, pair);
             }
+
+            CaptureRenderings(entry, pairs);
         }
 
         return destructured;
+    }
+
+    /// <summary>
+    /// CLEF <c>@r</c> for the standard path: every template token carrying a format
+    /// (<c>{Amount:N2}</c>) contributes its value rendered with that format, in template order,
+    /// the way Serilog's <c>CompactJsonFormatter</c> does. Tokens with only an alignment have
+    /// none. Rendered in the invariant culture, like every other value this library writes.
+    /// </summary>
+    private void CaptureRenderings(LogEntry entry, IEnumerable<KeyValuePair<string, object?>> pairs)
+    {
+        if (entry.Template is not { } template || !template.Contains(':', StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var text = template.AsSpan();
+        while (!text.IsEmpty)
+        {
+            var open = text.IndexOf('{');
+            if (open < 0)
+            {
+                return;
+            }
+
+            if (open + 1 < text.Length && text[open + 1] == '{')
+            {
+                text = text[(open + 2)..];
+                continue;
+            }
+
+            text = text[(open + 1)..];
+            var close = text.IndexOf('}');
+            if (close < 0)
+            {
+                return;
+            }
+
+            var token = text[..close];
+            text = text[(close + 1)..];
+            var colon = token.IndexOf(':');
+            if (colon < 0)
+            {
+                continue;
+            }
+
+            var format = token[(colon + 1)..].ToString();
+            var name = token[..colon];
+            int? alignment = null;
+            var comma = name.IndexOf(',');
+            if (comma >= 0)
+            {
+                if (
+                    int.TryParse(
+                        name[(comma + 1)..],
+                        NumberStyles.AllowLeadingSign,
+                        CultureInfo.InvariantCulture,
+                        out var width
+                    )
+                )
+                {
+                    alignment = width;
+                }
+
+                name = name[..comma];
+            }
+
+            if (!IsHoleName(name))
+            {
+                // Serilog's parser keeps such a token as literal text, so it has no rendering.
+                continue;
+            }
+
+            string rendering;
+            try
+            {
+                rendering =
+                    !TryFindValue(pairs, name, out var value) ? string.Concat("{", token, "}")
+                    : name[0] == '@' || value is IEnumerable and not string
+                        ? CapturedText(entry, name)
+                    : RenderToken(value, format, alignment);
+            }
+            catch (Exception)
+            {
+                // An invalid format or a throwing ToString() costs this rendering, never the
+                // event; the token stands in for it, as for a value that is missing.
+                rendering = string.Concat("{", token, "}");
+            }
+
+            entry.EnsureTemplateRenderings().Add(CapText(rendering, options.MaxTextFieldLength));
+        }
+    }
+
+    /// <summary>
+    /// Serilog's hole grammar: an optional <c>@</c> or <c>$</c>, then letters, digits, and
+    /// underscores only. MEL captures any braced token; Serilog renders the rest as text.
+    /// </summary>
+    private static bool IsHoleName(ReadOnlySpan<char> name)
+    {
+        if (!name.IsEmpty && (name[0] == '@' || name[0] == '$'))
+        {
+            name = name[1..];
+        }
+
+        if (name.IsEmpty)
+        {
+            return false;
+        }
+
+        foreach (var c in name)
+        {
+            if (!char.IsLetterOrDigit(c) && c != '_')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>A destructured or structurally captured value renders as the JSON already
+    /// captured for its field — under the masking policy, never through its own
+    /// <c>ToString()</c>, which would print the members the policy excluded.</summary>
+    private static string CapturedText(LogEntry entry, ReadOnlySpan<char> name)
+    {
+        if (name[0] is '@' or '$')
+        {
+            name = name[1..];
+        }
+
+        Span<byte> utf8 = stackalloc byte[512];
+        var builder = new StringBuilder();
+        var length = EncodeName(name, utf8);
+        return length >= 0 && entry.TryAppendFieldValue(utf8[..length], 0, builder)
+            ? builder.ToString()
+            : string.Empty;
+    }
+
+    private static bool TryFindValue(
+        IEnumerable<KeyValuePair<string, object?>> pairs,
+        ReadOnlySpan<char> name,
+        out object? value
+    )
+    {
+        foreach (var pair in pairs)
+        {
+            if (name.SequenceEqual(pair.Key))
+            {
+                value = pair.Value;
+                return true;
+            }
+        }
+
+        value = null;
+        return false;
+    }
+
+    /// <summary>Serilog's scalar rendering: <c>null</c>, a string quoted unless the format is
+    /// <c>l</c>, a formattable value through its format, anything else through
+    /// <c>ToString()</c>; then padded to the alignment.</summary>
+    internal static string RenderToken(object? value, string format, int? alignment)
+    {
+        var text = value switch
+        {
+            null => "null",
+            string s => format == "l"
+                ? s
+                : string.Concat("\"", s.Replace("\"", "\\\"", StringComparison.Ordinal), "\""),
+            IFormattable formattable => formattable.ToString(format, CultureInfo.InvariantCulture),
+            _ => value.ToString() ?? string.Empty,
+        };
+
+        return alignment switch
+        {
+            > 0 => text.PadLeft(alignment.Value),
+            < 0 => text.PadRight(-alignment.Value),
+            _ => text,
+        };
     }
 
     private bool CapturePair(LogEntry entry, KeyValuePair<string, object?> pair)
