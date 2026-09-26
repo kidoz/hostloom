@@ -257,6 +257,20 @@ internal sealed class LogPipeline : IAsyncDisposable
             return;
         }
 
+        // A disposal or writer fault that closed the channel after the check above fails the
+        // write too; the drop belongs to it, not to a full queue.
+        var state = Volatile.Read(ref _state);
+        if (state != StateRunning)
+        {
+            Discard(
+                entry,
+                state == StateFaulted
+                    ? LoggingMetrics.ReasonWriterFault
+                    : LoggingMetrics.ReasonProviderDisposed
+            );
+            return;
+        }
+
         switch (_options.QueueFullPolicy)
         {
             case QueueFullPolicy.Block:
