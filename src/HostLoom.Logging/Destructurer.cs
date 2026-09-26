@@ -583,26 +583,47 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
     {
         writer.WriteStartObject();
         var members = 0;
+        // Keys that render alike (a key type without its own ToString(), or long keys sharing a
+        // capped prefix) would otherwise produce duplicate JSON keys; the first one wins.
+        var written = new HashSet<string>(StringComparer.Ordinal);
+        var omitted = false;
         try
         {
+            var complete = true;
             foreach (DictionaryEntry pair in dictionary)
             {
                 if (members == options.MaxObjectMembers)
                 {
                     writer.WriteString("…"u8, "[Truncated]");
+                    complete = false;
                     break;
                 }
 
-                var mark = walk.Position(writer);
                 // A key is caller data just like a value, so it is capped the same way.
-                writer.WritePropertyName(Capped(ToInvariantString(pair.Key)));
+                var key = Capped(ToInvariantString(pair.Key));
+                if (!written.Add(key))
+                {
+                    omitted = true;
+                    continue;
+                }
+
+                var mark = walk.Position(writer);
+                writer.WritePropertyName(key);
                 WriteValue(writer, pair.Value, depth + 1, ref walk);
                 if (!Admit(writer, ref walk, depth, mark, members == 0, TruncatedMember))
                 {
+                    complete = false;
                     break;
                 }
 
                 members++;
+            }
+
+            // Omitted duplicates are marked like any other cut. The marker is shorter than the
+            // reserve the walk keeps free, so it cannot outgrow the byte budget.
+            if (complete && omitted && written.Add("…"))
+            {
+                writer.WriteString("…"u8, "[Truncated]");
             }
         }
         catch (Exception)
@@ -640,6 +661,9 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
     private TypePlan BuildPlan(Type type)
     {
         var members = new List<MemberPlan>();
+        // A property hidden with 'new' is listed along with its replacement; like Serilog, keep
+        // only the most derived one, so no object carries the same key twice.
+        var properties = new Dictionary<string, PropertyInfo>(StringComparer.Ordinal);
         foreach (var property in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
         {
             // A public property with a private getter is not readable from outside, and Serilog
@@ -652,6 +676,17 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
                 continue;
             }
 
+            if (
+                !properties.TryGetValue(property.Name, out var existing)
+                || property.DeclaringType!.IsSubclassOf(existing.DeclaringType!)
+            )
+            {
+                properties[property.Name] = property;
+            }
+        }
+
+        foreach (var property in properties.Values)
+        {
             AddMember(members, type, property.Name, property, null);
         }
 
@@ -659,7 +694,14 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
         {
             foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Instance))
             {
-                AddMember(members, type, field.Name, null, field);
+                // A field hidden by a derived property or field of the same name is left out.
+                if (
+                    !properties.ContainsKey(field.Name)
+                    && !members.Exists(member => member.Name == field.Name)
+                )
+                {
+                    AddMember(members, type, field.Name, null, field);
+                }
             }
         }
 

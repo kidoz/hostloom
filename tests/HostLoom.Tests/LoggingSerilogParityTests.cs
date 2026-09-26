@@ -91,6 +91,41 @@ namespace HostLoom.Tests
             Assert.Equal("02", root.GetProperty("Memory").GetString());
         }
 
+        [Fact]
+        public async Task A_hiding_property_is_written_once_with_the_derived_value()
+        {
+            var (root, line) = await LogAsync(logger =>
+                logger.LogInformation("hidden {@Value}", new HidingDerived { Id = "derived" })
+            );
+
+            Assert.Equal("derived", root.GetProperty("Value").GetProperty("Id").GetString());
+            Assert.Equal(1, Occurrences(line, "\"Id\":"));
+        }
+
+        [Fact]
+        public async Task Dictionary_keys_that_render_alike_are_written_once()
+        {
+            var map = new Dictionary<object, int> { [new SameText()] = 1, [new SameText()] = 2 };
+            var (_, line) = await LogAsync(logger => logger.LogInformation("map {@Map}", map));
+
+            Assert.Equal(1, Occurrences(line, "\"K\":"));
+        }
+
+        private static int Occurrences(string text, string value)
+        {
+            var count = 0;
+            for (
+                var index = text.IndexOf(value, StringComparison.Ordinal);
+                index >= 0;
+                index = text.IndexOf(value, index + 1, StringComparison.Ordinal)
+            )
+            {
+                count++;
+            }
+
+            return count;
+        }
+
         private static InvalidOperationException Throw()
         {
             try
@@ -158,6 +193,21 @@ namespace HostLoom.Tests
             public Action? OnDone { get; set; }
 
             public Type? Kind { get; set; }
+        }
+
+        private class HidingBase
+        {
+            public int Id { get; set; } = 7;
+        }
+
+        private sealed class HidingDerived : HidingBase
+        {
+            public new string Id { get; set; } = "";
+        }
+
+        private sealed class SameText
+        {
+            public override string ToString() => "K";
         }
 
         private sealed class CollectingSink : ILogSink

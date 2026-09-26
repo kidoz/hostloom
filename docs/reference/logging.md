@@ -149,7 +149,9 @@ hole: uppercase hex, or beyond 1024 bytes its first 16 bytes followed by `... (N
 Delegates, `Type` and other reflection objects, assemblies, and modules are written as their
 `ToString()`, never walked.
 
-Destructuring reads public properties with a public getter.
+Destructuring reads public properties with a public getter; a hidden (`new`) property is read
+once, from the most derived type. Dictionary keys that render to the same text are written once,
+the first entry winning, and the omission is marked with a `"…": "[Truncated]"` member.
 
 ## Masking attributes
 
