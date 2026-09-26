@@ -26,10 +26,17 @@ public sealed class StreamLogSink(Stream stream, bool leaveOpen = false) : ILogS
 
     public async ValueTask DisposeAsync()
     {
-        await _stream.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-        if (!leaveOpen)
+        try
         {
-            await _stream.DisposeAsync().ConfigureAwait(false);
+            await _stream.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            // A failed flush must not prevent release of an owned file/socket handle.
+            if (!leaveOpen)
+            {
+                await _stream.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 }

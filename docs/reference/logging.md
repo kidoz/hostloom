@@ -170,7 +170,7 @@ caller formatting methods can still allocate or block internally.
 | Type | Notes |
 | --- | --- |
 | `ILogSink` | `Write(ReadOnlySpan<byte>, CancellationToken)`, `FlushAsync`, `IAsyncDisposable` |
-| `StreamLogSink(Stream, bool leaveOpen = false)` | `StreamLogSink.Console()` opens and owns standard output |
+| `StreamLogSink(Stream, bool leaveOpen = false)` | `StreamLogSink.Console()` opens and owns standard output; disposal attempts to release an owned stream even if flushing fails |
 | `ILogFormatter` | `Format(in LogRecord, IBufferWriter<byte>)`, optional `OwnsFieldName` |
 | `JsonLogFormatter(int maxExceptionLength = 32 * 1024)` | ECS-style compact JSON, one object per line; the hosted default |
 | `ClefLogFormatter(int maxExceptionLength = 32 * 1024)` | CLEF (`@t`, `@mt`, `@l`, `@x`, `@tr`, `@sp`, …); the bootstrap default |

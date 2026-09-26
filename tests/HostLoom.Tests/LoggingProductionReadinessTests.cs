@@ -326,6 +326,24 @@ public sealed class LoggingProductionReadinessTests
         Assert.Equal(0, provider.Dropped);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Failed_flush_still_disposes_owned_streams_but_leaves_borrowed_streams_open(
+        bool leaveOpen
+    )
+    {
+        await using var stream = new FlushFailingStream();
+        // The provider owns the sink, while the stream remains test-owned for final cleanup.
+#pragma warning disable CA2000
+        var sink = new StreamLogSink(stream, leaveOpen);
+#pragma warning restore CA2000
+        await using var provider = new HostLoomLoggerProvider(new JsonLogFormatter(), sink, new());
+        provider.CreateLogger("Stream").LogInformation("record");
+        await provider.DisposeAsync();
+        Assert.Equal(!leaveOpen, stream.WasDisposed);
+    }
+
     private sealed class OversizedFormattable(bool neverFits) : IUtf8SpanFormattable
     {
         public int LargestBuffer { get; private set; }
@@ -453,6 +471,20 @@ public sealed class LoggingProductionReadinessTests
         public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class FlushFailingStream : MemoryStream
+    {
+        public bool WasDisposed { get; private set; }
+
+        public override Task FlushAsync(CancellationToken cancellationToken) =>
+            Task.FromException(new IOException("flush failed"));
+
+        protected override void Dispose(bool disposing)
+        {
+            WasDisposed = true;
+            base.Dispose(disposing);
+        }
     }
 
     private sealed class ProviderMetrics : IDisposable
