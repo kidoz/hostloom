@@ -35,6 +35,12 @@ are derived from release tags at publish time.
 - A byte array is written as Serilog's uppercase hex in every hole, summarized as its first 16
   bytes and its length beyond 1024 bytes. A destructured byte array was Base64, and one in a plain
   hole was its type name.
+- A sink failure costs the batch being written instead of stopping logging for the rest of the
+  process. The batch's records are counted as dropped with the new reason `sink_failed`, and the
+  writer goes on with the next batch, so a sink that recovers gets every record after the
+  failure. One transient `IOException` used to fault the pipeline and drop every later record as
+  `writer_fault`, which now means a defect in the writer itself. A failed flush is counted and
+  costs nothing further.
 
 ### Fixed
 
@@ -86,6 +92,13 @@ are derived from release tags at publish time.
   when the channel closed between the state check and the write, it was counted as a full queue.
 - A message rendered from captured fields writes a template's `}}` as `}`, as it already wrote
   `{{` as `{`.
+- A process that ends without disposing the logging provider no longer loses the records still
+  queued. `Environment.Exit`, `Main` returning, a SIGTERM outside the Generic Host, and an
+  unhandled exception each ended the process around the background writer, silently losing up to
+  a full queue, the last lines before a crash among them; a Generic Host app calling
+  `Environment.Exit` lost them too, because the host is not disposed then. The provider now
+  flushes the queue from `AppDomain.ProcessExit` and `AppDomain.UnhandledException`, within
+  `ShutdownTimeout`. `Environment.FailFast` and a killed process still lose what is queued.
 - `ClefLogFormatter` writes `@t` with all seven fractional digits. The JSON writer trimmed
   trailing zeros, so a timestamp could lose digits or its whole fraction, which a fixed-pattern
   timestamp parser rejects.
