@@ -80,9 +80,22 @@ public sealed class ClefLogFormatter : ILogFormatter
             _writer.WriteString("@sp"u8, record.SpanId.ToHexString());
         }
 
-        _writer.WriteString("SourceContext"u8, record.Category);
-        _writer.WriteNumber("ThreadId"u8, record.ThreadId);
-        WriteEventId(record.EventId);
+        // A caller's hole with one of these names keeps its value, as it does under Serilog; the
+        // core property is written only when no captured field carries the name.
+        if (!HasField(record, "SourceContext"u8))
+        {
+            _writer.WriteString("SourceContext"u8, record.Category);
+        }
+
+        if (!HasField(record, "ThreadId"u8))
+        {
+            _writer.WriteNumber("ThreadId"u8, record.ThreadId);
+        }
+
+        if (!HasField(record, "EventId"u8))
+        {
+            WriteEventId(record.EventId);
+        }
 
         _writer.WriteFields(record);
 
@@ -92,15 +105,27 @@ public sealed class ClefLogFormatter : ILogFormatter
     }
 
     /// <summary>
-    /// The reified CLEF names plus the core Serilog-provider properties. A single leading
-    /// <c>@</c> marks formatter territory; user names arrive here already escaped to <c>@@</c>,
-    /// which is exempt — CLEF readers unescape it back to the caller's original name.
+    /// The reified CLEF names. A single leading <c>@</c> marks formatter territory; user names
+    /// arrive here already escaped to <c>@@</c>, which is exempt — CLEF readers unescape it back
+    /// to the caller's original name. The core <c>SourceContext</c>, <c>ThreadId</c>, and
+    /// <c>EventId</c> properties are not reserved: a captured field of that name replaces them.
     /// </summary>
     public bool OwnsFieldName(ReadOnlySpan<byte> name) =>
-        name.SequenceEqual("SourceContext"u8)
-        || name.SequenceEqual("ThreadId"u8)
-        || name.SequenceEqual("EventId"u8)
-        || (name.Length > 1 && name[0] == (byte)'@' && name[1] != (byte)'@');
+        name.Length > 1 && name[0] == (byte)'@' && name[1] != (byte)'@';
+
+    private static bool HasField(in LogRecord record, ReadOnlySpan<byte> name)
+    {
+        for (var i = 0; i < record.FieldCount; i++)
+        {
+            record.GetField(i, out var fieldName, out _, out _);
+            if (fieldName.SequenceEqual(name))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private void WriteRenderings(in LogRecord record)
     {

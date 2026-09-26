@@ -29,6 +29,26 @@ namespace HostLoom.Tests
     public sealed class LoggingSerilogParityTests
     {
         [Fact]
+        public async Task Holes_named_like_core_properties_keep_the_callers_values()
+        {
+            var (root, line) = await LogAsync(logger =>
+                logger.LogInformation(
+                    "Worker {ThreadId} ctx {SourceContext} ev {EventId}",
+                    99,
+                    "mine",
+                    5
+                )
+            );
+
+            Assert.Equal(99, root.GetProperty("ThreadId").GetInt32());
+            Assert.Equal("mine", root.GetProperty("SourceContext").GetString());
+            Assert.Equal(5, root.GetProperty("EventId").GetInt32());
+            Assert.Equal(1, Occurrences(line, "\"ThreadId\":"));
+            Assert.Equal(1, Occurrences(line, "\"SourceContext\":"));
+            Assert.Equal(1, Occurrences(line, "\"EventId\":"));
+        }
+
+        [Fact]
         public async Task A_sequence_in_a_plain_hole_is_enumerated_once()
         {
             var sequence = new CountingSequence();

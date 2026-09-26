@@ -130,16 +130,18 @@ public sealed class LoggingClefFormatterTests
     }
 
     [Fact]
-    public async Task Clef_reserves_its_core_property_names()
+    public async Task A_hole_named_like_a_core_property_keeps_the_callers_value()
     {
         var SourceContext = "sneaky";
-        var (root, _) = await LogAsync(logger =>
+        var (root, line) = await LogAsync(logger =>
             logger.LogFast(LogLevel.Information, $"hi {SourceContext}")
         );
 
-        // The hole was named SourceContext by its variable; the formatter owns that key.
+        // Serilog keeps the caller's value for a hole named like a core property; so does CLEF
+        // here, and the key still appears exactly once.
         Assert.Equal(1, root.EnumerateObject().Count(p => p.NameEquals("SourceContext")));
-        Assert.Equal("Clef", root.GetProperty("SourceContext").GetString());
+        Assert.Equal("sneaky", root.GetProperty("SourceContext").GetString());
+        Assert.Contains("\"ThreadId\":", line, StringComparison.Ordinal);
     }
 
     private static async Task<(JsonElement Root, string Line)> LogAsync(
