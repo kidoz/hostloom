@@ -2,6 +2,7 @@
   <PropertyGroup>
     <Description>Allocation-free UTF-8 logging for .NET 10, compatible with Microsoft.Extensions.Logging.</Description>
     <PackageId>HostLoom.Logging</PackageId>
+    <IsAotCompatible>true</IsAotCompatible>
     <!-- Compiles the options binding, so configuration still binds under trimming and Native AOT.
          SYSLIB1100/1101 name the code-only Enrichers and TimeProvider, which configuration cannot
          set, and the generator reports them at the one Bind call in this project. -->

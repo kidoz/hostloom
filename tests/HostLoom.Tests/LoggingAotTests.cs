@@ -36,6 +36,83 @@ namespace HostLoom.Tests
             Assert.Equal(1, failures.Count);
         }
 
+        [Fact]
+        public void Under_native_code_a_type_without_readable_members_is_counted_once()
+        {
+            using var failures = new DestructurerFailures();
+            var destructurer = new Destructurer(
+                new DestructuringOptions(),
+                failures.Metrics,
+                nativeCode: true
+            );
+
+            Assert.Equal("{}", Write(destructurer, new Shipment()));
+            Assert.Equal("{}", Write(destructurer, new Shipment()));
+
+            Assert.Equal(1, failures.Count);
+        }
+
+        [Fact]
+        public void Members_excluded_on_purpose_are_not_counted_as_missing_under_native_code()
+        {
+            using var failures = new DestructurerFailures();
+            var destructurer = new Destructurer(
+                new DestructuringOptions(),
+                failures.Metrics,
+                nativeCode: true
+            );
+
+            Assert.Equal("{}", Write(destructurer, new SealedInvoice { Token = "t-1" }));
+
+            Assert.Equal(0, failures.Count);
+        }
+
+        [Fact]
+        public void On_the_jit_a_type_without_members_is_not_counted()
+        {
+            using var failures = new DestructurerFailures();
+            var destructurer = new Destructurer(
+                new DestructuringOptions(),
+                failures.Metrics,
+                nativeCode: false
+            );
+
+            Assert.Equal("{}", Write(destructurer, new Shipment()));
+
+            Assert.Equal(0, failures.Count);
+        }
+
+        [Theory]
+        [InlineData(nameof(DestructuringOptions.Preserve))]
+        [InlineData(nameof(DestructuringOptions.NotLogged))]
+        [InlineData(nameof(DestructuringOptions.Mask))]
+        public void Type_registrations_keep_the_members_destructuring_reads(string method)
+        {
+            // The annotation is what makes the trimmer and Native AOT keep the type argument's
+            // properties and fields; without it, registering a type would not preserve it.
+            var parameter = typeof(DestructuringOptions)
+                .GetMethod(method)!
+                .GetGenericArguments()
+                .Single();
+
+            var annotation = parameter.GetCustomAttribute<DynamicallyAccessedMembersAttribute>();
+
+            Assert.NotNull(annotation);
+            Assert.Equal(
+                DynamicallyAccessedMemberTypes.PublicProperties
+                    | DynamicallyAccessedMemberTypes.PublicFields,
+                annotation.MemberTypes
+            );
+        }
+
+        [Fact]
+        public void Preserve_returns_the_options_for_chaining()
+        {
+            var options = new DestructuringOptions();
+
+            Assert.Same(options, options.Preserve<Contact>());
+        }
+
         private static string Write(Destructurer destructurer, object value) =>
             Encoding.UTF8.GetString(destructurer.Destructure(value, int.MaxValue));
 
@@ -45,6 +122,14 @@ namespace HostLoom.Tests
 
             [Legacy.Unreadable.LogMasked(ShowFirst = 2)]
             public string? Phone { get; set; }
+        }
+
+        private sealed class Shipment;
+
+        private sealed class SealedInvoice
+        {
+            [NotLogged]
+            public string? Token { get; set; }
         }
 
         /// <summary>Counts destructurer failures reported by the one metrics instance it creates, so

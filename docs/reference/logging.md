@@ -121,7 +121,9 @@ still reach the sink.
 `IncludeFields` true; plus programmatic redaction for types you cannot annotate —
 `NotLogged<T>(params string[] members)` and
 `Mask<T>(string member, string text = "***", int showFirst = 0, int showLast = 0)`,
-which follows the same reveal rule as [`[LogMasked]`](#masking-attributes).
+which follows the same reveal rule as [`[LogMasked]`](#masking-attributes); and `Preserve<T>()`,
+which keeps a type's members for destructuring in a trimmed or Native AOT app (see
+[Trimming and Native AOT](#trimming-and-native-aot)).
 
 `TypeTags` adds Serilog's `"$type"` member, the runtime type's short name, as the last member
 of every destructured object except anonymous and other compiler-generated types. Turn it on
@@ -362,6 +364,34 @@ minimumLevel = Information, string category = "Bootstrap", bool failFast
 masking, and static fields; defaults to `ClefLogFormatter`. Dispose it
 once the hosted provider is up — it retains nothing, so the hand-off
 neither replays nor duplicates.
+
+## Trimming and Native AOT
+
+The package is annotated for trimming and Native AOT, and
+`examples/HostLoom.Examples.LoggingAot` publishes natively and checks its own output. Options
+bind from configuration through compiled binding code, so the configuration overloads work in a
+native app, and an empty `EnqueueTimeout` still lifts the limit.
+
+Destructuring is the part that depends on reflection. `{@...}` reads a value's public properties
+and fields at run time, and a trimmed or natively compiled app keeps them only when something
+else uses them. Call `Preserve<T>()` for every type written with `{@...}`, nested types
+included:
+
+```csharp
+logging.Destructuring.Preserve<Order>().Preserve<Shipment>();
+```
+
+`NotLogged<T>` and `Mask<T>` preserve their type the same way. Under Native AOT, a type nobody
+preserved has no members to read. It is written as `{}`, or with only its `"$type"` when
+`TypeTags` is on, and counted once in `hostloom.logging.failures` with `component=destructurer`.
+Anonymous types cannot be preserved, so a native app always writes them as `{}`. A trimmed app
+that still runs on the JIT keeps the members it saw used and can drop others without that count.
+
+The masking attributes keep working natively on preserved types. A legacy `LogMasked` attribute
+whose options cannot be read masks its member whole with `***` and counts a destructurer
+failure, and the rest of the object is still written; Native AOT does this to the options when
+nothing else reads them. Exception stack traces in a native app carry no file names or line
+numbers, which is how the runtime formats them.
 
 ## Health
 

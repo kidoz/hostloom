@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace HostLoom.Logging;
 
 /// <summary>How one protected member is treated. An excluded member is never read at all.</summary>
@@ -17,6 +19,11 @@ internal sealed record MaskRule(string Text, int ShowFirst, int ShowLast);
 /// </summary>
 public sealed class DestructuringOptions
 {
+    /// <summary>The members destructuring reads: public instance properties and fields.</summary>
+    internal const DynamicallyAccessedMemberTypes Destructured =
+        DynamicallyAccessedMemberTypes.PublicProperties
+        | DynamicallyAccessedMemberTypes.PublicFields;
+
     private readonly Dictionary<Type, Dictionary<string, MemberRule>> _policies = [];
 
     /// <summary>Nesting levels below the hole itself; deeper complex values become "…".</summary>
@@ -62,9 +69,21 @@ public sealed class DestructuringOptions
     /// </summary>
     public bool IncludeFields { get; set; } = true;
 
+    /// <summary>
+    /// Keeps the public properties and fields of <typeparamref name="T"/> through trimming and
+    /// Native AOT, so <c>{@...}</c> can read them. Destructuring finds members by reflection, and
+    /// a trimmed or natively compiled app keeps reflection data only for members it sees used,
+    /// so without this it can leave some or all of a type's members out. Nothing changes on the
+    /// JIT. <see cref="NotLogged{T}"/> and <see cref="Mask{T}"/> keep the members
+    /// of their type the same way.
+    /// </summary>
+    public DestructuringOptions Preserve<[DynamicallyAccessedMembers(Destructured)] T>() => this;
+
     /// <summary>Excludes members of <typeparamref name="T"/> (and derived types) that cannot be
     /// annotated. Excluded members are never read.</summary>
-    public DestructuringOptions NotLogged<T>(params string[] members)
+    public DestructuringOptions NotLogged<[DynamicallyAccessedMembers(Destructured)] T>(
+        params string[] members
+    )
     {
         ArgumentNullException.ThrowIfNull(members);
         var rules = RulesFor(typeof(T));
@@ -80,7 +99,7 @@ public sealed class DestructuringOptions
     /// <see cref="LogMaskedAttribute"/> would, including its rule that a value shorter than twice
     /// <paramref name="showFirst"/> + <paramref name="showLast"/> is written as
     /// <paramref name="text"/> alone.</summary>
-    public DestructuringOptions Mask<T>(
+    public DestructuringOptions Mask<[DynamicallyAccessedMembers(Destructured)] T>(
         string member,
         string text = "***",
         int showFirst = 0,

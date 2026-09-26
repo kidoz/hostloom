@@ -19,8 +19,16 @@ namespace HostLoom.Logging;
 /// or serializer failure emits <c>"[DestructuringFailed]"</c> — never the value's
 /// <c>ToString()</c>.
 /// </summary>
-internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics? metrics)
+/// <param name="nativeCode">Whether reflection sees only the members Native AOT kept; null
+/// detects it. Tests set it to reach the native branch on the JIT.</param>
+internal sealed class Destructurer(
+    DestructuringOptions options,
+    LoggingMetrics? metrics,
+    bool? nativeCode = null
+)
 {
+    private readonly bool _nativeCode = nativeCode ?? !RuntimeFeature.IsDynamicCodeSupported;
+
     /// <summary>
     /// Bytes the budget keeps free until a cut is marked, so the marker always fits: the longest
     /// one a container writes at an element boundary, <c>,"\u2026":"[DestructuringFailed]"</c>.
@@ -716,6 +724,14 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
 
     /// <summary>Built once per runtime type: exclusion decisions happen here, so an excluded
     /// member is absent from the plan and can never be read on any later event.</summary>
+    [UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2070",
+        Justification = "Destructuring reads the members a logged value's runtime type still has. "
+            + "Trimming can remove members that nothing else uses; DestructuringOptions.Preserve "
+            + "keeps them, a member that is gone is simply not written, and a type left with none "
+            + "under Native AOT is counted."
+    )]
     private TypePlan BuildPlan(Type type)
     {
         var members = new List<MemberPlan>();
@@ -748,10 +764,12 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
             AddMember(members, type, property.Name, property, null);
         }
 
+        var discovered = properties.Count;
         if (options.IncludeFields)
         {
             foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Instance))
             {
+                discovered++;
                 // A field hidden by a derived property or field of the same name is left out.
                 if (
                     !properties.ContainsKey(field.Name)
@@ -761,6 +779,13 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
                     AddMember(members, type, field.Name, null, field);
                 }
             }
+        }
+
+        if (discovered == 0 && _nativeCode)
+        {
+            // Native AOT keeps reflection data only for members it saw used, so a type that shows
+            // none has most likely lost them all. The plan is cached, so this counts once per type.
+            metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
         }
 
         return new TypePlan([.. members], TypeTagFor(type, members));

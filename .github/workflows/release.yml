@@ -131,6 +131,11 @@ jobs:
           dotnet publish examples/HostLoom.Examples.ValkeyAot -c Release -r linux-x64 -o artifacts/valkey-aot -p:Version=${{ steps.version.outputs.version }}
           artifacts/valkey-aot/HostLoom.Examples.ValkeyAot
 
+      - name: Verify logging Native AOT
+        run: |
+          dotnet publish examples/HostLoom.Examples.LoggingAot -c Release -r linux-x64 -o artifacts/logging-aot -p:Version=${{ steps.version.outputs.version }}
+          artifacts/logging-aot/HostLoom.Examples.LoggingAot
+
       - name: Stop brokers
         if: always()
         run: docker compose down -v

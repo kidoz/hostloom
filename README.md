@@ -679,7 +679,8 @@ and no fencing. A graceful stop hands over at once; a crash hands over at lease 
 with a dedicated background writer, typed JSON fields from ordinary `ILogger` template holes
 and from the allocation-free `LogFast` interpolated path, Serilog-compatible `{@...}`
 destructuring with fail-closed `[NotLogged]`/`[LogMasked]` protection, scopes, enrichers,
-and health metrics on the `HostLoom.Logging` meter.
+and health metrics on the `HostLoom.Logging` meter. It is Native AOT compatible; a native app
+preserves the types it destructures with `Destructuring.Preserve<T>()`.
 
 ```csharp
 builder.Logging.AddHostLoomLogging(
@@ -1087,6 +1088,7 @@ benchmarks/HostLoom.Composition.Benchmarks/ phased runtime and incremental build
 benchmarks/HostLoom.Redis.Benchmarks/ real-Redis cache and lock comparisons
 examples/HostLoom.Examples.Pipelines/ runnable pipeline tour: DI stages, manual and standalone composition
 examples/HostLoom.Examples.CachingAot/ Native AOT sample for caching and locking
+examples/HostLoom.Examples.LoggingAot/ self-checking Native AOT sample for logging
 tests/HostLoom.Tests/            pipeline, round-trip, behavior, and fault tests
 tests/HostLoom.Conformance/      backend-neutral cache and lock scenarios shared by the unit and integration suites
 tests/HostLoom.IntegrationTests/ RabbitMQ, Kafka, and Redis against real servers

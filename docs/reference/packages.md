@@ -136,12 +136,17 @@ The package's conformance tests consume the schema and exact fixtures from
 `HostLoom.Locking.Pipelines`, `HostLoom.Scheduling`,
 `HostLoom.Scheduling.DependencyInjection`, `HostLoom.Scheduling.Locking`,
 `HostLoom.Scheduling.Testing`, `HostLoom.Scheduling.Leadership`, `HostLoom.Leadership`,
-`HostLoom.Leadership.DependencyInjection`, and `HostLoom.Leadership.Testing` enable the
-.NET SDK Native AOT and trimming analyzers (`IsAotCompatible=true`).
+`HostLoom.Leadership.DependencyInjection`, `HostLoom.Leadership.Testing`, and
+`HostLoom.Logging` enable the .NET SDK Native AOT and trimming analyzers
+(`IsAotCompatible=true`).
 `examples/HostLoom.Examples.CachingAot` publishes with `PublishAot=true`
 and exercises a serialized cache round trip through a source-generated
 `JsonSerializerContext`, so the caching and locking packages are verified
-under Native AOT rather than only analyzed. `HostLoom.Redis` does not claim
+under Native AOT rather than only analyzed.
+`examples/HostLoom.Examples.LoggingAot` does the same for logging: it binds options from
+configuration, destructures preserved and masked types, and exits non-zero when its output
+differs. Destructuring reads members by reflection, so a native app preserves the types it
+writes with `{@...}` through `DestructuringOptions.Preserve<T>()`. `HostLoom.Redis` does not claim
 `IsAotCompatible`: StackExchange.Redis is not annotated for trimming, and the
 package states that rather than asserting a compatibility it cannot verify.
 
