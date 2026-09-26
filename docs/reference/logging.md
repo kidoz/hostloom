@@ -160,6 +160,11 @@ construction, and the configuration overload rejects them at host startup.
   are bounded by `Destructuring.MaxStringLength` instead, and the encoded size of all
   destructured values in a record by `Destructuring.MaxEncodedBytesPerRecord`.
 
+`LogFast` also bounds the buffers offered to UTF-8 formattables, with a small fixed allowance
+for complete primitive tokens. A value or rendering that cannot fit becomes `…`; numeric
+fields retain their complete canonical tokens. These bounds apply to HostLoom's buffers;
+caller formatting methods can still allocate or block internally.
+
 ## Sinks and formatters
 
 | Type | Notes |
@@ -326,6 +331,14 @@ Overloads: `(LogLevel, message)`, `(LogLevel, Exception?, message)`,
 `(EventId, Exception)` overload. Zero-allocation applies with HostLoom's
 own logger; other providers receive the rendered message and structured
 state through the standard interface.
+
+Exceptions raised by `ToString`, `IFormattable`, or UTF-8 formatting on this path produce
+`[DestructuringFailed]` and increment `hostloom.logging.failures` with `component=capture`
+when delivered to HostLoom. If only the display format fails (for example, `{count:Q}` for an
+integer), the message uses the sentinel while the field keeps its canonical value, provided
+canonical capture succeeds. The direct HostLoom path also preserves its type; the standard
+interface handoff still transports fields as strings. Later holes and records still log normally. Exceptions from
+evaluating the interpolation expressions themselves remain the caller's responsibility.
 
 ## Enrichers
 

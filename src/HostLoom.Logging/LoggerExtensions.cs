@@ -82,7 +82,8 @@ public static class LoggerExtensions
 
             var state = new HandoffState(
                 System.Text.Encoding.UTF8.GetString(entry.Message),
-                fields
+                fields,
+                entry.CaptureFailures
             );
             logger.Log(entry.Level, eventId, state, exception, static (s, _) => s.ToString());
 #pragma warning restore CA1873
@@ -98,9 +99,14 @@ public static class LoggerExtensions
     /// provider recognizes. <see cref="ToString"/> returns the rendered message, for sinks that
     /// render state directly.
     /// </summary>
-    private sealed class HandoffState(string message, KeyValuePair<string, object?>[] fields)
-        : IReadOnlyList<KeyValuePair<string, object?>>
+    internal sealed class HandoffState(
+        string message,
+        KeyValuePair<string, object?>[] fields,
+        int captureFailures
+    ) : IReadOnlyList<KeyValuePair<string, object?>>
     {
+        public int CaptureFailures => captureFailures;
+
         public KeyValuePair<string, object?> this[int index] => fields[index];
 
         public int Count => fields.Length;

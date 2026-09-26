@@ -48,6 +48,9 @@ internal sealed class LogEntry
 {
     private const int MaxRetainedBuffer = 64 * 1024;
 
+    // Enough for complete canonical primitive tokens even when text caps are very small.
+    private const int PrimitiveFormatBudget = 128;
+
     private byte[] _message = new byte[512];
     private byte[] _names = new byte[256];
     private byte[] _values = new byte[256];
@@ -71,6 +74,9 @@ internal sealed class LogEntry
     private int[] _slots = [];
 
     public LogLevel Level { get; set; }
+
+    /// <summary>Fast-path formatting failures, reported when the event reaches its provider.</summary>
+    public int CaptureFailures { get; set; }
 
     public string Category { get; set; } = string.Empty;
 
@@ -215,18 +221,43 @@ internal sealed class LogEntry
         }
 
         var renderingStart = _messageLength;
-        var messageFormat = format ?? canonicalFormat;
-        int written;
-        while (
-            !value.TryFormat(
-                _message.AsSpan(_messageLength),
-                out written,
-                messageFormat,
-                CultureInfo.InvariantCulture
+        // A small fixed allowance preserves complete primitive tokens even with tiny message
+        // caps. Text formatters never get an input-sized buffer or an unlimited retry loop.
+        var budget = Math.Max(PrimitiveFormatBudget, _maxMessageLength - _messageLength);
+        if (format is null)
+        {
+            budget = Math.Max(budget, _maxTextFieldLength);
+        }
+
+        if (
+            !TryFormatBounded(
+                ref _message,
+                _messageLength,
+                budget,
+                value,
+                format ?? canonicalFormat,
+                out var written,
+                out var failed
             )
         )
         {
-            EnsureMessage(Math.Max(64, _message.Length));
+            if (failed && format is null)
+            {
+                AppendCaptureFailure(name);
+            }
+            else
+            {
+                // A display format can fail while the canonical value remains valid. Keep
+                // its type and capture it independently of the failed message rendering.
+                if (failed)
+                    CaptureFailures++;
+                AppendLiteral(failed ? "[DestructuringFailed]" : "…");
+                if (name is not null)
+                {
+                    AddFieldFormattable(name, value, kind, canonicalFormat);
+                }
+            }
+            return;
         }
 
         _messageLength += written;
@@ -236,45 +267,129 @@ internal sealed class LogEntry
             return;
         }
 
-        if (format is null)
+        if (format is null && (kind != LogFieldKind.Text || written <= _maxTextFieldLength))
         {
-            RecordField(
-                name,
-                kind,
-                valueInMessage: true,
-                renderingStart,
-                _messageLength - renderingStart,
-                0,
-                -1
-            );
+            RecordField(name, kind, true, renderingStart, written, 0, -1);
             CapMessage();
             return;
         }
 
         var valueStart = _valuesLength;
-        while (
-            !value.TryFormat(
-                _values.AsSpan(_valuesLength),
-                out written,
+        if (format is null)
+        {
+            // The rendering fitted the message budget but not the text-field budget.
+            written = CopyText(
+                ref _values,
+                valueStart,
+                _message.AsSpan(renderingStart, written),
+                _maxTextFieldLength,
+                out _
+            );
+        }
+        else if (
+            !TryFormatBounded(
+                ref _values,
+                valueStart,
+                kind == LogFieldKind.Number
+                    ? PrimitiveFormatBudget
+                    : Math.Max(PrimitiveFormatBudget, _maxTextFieldLength),
+                value,
                 canonicalFormat,
-                CultureInfo.InvariantCulture
+                out written,
+                out failed
             )
         )
         {
-            EnsureValues(Math.Max(64, _values.Length));
+            _messageLength = renderingStart;
+            if (failed)
+            {
+                AppendCaptureFailure(name);
+            }
+            else
+            {
+                AppendText("…", name);
+            }
+            return;
+        }
+        else if (kind == LogFieldKind.Text && written > _maxTextFieldLength)
+        {
+            written = CopyText(
+                ref _values,
+                valueStart,
+                _values.AsSpan(valueStart, written),
+                _maxTextFieldLength,
+                out _
+            );
         }
 
         _valuesLength += written;
         RecordField(
             name,
             kind,
-            valueInMessage: false,
+            false,
             valueStart,
             written,
-            renderingStart,
-            _messageLength - renderingStart
+            format is null ? 0 : renderingStart,
+            format is null ? -1 : _messageLength - renderingStart
         );
         CapMessage();
+    }
+
+    public void AppendCaptureFailure(string? name)
+    {
+        CaptureFailures++;
+        AppendText("[DestructuringFailed]", name);
+    }
+
+    /// <summary>Caller formatting may fail or refuse every buffer. Neither can grow storage
+    /// beyond the budget; partially written bytes are never committed.</summary>
+    private static bool TryFormatBounded<T>(
+        ref byte[] buffer,
+        int start,
+        int budget,
+        T value,
+        string? format,
+        out int written,
+        out bool failed
+    )
+        where T : IUtf8SpanFormattable
+    {
+        written = 0;
+        failed = false;
+        try
+        {
+            while (true)
+            {
+                var available = Math.Min(buffer.Length - start, budget);
+                if (
+                    value.TryFormat(
+                        buffer.AsSpan(start, available),
+                        out written,
+                        format,
+                        CultureInfo.InvariantCulture
+                    )
+                )
+                {
+                    if ((uint)written > (uint)available)
+                    {
+                        failed = true;
+                        return false;
+                    }
+                    return true;
+                }
+                if (available == budget)
+                {
+                    return false;
+                }
+                var next = (int)Math.Min(budget, Math.Max(64L, (long)available * 2));
+                EnsureTextBuffer(ref buffer, checked(start + next));
+            }
+        }
+        catch (Exception)
+        {
+            failed = true;
+            return false;
+        }
     }
 
     /// <summary>Booleans get their own path: <see cref="bool"/> has no UTF-8 formatter to constrain to.</summary>
@@ -352,6 +467,7 @@ internal sealed class LogEntry
     public void Reset()
     {
         _messageLength = 0;
+        CaptureFailures = 0;
         _namesLength = 0;
         _valuesLength = 0;
         _fieldCount = 0;
@@ -570,19 +686,38 @@ internal sealed class LogEntry
         }
 
         var start = _valuesLength;
-        int written;
-        while (
-            !value.TryFormat(
-                _values.AsSpan(_valuesLength),
-                out written,
+        if (
+            !TryFormatBounded(
+                ref _values,
+                start,
+                kind == LogFieldKind.Number
+                    ? PrimitiveFormatBudget
+                    : Math.Max(PrimitiveFormatBudget, _maxTextFieldLength),
+                value,
                 format,
-                CultureInfo.InvariantCulture
+                out var written,
+                out var failed
             )
         )
         {
-            EnsureValues(Math.Max(64, _values.Length));
+            if (failed)
+            {
+                CaptureFailures++;
+            }
+            AddFieldText(name, failed ? "[DestructuringFailed]" : "…", source);
+            return;
         }
 
+        if (kind == LogFieldKind.Text && written > _maxTextFieldLength)
+        {
+            written = CopyText(
+                ref _values,
+                start,
+                _values.AsSpan(start, written),
+                _maxTextFieldLength,
+                out _
+            );
+        }
         _valuesLength += written;
         RecordField(name, kind, valueInMessage: false, start, written, 0, -1, source);
     }

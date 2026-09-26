@@ -138,9 +138,18 @@ public ref struct LogMessageHandler
             return;
         }
 
-        var text = value is IFormattable formattable
-            ? formattable.ToString(format, System.Globalization.CultureInfo.InvariantCulture)
-            : value?.ToString();
+        string? text;
+        try
+        {
+            text = value is IFormattable formattable
+                ? formattable.ToString(format, System.Globalization.CultureInfo.InvariantCulture)
+                : value?.ToString();
+        }
+        catch (Exception)
+        {
+            Entry.AppendCaptureFailure(name);
+            return;
+        }
         Entry.AppendText(text ?? string.Empty, name);
     }
 

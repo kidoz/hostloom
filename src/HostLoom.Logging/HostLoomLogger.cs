@@ -42,6 +42,10 @@ internal sealed class HostLoomLogger(
         var entry = LogEntryPool.Rent();
         entry.ApplyCaps(options);
         entry.Level = logLevel;
+        if (state is LoggerExtensions.HandoffState handoff)
+        {
+            entry.CaptureFailures = handoff.CaptureFailures;
+        }
         pipeline.Capture.CaptureEvent(entry, state, exception, formatter);
         entry.FinalizeTemplate();
         Emit(entry, eventId, exception);
@@ -110,6 +114,10 @@ internal sealed class HostLoomLogger(
             entry.AddFieldUtf8Text(statics[i].Name, statics[i].Value, LogFieldSource.Static);
         }
 
+        for (var i = 0; i < entry.CaptureFailures; i++)
+        {
+            pipeline.Metrics.RecordFailure(LoggingMetrics.ComponentCapture);
+        }
         pipeline.Enqueue(entry);
     }
 }
