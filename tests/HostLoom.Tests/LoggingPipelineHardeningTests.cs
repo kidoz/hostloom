@@ -10,10 +10,107 @@ using Xunit;
 namespace HostLoom.Tests;
 
 /// <summary>
-/// Drop attribution while a provider is being disposed.
+/// Field bookkeeping under pathological records, and drop attribution while a provider is being
+/// disposed.
 /// </summary>
 public sealed class LoggingPipelineHardeningTests
 {
+    [Fact]
+    public void Capture_records_at_most_four_times_the_field_cap()
+    {
+        var entry = new LogEntry();
+        entry.ApplyCaps(new HostLoomLoggerOptions { MaxFieldsPerRecord = 8 });
+
+        for (var i = 0; i < 1000; i++)
+        {
+            entry.AddFieldText($"field{i}", "value");
+        }
+
+        Assert.Equal(32, entry.FieldCount);
+        entry.NormalizeFields(128, 8, new ClefLogFormatter(), null);
+        Assert.Equal(8, entry.FieldCount);
+    }
+
+    [Fact]
+    public void Large_records_resolve_collisions_by_the_same_precedence()
+    {
+        // Enough fields for the hashed path, with names shared across every source.
+        var fields = new List<(string Name, LogFieldSource Source)>();
+        for (var i = 0; i < 30; i++)
+        {
+            fields.Add(($"n{i % 12}", LogFieldSource.Hole));
+        }
+
+        for (var i = 0; i < 20; i++)
+        {
+            fields.Add(($"n{(i % 16) + 6}", LogFieldSource.Scope));
+        }
+
+        for (var i = 0; i < 10; i++)
+        {
+            fields.Add(($"n{i + 14}", LogFieldSource.Enricher));
+        }
+
+        fields.Add(("n0", LogFieldSource.Static));
+        fields.Add(("n30", LogFieldSource.Static));
+
+        var entry = new LogEntry();
+        entry.ApplyCaps(new HostLoomLoggerOptions { MaxFieldsPerRecord = 64 });
+        for (var i = 0; i < fields.Count; i++)
+        {
+            entry.AddFieldText(
+                fields[i].Name,
+                i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                fields[i].Source
+            );
+        }
+
+        entry.NormalizeFields(128, 64, new ClefLogFormatter(), null);
+
+        // Reference: per name, the lowest source rank wins, and the last occurrence within it.
+        var expected = fields
+            .Select((field, index) => (field.Name, field.Source, Index: index))
+            .GroupBy(field => field.Name)
+            .ToDictionary(
+                group => group.Key,
+                group =>
+                    group
+                        .OrderBy(field => field.Source)
+                        .ThenByDescending(field => field.Index)
+                        .First()
+                        .Index
+            );
+        var actual = new Dictionary<string, int>();
+        for (var i = 0; i < entry.FieldCount; i++)
+        {
+            entry.GetField(i, out var name, out var value, out _);
+            actual.Add(
+                Encoding.UTF8.GetString(name),
+                int.Parse(
+                    Encoding.UTF8.GetString(value),
+                    System.Globalization.CultureInfo.InvariantCulture
+                )
+            );
+        }
+
+        Assert.Equal(expected.OrderBy(pair => pair.Key), actual.OrderBy(pair => pair.Key));
+    }
+
+    [Fact]
+    public void A_pooled_entry_does_not_keep_an_oversized_field_table()
+    {
+        var entry = new LogEntry();
+        for (var i = 0; i < 200; i++)
+        {
+            entry.AddFieldText($"field{i}", "value");
+        }
+
+        entry.Reset();
+        entry.TrimIfOversized();
+
+        Assert.True(entry.FieldCapacity <= 64, $"capacity is {entry.FieldCapacity}");
+    }
+
     [Fact]
     public async Task Drops_while_disposing_are_counted_as_disposal_not_as_a_full_queue()
     {

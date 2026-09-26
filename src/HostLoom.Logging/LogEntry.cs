@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.Numerics;
 using System.Text;
 using System.Text.Unicode;
 using Microsoft.Extensions.Logging;
@@ -57,7 +58,17 @@ internal sealed class LogEntry
     private int _fieldCount;
     private int _maxMessageLength = HostLoomLoggerOptions.DefaultMaxMessageLength;
     private int _maxTextFieldLength = HostLoomLoggerOptions.DefaultMaxTextFieldLength;
+    private int _maxCapturedFields = CaptureCeiling(
+        HostLoomLoggerOptions.DefaultMaxFieldsPerRecord
+    );
     private bool _messageTruncated;
+
+    /// <summary>Fields refused at capture, by source, reported when the writer normalizes.</summary>
+    private readonly int[] _overflow = new int[4];
+
+    /// <summary>Open-addressing table of field indexes (plus one) for deduplicating large
+    /// records; reused, and trimmed with the entry.</summary>
+    private int[] _slots = [];
 
     public LogLevel Level { get; set; }
 
@@ -97,12 +108,37 @@ internal sealed class LogEntry
 
     public int FieldCount => _fieldCount;
 
+    /// <summary>Length of the retained field table, for the pool's trimming tests.</summary>
+    internal int FieldCapacity => _fields.Length;
+
     /// <summary>Applies the record-size caps of the provider this entry is captured for. An entry
     /// rented for a foreign logger keeps the defaults.</summary>
     public void ApplyCaps(HostLoomLoggerOptions options)
     {
         _maxMessageLength = options.MaxMessageLength;
         _maxTextFieldLength = options.MaxTextFieldLength;
+        _maxCapturedFields = CaptureCeiling(options.MaxFieldsPerRecord);
+    }
+
+    /// <summary>
+    /// How many fields capture records before refusing more: four times the per-record cap. The
+    /// exact cap applies later, after duplicates and reserved names are resolved on the writer
+    /// thread; this ceiling only bounds what a pathological state (thousands of pairs) can make
+    /// the caller encode and the writer examine. Fields past it are counted as over the cap.
+    /// </summary>
+    private static int CaptureCeiling(int maxFieldsPerRecord) =>
+        (int)Math.Min(4L * maxFieldsPerRecord, int.MaxValue);
+
+    /// <summary>Whether capture has reached its ceiling; a refused field is counted.</summary>
+    private bool CaptureFull(LogFieldSource source)
+    {
+        if (_fieldCount < _maxCapturedFields)
+        {
+            return false;
+        }
+
+        _overflow[(int)source]++;
+        return true;
     }
 
     public void GetField(
@@ -273,7 +309,7 @@ internal sealed class LogEntry
 
     public void AppendText(ReadOnlySpan<char> value, string? name)
     {
-        if (name is not null)
+        if (name is not null && !CaptureFull(LogFieldSource.Hole))
         {
             // Keep the bounded field independent of the message budget, including when the
             // message is already closed or only part of this hole fits in it.
@@ -322,6 +358,8 @@ internal sealed class LogEntry
         _messageTruncated = false;
         _maxMessageLength = HostLoomLoggerOptions.DefaultMaxMessageLength;
         _maxTextFieldLength = HostLoomLoggerOptions.DefaultMaxTextFieldLength;
+        _maxCapturedFields = CaptureCeiling(HostLoomLoggerOptions.DefaultMaxFieldsPerRecord);
+        Array.Clear(_overflow);
         DestructuringBudget = -1;
         Exception = null;
         Category = string.Empty;
@@ -343,6 +381,11 @@ internal sealed class LogEntry
         LogFieldSource source = LogFieldSource.Hole
     )
     {
+        if (CaptureFull(source))
+        {
+            return;
+        }
+
         var start = _valuesLength;
         var written = EncodeText(ref _values, start, value, _maxTextFieldLength, out _);
         _valuesLength = start + written;
@@ -353,6 +396,11 @@ internal sealed class LogEntry
     /// bytes were encoded once at provider start.</summary>
     public void AddFieldUtf8Text(string name, ReadOnlySpan<byte> utf8Value, LogFieldSource source)
     {
+        if (CaptureFull(source))
+        {
+            return;
+        }
+
         var start = _valuesLength;
         var written = CopyText(ref _values, start, utf8Value, _maxTextFieldLength, out _);
         _valuesLength = start + written;
@@ -365,6 +413,11 @@ internal sealed class LogEntry
         LogFieldSource source = LogFieldSource.Hole
     )
     {
+        if (CaptureFull(source))
+        {
+            return;
+        }
+
         var start = _valuesLength;
         var text = value ? "true"u8 : "false"u8;
         EnsureValues(text.Length);
@@ -469,6 +522,11 @@ internal sealed class LogEntry
         LogFieldSource source = LogFieldSource.Hole
     )
     {
+        if (CaptureFull(source))
+        {
+            return;
+        }
+
         var start = _valuesLength;
         EnsureValues(json.Length);
         json.CopyTo(_values.AsSpan(_valuesLength));
@@ -506,6 +564,11 @@ internal sealed class LogEntry
     )
         where T : IUtf8SpanFormattable
     {
+        if (CaptureFull(source))
+        {
+            return;
+        }
+
         var start = _valuesLength;
         int written;
         while (
@@ -535,7 +598,9 @@ internal sealed class LogEntry
         LogFieldSource source = LogFieldSource.Hole
     )
     {
-        if (name is null)
+        // The AddField* writers check before encoding a value; the message-slicing fast path
+        // reaches this check with its hole text already in the message, where it stays.
+        if (name is null || CaptureFull(source))
         {
             return;
         }
@@ -582,6 +647,18 @@ internal sealed class LogEntry
         LoggingMetrics? metrics
     )
     {
+        for (var source = 0; source < _overflow.Length; source++)
+        {
+            if (_overflow[source] > 0)
+            {
+                metrics?.RecordFieldDropped(
+                    LoggingMetrics.FieldReasonRecordCap,
+                    SourceName((LogFieldSource)source),
+                    _overflow[source]
+                );
+            }
+        }
+
         if (_fieldCount == 0)
         {
             return;
@@ -608,34 +685,13 @@ internal sealed class LogEntry
             }
         }
 
-        for (var i = 0; i < _fieldCount; i++)
+        if (_fieldCount <= SmallRecordFields)
         {
-            var field = _fields[i];
-            if (field.NameLength < 0)
-            {
-                continue;
-            }
-
-            for (var j = 0; j < _fieldCount; j++)
-            {
-                if (j == i)
-                {
-                    continue;
-                }
-
-                var other = _fields[j];
-                if (other.NameLength < 0 || !SameName(field, other))
-                {
-                    continue;
-                }
-
-                var beaten = other.Source < field.Source || (other.Source == field.Source && j > i);
-                if (beaten)
-                {
-                    _fields[i] = field with { NameLength = -1 };
-                    break;
-                }
-            }
+            ResolveCollisionsPairwise();
+        }
+        else
+        {
+            ResolveCollisionsHashed();
         }
 
         for (var i = 0; i < _fieldCount; i++)
@@ -674,6 +730,104 @@ internal sealed class LogEntry
         }
 
         _fieldCount = write;
+    }
+
+    /// <summary>Records up to this many fields compare names pairwise, which beats hashing at
+    /// the sizes nearly every record has.</summary>
+    private const int SmallRecordFields = 16;
+
+    /// <summary>Per name, the field of the lowest source rank wins, the last one within it.</summary>
+    private void ResolveCollisionsPairwise()
+    {
+        for (var i = 0; i < _fieldCount; i++)
+        {
+            var field = _fields[i];
+            if (field.NameLength < 0)
+            {
+                continue;
+            }
+
+            for (var j = 0; j < _fieldCount; j++)
+            {
+                if (j == i)
+                {
+                    continue;
+                }
+
+                var other = _fields[j];
+                if (other.NameLength < 0 || !SameName(field, other))
+                {
+                    continue;
+                }
+
+                var beaten = other.Source < field.Source || (other.Source == field.Source && j > i);
+                if (beaten)
+                {
+                    _fields[i] = field with { NameLength = -1 };
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The same rule in one pass for large records: a table keyed by name keeps the current
+    /// winner, which a later field replaces when its source ranks the same or higher — the same
+    /// winner the pairwise comparison picks, at linear instead of quadratic cost.
+    /// </summary>
+    private void ResolveCollisionsHashed()
+    {
+        var size = (int)BitOperations.RoundUpToPowerOf2((uint)_fieldCount * 2);
+        if (_slots.Length < size)
+        {
+            _slots = new int[size];
+        }
+        else
+        {
+            Array.Clear(_slots, 0, size);
+        }
+
+        var mask = size - 1;
+        for (var i = 0; i < _fieldCount; i++)
+        {
+            var field = _fields[i];
+            if (field.NameLength < 0)
+            {
+                continue;
+            }
+
+            var hash = new HashCode();
+            hash.AddBytes(_names.AsSpan(field.NameStart, field.NameLength));
+            var slot = hash.ToHashCode() & mask;
+            while (true)
+            {
+                var occupant = _slots[slot] - 1;
+                if (occupant < 0)
+                {
+                    _slots[slot] = i + 1;
+                    break;
+                }
+
+                var winner = _fields[occupant];
+                if (!SameName(field, winner))
+                {
+                    slot = (slot + 1) & mask;
+                    continue;
+                }
+
+                if (field.Source <= winner.Source)
+                {
+                    _fields[occupant] = winner with { NameLength = -1 };
+                    _slots[slot] = i + 1;
+                }
+                else
+                {
+                    _fields[i] = field with { NameLength = -1 };
+                }
+
+                break;
+            }
+        }
     }
 
     private void DropField(int index, LoggingMetrics? metrics, string reason)
@@ -881,7 +1035,21 @@ internal sealed class LogEntry
         {
             TemplateRenderings = null;
         }
+
+        // A record with thousands of fields must not leave every later use of this pooled entry
+        // holding a table that size.
+        if (_fields.Length > MaxRetainedFields)
+        {
+            _fields = new LogField[8];
+        }
+
+        if (_slots.Length > MaxRetainedFields * 2)
+        {
+            _slots = [];
+        }
     }
+
+    private const int MaxRetainedFields = 64;
 }
 
 /// <summary>

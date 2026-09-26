@@ -117,9 +117,9 @@ internal sealed class LoggingMetrics : IDisposable
             new KeyValuePair<string, object?>("level", LevelName(level))
         );
 
-    public void RecordFieldDropped(string reason, string source) =>
+    public void RecordFieldDropped(string reason, string source, long count = 1) =>
         _fieldsDropped.Add(
-            1,
+            count,
             new KeyValuePair<string, object?>("reason", reason),
             new KeyValuePair<string, object?>("source", source)
         );

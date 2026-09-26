@@ -51,7 +51,7 @@ runs before the provider; HostLoom does no level filtering of its own.
 | `EnqueueTimeout` | null (block without limit) | Cap on how long a log call may block under `Block` |
 | `ShutdownTimeout` | 5 s | Separate budgets for draining writes and disposing the sink |
 | `MaxFieldNameLength` | `128` | UTF-8 bytes; a longer name drops the field, never the record |
-| `MaxFieldsPerRecord` | `64` | Fields past the cap are dropped and counted; the record ships |
+| `MaxFieldsPerRecord` | `64` | Fields past the cap are dropped and counted; the record ships. Capture itself stops at four times the cap |
 | `MaxMessageLength` | `16384` (16 KiB) | UTF-8 bytes of rendered message; see [Record size caps](#record-size-caps) |
 | `MaxTextFieldLength` | `8192` (8 KiB) | UTF-8 bytes per plain text field, string hole, enricher value, or scope text |
 | `AttachMachineName` | `true` | Adds the machine name as a static field |

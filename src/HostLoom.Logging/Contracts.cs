@@ -64,6 +64,8 @@ public sealed class HostLoomLoggerOptions
 
     internal const int DefaultMaxTextFieldLength = 8 * 1024;
 
+    internal const int DefaultMaxFieldsPerRecord = 64;
+
     /// <summary>Bounded on purpose: an unbounded queue turns a logging burst into an OutOfMemoryException.</summary>
     public int QueueCapacity { get; set; } = 8192;
 
@@ -99,7 +101,7 @@ public sealed class HostLoomLoggerOptions
     /// Most fields one record may carry after deduplication. Overflow fields are dropped and
     /// counted; the record itself still ships.
     /// </summary>
-    public int MaxFieldsPerRecord { get; set; } = 64;
+    public int MaxFieldsPerRecord { get; set; } = DefaultMaxFieldsPerRecord;
 
     /// <summary>
     /// Longest rendered message one record may carry, in UTF-8 bytes. A longer message is cut on
