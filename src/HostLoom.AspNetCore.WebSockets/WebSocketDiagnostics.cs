@@ -66,13 +66,56 @@ public static class WebSocketDiagnostics
     private static readonly Histogram<long> QueueBytes = Meter.CreateHistogram<long>(
         "hostloom.websocket.queue.bytes",
         "By",
-        "Encoded event-frame bytes accepted into the connection outbound budget."
+        "Encoded event-frame bytes accepted into the connection outbound budget.",
+        tags: null,
+        advice: new InstrumentAdvice<long>
+        {
+            // Queued bytes: one small frame up to 16 MiB.
+            HistogramBucketBoundaries =
+            [
+                256,
+                1024,
+                4096,
+                16384,
+                65536,
+                262144,
+                1048576,
+                4194304,
+                16777216,
+            ],
+        }
     );
 
     private static readonly Histogram<double> SessionDuration = Meter.CreateHistogram<double>(
         "hostloom.websocket.session.duration",
         "s",
-        "Session lifetime, tagged by a normalized close reason."
+        "Session lifetime, tagged by a normalized close reason.",
+        tags: null,
+        advice: new InstrumentAdvice<double>
+        {
+            // Spans and lags: milliseconds up to a day.
+            HistogramBucketBoundaries =
+            [
+                0.001,
+                0.005,
+                0.01,
+                0.05,
+                0.1,
+                0.5,
+                1,
+                5,
+                10,
+                30,
+                60,
+                300,
+                900,
+                1800,
+                3600,
+                7200,
+                21600,
+                86400,
+            ],
+        }
     );
 
     private static readonly Counter<long> Faults = Meter.CreateCounter<long>(

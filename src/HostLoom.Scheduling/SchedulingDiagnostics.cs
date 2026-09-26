@@ -31,13 +31,65 @@ public static class SchedulingDiagnostics
     internal static readonly Histogram<double> RunDuration = Meter.CreateHistogram<double>(
         "hostloom.schedule.run.duration",
         "s",
-        "Time a scheduled run executed, by outcome."
+        "Time a scheduled run executed, by outcome.",
+        tags: null,
+        advice: new InstrumentAdvice<double>
+        {
+            // Spans and lags: milliseconds up to a day.
+            HistogramBucketBoundaries =
+            [
+                0.001,
+                0.005,
+                0.01,
+                0.05,
+                0.1,
+                0.5,
+                1,
+                5,
+                10,
+                30,
+                60,
+                300,
+                900,
+                1800,
+                3600,
+                7200,
+                21600,
+                86400,
+            ],
+        }
     );
 
     internal static readonly Histogram<double> Lag = Meter.CreateHistogram<double>(
         "hostloom.schedule.lag",
         "s",
-        "Time between a run's due time and its start."
+        "Time between a run's due time and its start.",
+        tags: null,
+        advice: new InstrumentAdvice<double>
+        {
+            // Spans and lags: milliseconds up to a day.
+            HistogramBucketBoundaries =
+            [
+                0.001,
+                0.005,
+                0.01,
+                0.05,
+                0.1,
+                0.5,
+                1,
+                5,
+                10,
+                30,
+                60,
+                300,
+                900,
+                1800,
+                3600,
+                7200,
+                21600,
+                86400,
+            ],
+        }
     );
 
     internal static readonly Counter<long> Skipped = Meter.CreateCounter<long>(

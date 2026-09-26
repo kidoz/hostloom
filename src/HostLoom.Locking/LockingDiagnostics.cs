@@ -35,13 +35,64 @@ public static class LockingDiagnostics
     internal static readonly Histogram<double> AcquireDuration = Meter.CreateHistogram<double>(
         "hostloom.lock.acquire.duration",
         "s",
-        "Time spent acquiring a lease, including retries, by outcome."
+        "Time spent acquiring a lease, including retries, by outcome.",
+        tags: null,
+        advice: new InstrumentAdvice<double>
+        {
+            // Operations: sub-millisecond hits up to slow calls of tens of seconds.
+            HistogramBucketBoundaries =
+            [
+                0.0001,
+                0.00025,
+                0.0005,
+                0.001,
+                0.0025,
+                0.005,
+                0.01,
+                0.025,
+                0.05,
+                0.1,
+                0.25,
+                0.5,
+                1,
+                2.5,
+                5,
+                10,
+                30,
+            ],
+        }
     );
 
     internal static readonly Histogram<double> HoldDuration = Meter.CreateHistogram<double>(
         "hostloom.lock.hold.duration",
         "s",
-        "Time between acquiring a lease and releasing it."
+        "Time between acquiring a lease and releasing it.",
+        tags: null,
+        advice: new InstrumentAdvice<double>
+        {
+            // Spans and lags: milliseconds up to a day.
+            HistogramBucketBoundaries =
+            [
+                0.001,
+                0.005,
+                0.01,
+                0.05,
+                0.1,
+                0.5,
+                1,
+                5,
+                10,
+                30,
+                60,
+                300,
+                900,
+                1800,
+                3600,
+                7200,
+                21600,
+                86400,
+            ],
+        }
     );
 
     internal static readonly UpDownCounter<long> Active = Meter.CreateUpDownCounter<long>(

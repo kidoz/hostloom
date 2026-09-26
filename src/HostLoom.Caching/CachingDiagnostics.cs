@@ -34,13 +34,63 @@ public static class CachingDiagnostics
     internal static readonly Histogram<double> OperationDuration = Meter.CreateHistogram<double>(
         "hostloom.cache.operation.duration",
         "s",
-        "Time one cache operation took, tagged by operation and outcome."
+        "Time one cache operation took, tagged by operation and outcome.",
+        tags: null,
+        advice: new InstrumentAdvice<double>
+        {
+            // Operations: sub-millisecond hits up to slow calls of tens of seconds.
+            HistogramBucketBoundaries =
+            [
+                0.0001,
+                0.00025,
+                0.0005,
+                0.001,
+                0.0025,
+                0.005,
+                0.01,
+                0.025,
+                0.05,
+                0.1,
+                0.25,
+                0.5,
+                1,
+                2.5,
+                5,
+                10,
+                30,
+            ],
+        }
     );
 
     internal static readonly Histogram<double> FactoryDuration = Meter.CreateHistogram<double>(
         "hostloom.cache.factory.duration",
         "s",
-        "Time a get-or-create factory took."
+        "Time a get-or-create factory took.",
+        tags: null,
+        advice: new InstrumentAdvice<double>
+        {
+            // Operations: sub-millisecond hits up to slow calls of tens of seconds.
+            HistogramBucketBoundaries =
+            [
+                0.0001,
+                0.00025,
+                0.0005,
+                0.001,
+                0.0025,
+                0.005,
+                0.01,
+                0.025,
+                0.05,
+                0.1,
+                0.25,
+                0.5,
+                1,
+                2.5,
+                5,
+                10,
+                30,
+            ],
+        }
     );
 
     internal static readonly Counter<long> StampedeLeaseMissed = Meter.CreateCounter<long>(

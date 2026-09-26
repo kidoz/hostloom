@@ -59,7 +59,32 @@ internal sealed class LoggingMetrics : IDisposable
         _blockedDuration = _meter.CreateHistogram<double>(
             "hostloom.logging.enqueue.blocked.duration",
             unit: "s",
-            description: "Time log calls spent blocked on a full queue."
+            description: "Time log calls spent blocked on a full queue.",
+            tags: null,
+            advice: new InstrumentAdvice<double>
+            {
+                // Operations: sub-millisecond hits up to slow calls of tens of seconds.
+                HistogramBucketBoundaries =
+                [
+                    0.0001,
+                    0.00025,
+                    0.0005,
+                    0.001,
+                    0.0025,
+                    0.005,
+                    0.01,
+                    0.025,
+                    0.05,
+                    0.1,
+                    0.25,
+                    0.5,
+                    1,
+                    2.5,
+                    5,
+                    10,
+                    30,
+                ],
+            }
         );
         _failures = _meter.CreateCounter<long>(
             "hostloom.logging.failures",

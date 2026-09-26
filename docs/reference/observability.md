@@ -35,6 +35,12 @@ The WebSocket source creates `hostloom.websocket.request` Server activities for 
 operations. The existing `HostLoom` send activity is their direct child. External transports do
 not yet propagate W3C trace context to a consumer process.
 
+Every histogram advises its bucket boundaries, so an exporter that honors advice, as the
+OpenTelemetry SDK does, needs no view to get useful buckets. Operation durations use boundaries
+from 0.1 ms to 30 s, spans and lags (lock holds, scheduled runs and their lag, outbox lag,
+WebSocket sessions) from 1 ms to one day, and `hostloom.websocket.queue.bytes` from 256 B to
+16 MiB.
+
 ## Messaging instruments (`HostLoom`)
 
 The `hostloom.request.*` instruments are tagged `messaging.destination.name`

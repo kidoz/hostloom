@@ -35,7 +35,32 @@ public static class RabbitMqDiagnostics
     internal static readonly Histogram<double> PublishDuration = Meter.CreateHistogram<double>(
         "hostloom.rabbitmq.publish.duration",
         "s",
-        "Time one publication took, from waiting for a channel to the broker's confirmation."
+        "Time one publication took, from waiting for a channel to the broker's confirmation.",
+        tags: null,
+        advice: new InstrumentAdvice<double>
+        {
+            // Operations: sub-millisecond hits up to slow calls of tens of seconds.
+            HistogramBucketBoundaries =
+            [
+                0.0001,
+                0.00025,
+                0.0005,
+                0.001,
+                0.0025,
+                0.005,
+                0.01,
+                0.025,
+                0.05,
+                0.1,
+                0.25,
+                0.5,
+                1,
+                2.5,
+                5,
+                10,
+                30,
+            ],
+        }
     );
 
     internal static readonly Counter<long> DeliveriesRejected = Meter.CreateCounter<long>(
