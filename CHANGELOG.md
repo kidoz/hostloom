@@ -25,6 +25,9 @@ are derived from release tags at publish time.
   built from the service collection calls the factory when it first resolves logging and so gets
   a sink of its own, where a sink instance is shared by all of them. A call site that creates its
   sink in the factory no longer needs a CA2000 suppression.
+- `HostLoomLoggerProvider.Flush(TimeSpan)` waits until every record logged before the call is
+  written and the sink flushed, for a crash handler registered after the provider: handlers run
+  in registration order, so such a handler logs after the provider's own exit flush.
 
 ### Changed
 
@@ -35,6 +38,10 @@ are derived from release tags at publish time.
 - A byte array is written as Serilog's uppercase hex in every hole, summarized as its first 16
   bytes and its length beyond 1024 bytes. A destructured byte array was Base64, and one in a plain
   hole was its type name.
+- `EnqueueTimeout` defaults to one second instead of no limit. A log call that waits for room on
+  a full queue, under `Block` or for Warning and above under `DropBelowWarning`, drops its record
+  as `enqueue_timeout` after a second instead of waiting for as long as the sink stalls; a stdout
+  nobody read stalled every thread that logged a warning. Set it to null to wait without limit.
 - A sink failure costs the batch being written instead of stopping logging for the rest of the
   process. The batch's records are counted as dropped with the new reason `sink_failed`, and the
   writer goes on with the next batch, so a sink that recovers gets every record after the
@@ -93,12 +100,13 @@ are derived from release tags at publish time.
 - A message rendered from captured fields writes a template's `}}` as `}`, as it already wrote
   `{{` as `{`.
 - A process that ends without disposing the logging provider no longer loses the records still
-  queued. `Environment.Exit`, `Main` returning, a SIGTERM outside the Generic Host, and an
-  unhandled exception each ended the process around the background writer, silently losing up to
-  a full queue, the last lines before a crash among them; a Generic Host app calling
-  `Environment.Exit` lost them too, because the host is not disposed then. The provider now
-  flushes the queue from `AppDomain.ProcessExit` and `AppDomain.UnhandledException`, within
-  `ShutdownTimeout`. `Environment.FailFast` and a killed process still lose what is queued.
+  queued. `Environment.Exit`, `Main` returning, and an unhandled exception each ended the process
+  around the background writer, silently losing up to a full queue, the last lines before a crash
+  among them; a Generic Host app calling `Environment.Exit` lost them too, because the host is not
+  disposed then. The provider now flushes the queue from `AppDomain.ProcessExit` and
+  `AppDomain.UnhandledException`, within `ShutdownTimeout`. `Environment.FailFast` and a killed
+  process still lose what is queued, and so does a SIGTERM to an application without the Generic
+  Host that does not handle the signal: since .NET 10 the runtime raises no event for it.
 - `ClefLogFormatter` writes `@t` with all seven fractional digits. The JSON writer trimmed
   trailing zeros, so a timestamp could lose digits or its whole fraction, which a fixed-pattern
   timestamp parser rejects.
