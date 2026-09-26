@@ -30,8 +30,12 @@ internal sealed class LogPipeline : IAsyncDisposable
     private readonly ILogFormatter _formatter;
     private readonly ILogSink _sink;
     private readonly HostLoomLoggerOptions _options;
+    // CA2213: both are disposed by Shutdown(), on the shutdown thread DisposeAsync starts; the
+    // cancellation source deliberately is not when an abandoned writer may still observe it.
+#pragma warning disable CA2213
     private readonly LoggingMetrics _metrics;
     private readonly CancellationTokenSource _shutdown = new();
+#pragma warning restore CA2213
     private readonly TaskCompletionSource _completion = new(
         TaskCreationOptions.RunContinuationsAsynchronously
     );
@@ -42,6 +46,11 @@ internal sealed class LogPipeline : IAsyncDisposable
 
     private long _dropped;
     private int _state;
+
+    // Monitor for producers blocked on a full queue; see BlockingWrite. A Monitor, not a Lock,
+    // because it is waited on and pulsed.
+    private readonly object _space = new();
+    private int _spaceWaiters;
     private int _disposeStarted;
     private volatile bool _abandoned;
     private volatile int _inFlight;
@@ -64,6 +73,10 @@ internal sealed class LogPipeline : IAsyncDisposable
                 SingleReader = true,
                 SingleWriter = false,
                 FullMode = BoundedChannelFullMode.Wait,
+                // The writer and blocked producers wait synchronously, so completing their waits
+                // inline only releases a waiting thread. Deferred to the thread pool instead, the
+                // wake-up stalled for seconds whenever the pool was saturated.
+                AllowSynchronousContinuations = true,
             }
         );
         _metrics = new LoggingMetrics(
@@ -263,51 +276,81 @@ internal sealed class LogPipeline : IAsyncDisposable
     /// <summary>
     /// Deliberately synchronous: the caller chose backpressure over loss. The wait is bounded by
     /// <see cref="HostLoomLoggerOptions.EnqueueTimeout"/> when one is set, and always ends when
-    /// the channel closes, so a faulted or disposed pipeline never strands a caller.
+    /// the pipeline is disposed or faults, so a closed pipeline never strands a caller. Producers
+    /// wait on <see cref="_space"/>, not on the channel: the channel completes a blocked write
+    /// through the thread pool whatever its options say, so under pool starvation a producer
+    /// could not wake even after the writer made room, and its timeout could not fire either.
     /// </summary>
     private void BlockingWrite(LogEntry entry)
     {
         var level = entry.Level;
         _metrics.RecordBlocked(level);
         var started = Stopwatch.GetTimestamp();
-        try
+        string? dropReason = null;
+        lock (_space)
         {
-            if (_options.EnqueueTimeout is { } limit)
+            Interlocked.Increment(ref _spaceWaiters);
+            try
             {
-                using var timeout = new CancellationTokenSource(limit);
-                Wait(_queue.Writer.WriteAsync(entry, timeout.Token));
+                while (!_queue.Writer.TryWrite(entry))
+                {
+                    var state = Volatile.Read(ref _state);
+                    if (state != StateRunning)
+                    {
+                        dropReason =
+                            state == StateFaulted
+                                ? LoggingMetrics.ReasonWriterFault
+                                : LoggingMetrics.ReasonProviderDisposed;
+                        break;
+                    }
+
+                    var wait = Timeout.Infinite;
+                    if (_options.EnqueueTimeout is { } limit)
+                    {
+                        var remaining = limit - Stopwatch.GetElapsedTime(started);
+                        if (remaining <= TimeSpan.Zero)
+                        {
+                            dropReason = LoggingMetrics.ReasonEnqueueTimeout;
+                            break;
+                        }
+
+                        wait = Milliseconds(remaining);
+                    }
+
+                    Monitor.Wait(_space, wait);
+                }
             }
-            else
+            finally
             {
-                Wait(_queue.Writer.WriteAsync(entry, CancellationToken.None));
+                Interlocked.Decrement(ref _spaceWaiters);
             }
         }
-        catch (OperationCanceledException)
+
+        if (dropReason is not null)
         {
-            Discard(entry, LoggingMetrics.ReasonEnqueueTimeout);
+            Discard(entry, dropReason);
         }
-        catch (ChannelClosedException)
+
+        _metrics.RecordBlockedFor(Stopwatch.GetElapsedTime(started).TotalSeconds, level);
+    }
+
+    /// <summary>Wakes producers blocked on a full queue, after the writer made room or the
+    /// pipeline closed. Free when nobody waits.</summary>
+    private void SignalSpace()
+    {
+        if (Volatile.Read(ref _spaceWaiters) > 0)
         {
-            Discard(
-                entry,
-                _state == StateFaulted
-                    ? LoggingMetrics.ReasonWriterFault
-                    : LoggingMetrics.ReasonProviderDisposed
-            );
-        }
-        finally
-        {
-            _metrics.RecordBlockedFor(Stopwatch.GetElapsedTime(started).TotalSeconds, level);
+            lock (_space)
+            {
+                Monitor.PulseAll(_space);
+            }
         }
     }
 
-    private static void Wait(ValueTask pending)
-    {
-        if (!pending.IsCompletedSuccessfully)
-        {
-            pending.AsTask().GetAwaiter().GetResult();
-        }
-    }
+    private static int Milliseconds(TimeSpan span) =>
+        span.TotalMilliseconds >= int.MaxValue
+            ? Timeout.Infinite
+            : (int)Math.Ceiling(span.TotalMilliseconds);
 
     private void Run()
     {
@@ -365,6 +408,19 @@ internal sealed class LogPipeline : IAsyncDisposable
     }
 
     private void FormatBatch(ChannelReader<LogEntry> reader, ArrayBufferWriter<byte> buffer)
+    {
+        try
+        {
+            FormatEntries(reader, buffer);
+        }
+        finally
+        {
+            // Whatever the batch took from the queue is room a blocked producer can use now.
+            SignalSpace();
+        }
+    }
+
+    private void FormatEntries(ChannelReader<LogEntry> reader, ArrayBufferWriter<byte> buffer)
     {
         _component = LoggingMetrics.ComponentFormatter;
         while (_batch.Count < _options.BatchSize && reader.TryRead(out var entry))
@@ -433,6 +489,7 @@ internal sealed class LogPipeline : IAsyncDisposable
         // Closing the channel releases every producer blocked on the full queue; their waits end
         // in ChannelClosedException, which Enqueue counts as writer-fault drops.
         _queue.Writer.TryComplete();
+        SignalSpace();
         _metrics.RecordFailure(_component);
         DiscardBatch(LoggingMetrics.ReasonWriterFault);
         DiscardQueued(LoggingMetrics.ReasonWriterFault);
@@ -496,59 +553,80 @@ internal sealed class LogPipeline : IAsyncDisposable
     /// (drain, then sink disposal) plus a short grace, even when the sink has stopped making
     /// progress. Flushing logs must never be the thing that hangs or throws on the way down.
     /// </summary>
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposeStarted, 1) == 1)
         {
-            return;
+            return ValueTask.CompletedTask;
         }
 
         Interlocked.CompareExchange(ref _state, StateDisposed, StateRunning);
         _queue.Writer.TryComplete();
+        SignalSpace();
 
-        var finished = await WaitForWriterAsync(_options.ShutdownTimeout).ConfigureAwait(false);
-        Task<Exception?>? cancellation = null;
+        // Every deadline of the shutdown is a kernel-timed wait on a thread of its own. Timed
+        // awaits fire on the thread pool, so under pool starvation, often the very condition a
+        // process is shutting down under, the shutdown budget stretched until the pool injected
+        // threads. The caller only waits for the outcome.
+        var shutdown = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                Shutdown();
+            }
+            catch (Exception)
+            {
+                // Disposal must never throw; every phase already accounts for its own failures.
+                _metrics.RecordFailure(LoggingMetrics.ComponentSink);
+            }
+            finally
+            {
+                shutdown.TrySetResult();
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "HostLoom Logging Shutdown",
+        };
+        thread.Start();
+        return new ValueTask(shutdown.Task);
+    }
+
+    private void Shutdown()
+    {
+        var finished = _completion.Task.Wait(Milliseconds(_options.ShutdownTimeout));
         if (!finished)
         {
-            // Callbacks can block synchronously too. Neither they nor sink disposal may
-            // occupy the caller or an abandoned shared thread-pool worker.
+            // Callbacks can block synchronously too. Neither they nor sink disposal may occupy
+            // the caller or a shared thread-pool worker.
 #pragma warning disable CA1849 // Synchronous callbacks stay on our owned background thread, not the shared pool.
-            cancellation = RunShutdownWorker(() =>
+            var cancellation = RunShutdownWorker(() =>
             {
                 _shutdown.Cancel();
                 return ValueTask.CompletedTask;
             });
 #pragma warning restore CA1849
-            try
-            {
-                await Task.WhenAll(_completion.Task, cancellation)
-                    .WaitAsync(AbandonGrace)
-                    .ConfigureAwait(false);
-            }
-            catch (TimeoutException) { }
+            // Neither task faults: the writer's completion is only ever set, and the worker
+            // returns its failure as a value.
+            Task.WaitAll([_completion.Task, cancellation], AbandonGrace);
             finished = _completion.Task.IsCompleted && cancellation.IsCompleted;
-            if (
-                cancellation.IsCompletedSuccessfully
-                && await cancellation.ConfigureAwait(false) is not null
-            )
+            if (cancellation.IsCompletedSuccessfully && cancellation.Result is not null)
+            {
                 _metrics.RecordFailure(LoggingMetrics.ComponentSink);
+            }
         }
 
         if (finished)
         {
-            try
+            // Bounded like the drain: a sink that hangs inside its own flush-on-dispose must not
+            // be able to hang application shutdown.
+            var disposal = RunShutdownWorker(_sink.DisposeAsync);
+            if (
+                !disposal.Wait(Milliseconds(_options.ShutdownTimeout))
+                || disposal.Result is not null
+            )
             {
-                // Bounded like the drain: a sink that hangs inside its own flush-on-dispose must
-                // not be able to hang application shutdown.
-                var failure = await RunShutdownWorker(_sink.DisposeAsync)
-                    .WaitAsync(_options.ShutdownTimeout)
-                    .ConfigureAwait(false);
-                if (failure is not null)
-                    _metrics.RecordFailure(LoggingMetrics.ComponentSink);
-            }
-            catch (Exception)
-            {
-                // A sink that fails or times out on the way down must not break shutdown.
                 _metrics.RecordFailure(LoggingMetrics.ComponentSink);
             }
 
@@ -603,18 +681,5 @@ internal sealed class LogPipeline : IAsyncDisposable
         };
         worker.Start();
         return completion.Task;
-    }
-
-    private async ValueTask<bool> WaitForWriterAsync(TimeSpan timeout)
-    {
-        try
-        {
-            await _completion.Task.WaitAsync(timeout).ConfigureAwait(false);
-            return true;
-        }
-        catch (TimeoutException)
-        {
-            return false;
-        }
     }
 }

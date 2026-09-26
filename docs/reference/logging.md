@@ -68,6 +68,12 @@ stall also respects these phase budgets. A sink whose writer or callbacks remain
 abandoned without concurrent disposal. Bounded shutdown cannot force that external code to
 release its resources.
 
+None of the logging bounds depends on the thread pool. The shutdown deadlines are timed waits on
+a thread of their own, `DisposeAsync` returns to its caller at once, a caller blocked on a full
+queue waits on a monitor the writer signals, and the writer wakes as soon as a record arrives.
+With every pool thread busy, `EnqueueTimeout` and `ShutdownTimeout` still hold, and records
+still reach the sink.
+
 `DestructuringOptions`: `MaxDepth` 5, `MaxCollectionItems` 32,
 `MaxObjectMembers` 64, `MaxStringLength` 4096,
 `MaxEncodedBytesPerRecord` 64 KiB, `MapLegacyAttributes` true, `TypeTags` false,

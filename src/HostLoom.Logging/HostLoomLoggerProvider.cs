@@ -58,12 +58,14 @@ public sealed class HostLoomLoggerProvider
 
     public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        // Drains the queue before releasing the sink; an async logger that skips this loses whatever
-        // was still in flight at shutdown, which is exactly when the interesting logs are written.
-        await _pipeline.DisposeAsync().ConfigureAwait(false);
         _loggers.Clear();
         GC.SuppressFinalize(this);
+        // Drains the queue before releasing the sink; an async logger that skips this loses
+        // whatever was still in flight at shutdown, which is exactly when the interesting logs
+        // are written. Returned rather than awaited: a continuation here would need a free
+        // thread-pool thread, and the shutdown bound must hold while the pool is starved.
+        return _pipeline.DisposeAsync();
     }
 }

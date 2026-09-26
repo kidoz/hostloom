@@ -35,10 +35,9 @@ public sealed class LoggingShutdownTests
                     TestContext.Current.CancellationToken
                 );
             }
-            disposing = Task.Run(
-                async () => await provider.DisposeAsync(),
-                TestContext.Current.CancellationToken
-            );
+            // Called directly, not through Task.Run: disposal returns to its caller at once, and
+            // starting it on the pool would make the test depend on a free pool thread.
+            disposing = provider.DisposeAsync().AsTask();
             await sink.Entered.Task.WaitAsync(
                 TimeSpan.FromSeconds(5),
                 TestContext.Current.CancellationToken
