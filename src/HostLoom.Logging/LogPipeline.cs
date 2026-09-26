@@ -12,10 +12,11 @@ internal readonly record struct StaticField(string Name, byte[] Value);
 /// Single-reader queue plus a background writer on a dedicated thread. The calling thread renders
 /// and enqueues; all formatting and I/O happens off it, which is what keeps a log call off the
 /// tail latency path. A record the formatter fails on is cut from its batch and dropped alone, so
-/// one unformattable record never costs the records around it. An unexpected sink failure faults
-/// the pipeline instead of silently killing the writer: the channel closes, queued and in-flight
-/// records are counted as dropped, and no caller is ever left waiting on a writer that has
-/// stopped reading. A process that ends without disposing the pipeline, through
+/// one unformattable record never costs the records around it, and a failed sink write costs its
+/// batch alone, so a sink that recovers gets the records after it. Only a defect in the writer
+/// itself faults the pipeline, instead of silently killing the writer: the channel closes, queued
+/// and in-flight records are counted as dropped, and no caller is ever left waiting on a writer
+/// that has stopped reading. A process that ends without disposing the pipeline, through
 /// Environment.Exit, Main returning, or an unhandled exception, still gets the queued records
 /// out: its exit events flush the queue within the shutdown budget.
 /// </summary>
@@ -128,7 +129,8 @@ internal sealed class LogPipeline : IAsyncDisposable
     /// <summary>Records dropped for any reason. Surfaced so overload is visible, not silent.</summary>
     public long Dropped => Interlocked.Read(ref _dropped);
 
-    /// <summary>The sink failure that faulted the background writer. Null while it is healthy.</summary>
+    /// <summary>The defect that stopped the background writer. Null while it is healthy; sink and
+    /// formatter failures cost only their records and never set it.</summary>
     public Exception? WriterFault => _writerFault;
 
     /// <summary>Serializes '@' hole values on the producer thread; shared by every logger.</summary>
@@ -519,27 +521,39 @@ internal sealed class LogPipeline : IAsyncDisposable
             FlushSink();
             _drained = true;
         }
-        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+        catch (Exception) when (_shutdown.IsCancellationRequested)
         {
-            // The shutdown deadline expired and disposal cancelled the sink mid-batch. Any other
-            // OperationCanceledException is a sink failure and faults the pipeline below —
-            // treating it as shutdown would leave producers facing an open channel nobody reads.
+            // The shutdown deadline expired and disposal cancelled the sink mid-batch; whatever
+            // the sink threw on its way out is that cancellation's doing.
             DiscardBatch(LoggingMetrics.ReasonShutdownTimeout);
             DiscardQueued(LoggingMetrics.ReasonShutdownTimeout);
         }
         catch (Exception failure)
         {
+            // Sink and formatter failures are handled where they happen; this is a defect.
             Fault(failure);
         }
     }
 
+    /// <summary>
+    /// A failed flush loses nothing the pipeline can still count, since the records are already
+    /// the sink's, and it stops nothing: it is counted and the writer carries on. Only disposal
+    /// giving up on the writer ends the loop from here.
+    /// </summary>
     private void FlushSink()
     {
         _component = LoggingMetrics.ComponentSink;
-        var flush = _sink.FlushAsync(_shutdown.Token);
-        if (!flush.IsCompletedSuccessfully)
+        try
         {
-            flush.AsTask().GetAwaiter().GetResult();
+            var flush = _sink.FlushAsync(_shutdown.Token);
+            if (!flush.IsCompletedSuccessfully)
+            {
+                flush.AsTask().GetAwaiter().GetResult();
+            }
+        }
+        catch (Exception) when (!_shutdown.IsCancellationRequested)
+        {
+            _metrics.RecordFailure(LoggingMetrics.ComponentSink);
         }
     }
 
@@ -616,7 +630,22 @@ internal sealed class LogPipeline : IAsyncDisposable
         {
             _component = LoggingMetrics.ComponentSink;
             _inFlight = _batch.Count;
-            _sink.Write(buffer.WrittenSpan, _shutdown.Token);
+            try
+            {
+                _sink.Write(buffer.WrittenSpan, _shutdown.Token);
+            }
+            catch (Exception) when (!_shutdown.IsCancellationRequested)
+            {
+                // A failed write costs its batch, never the pipeline: the records are counted and
+                // the writer goes on, so a sink that recovers, a disk with space again or a
+                // reconnected socket, gets the records after it. The batch is not retried: the
+                // sink may have written part of it already.
+                _metrics.RecordFailure(LoggingMetrics.ComponentSink);
+                buffer.ResetWrittenCount();
+                DiscardBatch(LoggingMetrics.ReasonSinkFailed);
+                return;
+            }
+
             buffer.ResetWrittenCount();
             _inFlight = 0;
         }

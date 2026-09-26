@@ -27,7 +27,13 @@ public interface ILogFormatter
     bool OwnsFieldName(ReadOnlySpan<byte> name) => false;
 }
 
-/// <summary>Consumes formatted bytes. Called only from the single writer thread.</summary>
+/// <summary>
+/// Consumes formatted bytes. Called only from the single writer thread. An exception from
+/// <see cref="Write"/> costs only the batch being written: the pipeline counts its records as
+/// dropped with reason <c>sink_failed</c> and goes on with the next batch on the same instance,
+/// so a sink must remain usable after it throws. An exception from <see cref="FlushAsync"/> is
+/// counted and costs nothing further.
+/// </summary>
 public interface ILogSink : IAsyncDisposable
 {
     /// <summary>

@@ -93,7 +93,7 @@ background writer.
 | `hostloom.logging.enqueue.blocked.duration` | histogram (s) | Time log calls spent blocked on a full queue |
 | `hostloom.logging.failures` | counter | Unexpected component failures inside the logging pipeline |
 | `hostloom.logging.queue.depth` | observable gauge | Records waiting in the bounded queue |
-| `hostloom.logging.writer.state` | observable gauge | 1 while the background writer is healthy, 0 once faulted or disposed |
+| `hostloom.logging.writer.state` | observable gauge | 1 while the background writer runs, 0 once a defect stopped it or the provider was disposed; a failing sink leaves it at 1 and shows as `sink_failed` drops |
 
 ## Cache instruments (`HostLoom.Caching`)
 

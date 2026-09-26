@@ -160,8 +160,15 @@ The background writer isolates formatter failures to a single record. If `Format
 counts the record as dropped with reason `format_failed`. It then formats the rest of the batch
 and later records with the same formatter instance, so a custom formatter must stay usable
 after throwing. A formatter that throws on every record therefore loses every record without
-stopping the writer, so watch the `format_failed` drop count. Only a sink failure faults the
-pipeline (see [Health](#health)).
+stopping the writer, so watch the `format_failed` drop count.
+
+Sink failures cost a batch in the same way. If `Write` throws, the writer counts the batch's
+records as dropped with reason `sink_failed` and goes on with the next batch on the same sink, so
+a sink that recovers, such as a disk with space again, gets every record after the failure. The
+failed batch is not retried, because the sink may already have written part of it. A sink that
+throws on every write loses every record without stopping the writer or blocking a caller, so
+watch the `sink_failed` drop count. A failed `FlushAsync` is counted under `failures` and costs
+nothing further.
 
 ## Event holes
 
@@ -315,9 +322,9 @@ neither replays nor duplicates.
 `HostLoom.Logging` meter publishes seven instruments — see the
 [observability reference](observability.md#logging-instruments-hostloomlogging).
 
-`WriterFault` holds the sink failure that stopped the background writer. After a fault the
-provider drops every record it receives. A formatter failure never sets `WriterFault`: it costs
-only the record being formatted. `hostloom.logging.records.dropped` carries a `level` tag and one
+`WriterFault` holds the defect that stopped the background writer. After a fault the provider
+drops every record it receives. Formatter and sink failures never set `WriterFault`: a formatter
+failure costs only the record being formatted, and a failed sink write only its batch. `hostloom.logging.records.dropped` carries a `level` tag and one
 of these `reason` values:
 
 | Reason | Record dropped because |
@@ -325,7 +332,8 @@ of these `reason` values:
 | `queue_full` | the queue was full and the policy discards the record |
 | `enqueue_timeout` | a blocking enqueue reached `EnqueueTimeout` |
 | `format_failed` | the formatter threw while formatting this record |
-| `writer_fault` | a sink failure faulted the writer while the record was queued or in its batch, or before it arrived |
+| `sink_failed` | the sink threw while writing the record's batch |
+| `writer_fault` | a defect stopped the writer while the record was queued or in its batch, or before it arrived |
 | `provider_disposed` | it arrived after disposal started |
 | `shutdown_timeout` | disposal reached its deadline before the record was written |
 

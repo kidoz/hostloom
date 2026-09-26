@@ -235,35 +235,91 @@ public sealed class LoggingTests
         await provider.DisposeAsync();
     }
 
-    [Fact(Timeout = 30_000)]
-    public async Task A_sink_failure_faults_the_pipeline_and_never_strands_a_caller()
+    [Fact]
+    public async Task A_failed_sink_write_costs_its_batch_and_the_writer_carries_on()
     {
-        var sink = NewFailingSink(new InvalidOperationException("the sink broke"));
+        var reasons = new List<string>();
+        var gate = new Lock();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (
+                instrument.Meter.Name == "HostLoom.Logging"
+                && instrument.Name == "hostloom.logging.records.dropped"
+            )
+            {
+                l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>(
+            (instrument, measurement, tags, state) =>
+            {
+                foreach (var tag in tags)
+                {
+                    if (tag.Key == "reason" && tag.Value is string reason)
+                    {
+                        lock (gate)
+                        {
+                            reasons.Add(reason);
+                        }
+                    }
+                }
+            }
+        );
+        listener.Start();
+
+        var sink = NewFlakySink(new InvalidOperationException("the sink broke"), failingWrites: 1);
         await using var provider = new HostLoomLoggerProvider(
             new JsonLogFormatter(),
             sink,
             new HostLoomLoggerOptions { QueueFullPolicy = QueueFullPolicy.Block }
         );
-        var logger = provider.CreateLogger("Faulty");
+        var logger = provider.CreateLogger("Flaky");
 
-        logger.LogFast(LogLevel.Information, $"first entry breaks the sink");
+        logger.LogFast(LogLevel.Information, $"lost with the failed write");
+        Assert.True(
+            provider.Flush(TimeSpan.FromSeconds(10)),
+            "the writer never got past the failure"
+        );
+        Assert.Equal(1, provider.Dropped);
 
-        var deadline = Stopwatch.StartNew();
-        while (provider.WriterFault is null && deadline.Elapsed < TimeSpan.FromSeconds(10))
+        // A sink that recovers, a disk with space again or a reconnected socket, gets every
+        // record after the failure: one failed write used to stop logging until a restart.
+        logger.LogFast(LogLevel.Error, $"written after the failure");
+        await provider.DisposeAsync();
+
+        Assert.Null(provider.WriterFault);
+        Assert.Equal(1, provider.Dropped);
+        Assert.Equal(["written after the failure"], sink.Messages());
+        lock (gate)
         {
-            await Task.Delay(5, TestContext.Current.CancellationToken);
+            Assert.Contains("sink_failed", reasons);
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task A_sink_that_always_fails_never_strands_a_blocking_caller()
+    {
+        var sink = NewFlakySink(new IOException("the pipe is gone"), failingWrites: int.MaxValue);
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions { QueueFullPolicy = QueueFullPolicy.Block, QueueCapacity = 4 }
+        );
+        var logger = provider.CreateLogger("Broken");
+
+        // Block waits for room without limit. The writer keeps taking batches from a sink that
+        // fails every write, so the queue keeps emptying and no caller waits on a dead writer.
+        for (var i = 0; i < 1000; i++)
+        {
+            TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+            logger.LogFast(LogLevel.Error, $"record {i}");
         }
 
-        Assert.IsType<InvalidOperationException>(provider.WriterFault);
-
-        // Block would normally wait on a full queue forever. A faulted pipeline must instead turn
-        // every later call into a counted, non-blocking no-op — a dead writer that still accepts
-        // blocking callers is a service-wide deadlock.
-        var before = provider.Dropped;
-        logger.LogFast(LogLevel.Error, $"after the fault");
-        Assert.Equal(before + 1, provider.Dropped);
-
         await provider.DisposeAsync();
+        Assert.Null(provider.WriterFault);
+        Assert.Equal(1000, provider.Dropped);
+        Assert.Empty(sink.Messages());
     }
 
     [Fact(Timeout = 30_000)]
@@ -398,10 +454,13 @@ public sealed class LoggingTests
         Assert.Equal(3, provider.Dropped);
     }
 
-    [Fact(Timeout = 30_000)]
-    public async Task A_stray_cancellation_faults_the_pipeline_instead_of_vanishing()
+    [Fact]
+    public async Task A_stray_cancellation_from_the_sink_costs_its_batch_not_the_writer()
     {
-        var sink = NewFailingSink(new OperationCanceledException("a stray cancellation"));
+        var sink = NewFlakySink(
+            new OperationCanceledException("a stray cancellation"),
+            failingWrites: 1
+        );
         await using var provider = new HostLoomLoggerProvider(
             new JsonLogFormatter(),
             sink,
@@ -410,20 +469,19 @@ public sealed class LoggingTests
         var logger = provider.CreateLogger("Cancelled");
 
         logger.LogFast(LogLevel.Information, $"triggers a stray cancellation");
+        Assert.True(
+            provider.Flush(TimeSpan.FromSeconds(10)),
+            "the writer stopped at the cancellation"
+        );
 
-        var deadline = Stopwatch.StartNew();
-        while (provider.WriterFault is null && deadline.Elapsed < TimeSpan.FromSeconds(10))
-        {
-            await Task.Delay(5, TestContext.Current.CancellationToken);
-        }
-
-        // An OperationCanceledException nobody asked for is a component failure, not a shutdown.
-        // Swallowing it would leave the writer dead while producers still see a running pipeline.
-        Assert.IsType<OperationCanceledException>(provider.WriterFault);
-
-        var before = provider.Dropped;
+        // An OperationCanceledException nobody asked for is a failed write, not a shutdown: the
+        // writer counts its batch and keeps reading, where stopping would strand the queue.
         logger.LogFast(LogLevel.Warning, $"after the stray cancellation");
-        Assert.Equal(before + 1, provider.Dropped);
+        await provider.DisposeAsync();
+
+        Assert.Null(provider.WriterFault);
+        Assert.Equal(1, provider.Dropped);
+        Assert.Equal(["after the stray cancellation"], sink.Messages());
     }
 
     [Fact]
@@ -1102,7 +1160,8 @@ public sealed class LoggingTests
 
     private static RecordingSink NewRecordingSink() => new();
 
-    private static FailingSink NewFailingSink(Exception failure) => new(failure);
+    private static FlakySink NewFlakySink(Exception failure, int failingWrites) =>
+        new(failure, failingWrites);
 #pragma warning restore CA2000
 
     private static int Expensive(ref int counter)
@@ -1166,15 +1225,46 @@ public sealed class LoggingTests
         }
     }
 
-    /// <summary>Fails every write — the sink failure that must still fault the pipeline.</summary>
-    private sealed class FailingSink(Exception failure) : ILogSink
+    /// <summary>Fails its first writes, then keeps the message of every record it is given.</summary>
+    private sealed class FlakySink(Exception failure, int failingWrites) : ILogSink
     {
-        public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken) =>
-            throw failure;
+        private readonly List<string> _messages = [];
+        private readonly Lock _gate = new();
+        private int _writes;
+
+        public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken)
+        {
+            lock (_gate)
+            {
+                if (_writes < failingWrites)
+                {
+                    _writes++;
+                    throw failure;
+                }
+
+                foreach (
+                    var line in Encoding
+                        .UTF8.GetString(payload)
+                        .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                )
+                {
+                    using var document = JsonDocument.Parse(line);
+                    _messages.Add(document.RootElement.GetProperty("message").GetString()!);
+                }
+            }
+        }
 
         public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public IReadOnlyList<string> Messages()
+        {
+            lock (_gate)
+            {
+                return [.. _messages];
+            }
+        }
     }
 
     /// <summary>

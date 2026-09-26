@@ -33,11 +33,12 @@ public sealed class HostLoomLoggerProvider
     }
 
     /// <summary>Records dropped for any reason: overload, timeout, a record the formatter
-    /// failed on, a writer fault, or shutdown.</summary>
+    /// failed on, a failed sink write, a writer fault, or shutdown.</summary>
     public long Dropped => _pipeline.Dropped;
 
-    /// <summary>The sink failure that faulted the background writer, if any. Null while
-    /// healthy; a formatter failure drops only its own record and never sets it.</summary>
+    /// <summary>The defect that stopped the background writer, if any. Null while healthy; a
+    /// formatter failure drops only its own record and a failed sink write only its batch, and
+    /// neither sets it.</summary>
     public Exception? WriterFault => _pipeline.WriterFault;
 
     internal IExternalScopeProvider ScopeProvider => _scopeProvider;
