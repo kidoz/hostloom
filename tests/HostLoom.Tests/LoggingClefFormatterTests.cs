@@ -102,6 +102,22 @@ public sealed class LoggingClefFormatterTests
     }
 
     [Fact]
+    public async Task The_timestamp_always_carries_seven_fractional_digits()
+    {
+        var options = new HostLoomLoggerOptions
+        {
+            AttachMachineName = false,
+            TimeProvider = new FixedTimeProvider(
+                new DateTimeOffset(2026, 8, 26, 10, 0, 0, TimeSpan.Zero)
+            ),
+        };
+        var (_, line) = await LogAsync(logger => logger.LogInformation("tick"), options: options);
+
+        // A whole second is where a trimming encoder would drop the fraction entirely.
+        Assert.Contains("\"@t\":\"2026-08-26T10:00:00.0000000Z\"", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task An_event_id_uses_the_ordinary_property_shape()
     {
         var (root, _) = await LogAsync(logger =>
@@ -128,16 +144,18 @@ public sealed class LoggingClefFormatterTests
 
     private static async Task<(JsonElement Root, string Line)> LogAsync(
         Action<ILogger> log,
-        ClefLogFormatter? formatter = null
+        ClefLogFormatter? formatter = null,
+        HostLoomLoggerOptions? options = null
     )
     {
-        var (roots, lines) = await LogManyAsync(log, formatter);
+        var (roots, lines) = await LogManyAsync(log, formatter, options);
         return (Assert.Single(roots), Assert.Single(lines));
     }
 
     private static async Task<(JsonElement[] Roots, string[] Lines)> LogManyAsync(
         Action<ILogger> log,
-        ClefLogFormatter? formatter = null
+        ClefLogFormatter? formatter = null,
+        HostLoomLoggerOptions? options = null
     )
     {
         // CA2000: sink ownership transfers to the provider.
@@ -147,7 +165,7 @@ public sealed class LoggingClefFormatterTests
         await using var provider = new HostLoomLoggerProvider(
             formatter ?? new ClefLogFormatter(),
             sink,
-            new HostLoomLoggerOptions { AttachMachineName = false }
+            options ?? new HostLoomLoggerOptions { AttachMachineName = false }
         );
         log(provider.CreateLogger("Clef"));
         await provider.DisposeAsync();
@@ -155,6 +173,11 @@ public sealed class LoggingClefFormatterTests
         var lines = sink.Lines();
         var roots = lines.Select(line => JsonDocument.Parse(line).RootElement.Clone()).ToArray();
         return (roots, lines);
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
     }
 
     private sealed class CollectingSink : ILogSink

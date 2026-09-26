@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
@@ -41,8 +42,17 @@ public sealed class ClefLogFormatter : ILogFormatter
 
         _writer.Reset(writer);
         _writer.WriteStartObject();
-        // UtcDateTime keeps DateTimeKind.Utc, so the timestamp serializes with the CLEF 'Z'.
-        _writer.WriteString("@t"u8, record.Timestamp.UtcDateTime);
+        // Round-trip format, as Serilog writes it: always seven fractional digits and the 'Z' that
+        // UtcDateTime's DateTimeKind.Utc produces. The writer's own DateTime encoding trims
+        // trailing zeros, which a fixed-pattern timestamp parser would reject.
+        Span<byte> timestamp = stackalloc byte[33];
+        record.Timestamp.UtcDateTime.TryFormat(
+            timestamp,
+            out var length,
+            "O",
+            CultureInfo.InvariantCulture
+        );
+        _writer.WriteString("@t"u8, timestamp[..length]);
         if (record.Template is { } template)
         {
             _writer.WriteString("@mt"u8, template);

@@ -123,6 +123,9 @@ construction, and the configuration overload rejects them at host startup.
 | `JsonLogFormatter(int maxExceptionLength = 32 * 1024)` | ECS-style compact JSON, one object per line; the hosted default |
 | `ClefLogFormatter(int maxExceptionLength = 32 * 1024)` | CLEF (`@t`, `@mt`, `@l`, `@x`, `@tr`, `@sp`, …); the bootstrap default |
 
+`ClefLogFormatter` writes the shape of Serilog's `CompactJsonFormatter`. `@t` is the UTC
+round-trip format with all seven fractional digits (`2026-09-26T14:25:46.9209690Z`).
+
 The background writer isolates formatter failures to a single record. If `Format` or
 `OwnsFieldName` throws, the writer removes that record's partial output from the batch and
 counts the record as dropped with reason `format_failed`. It then formats the rest of the batch
