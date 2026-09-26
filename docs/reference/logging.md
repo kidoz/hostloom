@@ -48,7 +48,7 @@ runs before the provider; HostLoom does no level filtering of its own.
 | `QueueCapacity` | `8192` | Bounded queue size (records) |
 | `QueueFullPolicy` | `DropBelowWarning` | `Block` \| `DropNewest` \| `DropBelowWarning` |
 | `BatchSize` | `256` | Records per writer batch |
-| `EnqueueTimeout` | null (block without limit) | Cap on how long a log call may block under `Block` |
+| `EnqueueTimeout` | 1 s | Cap on how long a log call may wait for room on a full queue before its record is dropped and counted; null waits without limit |
 | `ShutdownTimeout` | 5 s | Separate budgets for draining writes and disposing the sink; also bounds the flush when the process ends without disposal |
 | `MaxFieldNameLength` | `128` | UTF-8 bytes; a longer name drops the field, never the record |
 | `MaxFieldsPerRecord` | `64` | Fields past the cap are dropped and counted; the record ships. Capture itself stops at four times the cap |
@@ -67,6 +67,13 @@ and the entire sink disposal invocation run on dedicated background threads, so 
 stall also respects these phase budgets. A sink whose writer or callbacks remain blocked is
 abandoned without concurrent disposal. Bounded shutdown cannot force that external code to
 release its resources.
+
+A log call waits for room on a full queue only under `Block`, and for Warning and above under
+`DropBelowWarning`. `EnqueueTimeout` caps that wait at one second by default. A sink that stops
+draining, such as stdout that nobody reads, then costs each such call at most a second, and the
+record is dropped and counted as `enqueue_timeout`. Setting it to null makes those calls wait as
+long as the sink stalls, so a stuck stdout stalls every thread that logs a warning. Configuration
+sets null with an empty value, `"EnqueueTimeout": ""`.
 
 A process that ends without disposing the provider still gets its queued records out. The
 writer is a background thread, so the queue would otherwise die with the process, taking the
@@ -276,9 +283,10 @@ masking policy does not reach; each `Scope` entry is bounded by `MaxTextFieldLen
 - The default `QueueFullPolicy.DropBelowWarning` drops Information and Debug records while the
   queue is full, and only Warning and above block. An audit trail logged at Information level
   can therefore lose events under sustained overload, silently apart from the `Dropped` counter
-  and the `hostloom.logging.records.dropped` instrument. Log audit events at Warning or above, or use
-  `QueueFullPolicy.Block` with an `EnqueueTimeout` so a stalled sink bounds the caller's wait
-  instead of stalling the application.
+  and the `hostloom.logging.records.dropped` instrument. Log audit events at Warning or above, or
+  use `QueueFullPolicy.Block`. Either way a record still waiting for room after `EnqueueTimeout`,
+  one second by default, is dropped too; only a null `EnqueueTimeout` loses nothing, and it lets a
+  stalled sink stall the application.
 
 ## LogFast
 

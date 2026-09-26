@@ -97,6 +97,28 @@ public sealed class LoggingRegistrationTests
         );
     }
 
+    [Theory]
+    [InlineData("00:00:02", 2_000)]
+    [InlineData("", null)]
+    public void Configuration_sets_the_enqueue_timeout_or_lifts_it_with_an_empty_value(
+        string value,
+        int? milliseconds
+    )
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["EnqueueTimeout"] = value })
+            .Build();
+        var options = new HostLoomLoggerOptions();
+        Assert.Equal(TimeSpan.FromSeconds(1), options.EnqueueTimeout);
+
+        HostLoom.Logging.LoggingBuilderExtensions.BindOptions(options, configuration);
+
+        Assert.Equal(
+            milliseconds is { } ms ? TimeSpan.FromMilliseconds(ms) : null,
+            options.EnqueueTimeout
+        );
+    }
+
     [Fact]
     public async Task A_sink_factory_registration_binds_its_options_from_configuration()
     {

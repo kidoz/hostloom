@@ -50,10 +50,10 @@ public interface ILogSink : IAsyncDisposable
 public enum QueueFullPolicy
 {
     /// <summary>
-    /// Block the caller until there is room. Loses nothing; propagates backpressure. The wait is
-    /// synchronous on the calling thread — bound it with
-    /// <see cref="HostLoomLoggerOptions.EnqueueTimeout"/> if a stalled sink must not be able to
-    /// stall the application with it.
+    /// Block the caller until there is room, propagating backpressure. The wait is synchronous on
+    /// the calling thread and lasts at most <see cref="HostLoomLoggerOptions.EnqueueTimeout"/>,
+    /// one second by default, after which the record is dropped and counted. Set the timeout to
+    /// null to lose nothing, at the price of stalling the application with a stalled sink.
     /// </summary>
     Block,
 
@@ -97,11 +97,13 @@ public sealed class HostLoomLoggerOptions
 
     /// <summary>
     /// Upper bound on one blocking enqueue (the <see cref="QueueFullPolicy.Block"/> policy, and
-    /// Warning-and-above under <see cref="QueueFullPolicy.DropBelowWarning"/>). Null blocks
-    /// without limit. When the bound is reached the record is dropped and counted, trading
-    /// completeness for liveness.
+    /// Warning-and-above under <see cref="QueueFullPolicy.DropBelowWarning"/>). When the bound is
+    /// reached the record is dropped and counted, trading completeness for liveness. One second
+    /// by default, so a sink that stops draining, such as stdout nobody reads, costs a blocked
+    /// call at most that long instead of stalling it for as long as the sink stalls. Null blocks
+    /// without limit.
     /// </summary>
-    public TimeSpan? EnqueueTimeout { get; set; }
+    public TimeSpan? EnqueueTimeout { get; set; } = TimeSpan.FromSeconds(1);
 
     /// <summary>
     /// Longest accepted field name, in UTF-8 bytes before escaping. A longer name drops the

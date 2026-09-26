@@ -297,6 +297,39 @@ public sealed class LoggingTests
         }
     }
 
+    [Fact]
+    public async Task A_warning_waits_at_most_the_default_enqueue_timeout_for_a_stalled_sink()
+    {
+        var sink = NewBlockingSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new HostLoomLoggerOptions { QueueCapacity = 1, BatchSize = 1 }
+        );
+        var logger = provider.CreateLogger("Stalled");
+
+        // The sink holds the writer inside the first record; Information records are dropped as
+        // soon as the one-record queue behind it is full, which is how the test knows it is.
+        for (var i = 0; i < 1000 && provider.Dropped == 0; i++)
+        {
+            logger.LogFast(LogLevel.Information, $"fills the queue {i}");
+            await Task.Delay(1, TestContext.Current.CancellationToken);
+        }
+
+        Assert.True(provider.Dropped > 0, "the queue never filled");
+
+        // A warning waits for room, but no longer than the default bound: a stdout nobody reads
+        // used to stall every thread that logged one for as long as the sink stalled.
+        var before = provider.Dropped;
+        var elapsed = Stopwatch.StartNew();
+        logger.LogFast(LogLevel.Warning, $"waits for room");
+        elapsed.Stop();
+
+        Assert.Equal(before + 1, provider.Dropped);
+        Assert.InRange(elapsed.Elapsed, TimeSpan.FromMilliseconds(900), TimeSpan.FromSeconds(4));
+        sink.Release();
+    }
+
     [Fact(Timeout = 30_000)]
     public async Task A_sink_that_always_fails_never_strands_a_blocking_caller()
     {
