@@ -95,10 +95,19 @@ public static class LoggingBuilderExtensions
         return Register(builder, sink, options, formatter);
     }
 
-    internal static void BindOptions(HostLoomLoggerOptions options, IConfiguration configuration) =>
+    internal static void BindOptions(HostLoomLoggerOptions options, IConfiguration configuration)
+    {
         // Strict on purpose: a typo in a cap or policy name should fail startup loudly rather
-        // than silently leave the default in place.
+        // than silently leave the default in place. The binding generator compiles this call.
         configuration.Bind(options, binder => binder.ErrorOnUnknownConfiguration = true);
+
+        // An empty value lifts the limit, as the reflection binder made it do; the generated
+        // binder leaves a nullable value alone when its configuration value is empty.
+        if (configuration[nameof(HostLoomLoggerOptions.EnqueueTimeout)] is "")
+        {
+            options.EnqueueTimeout = null;
+        }
+    }
 
     private static ILoggingBuilder Register(
         ILoggingBuilder builder,
