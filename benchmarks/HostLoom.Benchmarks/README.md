@@ -110,6 +110,27 @@ Mapping comparisons and strategy suites have their own
 dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --filter "*Logging*"
 ```
 
+`LoggingBenchmarks` measures HostLoom's own paths, including the formatter-only background
+half. Two suites compare HostLoom with Serilog as an application reaches both, through
+`Microsoft.Extensions.Logging.ILogger` and a `LoggerFactory`:
+
+- `LoggingSerilogComparisonBenchmarks` times one call per shape (two scalars, a destructured
+  contract, a masked DTO, eleven enriched properties, a scope, an exception, a collection hole,
+  a disabled level). Serilog runs with Serilog.Extensions.Logging, `CompactJsonFormatter`,
+  Destructurama attribute masking, and a sink that does per event what Serilog.Sinks.Console does
+  with a formatter configured; a second Serilog variant sits behind Serilog.Sinks.Async. HostLoom
+  runs with `ClefLogFormatter` and `QueueFullPolicy.Block`, and cleanup fails if it dropped a
+  record, so no timing counts discarded work. Sinks discard their output: stdout I/O is excluded.
+  The timings cover the calling thread only; the allocation columns count every thread.
+- `LoggingSerilogThroughputBenchmarks` has 1 or 8 threads log 2,000 records each and ends an
+  operation only when the sink has received all of them, so background formatting and contention
+  are inside the timing. Its results are per 2,000 records per thread: divide by `Threads` for a
+  per-record figure.
+
+BenchmarkDotNet refuses to generate its build when another `HostLoom.Benchmarks.csproj` exists
+below the repository root, as it does in a local `artifacts/` source snapshot. Add `--inProcess`
+to measure inside the already-built Release binary instead.
+
 ## Dry runs
 
 For a quick build-and-discovery smoke run rather than statistically meaningful results:
