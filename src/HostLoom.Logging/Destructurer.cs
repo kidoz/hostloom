@@ -466,6 +466,13 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
             written++;
         }
 
+        if (plan.TypeTag is { } typeTag && !walk.Truncated)
+        {
+            var mark = walk.Position(writer);
+            writer.WriteString("$type"u8, typeTag);
+            Admit(writer, ref walk, depth, mark, written == 0, TruncatedMember);
+        }
+
         writer.WriteEndObject();
     }
 
@@ -610,7 +617,7 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
             _ => value.ToString() ?? string.Empty,
         };
 
-    private sealed record TypePlan(MemberPlan[] Members);
+    private sealed record TypePlan(MemberPlan[] Members, string? TypeTag);
 
     private sealed record MemberPlan(
         string Name,
@@ -638,13 +645,26 @@ internal sealed class Destructurer(DestructuringOptions options, LoggingMetrics?
             AddMember(members, type, property.Name, property, null);
         }
 
-        foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Instance))
+        if (options.IncludeFields)
         {
-            AddMember(members, type, field.Name, null, field);
+            foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Instance))
+            {
+                AddMember(members, type, field.Name, null, field);
+            }
         }
 
-        return new TypePlan([.. members]);
+        return new TypePlan([.. members], TypeTagFor(type, members));
     }
+
+    /// <summary>Serilog's type tag: the short type name, except for anonymous and other
+    /// compiler-generated types, and never next to a member already named <c>$type</c>.</summary>
+    private string? TypeTagFor(Type type, List<MemberPlan> members) =>
+        !options.TypeTags
+        || type.Name.StartsWith('<')
+        || Attribute.IsDefined(type, typeof(CompilerGeneratedAttribute), inherit: false)
+        || members.Exists(member => member.Name == "$type")
+            ? null
+            : type.Name;
 
     private void AddMember(
         List<MemberPlan> members,

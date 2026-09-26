@@ -522,6 +522,43 @@ namespace HostLoom.Tests
             );
         }
 
+        [Fact]
+        public async Task Type_tags_are_opt_in_and_skip_anonymous_types()
+        {
+            var value = new { Order = new Order() };
+            var (tagged, _) = await LogAsync(
+                logger => logger.LogInformation("got {@Order} and {@Wrapper}", new Order(), value),
+                options => options.Destructuring.TypeTags = true
+            );
+            var (plain, _) = await LogAsync(logger =>
+                logger.LogInformation("got {@Order}", new Order())
+            );
+
+            Assert.Equal("Order", tagged.GetProperty("Order").GetProperty("$type").GetString());
+            Assert.False(tagged.GetProperty("Wrapper").TryGetProperty("$type", out _));
+            Assert.Equal(
+                "Order",
+                tagged.GetProperty("Wrapper").GetProperty("Order").GetProperty("$type").GetString()
+            );
+            Assert.False(plain.GetProperty("Order").TryGetProperty("$type", out _));
+        }
+
+        [Fact]
+        public async Task Public_fields_can_be_left_out_like_serilog()
+        {
+            var (without, _) = await LogAsync(
+                logger => logger.LogInformation("got {@Value}", new WithField()),
+                options => options.Destructuring.IncludeFields = false
+            );
+            var (with, _) = await LogAsync(logger =>
+                logger.LogInformation("got {@Value}", new WithField())
+            );
+
+            Assert.False(without.GetProperty("Value").TryGetProperty("Secret", out _));
+            Assert.Equal("shown", without.GetProperty("Value").GetProperty("Shown").GetString());
+            Assert.Equal("field", with.GetProperty("Value").GetProperty("Secret").GetString());
+        }
+
         private static async Task<(JsonElement Root, string Line)> LogAsync(
             Action<ILogger> log,
             Action<HostLoomLoggerOptions>? configure = null
@@ -548,6 +585,15 @@ namespace HostLoom.Tests
 
             var line = Assert.Single(sink.Lines());
             return (JsonDocument.Parse(line).RootElement.Clone(), line);
+        }
+
+        private sealed class WithField
+        {
+#pragma warning disable CA1051 // The public field is the point of the test
+            public string Secret = "field";
+#pragma warning restore CA1051
+
+            public string Shown { get; set; } = "shown";
         }
 
         private sealed class Order

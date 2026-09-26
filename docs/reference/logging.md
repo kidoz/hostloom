@@ -70,11 +70,18 @@ release its resources.
 
 `DestructuringOptions`: `MaxDepth` 5, `MaxCollectionItems` 32,
 `MaxObjectMembers` 64, `MaxStringLength` 4096,
-`MaxEncodedBytesPerRecord` 64 KiB, `MapLegacyAttributes` true; plus
-programmatic redaction for types you cannot annotate —
+`MaxEncodedBytesPerRecord` 64 KiB, `MapLegacyAttributes` true, `TypeTags` false,
+`IncludeFields` true; plus programmatic redaction for types you cannot annotate —
 `NotLogged<T>(params string[] members)` and
 `Mask<T>(string member, string text = "***", int showFirst = 0, int showLast = 0)`,
 which follows the same reveal rule as [`[LogMasked]`](#masking-attributes).
+
+`TypeTags` adds Serilog's `"$type"` member, the runtime type's short name, as the last member
+of every destructured object except anonymous and other compiler-generated types. Turn it on
+when existing queries expect Serilog-shaped output. `IncludeFields` destructures public
+instance fields as well as properties; Serilog reads properties only, so turning it off keeps
+fields that were never logged under Serilog out of the output. Value tuples are written as
+sequences of their items either way.
 
 `MaxStringLength` counts UTF-16 characters and applies to dictionary keys as well as string
 values: a longer key or value keeps that many characters and ends in `…`.

@@ -48,6 +48,20 @@ public sealed class DestructuringOptions
     /// </summary>
     public bool MapLegacyAttributes { get; set; } = true;
 
+    /// <summary>
+    /// Adds Serilog's <c>"$type"</c> member, the runtime type's short name, as the last member
+    /// of every destructured object that is not an anonymous or other compiler-generated type.
+    /// Off by default; turn it on when downstream queries rely on Serilog-shaped output.
+    /// </summary>
+    public bool TypeTags { get; set; }
+
+    /// <summary>
+    /// Destructures public instance fields as well as properties. Serilog reads properties only,
+    /// so turning this off keeps fields that were never logged under Serilog out of the output;
+    /// value tuples are written as sequences either way.
+    /// </summary>
+    public bool IncludeFields { get; set; } = true;
+
     /// <summary>Excludes members of <typeparamref name="T"/> (and derived types) that cannot be
     /// annotated. Excluded members are never read.</summary>
     public DestructuringOptions NotLogged<T>(params string[] members)
