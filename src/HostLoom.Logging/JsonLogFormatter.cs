@@ -19,6 +19,7 @@ public sealed class JsonLogFormatter : ILogFormatter
     };
 
     private readonly Utf8JsonWriter _writer = new(Stream.Null, WriterOptions);
+    private readonly Lock _gate = new();
     private readonly int _maxExceptionLength;
 
     /// <param name="maxExceptionLength">Cap on the encoded exception text; longer chains are
@@ -29,11 +30,24 @@ public sealed class JsonLogFormatter : ILogFormatter
         _maxExceptionLength = maxExceptionLength;
     }
 
+    /// <summary>
+    /// Safe to call from several pipelines at once: one instance may be registered with every
+    /// container built from a service collection, while each keeps its own writer thread.
+    /// </summary>
     public void Format(in LogRecord record, IBufferWriter<byte> writer)
+    {
+        // The JSON writer is reused per record, so concurrent formats would interleave in it.
+        lock (_gate)
+        {
+            FormatCore(record, writer);
+        }
+    }
+
+    private void FormatCore(in LogRecord record, IBufferWriter<byte> writer)
     {
         ArgumentNullException.ThrowIfNull(writer);
 
-        // Reset rather than allocate: one writer per pipeline, and the pipeline has one thread.
+        // Reset rather than allocate: the gate in Format gives this writer one record at a time.
         _writer.Reset(writer);
         _writer.WriteStartObject();
         _writer.WriteString("@timestamp"u8, record.Timestamp);

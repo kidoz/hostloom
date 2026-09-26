@@ -1,5 +1,6 @@
 using System.Diagnostics.Metrics;
 using System.Text;
+using System.Text.Json;
 using HostLoom.Logging;
 using Microsoft.Extensions.Logging;
 using Xunit;
@@ -10,8 +11,8 @@ using Xunit;
 namespace HostLoom.Tests;
 
 /// <summary>
-/// Field bookkeeping under pathological records, and drop attribution while a provider is being
-/// disposed.
+/// Field bookkeeping under pathological records, formatter sharing between pipelines, and drop
+/// attribution while a provider is being disposed.
 /// </summary>
 public sealed class LoggingPipelineHardeningTests
 {
@@ -109,6 +110,57 @@ public sealed class LoggingPipelineHardeningTests
         entry.TrimIfOversized();
 
         Assert.True(entry.FieldCapacity <= 64, $"capacity is {entry.FieldCapacity}");
+    }
+
+    [Fact]
+    public async Task One_formatter_shared_by_two_providers_writes_valid_lines()
+    {
+        var formatter = new ClefLogFormatter();
+        // CA2000: sink ownership transfers to the providers.
+#pragma warning disable CA2000
+        var first = new CollectingSink();
+        var second = new CollectingSink();
+#pragma warning restore CA2000
+        var options = new HostLoomLoggerOptions
+        {
+            AttachMachineName = false,
+            QueueFullPolicy = QueueFullPolicy.Block,
+        };
+        await using var one = new HostLoomLoggerProvider(formatter, first, options);
+        await using var two = new HostLoomLoggerProvider(formatter, second, options);
+
+        var loggers = new[] { one.CreateLogger("One"), two.CreateLogger("Two") };
+        await Task.WhenAll(
+            loggers.Select(logger =>
+                Task.Run(
+                    () =>
+                    {
+                        for (var i = 0; i < 2000; i++)
+                        {
+                            logger.LogInformation(
+                                "record {Index} of {Total} with {Payload}",
+                                i,
+                                2000,
+                                "some text value"
+                            );
+                        }
+                    },
+                    TestContext.Current.CancellationToken
+                )
+            )
+        );
+        await one.DisposeAsync();
+        await two.DisposeAsync();
+
+        foreach (var sink in new[] { first, second })
+        {
+            var lines = sink.Lines();
+            Assert.Equal(2000, lines.Length);
+            foreach (var line in lines)
+            {
+                using var document = JsonDocument.Parse(line);
+            }
+        }
     }
 
     [Fact]

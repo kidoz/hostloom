@@ -4,7 +4,11 @@ using Microsoft.Extensions.Logging;
 namespace HostLoom.Logging;
 
 /// <summary>
-/// Turns one record into bytes. Formatters write UTF-8 and never build a string. An exception from
+/// Turns one record into bytes. Formatters write UTF-8 and never build a string. One instance
+/// can be shared: registering it with <c>AddHostLoomLogging</c> hands it to the provider of every
+/// container built from that service collection, and each provider formats on its own writer
+/// thread, so <see cref="Format"/> may run concurrently and must be safe for that, as the
+/// built-in formatters are. <see cref="OwnsFieldName"/> must be a pure function of its input. An exception from
 /// <see cref="Format"/> or <see cref="OwnsFieldName"/> costs only the record being formatted: the
 /// pipeline cuts that record's partial output from its batch, counts it as dropped with reason
 /// <c>format_failed</c>, and keeps formatting later records with the same instance, so a formatter

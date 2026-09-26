@@ -140,6 +140,11 @@ written unless the event captured a field of the same name, in which case the ca
 is kept, as under Serilog. On the `LogFast`
 path, `@r` holds the renderings of formatted holes instead.
 
+A formatter instance can be shared. The one passed to `AddHostLoomLogging` is handed to the
+provider of every container built from that service collection, and each provider formats on
+its own writer thread, so `Format` can run concurrently. Both built-in formatters are safe for
+that; a custom formatter must be too, and its `OwnsFieldName` must depend only on its input.
+
 The background writer isolates formatter failures to a single record. If `Format` or
 `OwnsFieldName` throws, the writer removes that record's partial output from the batch and
 counts the record as dropped with reason `format_failed`. It then formats the rest of the batch

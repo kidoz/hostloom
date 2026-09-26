@@ -26,6 +26,7 @@ public sealed class ClefLogFormatter : ILogFormatter
     };
 
     private readonly Utf8JsonWriter _writer = new(Stream.Null, WriterOptions);
+    private readonly Lock _gate = new();
     private readonly int _maxExceptionLength;
 
     /// <param name="maxExceptionLength">Cap on the encoded <c>@x</c> text; longer chains are
@@ -36,7 +37,20 @@ public sealed class ClefLogFormatter : ILogFormatter
         _maxExceptionLength = maxExceptionLength;
     }
 
+    /// <summary>
+    /// Safe to call from several pipelines at once: one instance may be registered with every
+    /// container built from a service collection, while each keeps its own writer thread.
+    /// </summary>
     public void Format(in LogRecord record, IBufferWriter<byte> writer)
+    {
+        // The JSON writer is reused per record, so concurrent formats would interleave in it.
+        lock (_gate)
+        {
+            FormatCore(record, writer);
+        }
+    }
+
+    private void FormatCore(in LogRecord record, IBufferWriter<byte> writer)
     {
         ArgumentNullException.ThrowIfNull(writer);
 
