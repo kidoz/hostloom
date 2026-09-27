@@ -8,6 +8,35 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-27
+
+This release brings `HostLoom.Logging` to the output of Serilog's `CompactJsonFormatter` and
+closes the ways it lost records or failed its caller. A service moving from Serilog keeps the
+shapes its log queries were written against: `"$type"` tags, the structure of collections in
+plain holes, hex byte arrays, `@r` renderings, seven-digit `@t` timestamps, scope dictionaries as
+fields, and caller holes named `SourceContext`, `ThreadId`, or `EventId`. A log call no longer
+throws because of the caller's values, logging no longer depends on the thread pool, a sink
+failure costs one batch instead of every later record, records still queued when the process
+exits or crashes are flushed, and a blocked warning waits a second by default instead of as long
+as the sink stalls. The package is annotated for trimming and Native AOT, accepts a sink factory
+that gives each container its own sink, and exposes `Flush` to crash handlers. Every histogram
+also advises its bucket boundaries.
+
+Upgrading from 0.11.0 changes behaviour an application can observe; each change is stated under
+**Changed** or **Fixed**. `EnqueueTimeout` defaults to one second, so a record that waits longer
+for room on a full queue is dropped and counted as `enqueue_timeout`; set it to null to wait
+without limit. A sink failure drops the batch being written as `sink_failed` and logging goes on,
+and `writer_fault` now means a defect in the writer itself. Log stores see new field shapes: a
+collection or dictionary in a plain hole keeps its structure, byte arrays and byte memory are
+uppercase hex, `LogFast` through an injected logger keeps numeric and boolean types instead of
+strings, and string-keyed dictionaries and `(string, value)` tuples passed to `BeginScope` become
+fields. Destructuring reads only public getters and writes delegates and reflection objects as
+their names. A custom `ILogFormatter` must allow `Format` to run concurrently, because the
+formatter passed to `AddHostLoomLogging` is shared by the provider of every container. A Native
+AOT application preserves the types it writes with `{@...}` through
+`DestructuringOptions.Preserve<T>()`. Exported histograms get new bucket boundaries. No package is
+published for the first time.
+
 ### Added
 
 - Every histogram advises its bucket boundaries: operation durations from 0.1 ms to 30 s, spans
@@ -1675,7 +1704,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/kidoz/hostloom/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/kidoz/hostloom/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/kidoz/hostloom/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/kidoz/hostloom/compare/v0.8.0...v0.9.0
