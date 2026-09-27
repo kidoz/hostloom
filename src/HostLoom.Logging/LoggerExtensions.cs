@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
 
@@ -14,7 +15,7 @@ namespace HostLoom.Logging;
 /// <c>ILogger&lt;T&gt;</c> is the framework's aggregating wrapper, so these extensions render
 /// once and hand structured key/value state through the standard interface: the captured hole
 /// names and values survive into any structured provider, but without the zero-allocation
-/// guarantee, and values travel as strings rather than typed tokens.
+/// guarantee. Numeric and boolean fields keep their types; text stays text.
 /// </remarks>
 public static class LoggerExtensions
 {
@@ -63,8 +64,8 @@ public static class LoggerExtensions
         // Another provider (or a wrapper) is installed. Render once and hand over structured
         // state through the standard interface, so the captured hole names survive: any provider
         // that understands key/value state — including this library's own logger behind a
-        // dependency-injected wrapper — keeps the fields. Values travel as strings here; only
-        // the direct fast path preserves value kinds without boxing.
+        // dependency-injected wrapper — keeps the fields. Boxing here preserves the captured
+        // numeric and boolean kinds; only the direct fast path avoids these allocations.
         try
         {
             // CA1873: the handler already proved the level is enabled — an entry only exists when
@@ -73,10 +74,10 @@ public static class LoggerExtensions
             var fields = new KeyValuePair<string, object?>[entry.FieldCount];
             for (var i = 0; i < fields.Length; i++)
             {
-                entry.GetField(i, out var name, out var value, out _);
+                entry.GetField(i, out var name, out var value, out var kind);
                 fields[i] = new KeyValuePair<string, object?>(
                     System.Text.Encoding.UTF8.GetString(name),
-                    System.Text.Encoding.UTF8.GetString(value)
+                    BoxValue(value, kind)
                 );
             }
 
@@ -92,6 +93,41 @@ public static class LoggerExtensions
         {
             LogEntryPool.Return(entry);
         }
+    }
+
+    private static object? BoxValue(ReadOnlySpan<byte> value, LogFieldKind kind)
+    {
+        if (kind == LogFieldKind.Null)
+            return null;
+        if (kind == LogFieldKind.Boolean)
+            return value.SequenceEqual("true"u8);
+        if (kind != LogFieldKind.Number)
+            return System.Text.Encoding.UTF8.GetString(value);
+
+        // The handler's concrete numeric overloads emit canonical int/long/decimal/double
+        // tokens. Never parse an exponent through decimal: tiny doubles can round to zero.
+        // Preserve negative zero too, rather than converting it to an integer zero.
+        if (
+            !value.SequenceEqual("-0"u8)
+            && long.TryParse(
+                value,
+                NumberStyles.AllowLeadingSign,
+                CultureInfo.InvariantCulture,
+                out var integer
+            )
+        )
+            return integer;
+        if (
+            !value.SequenceEqual("-0"u8)
+            && decimal.TryParse(
+                value,
+                NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture,
+                out var number
+            )
+        )
+            return number;
+        return double.Parse(value, NumberStyles.Float, CultureInfo.InvariantCulture);
     }
 
     /// <summary>

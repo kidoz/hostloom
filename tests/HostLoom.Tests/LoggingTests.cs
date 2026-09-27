@@ -1146,9 +1146,7 @@ public sealed class LoggingTests
 
         var root = JsonDocument.Parse(Assert.Single(sink.Lines())).RootElement;
         Assert.Equal("order 7 shipped", root.GetProperty("message").GetString());
-        // Through the fallback the value travels as a string, but the name survives — before,
-        // the field vanished entirely.
-        Assert.Equal("7", root.GetProperty("orderId").GetString());
+        Assert.Equal(7, root.GetProperty("orderId").GetInt32());
     }
 
     [Fact]

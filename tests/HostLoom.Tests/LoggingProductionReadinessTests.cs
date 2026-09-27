@@ -15,6 +15,76 @@ namespace HostLoom.Tests;
 
 public sealed class LoggingProductionReadinessTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Wrapped_fast_logging_preserves_numeric_precision_and_boolean_types(bool clef)
+    {
+        await using var sink = new CollectingSink();
+        await using var provider = new HostLoomLoggerProvider(
+            clef ? new ClefLogFormatter() : new JsonLogFormatter(),
+            sink,
+            new()
+        );
+        using var factory = LoggerFactory.Create(builder => builder.AddProvider(provider));
+        var wrapped = factory.CreateLogger("Capture");
+        var direct = provider.CreateLogger("Capture");
+        var count = 42;
+        var large = long.MinValue;
+        var amount = decimal.MaxValue;
+        var fractional = 0.1234567890123456789012345678m;
+        var tiny = double.Epsilon;
+        var huge = double.MaxValue;
+        var negativeZero = -0.0;
+        var enabled = true;
+        var disabled = false;
+        var text = "42";
+        foreach (var logger in new[] { direct, wrapped })
+        {
+            logger.LogFast(
+                LogLevel.Information,
+                $"{count:D4} {large} {amount} {fractional} {tiny} {huge} {negativeZero} {enabled} {disabled} {text}"
+            );
+        }
+#pragma warning disable CA1727 // Match the expression-derived LogFast names for schema comparison.
+        wrapped.LogInformation("regular {count} {enabled}", count, enabled);
+#pragma warning restore CA1727
+        Assert.True(provider.Flush(TimeSpan.FromSeconds(5)));
+        var lines = sink.Lines();
+        Assert.Equal(3, lines.Length);
+        using var original = JsonDocument.Parse(lines[0]);
+        using var handoff = JsonDocument.Parse(lines[1]);
+        foreach (
+            var name in new[]
+            {
+                "count",
+                "large",
+                "amount",
+                "fractional",
+                "tiny",
+                "huge",
+                "negativeZero",
+                "enabled",
+                "disabled",
+                "text",
+            }
+        )
+        {
+            var expected = original.RootElement.GetProperty(name);
+            var actual = handoff.RootElement.GetProperty(name);
+            Assert.Equal(expected.ValueKind, actual.ValueKind);
+            Assert.Equal(expected.GetRawText(), actual.GetRawText());
+        }
+        using var regular = JsonDocument.Parse(lines[2]);
+        Assert.Equal(
+            regular.RootElement.GetProperty("count").ValueKind,
+            handoff.RootElement.GetProperty("count").ValueKind
+        );
+        Assert.True(handoff.RootElement.GetProperty("enabled").GetBoolean());
+        Assert.False(handoff.RootElement.GetProperty("disabled").GetBoolean());
+        Assert.Equal("42", handoff.RootElement.GetProperty("text").GetString());
+    }
+
     [Fact]
     public async Task Concurrent_disposal_callers_share_drain_and_sink_disposal_completion()
     {
@@ -171,17 +241,8 @@ public sealed class LoggingProductionReadinessTests
         logger.LogFast(LogLevel.Information, $"before {count:Q} after {next}");
         Assert.True(provider.Flush(TimeSpan.FromSeconds(5)));
         using var json = JsonDocument.Parse(Assert.Single(sink.Lines()));
-        if (wrapped)
-        {
-            // The standard-interface handoff transports all LogFast fields as strings.
-            Assert.Equal("42", json.RootElement.GetProperty("count").GetString());
-            Assert.Equal("17", json.RootElement.GetProperty("next").GetString());
-        }
-        else
-        {
-            Assert.Equal(42, json.RootElement.GetProperty("count").GetInt32());
-            Assert.Equal(17, json.RootElement.GetProperty("next").GetInt32());
-        }
+        Assert.Equal(42, json.RootElement.GetProperty("count").GetInt32());
+        Assert.Equal(17, json.RootElement.GetProperty("next").GetInt32());
         Assert.Equal(
             "before [DestructuringFailed] after 17",
             json.RootElement.GetProperty(clef ? "@m" : "message").GetString()

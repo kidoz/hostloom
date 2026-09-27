@@ -57,6 +57,9 @@ are derived from release tags at publish time.
 ### Fixed
 
 - Concurrent logger disposal calls await the same bounded drain and sink cleanup operation.
+- `LogFast` through a wrapped or injected logger preserves numeric and boolean field types,
+  matching direct HostLoom logging. These fields previously travelled as strings; downstream
+  mappings relying on that representation need to accept the corresponding JSON types.
 - The `AddHostLoomLogging` overloads that bind options from configuration work under Native AOT.
   The reflection binder found no options there, so every key counted as unknown and startup
   failed; the binding is now compiled.

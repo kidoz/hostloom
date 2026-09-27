@@ -339,12 +339,17 @@ Overloads: `(LogLevel, message)`, `(LogLevel, Exception?, message)`,
 own logger; other providers receive the rendered message and structured
 state through the standard interface.
 
+The standard-interface handoff, including an injected `ILogger<T>`, boxes canonical numeric and
+boolean values so their JSON types match the direct HostLoom path. Text fields remain text.
+This changes the previous handoff behavior, which emitted every field as a string; update
+downstream mappings that were configured for those string values.
+
 Exceptions raised by `ToString`, `IFormattable`, or UTF-8 formatting on this path produce
 `[DestructuringFailed]` and increment `hostloom.logging.failures` with `component=capture`
 when delivered to HostLoom. If only the display format fails (for example, `{count:Q}` for an
 integer), the message uses the sentinel while the field keeps its canonical value, provided
-canonical capture succeeds. The direct HostLoom path also preserves its type; the standard
-interface handoff still transports fields as strings. Later holes and records still log normally. Exceptions from
+canonical capture succeeds. Both direct and wrapped HostLoom logging preserve its numeric type.
+Later holes and records still log normally. Exceptions from
 evaluating the interpolation expressions themselves remain the caller's responsibility.
 
 ## Enrichers
