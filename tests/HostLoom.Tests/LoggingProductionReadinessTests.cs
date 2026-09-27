@@ -15,6 +15,56 @@ namespace HostLoom.Tests;
 
 public sealed class LoggingProductionReadinessTests
 {
+    [Fact]
+    public async Task Concurrent_disposal_callers_share_drain_and_sink_disposal_completion()
+    {
+        using var gate = new HeldOperation();
+#pragma warning disable CA2000 // The provider owns the sink; the test verifies exactly-once disposal.
+        var sink = new DisposalGatedSink(gate);
+#pragma warning restore CA2000
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new() { ShutdownTimeout = TimeSpan.FromSeconds(10) }
+        );
+        provider.CreateLogger("Shutdown").LogInformation("held");
+        await gate.Entered.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken
+        );
+        Task first = provider.DisposeAsync().AsTask();
+        Task second = provider.DisposeAsync().AsTask();
+        try
+        {
+            Assert.Same(first, second);
+            Assert.False(second.IsCompleted);
+        }
+        finally
+        {
+            gate.Release.Set();
+        }
+        try
+        {
+            await sink.Disposing.Task.WaitAsync(
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken
+            );
+            Assert.False(first.IsCompleted);
+            Assert.False(second.IsCompleted);
+        }
+        finally
+        {
+            sink.ReleaseDisposal.TrySetResult();
+        }
+        await Task.WhenAll(first, second)
+            .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+#pragma warning disable CA1849 // Exercise the synchronous bridge after shared shutdown completes.
+        provider.Dispose();
+#pragma warning restore CA1849
+        Assert.Equal(1, sink.DisposalCalls);
+        Assert.Equal(0, provider.Dropped);
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]
@@ -484,6 +534,27 @@ public sealed class LoggingProductionReadinessTests
         {
             WasDisposed = true;
             base.Dispose(disposing);
+        }
+    }
+
+    private sealed class DisposalGatedSink(HeldOperation gate) : ILogSink
+    {
+        public TaskCompletionSource Disposing { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseDisposal { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int DisposalCalls;
+
+        public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken) =>
+            gate.Wait();
+
+        public ValueTask FlushAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public async ValueTask DisposeAsync()
+        {
+            Interlocked.Increment(ref DisposalCalls);
+            Disposing.TrySetResult();
+            await ReleaseDisposal.Task;
         }
     }
 

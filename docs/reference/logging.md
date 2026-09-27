@@ -115,6 +115,9 @@ queue waits on a monitor the writer signals, and the writer wakes as soon as a r
 With every pool thread busy, `EnqueueTimeout` and `ShutdownTimeout` still hold, and records
 still reach the sink.
 
+Concurrent calls to `DisposeAsync` await the same bounded shutdown operation, including drain
+and sink disposal. Synchronous `Dispose` waits for that same completion.
+
 `DestructuringOptions`: `MaxDepth` 5, `MaxCollectionItems` 32,
 `MaxObjectMembers` 64, `MaxStringLength` 4096,
 `MaxEncodedBytesPerRecord` 64 KiB, `MapLegacyAttributes` true, `TypeTags` false,

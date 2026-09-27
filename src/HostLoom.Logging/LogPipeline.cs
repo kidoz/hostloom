@@ -55,6 +55,9 @@ internal sealed class LogPipeline : IAsyncDisposable
     private readonly object _space = new();
     private int _spaceWaiters;
     private int _disposeStarted;
+    private readonly TaskCompletionSource _shutdownCompletion = new(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    );
 
     // Counts real entries owned by Enqueue, including blocked producers and formatting work.
     // -1 atomically closes accounting at abandonment; late completion cannot count them twice.
@@ -782,7 +785,7 @@ internal sealed class LogPipeline : IAsyncDisposable
     {
         if (Interlocked.Exchange(ref _disposeStarted, 1) == 1)
         {
-            return ValueTask.CompletedTask;
+            return new ValueTask(_shutdownCompletion.Task);
         }
 
         // Disposal drains the queue itself, and the handlers would keep the pipeline reachable.
@@ -796,7 +799,6 @@ internal sealed class LogPipeline : IAsyncDisposable
         // awaits fire on the thread pool, so under pool starvation, often the very condition a
         // process is shutting down under, the shutdown budget stretched until the pool injected
         // threads. The caller only waits for the outcome.
-        var shutdown = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
         {
             try
@@ -810,7 +812,7 @@ internal sealed class LogPipeline : IAsyncDisposable
             }
             finally
             {
-                shutdown.TrySetResult();
+                _shutdownCompletion.TrySetResult();
             }
         })
         {
@@ -818,7 +820,7 @@ internal sealed class LogPipeline : IAsyncDisposable
             Name = "HostLoom Logging Shutdown",
         };
         thread.Start();
-        return new ValueTask(shutdown.Task);
+        return new ValueTask(_shutdownCompletion.Task);
     }
 
     private void Shutdown()
