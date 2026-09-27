@@ -16,6 +16,88 @@ namespace HostLoom.Tests;
 public sealed class LoggingProductionReadinessTests
 {
     [Theory]
+    [InlineData(0, "hole")]
+    [InlineData(1, "scope")]
+    [InlineData(2, "enricher")]
+    [InlineData(3, "static")]
+    public void Oversized_names_are_bounded_before_encoding_and_counted_by_source(
+        int source,
+        string sourceName
+    )
+    {
+        using var listener = new MeterListener();
+        var thread = Environment.CurrentManagedThreadId;
+        var publishing = false;
+        var counts = new Dictionary<string, long>();
+        listener.InstrumentPublished = (instrument, owner) =>
+        {
+            if (
+                publishing
+                && instrument.Name == "hostloom.logging.fields.dropped"
+                && Environment.CurrentManagedThreadId == thread
+            )
+                owner.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>(
+            (_, count, tags, _) =>
+            {
+                string? reason = null;
+                foreach (var tag in tags)
+                {
+                    if (tag.Key == "source")
+                        Assert.Equal(sourceName, tag.Value);
+                    if (tag.Key == "reason")
+                        reason = (string?)tag.Value;
+                }
+                counts[reason!] = counts.GetValueOrDefault(reason!) + count;
+            }
+        );
+        listener.Start();
+        publishing = true;
+        using var metrics = new LoggingMetrics(
+            static () => 0,
+            static () => true,
+            static () => "running"
+        );
+        publishing = false;
+        var entry = new LogEntry();
+        entry.ApplyCaps(new() { MaxFieldNameLength = 16, MaxFieldsPerRecord = 1 });
+        var name = new string('x', 1_000_000);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 100; i++)
+            entry.AddFieldText(name, "value", (LogFieldSource)source);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.True(allocated < 64 * 1024, $"Capture allocated {allocated} bytes.");
+        entry.NormalizeFields(16, 1, new JsonLogFormatter(), metrics);
+        Assert.Equal(0, entry.FieldCount);
+        Assert.Equal(4, counts["name_too_long"]);
+        Assert.Equal(96, counts["record_field_cap"]);
+        entry.Reset();
+        counts.Clear();
+        entry.NormalizeFields(16, 1, new JsonLogFormatter(), metrics);
+        Assert.Empty(counts);
+    }
+
+    [Fact]
+    public void Name_caps_measure_utf8_and_keep_fast_message_rendering()
+    {
+        var entry = new LogEntry();
+        entry.ApplyCaps(new() { MaxFieldNameLength = 4 });
+        entry.AppendText("kept", "éé");
+        entry.AppendLiteral(" ");
+        entry.AppendText("rejected", "ééé");
+        entry.AppendLiteral(" ");
+        entry.AppendFormattable(42, "D4", "ééé", LogFieldKind.Number);
+
+        Assert.Equal("kept rejected 0042", Encoding.UTF8.GetString(entry.Message));
+        entry.NormalizeFields(4, 64, new JsonLogFormatter(), null);
+        Assert.Equal(1, entry.FieldCount);
+        entry.GetField(0, out var name, out _, out _);
+        Assert.Equal("éé", Encoding.UTF8.GetString(name));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Wrapped_fast_logging_preserves_numeric_precision_and_boolean_types(bool clef)
@@ -83,6 +165,49 @@ public sealed class LoggingProductionReadinessTests
         Assert.True(handoff.RootElement.GetProperty("enabled").GetBoolean());
         Assert.False(handoff.RootElement.GetProperty("disabled").GetBoolean());
         Assert.Equal("42", handoff.RootElement.GetProperty("text").GetString());
+    }
+
+    [Theory]
+    [InlineData(5)]
+    [InlineData(300)]
+    public async Task Wrapped_fast_logging_accounts_for_rejected_names_and_capture_overflow(
+        int rejectedCount
+    )
+    {
+        using var metrics = new ProviderMetrics();
+        await using var sink = new CollectingSink();
+        await using var provider = metrics.Create(
+            new JsonLogFormatter(),
+            sink,
+            new() { MaxFieldsPerRecord = 1, AttachMachineName = false }
+        );
+        using var factory = LoggerFactory.Create(builder => builder.AddProvider(provider));
+        var logger = factory.CreateLogger("Capture");
+        var handler = new LogMessageHandler(
+            0,
+            rejectedCount + 1,
+            logger,
+            LogLevel.Information,
+            out _
+        );
+        handler.AppendFormatted(42, name: "Count");
+        var oversizedName = new string('x', 1_000_000);
+        for (var i = 0; i < rejectedCount; i++)
+        {
+            handler.AppendLiteral(" ");
+            handler.AppendFormatted(17, name: oversizedName);
+        }
+        logger.LogFast(LogLevel.Information, ref handler);
+        Assert.True(provider.Flush(TimeSpan.FromSeconds(5)));
+        using var json = JsonDocument.Parse(Assert.Single(sink.Lines()));
+        Assert.Equal(
+            "42" + string.Concat(Enumerable.Repeat(" 17", rejectedCount)),
+            json.RootElement.GetProperty("message").GetString()
+        );
+        Assert.Equal(42, json.RootElement.GetProperty("Count").GetInt32());
+        Assert.Equal(3, metrics.NamesTooLong);
+        Assert.Equal(rejectedCount - 3, metrics.RecordCapFields);
+        Assert.Equal(0, provider.Dropped);
     }
 
     [Fact]
@@ -626,6 +751,10 @@ public sealed class LoggingProductionReadinessTests
         private long _captureFailures;
         private long _destructuringFailures;
         private long _dropped;
+        private long _namesTooLong;
+        private long _recordCapFields;
+        public long NamesTooLong => Interlocked.Read(ref _namesTooLong);
+        public long RecordCapFields => Interlocked.Read(ref _recordCapFields);
         public long CaptureFailures => Interlocked.Read(ref _captureFailures);
         public long DestructuringFailures => Interlocked.Read(ref _destructuringFailures);
         public long Dropped => Interlocked.Read(ref _dropped);
@@ -643,6 +772,14 @@ public sealed class LoggingProductionReadinessTests
             _listener.SetMeasurementEventCallback<long>(
                 (instrument, count, tags, _) =>
                 {
+                    if (instrument.Name == "hostloom.logging.fields.dropped")
+                        foreach (var tag in tags)
+                        {
+                            if (tag.Key == "reason" && tag.Value is "name_too_long")
+                                Interlocked.Add(ref _namesTooLong, count);
+                            if (tag.Key == "reason" && tag.Value is "record_field_cap")
+                                Interlocked.Add(ref _recordCapFields, count);
+                        }
                     if (instrument.Name == "hostloom.logging.records.dropped")
                         Interlocked.Add(ref _dropped, count);
                     if (instrument.Name != "hostloom.logging.failures")

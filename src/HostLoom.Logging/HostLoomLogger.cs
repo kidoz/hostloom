@@ -45,6 +45,7 @@ internal sealed class HostLoomLogger(
         if (state is LoggerExtensions.HandoffState handoff)
         {
             entry.CaptureFailures = handoff.CaptureFailures;
+            entry.ImportOverflowHoleFields(handoff.OverflowHoleFields);
         }
         pipeline.Capture.CaptureEvent(entry, state, exception, formatter);
         entry.FinalizeTemplate();
@@ -118,6 +119,7 @@ internal sealed class HostLoomLogger(
         {
             pipeline.Metrics.RecordFailure(LoggingMetrics.ComponentCapture);
         }
+        entry.FinalizeCapture();
         pipeline.Enqueue(entry);
     }
 }

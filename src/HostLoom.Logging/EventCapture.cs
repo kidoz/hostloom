@@ -245,12 +245,8 @@ internal sealed class EventCapture(
             name = name[1..];
         }
 
-        Span<byte> utf8 = stackalloc byte[512];
         var builder = new StringBuilder();
-        var length = EncodeName(name, utf8);
-        return length >= 0 && entry.TryAppendFieldValue(utf8[..length], 0, builder)
-            ? builder.ToString()
-            : string.Empty;
+        return entry.TryAppendFieldValue(name, 0, builder) ? builder.ToString() : string.Empty;
     }
 
     private static bool TryFindValue(
@@ -310,7 +306,7 @@ internal sealed class EventCapture(
             // Serilog-compatible template operators: both strip their prefix from the emitted
             // name. '$' forces the invariant string; '@' destructures a non-scalar into nested
             // JSON while a scalar keeps its typed value.
-            var stripped = name[1..];
+            var stripped = new LogFieldName(name, 1);
             if (name[0] == '$')
             {
                 CaptureStringified(entry, stripped, pair.Value);
@@ -332,7 +328,7 @@ internal sealed class EventCapture(
     /// nor a collection written as its invariant <c>ToString()</c>; any other object becomes
     /// its invariant string.
     /// </summary>
-    private bool CaptureValue(LogEntry entry, string name, object? value)
+    private bool CaptureValue(LogEntry entry, LogFieldName name, object? value)
     {
         if (TryCaptureScalar(entry, name, value))
         {
@@ -351,7 +347,7 @@ internal sealed class EventCapture(
 
     private void CaptureDestructured(
         LogEntry entry,
-        string name,
+        LogFieldName name,
         object? value,
         LogFieldSource source = LogFieldSource.Hole,
         bool objectsAsText = false
@@ -471,7 +467,7 @@ internal sealed class EventCapture(
         var name = pair.Key;
         if (name.Length > 0 && (name[0] == '@' || name[0] == '$'))
         {
-            var stripped = name[1..];
+            var stripped = new LogFieldName(name, 1);
             if (name[0] == '$')
             {
                 CaptureStringified(entry, stripped, pair.Value, LogFieldSource.Scope);
@@ -637,19 +633,13 @@ internal sealed class EventCapture(
         }
     }
 
-    /// <summary>Encodes a hole name for field lookup; -1 rejects names no field can carry.</summary>
-    private static int EncodeName(ReadOnlySpan<char> name, Span<byte> utf8) =>
-        name.Length is 0 or > 128 ? -1 : Encoding.UTF8.GetBytes(name, utf8);
-
     private readonly struct MessageTarget(LogEntry entry) : ITemplateTarget
     {
         public void Text(ReadOnlySpan<char> text) => entry.AppendText(text, null);
 
         public bool Hole(ReadOnlySpan<char> name)
         {
-            Span<byte> utf8 = stackalloc byte[512];
-            var length = EncodeName(name, utf8);
-            return length >= 0 && entry.AppendFieldValueToMessage(utf8[..length]);
+            return entry.AppendFieldValueToMessage(name);
         }
     }
 
@@ -662,15 +652,13 @@ internal sealed class EventCapture(
 
         public bool Hole(ReadOnlySpan<char> name)
         {
-            Span<byte> utf8 = stackalloc byte[512];
-            var length = EncodeName(name, utf8);
-            return length >= 0 && entry.TryAppendFieldValue(utf8[..length], firstField, builder);
+            return entry.TryAppendFieldValue(name, firstField, builder);
         }
     }
 
     private bool TryCaptureScalar(
         LogEntry entry,
-        string name,
+        LogFieldName name,
         object? value,
         LogFieldSource source = LogFieldSource.Hole
     )
@@ -774,7 +762,7 @@ internal sealed class EventCapture(
     /// the destructuring failure sentinel instead, never the event.</summary>
     private void CaptureStringified(
         LogEntry entry,
-        string name,
+        LogFieldName name,
         object? value,
         LogFieldSource source = LogFieldSource.Hole
     )

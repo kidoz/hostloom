@@ -56,6 +56,10 @@ are derived from release tags at publish time.
 
 ### Fixed
 
+- Field-name limits reject oversized names before allocating their encoded buffers or queueing
+  them, including names prefixed by `@` or `$`. Rejected fields keep their masked values for
+  message and scope rendering. Wrapped logging respects each provider's configured name limit;
+  caller-name references are released before enqueueing, and field drops remain counted.
 - Concurrent logger disposal calls await the same bounded drain and sink cleanup operation.
 - `LogFast` through a wrapped or injected logger preserves numeric and boolean field types,
   matching direct HostLoom logging. These fields previously travelled as strings; downstream

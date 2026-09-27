@@ -107,9 +107,12 @@ public sealed class HostLoomLoggerOptions
 
     /// <summary>
     /// Longest accepted field name, in UTF-8 bytes before escaping. A longer name drops the
-    /// field (never the record), counted in <c>hostloom.logging.fields.dropped</c>.
+    /// field (never the record), counted in <c>hostloom.logging.fields.dropped</c>. Names are
+    /// rejected on the producer before allocating their encoded buffers.
     /// </summary>
-    public int MaxFieldNameLength { get; set; } = 128;
+    public int MaxFieldNameLength { get; set; } = DefaultMaxFieldNameLength;
+
+    internal const int DefaultMaxFieldNameLength = 128;
 
     /// <summary>
     /// Most fields one record may carry after deduplication. Overflow fields are dropped and

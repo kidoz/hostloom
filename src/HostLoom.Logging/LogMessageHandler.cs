@@ -45,6 +45,10 @@ public ref struct LogMessageHandler
         {
             Entry.ApplyCaps(own.Options);
         }
+        else
+        {
+            Entry.DeferNameValidation();
+        }
 
         Entry.Level = level;
         shouldAppend = true;

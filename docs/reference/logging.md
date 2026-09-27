@@ -50,7 +50,7 @@ runs before the provider; HostLoom does no level filtering of its own.
 | `BatchSize` | `256` | Records per writer batch |
 | `EnqueueTimeout` | 1 s | Cap on how long a log call may wait for room on a full queue before its record is dropped and counted; null waits without limit |
 | `ShutdownTimeout` | 5 s | Separate budgets for draining writes and disposing the sink; also bounds the flush when the process ends without disposal |
-| `MaxFieldNameLength` | `128` | UTF-8 bytes; a longer name drops the field, never the record |
+| `MaxFieldNameLength` | `128` | UTF-8 bytes; a longer name is rejected before encoding, dropping the field, never the record |
 | `MaxFieldsPerRecord` | `64` | Fields past the cap are dropped and counted; the record ships. Capture itself stops at four times the cap |
 | `MaxMessageLength` | `16384` (16 KiB) | UTF-8 bytes of rendered message; see [Record size caps](#record-size-caps) |
 | `MaxTextFieldLength` | `8192` (8 KiB) | UTF-8 bytes per plain text field, string hole, enricher value, or scope text |
@@ -343,6 +343,12 @@ The standard-interface handoff, including an injected `ILogger<T>`, boxes canoni
 boolean values so their JSON types match the direct HostLoom path. Text fields remain text.
 This changes the previous handoff behavior, which emitted every field as a string; update
 downstream mappings that were configured for those string values.
+
+Wrapped logging passes field names by reference during the synchronous handoff, so each HostLoom
+provider applies its own `MaxFieldNameLength`, including limits above 128 bytes. Before enqueueing,
+the provider removes rejected fields and releases those name references. Rejected names are never
+UTF-8 encoded or copied to strip `@` or `$`; their captured values remain available for masked
+message and scope rendering within the existing capture limits.
 
 Exceptions raised by `ToString`, `IFormattable`, or UTF-8 formatting on this path produce
 `[DestructuringFailed]` and increment `hostloom.logging.failures` with `component=capture`

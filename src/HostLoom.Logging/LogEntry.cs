@@ -22,6 +22,17 @@ internal enum LogFieldSource : byte
     Static = 3,
 }
 
+/// <summary>A borrowed caller name; stripping a template operator never copies the string.</summary>
+internal readonly record struct LogFieldName(string? Text, int Offset = 0)
+{
+    public ReadOnlySpan<char> Span => Text.AsSpan(Offset);
+    public int Length => Span.Length;
+
+    public override string ToString() => Offset == 0 ? Text ?? string.Empty : Span.ToString();
+
+    public static implicit operator LogFieldName(string? text) => new(text);
+}
+
 /// <summary>
 /// Offsets of one structured field. The value slices the message buffer when the rendered text is
 /// already a canonical token, and the value buffer when an explicit format made the two diverge.
@@ -37,7 +48,9 @@ internal readonly record struct LogField(
     LogFieldSource Source,
     bool ValueInMessage,
     int RenderingStart,
-    int RenderingLength
+    int RenderingLength,
+    LogFieldName CaptureName,
+    bool NameRejected
 );
 
 /// <summary>
@@ -59,6 +72,8 @@ internal sealed class LogEntry
     private int _namesLength;
     private int _valuesLength;
     private int _fieldCount;
+    private bool _deferNameValidation;
+    private int _maxFieldNameLength = HostLoomLoggerOptions.DefaultMaxFieldNameLength;
     private int _maxMessageLength = HostLoomLoggerOptions.DefaultMaxMessageLength;
     private int _maxTextFieldLength = HostLoomLoggerOptions.DefaultMaxTextFieldLength;
     private int _maxCapturedFields = CaptureCeiling(
@@ -68,6 +83,7 @@ internal sealed class LogEntry
 
     /// <summary>Fields refused at capture, by source, reported when the writer normalizes.</summary>
     private readonly int[] _overflow = new int[4];
+    private readonly int[] _nameTooLong = new int[4];
 
     /// <summary>Open-addressing table of field indexes (plus one) for deduplicating large
     /// records; reused, and trimmed with the entry.</summary>
@@ -124,6 +140,7 @@ internal sealed class LogEntry
     /// rented for a foreign logger keeps the defaults.</summary>
     public void ApplyCaps(HostLoomLoggerOptions options)
     {
+        _maxFieldNameLength = options.MaxFieldNameLength;
         _maxMessageLength = options.MaxMessageLength;
         _maxTextFieldLength = options.MaxTextFieldLength;
         _maxCapturedFields = CaptureCeiling(options.MaxFieldsPerRecord);
@@ -148,6 +165,40 @@ internal sealed class LogEntry
 
         _overflow[(int)source]++;
         return true;
+    }
+
+    // A foreign logger can dispatch to providers with different limits. Borrow names until
+    // handoff; each receiving provider validates and encodes them under its own options.
+    public void DeferNameValidation() => _deferNameValidation = true;
+
+    public int OverflowHoleFields => _overflow[(int)LogFieldSource.Hole];
+
+    public void ImportOverflowHoleFields(int count) => _overflow[(int)LogFieldSource.Hole] += count;
+
+    public void GetHandoffField(
+        int index,
+        out string name,
+        out ReadOnlySpan<byte> value,
+        out LogFieldKind kind
+    )
+    {
+        name = _fields[index].CaptureName.ToString();
+        GetField(index, out _, out value, out kind);
+    }
+
+    /// <summary>Rendering is done. Drop rejected fields and release every caller-name reference
+    /// before an entry crosses into the queue (or a synchronous formatter).</summary>
+    public void FinalizeCapture()
+    {
+        var write = 0;
+        for (var i = 0; i < _fieldCount; i++)
+        {
+            var field = _fields[i];
+            if (!field.NameRejected)
+                _fields[write++] = field with { CaptureName = default };
+        }
+        Array.Clear(_fields, write, _fieldCount - write);
+        _fieldCount = write;
     }
 
     public void GetField(
@@ -474,12 +525,16 @@ internal sealed class LogEntry
         AccountingPending = false;
         _namesLength = 0;
         _valuesLength = 0;
+        Array.Clear(_fields, 0, _fieldCount);
         _fieldCount = 0;
+        _deferNameValidation = false;
+        _maxFieldNameLength = HostLoomLoggerOptions.DefaultMaxFieldNameLength;
         _messageTruncated = false;
         _maxMessageLength = HostLoomLoggerOptions.DefaultMaxMessageLength;
         _maxTextFieldLength = HostLoomLoggerOptions.DefaultMaxTextFieldLength;
         _maxCapturedFields = CaptureCeiling(HostLoomLoggerOptions.DefaultMaxFieldsPerRecord);
         Array.Clear(_overflow);
+        Array.Clear(_nameTooLong);
         DestructuringBudget = -1;
         Exception = null;
         Category = string.Empty;
@@ -496,7 +551,7 @@ internal sealed class LogEntry
     /// buffer; the message stays exactly what the caller's formatter rendered.
     /// </summary>
     public void AddFieldText(
-        string name,
+        LogFieldName name,
         ReadOnlySpan<char> value,
         LogFieldSource source = LogFieldSource.Hole
     )
@@ -514,7 +569,11 @@ internal sealed class LogEntry
 
     /// <summary>Copies an already-encoded UTF-8 value — the static-field path, where the value
     /// bytes were encoded once at provider start.</summary>
-    public void AddFieldUtf8Text(string name, ReadOnlySpan<byte> utf8Value, LogFieldSource source)
+    public void AddFieldUtf8Text(
+        LogFieldName name,
+        ReadOnlySpan<byte> utf8Value,
+        LogFieldSource source
+    )
     {
         if (CaptureFull(source))
         {
@@ -528,7 +587,7 @@ internal sealed class LogEntry
     }
 
     public void AddFieldBoolean(
-        string name,
+        LogFieldName name,
         bool value,
         LogFieldSource source = LogFieldSource.Hole
     )
@@ -555,7 +614,7 @@ internal sealed class LogEntry
         );
     }
 
-    public void AddFieldNull(string name, LogFieldSource source = LogFieldSource.Hole) =>
+    public void AddFieldNull(LogFieldName name, LogFieldSource source = LogFieldSource.Hole) =>
         RecordField(
             name,
             LogFieldKind.Null,
@@ -572,12 +631,12 @@ internal sealed class LogEntry
     /// with '@' holes, whose message must come from the masked representations rather than from
     /// a ToString() that may print excluded members. First matching name wins.
     /// </summary>
-    public bool AppendFieldValueToMessage(ReadOnlySpan<byte> utf8Name)
+    public bool AppendFieldValueToMessage(ReadOnlySpan<char> name)
     {
         for (var i = 0; i < _fieldCount; i++)
         {
             var field = _fields[i];
-            if (!_names.AsSpan(field.NameStart, field.NameLength).SequenceEqual(utf8Name))
+            if (!field.CaptureName.Span.SequenceEqual(name))
             {
                 continue;
             }
@@ -602,21 +661,17 @@ internal sealed class LogEntry
     }
 
     /// <summary>
-    /// Appends the value of the first field named <paramref name="utf8Name"/> at or after
+    /// Appends the value of the first field named <paramref name="name"/> at or after
     /// <paramref name="firstIndex"/> to <paramref name="target"/> — the scope-text renderer,
     /// which must resolve a hole against the fields captured for that one scope rather than
     /// against an event hole or an outer scope carrying the same name.
     /// </summary>
-    public bool TryAppendFieldValue(
-        ReadOnlySpan<byte> utf8Name,
-        int firstIndex,
-        StringBuilder target
-    )
+    public bool TryAppendFieldValue(ReadOnlySpan<char> name, int firstIndex, StringBuilder target)
     {
         for (var i = firstIndex; i < _fieldCount; i++)
         {
             var field = _fields[i];
-            if (!_names.AsSpan(field.NameStart, field.NameLength).SequenceEqual(utf8Name))
+            if (!field.CaptureName.Span.SequenceEqual(name))
             {
                 continue;
             }
@@ -637,7 +692,7 @@ internal sealed class LogEntry
 
     /// <summary>A complete, pre-validated JSON fragment produced by the library itself.</summary>
     public void AddFieldJson(
-        string name,
+        LogFieldName name,
         ReadOnlySpan<byte> json,
         LogFieldSource source = LogFieldSource.Hole
     )
@@ -676,7 +731,7 @@ internal sealed class LogEntry
     public List<string> EnsureTemplateRenderings() => TemplateRenderings ??= [];
 
     public void AddFieldFormattable<T>(
-        string name,
+        LogFieldName name,
         T value,
         LogFieldKind kind,
         string? format = null,
@@ -727,7 +782,7 @@ internal sealed class LogEntry
     }
 
     private void RecordField(
-        string? name,
+        LogFieldName name,
         LogFieldKind kind,
         bool valueInMessage,
         int valueStart,
@@ -739,24 +794,33 @@ internal sealed class LogEntry
     {
         // The AddField* writers check before encoding a value; the message-slicing fast path
         // reaches this check with its hole text already in the message, where it stays.
-        if (name is null || CaptureFull(source))
+        if (name.Text is null || CaptureFull(source))
         {
             return;
         }
 
+        // Keep the already captured value available to safe rendering, but never encode an
+        // invalid name. Both names and values remain subject to the field capture ceiling.
+        var rejected =
+            !_deferNameValidation
+            && (
+                name.Length > _maxFieldNameLength
+                || Encoding.UTF8.GetByteCount(name.Span) > _maxFieldNameLength
+            );
+        if (rejected)
+            _nameTooLong[(int)source]++;
+
         if (_fieldCount == _fields.Length)
-        {
             Array.Resize(ref _fields, _fields.Length * 2);
-        }
 
         var nameStart = _namesLength;
-        var required = Encoding.UTF8.GetMaxByteCount(name.Length);
-        if (_namesLength + required > _names.Length)
+        if (!rejected && !_deferNameValidation)
         {
-            Array.Resize(ref _names, Math.Max(_names.Length * 2, _namesLength + required));
+            var required = Encoding.UTF8.GetMaxByteCount(name.Length);
+            if (_namesLength + required > _names.Length)
+                Array.Resize(ref _names, Math.Max(_names.Length * 2, _namesLength + required));
+            _namesLength += Encoding.UTF8.GetBytes(name.Span, _names.AsSpan(_namesLength));
         }
-
-        _namesLength += Encoding.UTF8.GetBytes(name, _names.AsSpan(_namesLength));
         _fields[_fieldCount++] = new LogField(
             nameStart,
             _namesLength - nameStart,
@@ -766,7 +830,9 @@ internal sealed class LogEntry
             source,
             valueInMessage,
             renderingStart,
-            renderingLength
+            renderingLength,
+            name,
+            rejected
         );
     }
 
@@ -786,8 +852,17 @@ internal sealed class LogEntry
         LoggingMetrics? metrics
     )
     {
+        FinalizeCapture();
         for (var source = 0; source < _overflow.Length; source++)
         {
+            if (_nameTooLong[source] > 0)
+            {
+                metrics?.RecordFieldDropped(
+                    LoggingMetrics.FieldReasonNameTooLong,
+                    SourceName((LogFieldSource)source),
+                    _nameTooLong[source]
+                );
+            }
             if (_overflow[source] > 0)
             {
                 metrics?.RecordFieldDropped(

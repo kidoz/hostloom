@@ -74,17 +74,15 @@ public static class LoggerExtensions
             var fields = new KeyValuePair<string, object?>[entry.FieldCount];
             for (var i = 0; i < fields.Length; i++)
             {
-                entry.GetField(i, out var name, out var value, out var kind);
-                fields[i] = new KeyValuePair<string, object?>(
-                    System.Text.Encoding.UTF8.GetString(name),
-                    BoxValue(value, kind)
-                );
+                entry.GetHandoffField(i, out var name, out var value, out var kind);
+                fields[i] = new KeyValuePair<string, object?>(name, BoxValue(value, kind));
             }
 
             var state = new HandoffState(
                 System.Text.Encoding.UTF8.GetString(entry.Message),
                 fields,
-                entry.CaptureFailures
+                entry.CaptureFailures,
+                entry.OverflowHoleFields
             );
             logger.Log(entry.Level, eventId, state, exception, static (s, _) => s.ToString());
 #pragma warning restore CA1873
@@ -138,10 +136,12 @@ public static class LoggerExtensions
     internal sealed class HandoffState(
         string message,
         KeyValuePair<string, object?>[] fields,
-        int captureFailures
+        int captureFailures,
+        int overflowHoleFields
     ) : IReadOnlyList<KeyValuePair<string, object?>>
     {
         public int CaptureFailures => captureFailures;
+        public int OverflowHoleFields => overflowHoleFields;
 
         public KeyValuePair<string, object?> this[int index] => fields[index];
 
