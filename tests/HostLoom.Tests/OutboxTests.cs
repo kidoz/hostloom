@@ -183,10 +183,13 @@ public sealed class OutboxTests
             .Services.GetRequiredService<IPublishEndpoint>()
             .PublishAsync("orders", new OrderPlaced("A-1"), TestContext.Current.CancellationToken);
 
-        // Publishing returned when the append did; the relay delivers shortly after.
-        await SchedulingTests.WaitUntilAsync(() => received.Sorted().Count == 2);
-        Assert.Equal(["audit:A-1", "shipping:A-1"], received.Sorted());
+        // Publishing returned when the append did; the relay delivers shortly after, and marks the
+        // message published only once the broker has taken it, which can be after both handlers ran.
         var store = host.Services.GetRequiredService<InMemoryOutboxStore>();
+        await SchedulingTests.WaitUntilAsync(() =>
+            received.Sorted().Count == 2 && store.Published.Count == 1
+        );
+        Assert.Equal(["audit:A-1", "shipping:A-1"], received.Sorted());
         Assert.Empty(store.Pending);
         var published = Assert.Single(store.Published);
         Assert.Equal("orders", published.Topic);
