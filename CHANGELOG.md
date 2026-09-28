@@ -8,6 +8,11 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Changed
+
+- Update MessagePack from 3.1.9 to 3.1.10, including its upstream security fix for
+  catastrophic regular-expression backtracking.
+
 ## [0.13.0] - 2026-09-28
 
 This release lets configuration choose the output format of `HostLoom.Logging` and stops logging
