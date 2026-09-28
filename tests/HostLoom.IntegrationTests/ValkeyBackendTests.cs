@@ -9,6 +9,7 @@ using HostLoom.Locking;
 using HostLoom.Locking.DependencyInjection;
 using HostLoom.Valkey;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using ValkeyDotNet;
 using Xunit;
 
@@ -127,7 +128,9 @@ public sealed class ValkeyBackendTests
     public async Task UseValkey_ComposesSerializedL2AndLocksThroughContainer()
     {
         var ns = "valkey-di-" + Guid.NewGuid().ToString("N");
+        using var log = new LogCapture();
         var services = new ServiceCollection();
+        services.AddLogging(logging => logging.AddProvider(log).SetMinimumLevel(LogLevel.Trace));
         services
             .AddHostLoomCaching(options => options.Namespace = ns)
             .UseValkey(options => options.Connection = ValkeyAvailability.Options().Connection)
@@ -150,10 +153,19 @@ public sealed class ValkeyBackendTests
             container.GetRequiredService<IDistributedCacheStore>(),
             new SystemTextJsonCacheValueSerializer(
                 new JsonSerializerOptions { TypeInfoResolver = ValkeyBackendJson.Default }
-            )
+            ),
+            logger: container.GetRequiredService<ILogger<TieredCache>>()
         );
         var found = await other.TryGetAsync<string>("catalog:eu", Token);
-        Assert.Equal(CacheTier.L2, found.Tier);
+        if (found.Tier != CacheTier.L2)
+        {
+            // Both caches fail open, so a store failure reads as a miss. A second read tells a
+            // failed read from a write that never landed, and the log names what was absorbed.
+            var again = await other.TryGetAsync<string>("catalog:eu", Token);
+            Assert.Fail(
+                $"Expected an L2 hit, got {found}; a second read got {again}. {log.Describe()}"
+            );
+        }
         Assert.Equal("books", found.Value);
         var locking = container.GetRequiredService<IDistributedLock>();
         await using var handle = await locking.TryAcquireAsync(
