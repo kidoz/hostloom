@@ -501,7 +501,11 @@ public sealed class LoggingThreadPoolStarvationTests
 
         ThreadPool.GetMaxThreads(out var maxWorkers, out var maxIo);
         ThreadPool.GetMinThreads(out var minWorkers, out var minIo);
-        using var parked = new ManualResetEventSlim(false);
+        // Never disposed: parked work items the pool has not started by the end of the test call
+        // Wait afterwards, and a disposed event throws there, on a pool thread, ending the process.
+#pragma warning disable CA2000
+        var parked = new ManualResetEventSlim(false);
+#pragma warning restore CA2000
         try
         {
             ThreadPool.SetMaxThreads(minWorkers, minIo);
