@@ -1,4 +1,5 @@
 using System.Buffers;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace HostLoom.Logging;
@@ -164,4 +165,31 @@ public sealed class HostLoomLoggerOptions
     /// stay comparable across services; a backward step after a correction is intentional.
     /// </summary>
     public TimeProvider TimeProvider { get; set; } = TimeProvider.System;
+
+    /// <summary>
+    /// Applies configuration over the current values, as the configuration overloads of
+    /// <c>AddHostLoomLogging</c> do. Values set before the call are defaults that configuration
+    /// overrides, and values set after it win, so a wrapper can layer its own defaults under
+    /// configuration by calling this from the callback of an overload without configuration.
+    /// Keys follow the property names. An unknown key or invalid value throws, and an empty
+    /// <see cref="EnqueueTimeout"/> lifts the limit.
+    /// </summary>
+    /// <returns>This instance.</returns>
+    public HostLoomLoggerOptions Bind(IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        // Strict on purpose: a typo in a cap or policy name should fail startup loudly rather
+        // than silently leave the default in place. The binding generator compiles this call.
+        configuration.Bind(this, binder => binder.ErrorOnUnknownConfiguration = true);
+
+        // An empty value lifts the limit, as the reflection binder made it do; the generated
+        // binder leaves a nullable value alone when its configuration value is empty.
+        if (configuration[nameof(EnqueueTimeout)] is "")
+        {
+            EnqueueTimeout = null;
+        }
+
+        return this;
+    }
 }

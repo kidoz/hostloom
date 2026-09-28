@@ -111,7 +111,7 @@ public sealed class LoggingRegistrationTests
         var options = new HostLoomLoggerOptions();
         Assert.Equal(TimeSpan.FromSeconds(1), options.EnqueueTimeout);
 
-        HostLoom.Logging.LoggingBuilderExtensions.BindOptions(options, configuration);
+        options.Bind(configuration);
 
         Assert.Equal(
             milliseconds is { } ms ? TimeSpan.FromMilliseconds(ms) : null,
@@ -211,6 +211,26 @@ public sealed class LoggingRegistrationTests
         var message = record.RootElement.GetProperty("error.message").GetString();
         Assert.Equal(new string('x', 64) + "…", message);
     }
+
+    [Fact]
+    public void Bind_keeps_values_set_before_it_as_defaults_that_configuration_overrides()
+    {
+        var options = new HostLoomLoggerOptions { ServiceName = "default" };
+        options.Destructuring.TypeTags = true;
+
+        var bound = options.Bind(Configuration(("ServiceName", "checkout")));
+
+        Assert.Same(options, bound);
+        Assert.Equal("checkout", options.ServiceName);
+        Assert.True(options.Destructuring.TypeTags);
+    }
+
+    private static IConfiguration Configuration(params (string Key, string Value)[] values) =>
+        new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                values.Select(value => KeyValuePair.Create(value.Key, (string?)value.Value))
+            )
+            .Build();
 
     private sealed class UnreadableMessageException : Exception
     {

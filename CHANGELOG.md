@@ -8,6 +8,12 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- `HostLoomLoggerOptions.Bind(IConfiguration)` applies configuration with the strict rules of the
+  configuration overloads. A wrapper that sets defaults before calling it lets configuration
+  override them, which the configuration overloads, applying their callback afterwards, cannot.
+
 ## [0.12.0] - 2026-09-27
 
 This release brings `HostLoom.Logging` to the output of Serilog's `CompactJsonFormatter` and

@@ -49,7 +49,8 @@ public static class LoggingBuilderExtensions
 
     /// <summary>
     /// Registers the provider with options bound from configuration — typically
-    /// <c>configuration.GetSection("HostLoom:Logging")</c>. The optional callback applies after
+    /// <c>configuration.GetSection("HostLoom:Logging")</c> — through
+    /// <see cref="HostLoomLoggerOptions.Bind"/>. The optional callback applies after
     /// configuration, and invalid or unknown values fail here, at host startup, not at first
     /// log. Level filtering stays standard MEL <c>Logging</c> configuration, which runs before
     /// this provider.
@@ -66,8 +67,7 @@ public static class LoggingBuilderExtensions
         ArgumentNullException.ThrowIfNull(sink);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        var options = new HostLoomLoggerOptions();
-        BindOptions(options, configuration);
+        var options = new HostLoomLoggerOptions().Bind(configuration);
         configure?.Invoke(options);
         return Register(builder, _ => sink, options, formatter);
     }
@@ -89,24 +89,9 @@ public static class LoggingBuilderExtensions
         ArgumentNullException.ThrowIfNull(sink);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        var options = new HostLoomLoggerOptions();
-        BindOptions(options, configuration);
+        var options = new HostLoomLoggerOptions().Bind(configuration);
         configure?.Invoke(options);
         return Register(builder, sink, options, formatter);
-    }
-
-    internal static void BindOptions(HostLoomLoggerOptions options, IConfiguration configuration)
-    {
-        // Strict on purpose: a typo in a cap or policy name should fail startup loudly rather
-        // than silently leave the default in place. The binding generator compiles this call.
-        configuration.Bind(options, binder => binder.ErrorOnUnknownConfiguration = true);
-
-        // An empty value lifts the limit, as the reflection binder made it do; the generated
-        // binder leaves a nullable value alone when its configuration value is empty.
-        if (configuration[nameof(HostLoomLoggerOptions.EnqueueTimeout)] is "")
-        {
-            options.EnqueueTimeout = null;
-        }
     }
 
     private static ILoggingBuilder Register(

@@ -38,6 +38,23 @@ the `HostLoom:Logging` section) with unknown keys treated as errors —
 typos fail startup. A code callback applies *after* configuration. When
 `formatter` is null, `JsonLogFormatter` is used.
 
+A wrapper that wants defaults configuration can still override calls
+`HostLoomLoggerOptions.Bind(IConfiguration)` itself from the callback of an overload without
+configuration. `Bind` applies configuration over the current values with the same strict rules
+and returns the options:
+
+```csharp
+builder.Logging.AddHostLoomLogging(
+    _ => StreamLogSink.Console(),
+    options =>
+    {
+        // Defaults that configuration may override.
+        options.Destructuring.TypeTags = true;
+        options.Bind(builder.Configuration.GetSection("HostLoom:Logging"));
+        options.Enrichers.Add(new RegionEnricher()); // code only
+    });
+```
+
 Level filtering is standard MEL configuration (`Logging:LogLevel:*`) and
 runs before the provider; HostLoom does no level filtering of its own.
 

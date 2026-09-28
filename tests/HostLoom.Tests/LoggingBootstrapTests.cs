@@ -101,10 +101,7 @@ public sealed class LoggingBootstrapTests
             .Build();
 
         var options = new HostLoomLoggerOptions();
-        HostLoom.Logging.LoggingBuilderExtensions.BindOptions(
-            options,
-            configuration.GetSection("HostLoom:Logging")
-        );
+        options.Bind(configuration.GetSection("HostLoom:Logging"));
         // The code callback applies after configuration and wins.
         options.ServiceName = "callback-wins";
 
@@ -128,10 +125,7 @@ public sealed class LoggingBootstrapTests
             )
             .Build();
         Assert.Throws<InvalidOperationException>(() =>
-            HostLoom.Logging.LoggingBuilderExtensions.BindOptions(
-                new HostLoomLoggerOptions(),
-                misspelled.GetSection("HostLoom:Logging")
-            )
+            new HostLoomLoggerOptions().Bind(misspelled.GetSection("HostLoom:Logging"))
         );
 
         var invalid = new ConfigurationBuilder()
@@ -143,10 +137,7 @@ public sealed class LoggingBootstrapTests
             )
             .Build();
         Assert.Throws<InvalidOperationException>(() =>
-            HostLoom.Logging.LoggingBuilderExtensions.BindOptions(
-                new HostLoomLoggerOptions(),
-                invalid.GetSection("HostLoom:Logging")
-            )
+            new HostLoomLoggerOptions().Bind(invalid.GetSection("HostLoom:Logging"))
         );
     }
 
