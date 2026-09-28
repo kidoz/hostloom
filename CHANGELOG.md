@@ -8,6 +8,23 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-28
+
+This release lets configuration choose the output format of `HostLoom.Logging` and stops logging
+configuration from being ignored without a word. `"Formatter": "Json"` or `"Clef"` under
+`HostLoom:Logging` selects the formatter, a new `AddHostLoomLogging` overload takes everything
+from configuration and writes to standard output, and `HostLoomLoggerOptions.Bind` lets a wrapper
+set defaults that configuration can still override. Configuration that sets `Enrichers` or
+`TimeProvider`, which only code can set, fails startup instead of being accepted and ignored.
+
+Upgrading from 0.12.0 changes behaviour an application can observe; each change is stated under
+**Changed** or **Fixed**. A second `AddHostLoomLogging` call on the same service collection throws
+instead of being ignored along with its sink, formatter, and options; call `ClearProviders()`
+first to replace a registration. Options are validated when `AddHostLoomLogging` runs, so an
+out-of-range value fails at that call rather than when logging is first resolved. An application
+that names no formatter, in configuration or in code, keeps writing JSON from the provider and
+CLEF from the bootstrap logger. No package is published for the first time.
+
 ### Added
 
 - `HostLoomLoggerOptions.Formatter` chooses the output format by name, so configuration can set
@@ -1731,7 +1748,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/kidoz/hostloom/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/kidoz/hostloom/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/kidoz/hostloom/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/kidoz/hostloom/compare/v0.9.0...v0.10.0
