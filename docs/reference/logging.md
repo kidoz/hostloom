@@ -11,6 +11,9 @@ dotnet add package HostLoom.Logging
 ## Registration
 
 ```csharp
+ILoggingBuilder AddHostLoomLogging(IConfiguration configuration,
+    Action<HostLoomLoggerOptions>? configure = null);
+
 ILoggingBuilder AddHostLoomLogging(ILogSink sink,
     Action<HostLoomLoggerOptions>? configure = null, ILogFormatter? formatter = null);
 
@@ -31,12 +34,15 @@ A sink instance passed at registration is shared by every container built from t
 collection, each running its own background writer against it. The factory overloads call the
 factory once per container instead, so each gets a sink of its own, and CA2000 has no
 undisposed sink to report at the call site. A factory that returns null fails when logging is
-resolved.
+resolved. The overload taking only configuration writes to standard output, opening a
+`StreamLogSink.Console()` per container.
 
 The configuration overloads bind `HostLoomLoggerOptions` (conventionally from
 the `HostLoom:Logging` section) with unknown keys treated as errors —
-typos fail startup. A code callback applies *after* configuration. When
-`formatter` is null, `JsonLogFormatter` is used.
+typos fail startup. A code callback applies *after* configuration. Options are validated when
+`AddHostLoomLogging` runs, so an invalid value fails at the registering line. A `formatter`
+passed in code takes precedence over the `Formatter` option; when neither names one,
+`JsonLogFormatter` is used.
 
 `Enrichers` and `TimeProvider` can be set only in code. Configuration that sets either — for
 example, an enricher list under `HostLoom:Logging:Enrichers` — fails startup instead of being
@@ -53,6 +59,7 @@ builder.Logging.AddHostLoomLogging(
     options =>
     {
         // Defaults that configuration may override.
+        options.Formatter = LogFormatterNames.Clef;
         options.Destructuring.TypeTags = true;
         options.Bind(builder.Configuration.GetSection("HostLoom:Logging"));
         options.Enrichers.Add(new RegionEnricher()); // code only
@@ -75,6 +82,8 @@ runs before the provider; HostLoom does no level filtering of its own.
 | `MaxFieldsPerRecord` | `64` | Fields past the cap are dropped and counted; the record ships. Capture itself stops at four times the cap |
 | `MaxMessageLength` | `16384` (16 KiB) | UTF-8 bytes of rendered message; see [Record size caps](#record-size-caps) |
 | `MaxTextFieldLength` | `8192` (8 KiB) | UTF-8 bytes per plain text field, string hole, enricher value, or scope text |
+| `Formatter` | null | `Json` \| `Clef`, case-insensitive; null uses JSON for the provider and CLEF for the bootstrap logger. A formatter passed in code wins; any other name fails validation |
+| `MaxExceptionLength` | `32768` (32 KiB) | Characters of exception message and stack trace written by a formatter created from `Formatter` or by default |
 | `AttachMachineName` | `true` | Adds the machine name as a static field |
 | `ServiceName` | null | Adds a service name as a static field |
 | `CaptureActivity` | `true` | Attach trace/span ids from `Activity.Current` |
@@ -396,7 +405,8 @@ using var bootstrap = new HostLoomBootstrapLogger(minimumLevel: LogLevel.Informa
 Full ctor: `(HostLoomLoggerOptions?, ILogFormatter?, Stream?, LogLevel
 minimumLevel = Information, string category = "Bootstrap", bool failFast
 = false)`. Writes synchronously to stdout with the same event shape,
-masking, and static fields; defaults to `ClefLogFormatter`. Dispose it
+masking, and static fields; uses the formatter the options' `Formatter` names, and
+`ClefLogFormatter` when it names none. Dispose it
 once the hosted provider is up — it retains nothing, so the hand-off
 neither replays nor duplicates.
 
@@ -405,7 +415,7 @@ neither replays nor duplicates.
 The package is annotated for trimming and Native AOT, and
 `examples/HostLoom.Examples.LoggingAot` publishes natively and checks its own output. Options
 bind from configuration through compiled binding code, so the configuration overloads work in a
-native app, and an empty `EnqueueTimeout` still lifts the limit.
+native app, the `Formatter` name included, and an empty `EnqueueTimeout` still lifts the limit.
 
 Destructuring is the part that depends on reflection. `{@...}` reads a value's public properties
 and fields at run time, and a trimmed or natively compiled app keeps them only when something

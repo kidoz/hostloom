@@ -683,18 +683,22 @@ and health metrics on the `HostLoom.Logging` meter. It is Native AOT compatible;
 preserves the types it destructures with `Destructuring.Preserve<T>()`.
 
 ```csharp
-builder.Logging.AddHostLoomLogging(
-    _ => StreamLogSink.Console(),
-    builder.Configuration.GetSection("HostLoom:Logging"),
-    formatter: new ClefLogFormatter());
+builder.Logging.AddHostLoomLogging(builder.Configuration.GetSection("HostLoom:Logging"));
 ```
+
+This writes to standard output in the format configuration names; overloads taking an
+`ILogSink` or a sink factory write elsewhere.
 
 Level filtering is standard MEL configuration and runs before the provider — HostLoom does
 no level filtering of its own. Migrating from Serilog's section, `MinimumLevel:Default`
 becomes `Logging:LogLevel:Default` and each `MinimumLevel:Override:<prefix>` becomes
-`Logging:LogLevel:<prefix>`. Provider options bind from `HostLoom:Logging`; a code callback,
-when supplied, applies after configuration, and invalid values and code-only options such as
-`Enrichers` fail at host startup:
+`Logging:LogLevel:<prefix>`. A `WriteTo` console sink with `CompactJsonFormatter` becomes
+`"Formatter": "Clef"`. Of the `Enrich` entries, `FromLogContext` and `WithThreadId` have no
+counterpart to set, because scopes and the thread id are always captured; `WithMachineName` is
+`AttachMachineName`, on by default; custom enrichers are added in code. Provider options bind
+from `HostLoom:Logging`; a code callback, when supplied, applies after configuration, and
+invalid values, unknown formatter names, and code-only options such as `Enrichers` fail at host
+startup:
 
 ```json
 {
@@ -706,6 +710,7 @@ when supplied, applies after configuration, and invalid values and code-only opt
       "EnqueueTimeout": "00:00:02",
       "ShutdownTimeout": "00:00:05",
       "ServiceName": "checkout",
+      "Formatter": "Clef",
       "MaxMessageLength": 16384,
       "MaxTextFieldLength": 8192,
       "Destructuring": { "MaxDepth": 5, "MaxStringLength": 4096 }

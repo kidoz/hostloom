@@ -137,6 +137,25 @@ public sealed class HostLoomLoggerOptions
     /// </summary>
     public int MaxTextFieldLength { get; set; } = DefaultMaxTextFieldLength;
 
+    /// <summary>
+    /// The output format by name, so configuration can choose it: <see cref="LogFormatterNames.Json"/>
+    /// for <see cref="JsonLogFormatter"/> or <see cref="LogFormatterNames.Clef"/> for
+    /// <see cref="ClefLogFormatter"/>, matched without regard to case. Null keeps the default,
+    /// JSON for the hosted provider and CLEF for the bootstrap logger. A formatter passed in code
+    /// takes precedence over the name. Any other name, the empty one included, fails validation,
+    /// even when a formatter passed in code makes the name unused.
+    /// </summary>
+    public string? Formatter { get; set; }
+
+    /// <summary>
+    /// Longest exception text, in characters, that a formatter created from
+    /// <see cref="Formatter"/> or by default writes; a longer message or chain is cut and closed
+    /// with a trailing "…". A formatter passed in code keeps the cap it was constructed with.
+    /// </summary>
+    public int MaxExceptionLength { get; set; } = DefaultMaxExceptionLength;
+
+    internal const int DefaultMaxExceptionLength = 32 * 1024;
+
     /// <summary>Caps and protection policy for <c>{@...}</c> object destructuring.</summary>
     public DestructuringOptions Destructuring { get; } = new();
 

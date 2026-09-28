@@ -260,6 +260,25 @@ internal sealed class LogPipeline : IAsyncDisposable
             );
         }
 
+        if (options.Formatter is { } formatter && !LogFormatterNames.IsKnown(formatter))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                formatter,
+                $"Formatter must be '{LogFormatterNames.Json}' or '{LogFormatterNames.Clef}', "
+                    + "or unset for the default."
+            );
+        }
+
+        if (options.MaxExceptionLength < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.MaxExceptionLength,
+                "MaxExceptionLength must be at least 1."
+            );
+        }
+
         var destructuring = options.Destructuring;
         if (
             destructuring.MaxDepth < 1

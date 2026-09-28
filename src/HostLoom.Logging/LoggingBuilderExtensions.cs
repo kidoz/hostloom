@@ -8,8 +8,23 @@ namespace HostLoom.Logging;
 public static class LoggingBuilderExtensions
 {
     /// <summary>
+    /// Registers the provider with options, the formatter among them, bound from configuration —
+    /// typically <c>configuration.GetSection("HostLoom:Logging")</c> — and writing to standard
+    /// output through a <see cref="StreamLogSink.Console"/> sink that each container opens when
+    /// it first resolves logging and closes at disposal. The optional callback applies after
+    /// configuration.
+    /// </summary>
+    public static ILoggingBuilder AddHostLoomLogging(
+        this ILoggingBuilder builder,
+        IConfiguration configuration,
+        Action<HostLoomLoggerOptions>? configure = null
+    ) => AddHostLoomLogging(builder, _ => StreamLogSink.Console(), configuration, configure);
+
+    /// <summary>
     /// Registers the provider behind <see cref="ILoggingBuilder"/>, so it composes with the standard
-    /// filter configuration and can run alongside an existing provider during a migration.
+    /// filter configuration and can run alongside an existing provider during a migration. A
+    /// <paramref name="formatter"/> passed here takes precedence over
+    /// <see cref="HostLoomLoggerOptions.Formatter"/>.
     /// </summary>
     public static ILoggingBuilder AddHostLoomLogging(
         this ILoggingBuilder builder,
@@ -101,6 +116,11 @@ public static class LoggingBuilderExtensions
         ILogFormatter? formatter
     )
     {
+        // Fail at registration rather than when logging is first resolved: a bad value set in
+        // configuration or in the callback then surfaces at the line that registered it.
+        LogPipeline.Validate(options);
+        var resolved = formatter ?? LogFormatterNames.Create(options, LogFormatterNames.Json);
+
         // A factory, not an instance: the container disposes only the singletons it creates, and
         // the logger factory never disposes providers it receives from the container. Created
         // here, the provider is disposed with the container, which drains the pipeline and
@@ -109,7 +129,7 @@ public static class LoggingBuilderExtensions
         builder.Services.TryAddEnumerable(
             ServiceDescriptor.Singleton<ILoggerProvider, HostLoomLoggerProvider>(
                 services => new HostLoomLoggerProvider(
-                    formatter ?? new JsonLogFormatter(),
+                    resolved,
                     sink(services)
                         ?? throw new InvalidOperationException(
                             "The sink factory registered with AddHostLoomLogging returned null."

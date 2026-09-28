@@ -10,9 +10,21 @@ are derived from release tags at publish time.
 
 ### Added
 
+- `HostLoomLoggerOptions.Formatter` chooses the output format by name, so configuration can set
+  it: `"Json"` or `"Clef"`, matched without regard to case, with the names also available as
+  `LogFormatterNames` constants. Unset, the provider writes JSON and the bootstrap logger CLEF, as
+  before. A formatter passed to `AddHostLoomLogging` in code takes precedence over the name.
+  `MaxExceptionLength` sets the exception cap of the formatter created from the name.
+- An `AddHostLoomLogging(IConfiguration, Action<HostLoomLoggerOptions>?)` overload that takes
+  everything from configuration, the format included, and writes to standard output.
 - `HostLoomLoggerOptions.Bind(IConfiguration)` applies configuration with the strict rules of the
   configuration overloads. A wrapper that sets defaults before calling it lets configuration
   override them, which the configuration overloads, applying their callback afterwards, cannot.
+
+### Changed
+
+- `AddHostLoomLogging` validates the options when it runs, so an out-of-range value fails at the
+  registering call instead of when logging is first resolved.
 
 ### Fixed
 

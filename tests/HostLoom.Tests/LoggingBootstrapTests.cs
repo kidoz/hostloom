@@ -81,6 +81,28 @@ public sealed class LoggingBootstrapTests
     }
 
     [Fact]
+    public void The_bootstrap_logger_writes_the_format_its_options_name()
+    {
+        using var output = new MemoryStream();
+        using var logger = new HostLoomBootstrapLogger(
+            new HostLoomLoggerOptions { Formatter = LogFormatterNames.Json },
+            output: output
+        );
+
+        logger.LogInformation("migrating");
+
+        var root = ParseSingle(output);
+        Assert.Equal("INFO", root.GetProperty("log.level").GetString());
+        Assert.False(root.TryGetProperty("@mt", out _));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new HostLoomBootstrapLogger(
+                new HostLoomLoggerOptions { Formatter = "Text" },
+                output: output
+            )
+        );
+    }
+
+    [Fact]
     public void Options_bind_from_configuration_with_the_callback_applying_after()
     {
         var configuration = new ConfigurationBuilder()

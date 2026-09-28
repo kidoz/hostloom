@@ -33,7 +33,8 @@ public sealed class HostLoomBootstrapLogger : ILogger, IDisposable
 
     /// <param name="options">Shared with the future hosted provider so both emit identically;
     /// queue and shutdown settings do not apply to this synchronous logger.</param>
-    /// <param name="formatter">Defaults to <see cref="ClefLogFormatter"/>.</param>
+    /// <param name="formatter">Defaults to the one <see cref="HostLoomLoggerOptions.Formatter"/>
+    /// names, and to <see cref="ClefLogFormatter"/> when it names none.</param>
     /// <param name="output">Defaults to standard output, which is then owned and disposed.</param>
     /// <param name="minimumLevel">The only level filter that exists before the host.</param>
     /// <param name="category">Emitted as the logger category on every event.</param>
@@ -49,7 +50,7 @@ public sealed class HostLoomBootstrapLogger : ILogger, IDisposable
     {
         _options = options ?? new HostLoomLoggerOptions();
         LogPipeline.Validate(_options);
-        _formatter = formatter ?? new ClefLogFormatter();
+        _formatter = formatter ?? LogFormatterNames.Create(_options, LogFormatterNames.Clef);
         _ownsOutput = output is null;
         _output = output ?? Console.OpenStandardOutput();
         _minimumLevel = minimumLevel;

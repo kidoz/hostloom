@@ -10,8 +10,8 @@ using Microsoft.Extensions.Logging;
 
 // A Native AOT publish of this program must produce no trim or AOT warnings. The program checks
 // its own output and exits with 1 on a mismatch, so running the native binary is the test: options
-// bound from configuration, preserved and masked types destructured as on the JIT, and a type
-// nobody preserved reported instead of silently written without its members.
+// and the output format bound from configuration, preserved and masked types destructured as on
+// the JIT, and a type nobody preserved reported instead of silently written without its members.
 var destructurerFailures = 0L;
 using var listener = new MeterListener();
 listener.InstrumentPublished = (instrument, meters) =>
@@ -44,6 +44,7 @@ builder.Configuration.AddInMemoryCollection(
     new Dictionary<string, string?>
     {
         ["HostLoom:Logging:ServiceName"] = "orders",
+        ["HostLoom:Logging:Formatter"] = "Clef",
         ["HostLoom:Logging:AttachMachineName"] = "false",
         ["HostLoom:Logging:QueueFullPolicy"] = "Block",
         ["HostLoom:Logging:Destructuring:TypeTags"] = "true",
@@ -54,8 +55,7 @@ builder.Logging.AddHostLoomLogging(
     _ => sink = new CapturingSink(),
     builder.Configuration.GetSection("HostLoom:Logging"),
     // Every type written with {@...} under Native AOT, nested ones included.
-    logging => logging.Destructuring.Preserve<Order>().Preserve<Shipment>(),
-    new ClefLogFormatter()
+    logging => logging.Destructuring.Preserve<Order>().Preserve<Shipment>()
 );
 
 using (var host = builder.Build())
@@ -85,6 +85,10 @@ var problems = new List<string>();
 Expect(
     lines.All(line => Field(line, "ServiceName") == "\"orders\""),
     "ServiceName bound from configuration on every record"
+);
+Expect(
+    lines.All(line => Field(line, "@mt") is not null),
+    "the CLEF format chosen by name in configuration"
 );
 Expect(
     Field(lines[0], "Order")

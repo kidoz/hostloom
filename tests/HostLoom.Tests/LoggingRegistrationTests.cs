@@ -213,6 +213,65 @@ public sealed class LoggingRegistrationTests
     }
 
     [Theory]
+    [InlineData("Clef", "@mt")]
+    [InlineData("clef", "@mt")]
+    [InlineData("JSON", "log.level")]
+    public async Task Configuration_chooses_the_formatter_by_name(string name, string property)
+    {
+        var line = await LogOneRecord(Configuration(("Formatter", name)));
+
+        using var record = JsonDocument.Parse(line);
+        Assert.True(record.RootElement.TryGetProperty(property, out _));
+    }
+
+    [Fact]
+    public async Task A_formatter_passed_in_code_takes_precedence_over_the_configured_name()
+    {
+        var line = await LogOneRecord(Configuration(("Formatter", "Json")), new ClefLogFormatter());
+
+        using var record = JsonDocument.Parse(line);
+        Assert.True(record.RootElement.TryGetProperty("@mt", out _));
+        Assert.False(record.RootElement.TryGetProperty("log.level", out _));
+    }
+
+    [Fact]
+    public async Task Configuration_caps_the_exception_text_of_the_formatter_it_names()
+    {
+        var line = await LogOneRecord(
+            Configuration(("Formatter", "Json"), ("MaxExceptionLength", "64"))
+        );
+
+        using var record = JsonDocument.Parse(line);
+        Assert.Equal(
+            new string('x', 64) + "…",
+            record.RootElement.GetProperty("error.message").GetString()
+        );
+    }
+
+    [Theory]
+    [InlineData("Text")]
+    [InlineData("")]
+    public void An_unknown_formatter_name_fails_registration_even_beside_a_code_formatter(
+        string name
+    )
+    {
+        var configuration = Configuration(("Formatter", name));
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new ServiceCollection().AddLogging(logging => logging.AddHostLoomLogging(configuration))
+        );
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new ServiceCollection().AddLogging(logging =>
+                logging.AddHostLoomLogging(
+                    _ => new RecordingSink(),
+                    configuration,
+                    formatter: new ClefLogFormatter()
+                )
+            )
+        );
+    }
+
+    [Theory]
     [InlineData("Enrichers:0", "TraceContext")]
     [InlineData("enrichers:0:Name", "TraceContext")]
     [InlineData("Enrichers", "")]
@@ -230,14 +289,39 @@ public sealed class LoggingRegistrationTests
     [Fact]
     public void Bind_keeps_values_set_before_it_as_defaults_that_configuration_overrides()
     {
-        var options = new HostLoomLoggerOptions { ServiceName = "default" };
+        var options = new HostLoomLoggerOptions
+        {
+            ServiceName = "default",
+            Formatter = LogFormatterNames.Clef,
+        };
         options.Destructuring.TypeTags = true;
 
         var bound = options.Bind(Configuration(("ServiceName", "checkout")));
 
         Assert.Same(options, bound);
         Assert.Equal("checkout", options.ServiceName);
+        Assert.Equal(LogFormatterNames.Clef, options.Formatter);
         Assert.True(options.Destructuring.TypeTags);
+    }
+
+    [Fact]
+    public void The_configuration_only_overload_registers_one_provider_from_its_options()
+    {
+        var services = new ServiceCollection();
+
+        services.AddLogging(logging =>
+            logging.AddHostLoomLogging(
+                Configuration(("Formatter", "Clef")),
+                options => options.ServiceName = "checkout"
+            )
+        );
+
+        Assert.Single(services, service => service.ServiceType == typeof(ILoggerProvider));
+        Assert.Throws<InvalidOperationException>(() =>
+            new ServiceCollection().AddLogging(logging =>
+                logging.AddHostLoomLogging(Configuration(("QueueCapcity", "1024")))
+            )
+        );
     }
 
     private static IConfiguration Configuration(params (string Key, string Value)[] values) =>
@@ -246,6 +330,33 @@ public sealed class LoggingRegistrationTests
                 values.Select(value => KeyValuePair.Create(value.Key, (string?)value.Value))
             )
             .Build();
+
+    /// <summary>Logs one error with a long message through a container and returns its line.</summary>
+    private static async Task<string> LogOneRecord(
+        IConfiguration configuration,
+        ILogFormatter? formatter = null
+    )
+    {
+        RecordingSink? sink = null;
+        var services = new ServiceCollection();
+        services.AddLogging(logging =>
+            logging.AddHostLoomLogging(
+                _ => sink = new RecordingSink(),
+                configuration,
+                formatter: formatter
+            )
+        );
+
+        await using (var provider = services.BuildServiceProvider())
+        {
+            provider
+                .GetRequiredService<ILogger<LoggingRegistrationTests>>()
+                .LogError(new InvalidOperationException(new string('x', 10_000)), "Import failed.");
+        }
+
+        Assert.NotNull(sink);
+        return Assert.Single(sink.Lines());
+    }
 
     private sealed class UnreadableMessageException : Exception
     {
