@@ -14,6 +14,12 @@ are derived from release tags at publish time.
   configuration overloads. A wrapper that sets defaults before calling it lets configuration
   override them, which the configuration overloads, applying their callback afterwards, cannot.
 
+### Fixed
+
+- Configuration that sets `Enrichers` or `TimeProvider` under the options section fails startup.
+  The strict binder accepted both names but could bind neither, so a configured enricher list was
+  ignored without a word.
+
 ## [0.12.0] - 2026-09-27
 
 This release brings `HostLoom.Logging` to the output of Serilog's `CompactJsonFormatter` and

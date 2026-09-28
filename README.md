@@ -693,7 +693,8 @@ Level filtering is standard MEL configuration and runs before the provider — H
 no level filtering of its own. Migrating from Serilog's section, `MinimumLevel:Default`
 becomes `Logging:LogLevel:Default` and each `MinimumLevel:Override:<prefix>` becomes
 `Logging:LogLevel:<prefix>`. Provider options bind from `HostLoom:Logging`; a code callback,
-when supplied, applies after configuration, and invalid values fail at host startup:
+when supplied, applies after configuration, and invalid values and code-only options such as
+`Enrichers` fail at host startup:
 
 ```json
 {

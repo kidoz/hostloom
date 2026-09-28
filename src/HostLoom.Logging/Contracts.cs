@@ -171,13 +171,28 @@ public sealed class HostLoomLoggerOptions
     /// <c>AddHostLoomLogging</c> do. Values set before the call are defaults that configuration
     /// overrides, and values set after it win, so a wrapper can layer its own defaults under
     /// configuration by calling this from the callback of an overload without configuration.
-    /// Keys follow the property names. An unknown key or invalid value throws, and an empty
-    /// <see cref="EnqueueTimeout"/> lifts the limit.
+    /// Keys follow the property names. An unknown key or invalid value throws, as does any key
+    /// under <see cref="Enrichers"/> or <see cref="TimeProvider"/>, which only code can set; an
+    /// empty <see cref="EnqueueTimeout"/> lifts the limit.
     /// </summary>
     /// <returns>This instance.</returns>
     public HostLoomLoggerOptions Bind(IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
+
+        // The binder accepts both names as known properties but can bind neither, so without this
+        // check a configured enricher list would be ignored without a word.
+        foreach (var codeOnly in (ReadOnlySpan<string>)[nameof(Enrichers), nameof(TimeProvider)])
+        {
+            if (configuration.GetSection(codeOnly).Exists())
+            {
+                throw new InvalidOperationException(
+                    $"{codeOnly} cannot be set from configuration, found at "
+                        + $"'{configuration.GetSection(codeOnly).Path}'. Set "
+                        + $"{nameof(HostLoomLoggerOptions)}.{codeOnly} in code instead."
+                );
+            }
+        }
 
         // Strict on purpose: a typo in a cap or policy name should fail startup loudly rather
         // than silently leave the default in place. The binding generator compiles this call.

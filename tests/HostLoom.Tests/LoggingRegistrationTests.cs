@@ -212,6 +212,21 @@ public sealed class LoggingRegistrationTests
         Assert.Equal(new string('x', 64) + "…", message);
     }
 
+    [Theory]
+    [InlineData("Enrichers:0", "TraceContext")]
+    [InlineData("enrichers:0:Name", "TraceContext")]
+    [InlineData("Enrichers", "")]
+    [InlineData("TimeProvider:LocalTimeZone:Id", "UTC")]
+    public void Configuration_cannot_set_the_options_only_code_can_set(string key, string value)
+    {
+        var configuration = Configuration((key, value));
+
+        var failure = Assert.Throws<InvalidOperationException>(() =>
+            new HostLoomLoggerOptions().Bind(configuration)
+        );
+        Assert.Contains("in code", failure.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Bind_keeps_values_set_before_it_as_defaults_that_configuration_overrides()
     {

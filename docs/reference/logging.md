@@ -38,6 +38,10 @@ the `HostLoom:Logging` section) with unknown keys treated as errors —
 typos fail startup. A code callback applies *after* configuration. When
 `formatter` is null, `JsonLogFormatter` is used.
 
+`Enrichers` and `TimeProvider` can be set only in code. Configuration that sets either — for
+example, an enricher list under `HostLoom:Logging:Enrichers` — fails startup instead of being
+ignored.
+
 A wrapper that wants defaults configuration can still override calls
 `HostLoomLoggerOptions.Bind(IConfiguration)` itself from the callback of an overload without
 configuration. `Bind` applies configuration over the current values with the same strict rules
@@ -74,9 +78,9 @@ runs before the provider; HostLoom does no level filtering of its own.
 | `AttachMachineName` | `true` | Adds the machine name as a static field |
 | `ServiceName` | null | Adds a service name as a static field |
 | `CaptureActivity` | `true` | Attach trace/span ids from `Activity.Current` |
-| `Enrichers` | empty | `ILogEnricher` list |
+| `Enrichers` | empty | `ILogEnricher` list; code only |
 | `Destructuring` | see below | `{@...}` destructuring limits |
-| `TimeProvider` | `TimeProvider.System` | Testable timestamps |
+| `TimeProvider` | `TimeProvider.System` | Testable timestamps; code only |
 
 Shutdown grants the writer `ShutdownTimeout`, then up to 250 ms for cancellation, and grants
 sink disposal a separate `ShutdownTimeout` after the writer has stopped. Cancellation callbacks

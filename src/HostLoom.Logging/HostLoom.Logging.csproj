@@ -5,7 +5,8 @@
     <IsAotCompatible>true</IsAotCompatible>
     <!-- Compiles the options binding, so configuration still binds under trimming and Native AOT.
          SYSLIB1100/1101 name the code-only Enrichers and TimeProvider, which configuration cannot
-         set, and the generator reports them at the one Bind call in this project. -->
+         set, and the generator reports them at the one Bind call in this project; that call
+         rejects any key under either name before binding. -->
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
     <NoWarn>$(NoWarn);SYSLIB1100;SYSLIB1101</NoWarn>
   </PropertyGroup>
