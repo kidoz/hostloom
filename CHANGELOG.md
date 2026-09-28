@@ -23,6 +23,9 @@ are derived from release tags at publish time.
 
 ### Changed
 
+- A second `AddHostLoomLogging` call on the same service collection throws. It used to be ignored
+  along with its sink, formatter, and options; call `ClearProviders()` first to replace a
+  registration.
 - `AddHostLoomLogging` validates the options when it runs, so an out-of-range value fails at the
   registering call instead of when logging is first resolved.
 

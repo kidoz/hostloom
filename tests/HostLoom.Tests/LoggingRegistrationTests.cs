@@ -324,6 +324,59 @@ public sealed class LoggingRegistrationTests
         );
     }
 
+    [Fact]
+    public void Registering_twice_fails_instead_of_ignoring_the_second_registration()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.AddHostLoomLogging(_ => new RecordingSink()));
+
+        var failure = Assert.Throws<InvalidOperationException>(() =>
+            services.AddLogging(logging =>
+                logging.AddHostLoomLogging(
+                    _ => new RecordingSink(),
+                    formatter: new ClefLogFormatter()
+                )
+            )
+        );
+        Assert.Contains("already registered", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Clearing_the_providers_lets_a_later_registration_replace_the_first()
+    {
+        var created = new List<string>();
+        RecordingSink? replacement = null;
+        var services = new ServiceCollection();
+        services.AddLogging(logging =>
+            logging
+                .AddHostLoomLogging(_ =>
+                {
+                    created.Add("first");
+                    return new RecordingSink();
+                })
+                .ClearProviders()
+                .AddHostLoomLogging(
+                    _ =>
+                    {
+                        created.Add("replacement");
+                        return replacement = new RecordingSink();
+                    },
+                    formatter: new ClefLogFormatter()
+                )
+        );
+
+        await using (var provider = services.BuildServiceProvider())
+        {
+            provider
+                .GetRequiredService<ILogger<LoggingRegistrationTests>>()
+                .LogInformation("Order placed.");
+        }
+
+        Assert.Equal(["replacement"], created);
+        Assert.NotNull(replacement);
+        Assert.Contains("\"@mt\"", Assert.Single(replacement.Lines()), StringComparison.Ordinal);
+    }
+
     private static IConfiguration Configuration(params (string Key, string Value)[] values) =>
         new ConfigurationBuilder()
             .AddInMemoryCollection(

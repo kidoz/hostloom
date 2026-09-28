@@ -44,6 +44,9 @@ typos fail startup. A code callback applies *after* configuration. Options are v
 passed in code takes precedence over the `Formatter` option; when neither names one,
 `JsonLogFormatter` is used.
 
+The provider is registered once per service collection. A second `AddHostLoomLogging` call
+throws; call `ClearProviders()` before it to replace the first registration.
+
 `Enrichers` and `TimeProvider` can be set only in code. Configuration that sets either — for
 example, an enricher list under `HostLoom:Logging:Enrichers` — fails startup instead of being
 ignored.
