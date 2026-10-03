@@ -730,7 +730,11 @@ public sealed class OutboxRelay : IAsyncDisposable
     private async Task WaitAsync(Task wake, CancellationToken stopping)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(stopping);
-        var delay = Task.Delay(_options.PollInterval, _clock, linked.Token);
+        var delay = Task.Delay(
+            _options.PollInterval < MaxPause ? _options.PollInterval : MaxPause,
+            _clock,
+            linked.Token
+        );
         await Task.WhenAny(wake, delay).ConfigureAwait(false);
         await linked.CancelAsync().ConfigureAwait(false);
         try

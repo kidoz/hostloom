@@ -165,6 +165,36 @@ public sealed class OutboxTests
     }
 
     [Fact]
+    public async Task A_poll_interval_past_the_timer_ceiling_is_clamped_and_the_loop_still_drains()
+    {
+        var clock = new TestClock();
+        var store = new InMemoryOutboxStore(clock);
+        var broker = new RecordingEventBroker();
+        await using var relay = new OutboxRelay(
+            store,
+            broker,
+            new OutboxOptions { PollInterval = TimeSpan.FromDays(60) },
+            clock
+        );
+        await relay.StartAsync(TestContext.Current.CancellationToken);
+        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 1);
+
+        await store.AppendAsync(Message("orders", clock), TestContext.Current.CancellationToken);
+        relay.Wake();
+        await broker.WaitForAsync(1);
+        Assert.Empty(store.Pending);
+
+        // The clamped timer fires just under 49.7 days out, not the configured sixty.
+        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 1);
+        await store.AppendAsync(Message("orders", clock), TestContext.Current.CancellationToken);
+        clock.Advance(TimeSpan.FromMilliseconds(uint.MaxValue - 1));
+        await broker.WaitForAsync(2);
+
+        await relay.StopAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(0, clock.PendingTimers);
+    }
+
+    [Fact]
     public async Task A_published_event_reaches_its_subscribers_through_the_outbox()
     {
         var received = new Received();
