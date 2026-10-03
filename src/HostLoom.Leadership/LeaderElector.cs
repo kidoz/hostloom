@@ -253,7 +253,16 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
             resign = _resign;
         }
 
-        await resign.CancelAsync().ConfigureAwait(false);
+        try
+        {
+            await resign.CancelAsync().ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            // The term ended on its own between the snapshot and this call, and LeadAsync
+            // disposed its resign source. Leadership ending is what the resign asked for.
+        }
+
         await resigned.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 

@@ -11,6 +11,7 @@ namespace HostLoom.Tests;
 /// </summary>
 public sealed class LeaderElectorFaultTests
 {
+    private static readonly TimeSpan Lease = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan Retry = TimeSpan.FromSeconds(2);
 
     [Fact]
@@ -85,6 +86,64 @@ public sealed class LeaderElectorFaultTests
         await SchedulingTests.WaitUntilAsync(() => elector.IsLeader);
         Assert.Equal(2, elector.Term);
         Assert.Equal(1, Faults(logger));
+    }
+
+    [Fact]
+    public async Task A_resign_racing_a_spontaneous_loss_completes_gracefully_and_the_elector_runs_again()
+    {
+        var clock = new TestClock();
+        await using var locks = Compose(clock);
+        await using var elector = new LeaderElector("scheduler", locks, Options(), clock);
+        var changes = new List<LeadershipChange>();
+        using var _ = elector.OnChange(changes.Add);
+        await elector.StartAsync(TestContext.Current.CancellationToken);
+        await SchedulingTests.WaitUntilAsync(() => elector.IsLeader);
+
+        // The resign and the lease running out end the term concurrently; whichever wins, the
+        // resign call returns without throwing and the elector is a candidate again.
+        var resign = Task.Run(
+            () => elector.ResignAsync(TestContext.Current.CancellationToken).AsTask(),
+            TestContext.Current.CancellationToken
+        );
+        clock.Advance(Lease);
+        await resign.WaitAsync(TestContext.Current.CancellationToken);
+
+        Assert.False(elector.IsLeader);
+        Assert.Equal(LeadershipStatus.Candidate, elector.Status);
+        var reason = changes.Single(change => !change.IsLeader).Reason;
+        Assert.True(reason is LeadershipChangeReason.Resigned or LeadershipChangeReason.Lost);
+
+        // One retry interval later it leads again in a new term.
+        await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers >= 1);
+        clock.Advance(Retry);
+        await SchedulingTests.WaitUntilAsync(() => elector.IsLeader);
+        Assert.Equal(2, elector.Term);
+    }
+
+    [Fact]
+    public async Task A_resign_racing_a_stop_completes_gracefully_and_the_elector_ends_stopped()
+    {
+        for (var attempt = 0; attempt < 25; attempt++)
+        {
+            var clock = new TestClock();
+            await using var locks = Compose(clock);
+            await using var elector = new LeaderElector("scheduler", locks, Options(), clock);
+            await elector.StartAsync(TestContext.Current.CancellationToken);
+            await SchedulingTests.WaitUntilAsync(() => elector.IsLeader);
+
+            // The resign and the stop tear the term down concurrently; whichever wins, the
+            // resign call returns without throwing and the elector ends stopped.
+            var resign = Task.Run(
+                () => elector.ResignAsync(TestContext.Current.CancellationToken).AsTask(),
+                TestContext.Current.CancellationToken
+            );
+            var stop = elector.StopAsync(TestContext.Current.CancellationToken);
+            await resign.WaitAsync(TestContext.Current.CancellationToken);
+            await stop.WaitAsync(TestContext.Current.CancellationToken);
+
+            Assert.False(elector.IsLeader);
+            Assert.Equal(LeadershipStatus.Stopped, elector.Status);
+        }
     }
 
     [Fact]
@@ -178,7 +237,7 @@ public sealed class LeaderElectorFaultTests
     private static LeadershipOptions Options() =>
         new()
         {
-            Lease = TimeSpan.FromSeconds(15),
+            Lease = Lease,
             RenewInterval = TimeSpan.FromSeconds(5),
             RetryInterval = Retry,
             RetryJitter = TimeSpan.Zero,
