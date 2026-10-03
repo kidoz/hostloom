@@ -33,6 +33,11 @@ public interface ILockProvider
     /// Releases <paramref name="key"/> when <paramref name="owner"/> still holds it. Returns
     /// <see langword="false"/> when the key is absent, expired, or held by another owner.
     /// </summary>
+    /// <remarks>
+    /// Providers must bound their own command timeouts: the kernel calls this method with
+    /// <see cref="CancellationToken.None"/> while a handle is disposed — a cancelled action must
+    /// still release — so a provider that accepts a command but never answers can block shutdown.
+    /// </remarks>
     ValueTask<bool> ReleaseAsync(
         string key,
         string owner,

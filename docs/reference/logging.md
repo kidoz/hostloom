@@ -372,6 +372,9 @@ Overloads: `(LogLevel, message)`, `(LogLevel, Exception?, message)`,
 own logger; other providers receive the rendered message and structured
 state through the standard interface.
 
+A null interpolated hole renders as an empty string on this path, where the standard
+`ILogger` path captures it as JSON `null`.
+
 The standard-interface handoff, including an injected `ILogger<T>`, boxes canonical numeric and
 boolean values so their JSON types match the direct HostLoom path. Text fields remain text.
 This changes the previous handoff behavior, which emitted every field as a string; update
