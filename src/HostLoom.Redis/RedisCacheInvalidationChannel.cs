@@ -902,27 +902,22 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             handlers = [.. _handlers];
         }
 
+        // Handlers run outside the gate: a handler may subscribe, detach its own subscription,
+        // or dispose the channel, and the gate is not re-entrant.
         foreach (var handler in handlers)
         {
-            lock (_gate)
+            try
             {
-                if (_disposed != 0)
-                {
-                    return;
-                }
-                try
-                {
-                    handler(invalidation);
-                }
-                catch (Exception exception)
-                {
-                    _logger.LogWarning(
-                        new EventId(1318, "RedisInvalidationHandlerFailed"),
-                        exception,
-                        "An invalidation subscriber failed for {Channel}; continuing with the remaining subscribers.",
-                        ChannelName
-                    );
-                }
+                handler(invalidation);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    new EventId(1318, "RedisInvalidationHandlerFailed"),
+                    exception,
+                    "An invalidation subscriber failed for {Channel}; continuing with the remaining subscribers.",
+                    ChannelName
+                );
             }
         }
     }

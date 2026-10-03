@@ -44,6 +44,40 @@ public sealed class RedisInvalidationLifecycleTests
         }
     }
 
+    [Fact(Timeout = 10_000)]
+    public async Task A_handler_may_detach_itself_without_stalling_the_remaining_subscribers()
+    {
+        await using var connection = new RedisConnection(Substitute.For<IConnectionMultiplexer>());
+        await using var channel = new RedisCacheInvalidationChannel(
+            connection,
+            new CachingOptions { Namespace = "catalog" }
+        );
+        var delivered = new List<CacheInvalidation>();
+        using var healthy = channel.Subscribe(delivered.Add);
+        var detached = 0;
+        IDisposable subscription = null!;
+        subscription = channel.Subscribe(_ =>
+        {
+            detached++;
+            subscription.Dispose();
+        });
+
+        // Dispatch happens on the channel's reader; disposing a subscription from inside a
+        // handler must not deadlock it.
+        await Task.Run(
+                () =>
+                {
+                    channel.HandleExplicitMessage("v1\nkcatalog:eu");
+                    channel.HandleExplicitMessage("v1\nkcatalog:eu");
+                },
+                TestContext.Current.CancellationToken
+            )
+            .WaitAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, detached);
+        Assert.Equal(2, delivered.Count);
+    }
+
     [Fact]
     public async Task Disposed_channel_rejects_dispatch_and_new_subscribers()
     {
