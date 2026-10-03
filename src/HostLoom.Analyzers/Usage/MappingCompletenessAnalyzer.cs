@@ -20,8 +20,9 @@ namespace HostLoom.Analyzers.Usage;
 /// <item>not applicable — the destination has no settable public instance members, or is a
 /// sequence, so there is nothing to be complete about.</item>
 /// </list>
-/// A map whose destination is a type parameter is the one blind spot: its members cannot be
-/// enumerated, so it is skipped silently. That is documented in the analyzer README.
+/// A map whose destination is a type parameter is the remaining case: its members cannot be
+/// enumerated until the map is closed, so completeness cannot be checked here. That case is
+/// reported as HLM0017 rather than left silent, as the analyzer README describes.
 /// </remarks>
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer

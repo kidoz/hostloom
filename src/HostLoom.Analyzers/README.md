@@ -157,8 +157,8 @@ await cache.GetOrCreateAsync("constant", _ => ValueTask.FromResult(42), options,
 
 ## Configuration
 
-All rules are warnings by default and use the `HLM` diagnostic prefix. Standard `.editorconfig`
-configuration can change a rule's severity:
+All rules except the informational HLM0017 are warnings by default and use the `HLM` diagnostic
+prefix. Standard `.editorconfig` configuration can change a rule's severity:
 
 ```ini
 dotnet_diagnostic.HLM0001.severity = error
