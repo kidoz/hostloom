@@ -65,7 +65,9 @@ public sealed class RedisLockProvider : ILockProvider, ILockProviderHealthProbe,
         try
         {
             var db = await _connection.GetDatabaseAsync(cancellationToken).ConfigureAwait(false);
-            return await db.StringSetAsync(Key(key), owner, lease, When.NotExists)
+            // StackExchange.Redis truncates the expiry to milliseconds, so round up first.
+            var leaseMilliseconds = TimeSpan.FromMilliseconds(RedisFailures.Milliseconds(lease));
+            return await db.StringSetAsync(Key(key), owner, leaseMilliseconds, When.NotExists)
                 .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -113,7 +115,7 @@ public sealed class RedisLockProvider : ILockProvider, ILockProviderHealthProbe,
             var result = await db.ScriptEvaluateAsync(
                     ExtendScript,
                     [Key(key)],
-                    [owner, (long)lease.TotalMilliseconds]
+                    [owner, RedisFailures.Milliseconds(lease)]
                 )
                 .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);

@@ -30,6 +30,13 @@ internal static class RedisFailures
     public static bool IsCallerCancellation(Exception exception, CancellationToken token) =>
         exception is OperationCanceledException && token.IsCancellationRequested;
 
+    internal static long Milliseconds(TimeSpan duration)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(duration, TimeSpan.Zero);
+        // Round upward: a positive sub-millisecond lease must never become an invalid PX 0.
+        return checked((long)Math.Ceiling(duration.TotalMilliseconds));
+    }
+
     private static CacheFailureKind ClassifyCache(Exception exception) =>
         exception switch
         {
