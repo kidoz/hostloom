@@ -598,7 +598,19 @@ public sealed class Scheduler : IAsyncDisposable
         ) =>
             limit is { } timeout
                 ? clock.CreateTimer(
-                    static state => ((CancellationTokenSource)state!).Cancel(),
+                    static state =>
+                    {
+                        try
+                        {
+                            ((CancellationTokenSource)state!).Cancel();
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            // On TimeProvider.System a one-shot callback already in flight when
+                            // the run scope exits races the source's disposal; cancelling a run
+                            // that already finished has nothing left to do anyway.
+                        }
+                    },
                     source,
                     timeout,
                     Timeout.InfiniteTimeSpan

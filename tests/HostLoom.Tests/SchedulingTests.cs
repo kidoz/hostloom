@@ -253,6 +253,43 @@ public sealed class SchedulingTests
     }
 
     /// <summary>
+    /// On the system clock the one-shot timeout callback can already be in flight on a timer
+    /// thread when the run scope disposes the source; the callback must swallow the resulting
+    /// <see cref="ObjectDisposedException"/> rather than let it escape onto that thread. A
+    /// virtual clock fires callbacks synchronously and cannot reproduce the race, so the
+    /// timeout is armed on a capturing clock and the callback is invoked after the scope has
+    /// exited — the same disposal state the in-flight callback would observe.
+    /// </summary>
+    [Fact]
+    public async Task A_timeout_timer_firing_after_the_run_scope_is_ignored()
+    {
+        var timeout = TimeSpan.FromSeconds(5);
+        var clock = new TimeoutCaptureClock(timeout);
+        var probe = new JobProbe();
+        await using var scheduler = new Scheduler(
+            new SchedulingOptions(),
+            [
+                new ScheduleDefinition(
+                    "pulse",
+                    ScheduleTrigger.FixedRate(TimeSpan.FromMilliseconds(100)),
+                    probe.Run,
+                    new ScheduleOptions { Timeout = timeout }
+                ),
+            ],
+            timeProvider: clock
+        );
+
+        await scheduler.StartAsync(TestContext.Current.CancellationToken);
+        _ = await probe.NextRunAsync();
+        await WaitUntilAsync(() => scheduler.GetState("pulse").Runs >= 1);
+        Assert.Equal(ScheduleRunOutcome.Succeeded, scheduler.GetState("pulse").LastOutcome);
+
+        var late = clock.Captured;
+        Assert.NotNull(late);
+        late.Fire();
+    }
+
+    /// <summary>
     /// The timeout is armed through <see cref="TimeProvider.CreateTimer"/> rather than
     /// <c>new CancellationTokenSource(delay, clock)</c>, so what a duration may be is the injected
     /// clock's decision. On a virtual clock fifty days is not fifty days of waiting, and the
@@ -618,6 +655,64 @@ public sealed class SchedulingTests
 
             await Task.Delay(5, TestContext.Current.CancellationToken);
         }
+    }
+
+    /// <summary>
+    /// The system clock, except timers armed for exactly the given timeout: those are captured
+    /// unfired, so a test can invoke the callback at a moment a real timer race could produce.
+    /// </summary>
+    private sealed class TimeoutCaptureClock(TimeSpan timeout) : TimeProvider
+    {
+        private readonly Lock _gate = new();
+        private CapturedTimer? _captured;
+
+        public CapturedTimer? Captured
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _captured;
+                }
+            }
+        }
+
+        public override DateTimeOffset GetUtcNow() => TimeProvider.System.GetUtcNow();
+
+        public override long GetTimestamp() => TimeProvider.System.GetTimestamp();
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period
+        )
+        {
+            if (dueTime == timeout)
+            {
+                var timer = new CapturedTimer(callback, state);
+                lock (_gate)
+                {
+                    _captured ??= timer;
+                }
+
+                return timer;
+            }
+
+            return TimeProvider.System.CreateTimer(callback, state, dueTime, period);
+        }
+    }
+
+    /// <summary>A timer that never fires on its own; the test decides when the callback runs.</summary>
+    private sealed class CapturedTimer(TimerCallback callback, object? state) : ITimer
+    {
+        public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+
+        public void Fire() => callback(state);
+
+        public void Dispose() { }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     /// <summary>Records each run and lets a test await the next one.</summary>
