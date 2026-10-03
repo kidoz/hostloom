@@ -131,8 +131,11 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 // callback is the only place the loss is observable.
                 itemDropped: _ => ReportDroppedInvalidation()
             );
-            _invalidationLoop = Task.Run(() => ApplyInvalidationsAsync(_disposal.Token));
+            // Subscribe before the loop starts: a channel that refuses propagates out of the
+            // constructor, and a loop already parked on the queue would root this cache for the
+            // process lifetime. Messages arriving before the loop runs wait in the queue.
             _subscription = _channel.Subscribe(OnInvalidation);
+            _invalidationLoop = Task.Run(() => ApplyInvalidationsAsync(_disposal.Token));
         }
 
         _maintenance = _time.CreateTimer(

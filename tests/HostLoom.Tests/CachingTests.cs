@@ -623,6 +623,54 @@ public sealed class TieredCacheTests
     }
 
     [Fact]
+    public async Task Constructor_FailingSubscribe_LeavesNoInvalidationLoopRunning()
+    {
+        var options = Options("subscribe-failure");
+        var channel = Substitute.For<ICacheInvalidationChannel>();
+        Action<CacheInvalidation>? handler = null;
+        channel
+            .Subscribe(Arg.Any<Action<CacheInvalidation>>())
+            .Returns(call =>
+            {
+                handler = call.Arg<Action<CacheInvalidation>>();
+                throw new InvalidOperationException("The channel refused the subscription.");
+            });
+        var applied = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (instrument.Name == "hostloom.cache.invalidations")
+            {
+                l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>(
+            (_, _, tags, _) =>
+            {
+                foreach (var tag in tags)
+                {
+                    if (Equals(tag.Value, options.Namespace))
+                    {
+                        Interlocked.Increment(ref applied);
+                    }
+                }
+            }
+        );
+        listener.Start();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            new TieredCache(options, channel: channel, timeProvider: _clock)
+        );
+
+        // The constructor captured the handler before the channel threw; pushing a message
+        // through it must go nowhere, because no invalidation loop survived the failure.
+        Assert.NotNull(handler);
+        handler(new CacheInvalidation(["catalog:eu"], []));
+        await Task.Delay(TimeSpan.FromMilliseconds(250), TestContext.Current.CancellationToken);
+        Assert.Equal(0, applied);
+    }
+
+    [Fact]
     public async Task GetOrCreate_L1Hit_RecordsAHitL1Outcome()
     {
         using var metrics = new CacheMetricRecorder("metrics-l1");
