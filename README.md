@@ -1095,6 +1095,7 @@ benchmarks/HostLoom.Redis.Benchmarks/ real-Redis cache and lock comparisons
 examples/HostLoom.Examples.Pipelines/ runnable pipeline tour: DI stages, manual and standalone composition
 examples/HostLoom.Examples.CachingAot/ Native AOT sample for caching and locking
 examples/HostLoom.Examples.LoggingAot/ self-checking Native AOT sample for logging
+examples/HostLoom.Examples.MappingAot/ self-checking Native AOT sample for object mapping
 tests/HostLoom.Tests/            pipeline, round-trip, behavior, and fault tests
 tests/HostLoom.Conformance/      backend-neutral cache and lock scenarios shared by the unit and integration suites
 tests/HostLoom.IntegrationTests/ RabbitMQ, Kafka, and Redis against real servers
