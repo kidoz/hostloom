@@ -77,5 +77,9 @@ public sealed class PrefixedIdentifierGeneratorTests
         Assert.Throws<ArgumentOutOfRangeException>(() =>
             new PrefixedIdentifierGenerator(totalLength: 513)
         );
+        // int.MaxValue + 1 wraps in an unchecked int addition and would skip the lower bound.
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new PrefixedIdentifierGenerator(totalLength: 512, minRandomSuffixLength: int.MaxValue)
+        );
     }
 }

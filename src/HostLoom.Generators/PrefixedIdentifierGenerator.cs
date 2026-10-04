@@ -30,6 +30,16 @@ public sealed class PrefixedIdentifierGenerator
     )
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(minRandomSuffixLength, 1);
+        // int.MaxValue + 1 wraps to int.MinValue and would skip the lower bound.
+        if (minRandomSuffixLength == int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(minRandomSuffixLength),
+                minRandomSuffixLength,
+                "The minimum random suffix length leaves no room for a prefix."
+            );
+        }
+
         ArgumentOutOfRangeException.ThrowIfLessThan(totalLength, minRandomSuffixLength + 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(totalLength, 512);
 
@@ -68,11 +78,12 @@ public sealed class PrefixedIdentifierGenerator
     public string Generate(string prefix)
     {
         ValidatePrefixCharacters(prefix);
-        if (prefix.Length > _totalLength - _minRandomSuffixLength)
+        var maxPrefixLength = checked(_totalLength - _minRandomSuffixLength);
+        if (prefix.Length > maxPrefixLength)
         {
             throw new ArgumentException(
                 $"The prefix is {prefix.Length} characters long; at most "
-                    + $"{_totalLength - _minRandomSuffixLength} are allowed so at least "
+                    + $"{maxPrefixLength} are allowed so at least "
                     + $"{_minRandomSuffixLength} random characters remain.",
                 nameof(prefix)
             );
