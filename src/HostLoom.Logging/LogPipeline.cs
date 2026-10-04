@@ -724,8 +724,9 @@ internal sealed class LogPipeline : IAsyncDisposable
     private void Fault(Exception failure)
     {
         Interlocked.CompareExchange(ref _state, StateFaulted, StateRunning);
-        // Closing the channel releases every producer blocked on the full queue; their waits end
-        // in ChannelClosedException, which Enqueue counts as writer-fault drops.
+        // Completing the channel ends the writer's reads; SignalSpace below releases producers
+        // blocked on the full queue, which then observe the fault and count their waits as
+        // writer-fault drops.
         _queue.Writer.TryComplete();
         SignalSpace();
         _metrics.RecordFailure(_component);

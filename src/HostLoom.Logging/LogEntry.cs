@@ -12,7 +12,7 @@ namespace HostLoom.Logging;
 /// <summary>
 /// Where a field came from. Lower values win name collisions: an event hole beats a scope value,
 /// which beats an enricher, which beats a static field. Within one source the last occurrence
-/// wins. Only holes exist today; scopes, enrichers, and statics plug into the same ranking.
+/// wins. All four sources are ranked today; the enum doubles as the precedence order.
 /// </summary>
 internal enum LogFieldSource : byte
 {
