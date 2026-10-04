@@ -435,9 +435,12 @@ internal sealed class LogPipeline : IAsyncDisposable
 
         var started = Stopwatch.GetTimestamp();
         long ticket;
-        if (!_flushGate.TryEnter(Budget(timeout, started)))
+        while (!_flushGate.TryEnter(Budget(timeout, started)))
         {
-            return false;
+            if (Budget(timeout, started) == 0)
+            {
+                return false;
+            }
         }
 
         try
@@ -453,7 +456,7 @@ internal sealed class LogPipeline : IAsyncDisposable
                 // Disposal already closed the queue and is draining it; waiting for that is the
                 // flush. A faulted or overdue pipeline has nothing left to wait for.
                 return refused == LoggingMetrics.ReasonProviderDisposed
-                    && _completion.Task.Wait(Budget(timeout, started))
+                    && WaitForCompletion(_completion.Task, timeout, started)
                     && _drained;
             }
 
@@ -482,8 +485,9 @@ internal sealed class LogPipeline : IAsyncDisposable
     }
 
     /// <summary>Milliseconds left of <paramref name="timeout"/>, counted from
-    /// <paramref name="started"/> and never negative; an infinite timeout stays infinite.</summary>
-    private static int Budget(TimeSpan timeout, long started)
+    /// <paramref name="started"/> and never negative; an infinite timeout stays infinite.
+    /// Long finite budgets wait in finite chunks and are recalculated after each wait.</summary>
+    internal static int Budget(TimeSpan timeout, long started)
     {
         if (timeout == Timeout.InfiniteTimeSpan)
         {
@@ -516,8 +520,27 @@ internal sealed class LogPipeline : IAsyncDisposable
 
     private static int Milliseconds(TimeSpan span) =>
         span.TotalMilliseconds >= int.MaxValue
-            ? Timeout.Infinite
+            ? int.MaxValue
             : (int)Math.Ceiling(span.TotalMilliseconds);
+
+    private static bool WaitForCompletion(Task task, TimeSpan timeout, long started)
+    {
+        while (!task.IsCompleted)
+        {
+            var wait = Budget(timeout, started);
+            if (wait == 0)
+            {
+                return task.IsCompleted;
+            }
+
+            if (task.Wait(wait))
+            {
+                return true;
+            }
+        }
+
+        return true;
+    }
 
     private void Run()
     {
@@ -844,7 +867,11 @@ internal sealed class LogPipeline : IAsyncDisposable
 
     private void Shutdown()
     {
-        var finished = _completion.Task.Wait(Milliseconds(_options.ShutdownTimeout));
+        var finished = WaitForCompletion(
+            _completion.Task,
+            _options.ShutdownTimeout,
+            Stopwatch.GetTimestamp()
+        );
         if (!finished)
         {
             // Callbacks can block synchronously too. Neither they nor sink disposal may occupy
@@ -872,7 +899,7 @@ internal sealed class LogPipeline : IAsyncDisposable
             // be able to hang application shutdown.
             var disposal = RunShutdownWorker(_sink.DisposeAsync);
             if (
-                !disposal.Wait(Milliseconds(_options.ShutdownTimeout))
+                !WaitForCompletion(disposal, _options.ShutdownTimeout, Stopwatch.GetTimestamp())
                 || disposal.Result is not null
             )
             {

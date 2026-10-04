@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HostLoom.Logging;
 using Microsoft.Extensions.Logging;
 using Xunit;
@@ -6,6 +7,37 @@ namespace HostLoom.Tests;
 
 public sealed class LoggingShutdownTests
 {
+    [Theory]
+    [InlineData(2147483646L)]
+    [InlineData(2147483647L)]
+    [InlineData(2147483648L)]
+    [InlineData(2592000000L)]
+    [InlineData(922337203685477L)]
+    public void Large_finite_deadlines_produce_finite_kernel_waits(long milliseconds)
+    {
+        var wait = LogPipeline.Budget(
+            TimeSpan.FromMilliseconds(milliseconds),
+            Stopwatch.GetTimestamp()
+        );
+
+        Assert.InRange(wait, 1, int.MaxValue);
+    }
+
+    [Fact]
+    public void A_long_deadline_recalculates_its_remaining_budget_and_expires()
+    {
+        var timeout = TimeSpan.FromDays(30);
+        var elapsed = timeout - TimeSpan.FromMinutes(1);
+        var started = Stopwatch.GetTimestamp() - (long)(elapsed.TotalSeconds * Stopwatch.Frequency);
+        Assert.InRange(LogPipeline.Budget(timeout, started), 59_000, 60_000);
+
+        started =
+            Stopwatch.GetTimestamp()
+            - (long)((timeout + TimeSpan.FromSeconds(1)).TotalSeconds * Stopwatch.Frequency);
+        Assert.Equal(0, LogPipeline.Budget(timeout, started));
+        Assert.Equal(Timeout.Infinite, LogPipeline.Budget(Timeout.InfiniteTimeSpan, started));
+    }
+
     [Theory]
     [InlineData("dispose")]
     [InlineData("callback")]

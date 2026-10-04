@@ -106,7 +106,8 @@ A log call waits for room on a full queue only under `Block`, and for Warning an
 draining, such as stdout that nobody reads, then costs each such call at most a second, and the
 record is dropped and counted as `enqueue_timeout`. Setting it to null makes those calls wait as
 long as the sink stalls, so a stuck stdout stalls every thread that logs a warning. Configuration
-sets null with an empty value, `"EnqueueTimeout": ""`.
+sets null with an empty value, `"EnqueueTimeout": ""`. Large finite timeouts remain bounded:
+enqueue, flush, and shutdown waits use finite intervals and recalculate the remaining budget.
 
 A process that ends without disposing the provider still attempts to drain its queued records. The
 writer is a background thread, so the queue would otherwise die with the process, taking the
