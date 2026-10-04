@@ -280,6 +280,164 @@ namespace HostLoom.Tests
             Assert.DoesNotContain("k-123456", line, StringComparison.Ordinal);
         }
 
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(false, true)]
+        [InlineData(true, false)]
+        [InlineData(true, true)]
+        public async Task Applicable_masks_cannot_weaken_each_other(
+            bool derivedFirst,
+            bool strictBase
+        )
+        {
+            var (root, line) = await LogAsync(
+                logger => logger.LogInformation("protected {@Value}", new PolicyDerived()),
+                options =>
+                {
+                    void Base() =>
+                        options.Destructuring.Mask<PolicyBase>(
+                            nameof(PolicyBase.Secret),
+                            showLast: strictBase ? 0 : 4
+                        );
+                    void Derived() =>
+                        options.Destructuring.Mask<PolicyDerived>(
+                            nameof(PolicyBase.Secret),
+                            showLast: strictBase ? 4 : 0
+                        );
+                    if (derivedFirst)
+                    {
+                        Derived();
+                        Base();
+                    }
+                    else
+                    {
+                        Base();
+                        Derived();
+                    }
+                }
+            );
+
+            Assert.Equal("***", root.GetProperty("Value").GetProperty("Secret").GetString());
+            Assert.DoesNotContain("1234", line, StringComparison.Ordinal);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Interface_masks_keep_only_the_characters_both_rules_allow(bool reverse)
+        {
+            var (root, _) = await LogAsync(
+                logger => logger.LogInformation("protected {@Value}", new PolicyDerived()),
+                options =>
+                {
+                    void First() =>
+                        options.Destructuring.Mask<ISecret>(
+                            nameof(ISecret.Secret),
+                            text: "zzz",
+                            showFirst: 4
+                        );
+                    void Last() =>
+                        options.Destructuring.Mask<PolicyBase>(
+                            nameof(PolicyBase.Secret),
+                            text: "***",
+                            showLast: 4
+                        );
+                    if (reverse)
+                    {
+                        Last();
+                        First();
+                    }
+                    else
+                    {
+                        First();
+                        Last();
+                    }
+                }
+            );
+
+            Assert.Equal("***", root.GetProperty("Value").GetProperty("Secret").GetString());
+        }
+
+        [Fact]
+        public async Task A_programmatic_mask_cannot_weaken_an_attribute_or_read_a_fully_masked_getter()
+        {
+            var (root, _) = await LogAsync(
+                logger => logger.LogInformation("protected {@Value}", new FullyMasked()),
+                options =>
+                    options.Destructuring.Mask<FullyMasked>(nameof(FullyMasked.Secret), showLast: 4)
+            );
+
+            Assert.Equal("***", root.GetProperty("Value").GetProperty("Secret").GetString());
+        }
+
+        [Fact]
+        public async Task A_mask_registered_after_an_exclusion_cannot_restore_the_member()
+        {
+            var (root, _) = await LogAsync(
+                logger => logger.LogInformation("protected {@Value}", new FullyMasked()),
+                options =>
+                    options
+                        .Destructuring.NotLogged<FullyMasked>(nameof(FullyMasked.Secret))
+                        .Mask<FullyMasked>(nameof(FullyMasked.Secret), showLast: 4)
+            );
+
+            Assert.False(root.GetProperty("Value").TryGetProperty("Secret", out _));
+        }
+
+        [Fact]
+        public async Task A_stricter_programmatic_mask_cannot_lose_an_attributes_short_value_guard()
+        {
+            var (root, _) = await LogAsync(
+                logger =>
+                    logger.LogInformation("protected {@Value}", new Payment { Card = "123456" }),
+                options => options.Destructuring.Mask<Payment>(nameof(Payment.Card), showFirst: 2)
+            );
+
+            Assert.Equal("***", root.GetProperty("Value").GetProperty("Card").GetString());
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Repeated_masks_on_one_type_combine_without_losing_short_value_guards(
+            bool reverse
+        )
+        {
+            var (root, _) = await LogAsync(
+                logger =>
+                    logger.LogInformation(
+                        "protected {@Value}",
+                        new ThirdPartyDto { Card = "123456" }
+                    ),
+                options =>
+                {
+                    void Wide() =>
+                        options.Destructuring.Mask<ThirdPartyDto>(
+                            nameof(ThirdPartyDto.Card),
+                            showFirst: 2,
+                            showLast: 2
+                        );
+                    void Narrow() =>
+                        options.Destructuring.Mask<ThirdPartyDto>(
+                            nameof(ThirdPartyDto.Card),
+                            showFirst: 2
+                        );
+                    if (reverse)
+                    {
+                        Narrow();
+                        Wide();
+                    }
+                    else
+                    {
+                        Wide();
+                        Narrow();
+                    }
+                }
+            );
+
+            Assert.Equal("***", root.GetProperty("Value").GetProperty("Card").GetString());
+        }
+
         [Fact]
         public async Task Legacy_destructurama_attributes_are_honored_by_name()
         {
@@ -597,6 +755,26 @@ namespace HostLoom.Tests
 
             var line = Assert.Single(sink.Lines());
             return (JsonDocument.Parse(line).RootElement.Clone(), line);
+        }
+
+        private interface ISecret
+        {
+            string Secret { get; }
+        }
+
+        private class PolicyBase : ISecret
+        {
+            public string Secret => "12345678901234";
+        }
+
+        private sealed class PolicyDerived : PolicyBase { }
+
+        private sealed class FullyMasked
+        {
+            private readonly string _failure = "private-getter";
+
+            [LogMasked]
+            public string Secret => throw new InvalidOperationException(_failure);
         }
 
         private sealed class WithField

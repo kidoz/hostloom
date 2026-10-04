@@ -305,6 +305,12 @@ stays protected on a derived instance, including when the derived class override
 annotated virtual property. The same holds for the legacy attributes recognized by name under
 `MapLegacyAttributes`.
 
+Every applicable programmatic mask (including base classes and interfaces) combines with the
+member's masking attributes. Each end reveals the smallest count allowed by those rules;
+different replacement texts resolve to the ordinal minimum. Registration order cannot increase
+disclosure, and each rule's short-value guard remains in effect. An exclusion always wins, even
+when a mask is registered later for that member.
+
 The protection applies to members reached by destructuring. A plain `{Name}` hole in an
 *event* template stringifies an object through its `ToString()`, including each object inside
 a collection, and the message the caller's formatter renders does the same, so a record type's

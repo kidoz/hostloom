@@ -10,7 +10,28 @@ internal sealed record MemberRule(bool Excluded, MaskRule? Mask)
 
 /// <summary>Deterministic masking: reveal that many leading/trailing characters around the text,
 /// but never more characters than stay hidden.</summary>
-internal sealed record MaskRule(string Text, int ShowFirst, int ShowLast);
+internal sealed record MaskRule(string Text, int ShowFirst, int ShowLast)
+{
+    /// <summary>A combined mask must still honor every rule's short-value protection.</summary>
+    public long MinimumLength { get; init; } =
+        2L * (Math.Max(ShowFirst, 0) + (long)Math.Max(ShowLast, 0));
+
+    /// <summary>Every applicable rule constrains disclosure. Combining is commutative and
+    /// associative, including the ordinal choice of replacement text.</summary>
+    public static MaskRule Combine(MaskRule? current, MaskRule next) =>
+        current is null
+            ? next
+            : new MaskRule(
+                StringComparer.Ordinal.Compare(current.Text, next.Text) <= 0
+                    ? current.Text
+                    : next.Text,
+                Math.Min(Math.Max(current.ShowFirst, 0), Math.Max(next.ShowFirst, 0)),
+                Math.Min(Math.Max(current.ShowLast, 0), Math.Max(next.ShowLast, 0))
+            )
+            {
+                MinimumLength = Math.Max(current.MinimumLength, next.MinimumLength),
+            };
+}
 
 /// <summary>
 /// Caps and protection policy for <c>{@...}</c> destructuring. Every cap produces valid JSON with
@@ -98,7 +119,9 @@ public sealed class DestructuringOptions
     /// <summary>Masks one member of <typeparamref name="T"/> (and derived types) like
     /// <see cref="LogMaskedAttribute"/> would, including its rule that a value shorter than twice
     /// <paramref name="showFirst"/> + <paramref name="showLast"/> is written as
-    /// <paramref name="text"/> alone.</summary>
+    /// <paramref name="text"/> alone. Applicable masks and attributes combine by taking the
+    /// smallest allowed prefix and suffix; replacement text is the ordinal minimum. Exclusion
+    /// always wins, including when a mask is registered later.</summary>
     public DestructuringOptions Mask<[DynamicallyAccessedMembers(Destructured)] T>(
         string member,
         string text = "***",
@@ -108,10 +131,15 @@ public sealed class DestructuringOptions
     {
         ArgumentNullException.ThrowIfNull(member);
         ArgumentNullException.ThrowIfNull(text);
-        RulesFor(typeof(T))[member] = new MemberRule(
-            false,
-            new MaskRule(text, showFirst, showLast)
-        );
+        var rules = RulesFor(typeof(T));
+        rules.TryGetValue(member, out var current);
+        if (current is not { Excluded: true })
+        {
+            rules[member] = new MemberRule(
+                false,
+                MaskRule.Combine(current?.Mask, new MaskRule(text, showFirst, showLast))
+            );
+        }
         return this;
     }
 
@@ -127,7 +155,7 @@ public sealed class DestructuringOptions
                     return rule;
                 }
 
-                found ??= rule;
+                found = new MemberRule(false, MaskRule.Combine(found?.Mask, rule.Mask!));
             }
         }
 

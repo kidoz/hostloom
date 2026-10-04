@@ -564,7 +564,7 @@ internal sealed class Destructurer(
             return;
         }
 
-        if (2L * (first + (long)last) > text.Length)
+        if (mask.MinimumLength > text.Length)
         {
             writer.WriteStringValue(mask.Text);
             return;
@@ -831,7 +831,10 @@ internal sealed class Destructurer(
                 case NotLoggedAttribute:
                     return;
                 case LogMaskedAttribute masked:
-                    mask ??= new MaskRule(masked.Text, masked.ShowFirst, masked.ShowLast);
+                    mask = MaskRule.Combine(
+                        mask,
+                        new MaskRule(masked.Text, masked.ShowFirst, masked.ShowLast)
+                    );
                     break;
                 default:
                     if (options.MapLegacyAttributes)
@@ -842,16 +845,16 @@ internal sealed class Destructurer(
                             return;
                         }
 
-                        if (legacyName == "LogMaskedAttribute" && mask is null)
+                        if (legacyName == "LogMaskedAttribute")
                         {
-                            mask = LegacyMask(attribute);
+                            mask = MaskRule.Combine(mask, LegacyMask(attribute));
                         }
 
                         // A regex replacement is not reproduced; the member is masked whole
                         // instead, so the value it was meant to hide never appears.
                         if (legacyName == "LogReplacedAttribute")
                         {
-                            mask = new MaskRule("***", 0, 0);
+                            mask = MaskRule.Combine(mask, new MaskRule("***", 0, 0));
                         }
                     }
 
