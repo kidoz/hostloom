@@ -8,6 +8,50 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-04
+
+`HostLoom.Logging` keeps more of the value it was given and protects what it holds back. Dictionary
+keys in a destructured hole were written by calling `ToString()` on the key, so a key of a type
+whose members are masked or excluded appeared in full while the same type used as a value did not;
+complex keys now go through the same masking plan as values and use their protected JSON rendering
+as key text, while scalar keys keep their invariant text. A member protected by more than one rule —
+a `Mask<T>` rule and a masking attribute, or a native and a legacy attribute — kept only one of them,
+and which one survived depended on registration order; the rules now combine, each end reveals the
+smallest count any rule allows, and exclusion wins whatever the order.
+
+Three output paths that lost or mangled a value are fixed. `Int128`, `UInt128`, `Half`,
+`nint`/`nuint`, and `BigInteger` scalars are written as JSON numbers on every capture path; in a
+`{@...}` hole one used to become `{}` or an object of its flag properties, and as a dictionary key
+it lost its digit spelling. A quoted CLEF `@r` rendering now escapes the reverse solidus and control
+characters as well as the quotation mark, so a rendering is a string a JSON reader can hand back. A
+character-counted cap no longer splits a surrogate pair at its cut; a template larger than
+`MaxMessageLength` no longer captures formatted-token renderings that CLEF cannot emit after the
+template is discarded; and a finite logging timeout of about 24.8 days or longer no longer overflows
+into an infinite wait, while a null `EnqueueTimeout` still waits without limit.
+
+Outside logging, six lifecycle defects that could stop work silently are fixed. `HostLoom.Redis`
+now invokes cache-invalidation handlers outside the channel gate, as the Valkey channel already
+did: a handler that subscribed, detached its own subscription, or disposed the channel deadlocked
+the non-reentrant gate on the channel's single reader thread and silently stopped all invalidation
+for the process. Redis lock acquire and extend round a lease up to whole milliseconds, so a positive
+sub-millisecond lease cannot truncate to `PEXPIRE 0` and delete the lock while reporting success.
+`LeaderElector.ResignAsync` completes gracefully when leadership ends concurrently with the call
+instead of throwing `ObjectDisposedException`. A schedule's timeout timer that fires after its run
+scope has ended is ignored instead of terminating the process on a timer thread. An outbox
+`PollInterval` beyond the `Task.Delay` ceiling is clamped to it rather than faulting the relay loop
+on its first wait and leaving messages pending until a restart. `TieredCache` subscribes to its
+invalidation channel before starting the invalidation loop, so a `Subscribe` that throws no longer
+leaves the loop task parked forever and rooting the cache graph.
+
+Upgrading from 0.13.0 changes behaviour an application can observe; each change is stated under
+**Fixed**. MessagePack moves from 3.1.9 to 3.1.10 for its upstream security fix against
+catastrophic regular-expression backtracking. The repository gains
+`examples/HostLoom.Examples.MappingAot`, a self-checking Native AOT sample that publishes the
+mapping packages natively and verifies closed-map injection, the scoped `IMapper` dispatcher,
+`MapMany`, `MapOrNull`, and an update map in the produced binary. No package is published for the
+first time; the set is the same as 0.13.0, and `@hostloom/websocket-client` ships separately,
+unchanged since its 0.3.0 release.
+
 ### Added
 
 - `examples/HostLoom.Examples.MappingAot`, a self-checking Native AOT sample that publishes the
@@ -1803,7 +1847,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/kidoz/hostloom/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/kidoz/hostloom/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/kidoz/hostloom/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/kidoz/hostloom/compare/v0.10.0...v0.11.0
