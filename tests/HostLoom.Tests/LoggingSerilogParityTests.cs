@@ -194,6 +194,21 @@ namespace HostLoom.Tests
         }
 
         [Fact]
+        public async Task A_quoted_rendering_escapes_like_a_json_string()
+        {
+            var (root, _) = await LogAsync(logger =>
+                logger.LogInformation("home {Path:x} and {Note:x}", "C:\\new", "a\nb")
+            );
+
+            // Escaping only the quotation mark would leave a rendering no JSON reader can hand
+            // back; the reverse solidus and control characters escape too.
+            Assert.Equal(
+                ["\"C:\\\\new\"", "\"a\\nb\""],
+                root.GetProperty("@r").EnumerateArray().Select(e => e.GetString()).ToArray()
+            );
+        }
+
+        [Fact]
         public async Task A_legacy_replacing_attribute_masks_the_member()
         {
             var (root, line) = await LogAsync(logger =>

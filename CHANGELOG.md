@@ -33,6 +33,8 @@ are derived from release tags at publish time.
   JSON numbers on every capture path, like the other numeric scalars. A `{@...}` hole of one
   used to become `{}` or an object of its flag properties, and a dictionary key of one lost its
   digit spelling.
+- A quoted CLEF `@r` rendering escapes the reverse solidus and control characters, not only the
+  quotation mark, so a rendering is a string literal a JSON reader can hand back.
 
 ## [0.13.0] - 2026-09-28
 

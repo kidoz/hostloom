@@ -281,9 +281,7 @@ internal sealed class EventCapture(
         var text = value switch
         {
             null => "null",
-            string s => format == "l"
-                ? s
-                : string.Concat("\"", s.Replace("\"", "\\\"", StringComparison.Ordinal), "\""),
+            string s => format == "l" ? s : Quoted(s),
             IFormattable formattable => formattable.ToString(format, CultureInfo.InvariantCulture),
             _ => value.ToString() ?? string.Empty,
         };
@@ -294,6 +292,62 @@ internal sealed class EventCapture(
             < 0 => text.PadRight(-alignment.Value),
             _ => text,
         };
+    }
+
+    /// <summary>A quoted rendering is a JSON string literal, so the reverse solidus and control
+    /// characters escape exactly like the quotation mark; escaping only the quote would leave a
+    /// rendering no JSON reader can hand back.</summary>
+    private static string Quoted(string value)
+    {
+        foreach (var c in value)
+        {
+            if (c is '"' or '\\' || char.IsControl(c))
+            {
+                var builder = new StringBuilder(value.Length + 8);
+                builder.Append('"');
+                foreach (var ch in value)
+                {
+                    switch (ch)
+                    {
+                        case '"':
+                            builder.Append("\\\"");
+                            break;
+                        case '\\':
+                            builder.Append("\\\\");
+                            break;
+                        case '\n':
+                            builder.Append("\\n");
+                            break;
+                        case '\r':
+                            builder.Append("\\r");
+                            break;
+                        case '\t':
+                            builder.Append("\\t");
+                            break;
+                        case '\f':
+                            builder.Append("\\f");
+                            break;
+                        default:
+                            if (char.IsControl(ch))
+                            {
+                                builder
+                                    .Append("\\u")
+                                    .Append(((int)ch).ToString("x4", CultureInfo.InvariantCulture));
+                            }
+                            else
+                            {
+                                builder.Append(ch);
+                            }
+
+                            break;
+                    }
+                }
+
+                return builder.Append('"').ToString();
+            }
+        }
+
+        return string.Concat("\"", value, "\"");
     }
 
     private bool CapturePair(LogEntry entry, KeyValuePair<string, object?> pair)
