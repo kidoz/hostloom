@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Deterministic and scripted random sources plus an async numeric sequence for testing HostLoom.Generators consumers.</Description>
+    <PackageId>HostLoom.Generators.Testing</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>hostloom;generators;random;testing;aot</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HostLoom.Generators/HostLoom.Generators.csproj" />
+  </ItemGroup>
+</Project>

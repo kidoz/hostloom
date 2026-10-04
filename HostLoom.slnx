@@ -26,6 +26,8 @@
     <Project Path="src/HostLoom.Composition.Testing/HostLoom.Composition.Testing.csproj" />
     <Project Path="src/HostLoom.Composition/HostLoom.Composition.csproj" />
     <Project Path="src/HostLoom.Diagnostics/HostLoom.Diagnostics.csproj" />
+    <Project Path="src/HostLoom.Generators/HostLoom.Generators.csproj" />
+    <Project Path="src/HostLoom.Generators.Testing/HostLoom.Generators.Testing.csproj" />
     <Project Path="src/HostLoom.Locking.DependencyInjection/HostLoom.Locking.DependencyInjection.csproj" />
     <Project Path="src/HostLoom.Locking.Pipelines/HostLoom.Locking.Pipelines.csproj" />
     <Project Path="src/HostLoom.Locking.Testing/HostLoom.Locking.Testing.csproj" />
