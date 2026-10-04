@@ -13,9 +13,11 @@ pseudorandomness and scripted values are not secure; production code draws from
   tests only.
 - `ScriptedRandomSource(values...)` — every `NextInt32`/`NextInt64` call dequeues the next
   scripted value, which must lie inside the requested range; `WithBytes(bytes...)` scripts what
-  `Fill` hands out. Consumption is strict: an exhausted script or an out-of-range value throws,
-  so a test that under-scripts fails loudly. This is how a test forces endpoints, specific
-  characters, and collisions.
+  `Fill` hands out. An empty `NextInt64` range returns `minInclusive` without consuming a
+  scripted value, matching `SecureRandomSource`. `NextInt32` still rejects an empty range.
+  Consumption is strict: an exhausted script or an out-of-range value throws, so a test that
+  under-scripts fails loudly. This is how a test forces endpoints, specific characters, and
+  collisions.
 - `AsyncNumericSequence(seed, increment)` — `NextAsync` returns `seed + increment`, then
   successive increments, thread-safe via `Interlocked`. Process-local; no distributed
   uniqueness.

@@ -77,7 +77,9 @@ public sealed class ScriptedRandomSource : IRandomSource
     }
 
     /// <summary>
-    /// Dequeues the next scripted value and returns it.
+    /// Dequeues the next scripted value and returns it. Equal bounds return
+    /// <paramref name="minInclusive"/> without consuming a scripted value, matching
+    /// <see cref="SecureRandomSource"/>.
     /// </summary>
     /// <exception cref="InvalidOperationException">The value script is exhausted.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
@@ -86,6 +88,12 @@ public sealed class ScriptedRandomSource : IRandomSource
     /// </exception>
     public long NextInt64(long minInclusive, long maxExclusive)
     {
+        // Match SecureRandomSource: an empty range returns the bound and draws nothing.
+        if (minInclusive == maxExclusive)
+        {
+            return minInclusive;
+        }
+
         return Dequeue(minInclusive, maxExclusive);
     }
 

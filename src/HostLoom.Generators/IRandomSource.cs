@@ -22,7 +22,9 @@ public interface IRandomSource
 
     /// <summary>
     /// Returns an unbiased random integer in [<paramref name="minInclusive"/>,
-    /// <paramref name="maxExclusive"/>).
+    /// <paramref name="maxExclusive"/>). Equal bounds return
+    /// <paramref name="minInclusive"/> and draw nothing, so the unsigned span cannot
+    /// underflow. <see cref="NextInt32"/> still rejects an empty range.
     /// </summary>
     long NextInt64(long minInclusive, long maxExclusive);
 }

@@ -30,6 +30,8 @@ public sealed class SecureRandomSource : IRandomSource
     /// <inheritdoc />
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="minInclusive"/> is greater than <paramref name="maxExclusive"/>.
+    /// Equal bounds return <paramref name="minInclusive"/> without drawing, matching
+    /// <see cref="Random.NextInt64(long, long)"/>. <see cref="NextInt32"/> still throws.
     /// </exception>
     public long NextInt64(long minInclusive, long maxExclusive)
     {

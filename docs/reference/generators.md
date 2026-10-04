@@ -39,7 +39,9 @@ dotnet add package HostLoom.Generators.Testing   # deterministic test fakes
 Every generator accepts an optional `IRandomSource` and defaults to
 `SecureRandomSource.Instance`, a process-wide, thread-safe source backed by
 `RandomNumberGenerator` with unbiased rejection sampling on both integer
-widths:
+widths. `NextInt64` returns `minInclusive` when the bounds are equal and
+draws nothing, matching `Random.NextInt64`; `NextInt32` rejects an empty
+range.
 
 ```csharp
 public interface IRandomSource

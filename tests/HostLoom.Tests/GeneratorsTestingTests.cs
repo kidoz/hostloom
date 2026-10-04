@@ -44,6 +44,15 @@ public sealed class GeneratorsTestingTests
     }
 
     [Fact]
+    public void An_empty_int64_range_returns_the_bound_without_consuming_the_script()
+    {
+        var source = new ScriptedRandomSource(7);
+
+        Assert.Equal(5, source.NextInt64(5, 5));
+        Assert.Equal(7, source.NextInt64(0, 10));
+    }
+
+    [Fact]
     public void A_scripted_source_rejects_values_outside_the_requested_range()
     {
         var source = new ScriptedRandomSource(4);
