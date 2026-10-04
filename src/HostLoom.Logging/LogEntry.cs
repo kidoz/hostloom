@@ -234,17 +234,18 @@ internal sealed class LogEntry
     /// then emits the capped rendered message without retaining or emitting the large template.</summary>
     public void FinalizeTemplate()
     {
-        if (
-            Template is { } template
-            && (
-                template.Length > _maxMessageLength
-                || Encoding.UTF8.GetByteCount(template) > _maxMessageLength
-            )
-        )
+        if (Template is { } template && !CanKeepTemplate(template))
         {
             Template = null;
+            TemplateRenderings?.Clear();
         }
     }
+
+    /// <summary>Use the same byte cap before capturing CLEF renderings and before enqueueing
+    /// template metadata. Oversized templates remain available for safe message rendering.</summary>
+    internal bool CanKeepTemplate(string template) =>
+        template.Length <= _maxMessageLength
+        && Encoding.UTF8.GetByteCount(template) <= _maxMessageLength;
 
     /// <summary>
     /// Formats directly into the message buffer. The constraint keeps the call devirtualized, so a

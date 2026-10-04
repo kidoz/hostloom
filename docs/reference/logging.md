@@ -189,7 +189,8 @@ construction, and the configuration overload rejects them at host startup.
 - `MaxMessageLength` bounds the rendered message. Once the message is closed, the values of
   holes past the cut still ship as fields, and a hole whose bytes straddled the cut keeps its
   full value as a field, subject to the field cap. A template larger than this budget is
-  discarded after safe rendering; CLEF emits the capped `@m` instead of `@mt`.
+  discarded after safe rendering; CLEF emits the capped `@m` instead of `@mt`, and their
+  formatted-token renderings are neither captured nor retained for `@r`.
   Text buffers grow only for bytes within their remaining budgets, so large message and
   field inputs do not leave input-sized arrays in queued records.
 - `MaxTextFieldLength` bounds each plain text field (`{Name}` and `{$Name}` holes, string

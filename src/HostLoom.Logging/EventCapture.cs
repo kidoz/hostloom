@@ -126,7 +126,11 @@ internal sealed class EventCapture(
     /// </summary>
     private void CaptureRenderings(LogEntry entry, IEnumerable<KeyValuePair<string, object?>> pairs)
     {
-        if (entry.Template is not { } template || !template.Contains(':', StringComparison.Ordinal))
+        if (
+            entry.Template is not { } template
+            || !entry.CanKeepTemplate(template)
+            || !template.Contains(':', StringComparison.Ordinal)
+        )
         {
             return;
         }

@@ -295,7 +295,7 @@ public sealed class LoggingRecordSizeTests
         bool bootstrap
     )
     {
-        var template = new string('é', 1_000_000) + " {@Catalog}";
+        var template = new string('é', 1_000_000) + " {@Catalog:N2}";
         var options = new HostLoomLoggerOptions
         {
             MaxMessageLength = 33,
@@ -333,6 +333,7 @@ public sealed class LoggingRecordSizeTests
 
         var root = JsonDocument.Parse(line).RootElement;
         Assert.False(root.TryGetProperty("@mt", out _));
+        Assert.False(root.TryGetProperty("@r", out _));
         Assert.Equal(new string('é', 16) + "…", root.GetProperty("@m").GetString());
         Assert.Equal("eu", root.GetProperty("Catalog").GetProperty("Region").GetString());
         Assert.DoesNotContain("private-value", line, StringComparison.Ordinal);
@@ -341,6 +342,50 @@ public sealed class LoggingRecordSizeTests
 #pragma warning disable CA2254
         void Log(ILogger logger) => logger.LogInformation(template, new ProtectedCatalog());
 #pragma warning restore CA2254
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Oversized_templates_do_not_capture_unused_formatted_renderings(bool utf8Only)
+    {
+        var options = new HostLoomLoggerOptions { MaxMessageLength = 48 };
+        var template = utf8Only
+            ? new string('é', 32) + " {Value:x}"
+            : string.Concat(Enumerable.Repeat("{Value:x}", 10_000));
+        var probe = new RenderingProbe();
+        KeyValuePair<string, object?>[] state =
+        [
+            new("Value", probe),
+            new("{OriginalFormat}", template),
+        ];
+        var capture = new EventCapture(
+            options,
+            new Destructurer(options.Destructuring, null),
+            null
+        );
+        var entry = new LogEntry();
+        entry.ApplyCaps(options);
+
+        capture.CaptureEvent(entry, state, null, static (_, _) => "bounded message");
+
+        Assert.Equal(0, probe.Formatted);
+        Assert.Null(entry.TemplateRenderings);
+        entry.FinalizeTemplate();
+        Assert.Null(entry.Template);
+        Assert.Equal("bounded message", Encoding.UTF8.GetString(entry.Message));
+    }
+
+    private sealed class RenderingProbe : IFormattable
+    {
+        public int Formatted { get; private set; }
+
+        public string ToString(string? format, IFormatProvider? formatProvider)
+        {
+            if (format is not null)
+                Formatted++;
+            return "value";
+        }
     }
 
     [Fact]
