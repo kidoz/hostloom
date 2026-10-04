@@ -8,6 +8,27 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+The repository gains `HostLoom.Generators`, a dependency-free, trimming- and Native
+AOT-compatible package of secure generators: exact-length random strings over versioned preset
+alphabets, fixed-width numeric codes with a legacy `maxExclusive` adapter, human-readable coupon
+codes with position-aware check digits, opaque Base64Url tokens and hex nonces, exact-length
+prefixed identifiers, GUID string identifiers, batch-local distinct collection, and unbiased
+random choice. Every generator draws from a cryptographic random number generator behind the
+explicit `IRandomSource` entropy seam, and the companion `HostLoom.Generators.Testing` package
+ships deterministic fakes of that seam — `SeededRandomSource`, `ScriptedRandomSource`, and
+`AsyncNumericSequence` — so tests can force characters, bounds, and collisions without touching
+production entropy. No generator promises uniqueness: two calls can return the same value, durable
+uniqueness stays an atomic constraint in the owning service, and `DistinctBatch` de-duplicates
+only within one batch. The package is not a drop-in Powell.CouponCode replacement: the pinned
+1.0.3 artifact's alphabet, checksums, and grouping behavior are unverified, and old codes are
+never regenerated.
+
+### Added
+
+- `HostLoom.Generators`, secure random strings, numeric codes, coupon codes, opaque tokens, and
+  constrained identifier generators, and `HostLoom.Generators.Testing`, the deterministic
+  `IRandomSource` fakes for tests.
+
 ## [0.14.0] - 2026-10-04
 
 `HostLoom.Logging` keeps more of the value it was given and protects what it holds back. Dictionary
