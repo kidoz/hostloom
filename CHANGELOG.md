@@ -13,6 +13,23 @@ are derived from release tags at publish time.
 - Update MessagePack from 3.1.9 to 3.1.10, including its upstream security fix for
   catastrophic regular-expression backtracking.
 
+### Fixed
+
+- `HostLoom.Logging` protects complex dictionary keys in `{@...}` holes through the same
+  masking plan as values, instead of calling `ToString()` and exposing excluded or masked
+  members. These keys now use their protected JSON representation as key text, subject to
+  destructuring caps and cycle detection; scalar keys keep their invariant text.
+- Applicable `Mask<T>` rules and native or legacy masking attributes combine independently
+  of registration order. Each end reveals the smallest allowed count, every rule's short-value
+  guard remains effective, and different replacement texts resolve to the ordinal minimum.
+  Exclusion always wins, including when a mask is registered later for the same type and member.
+- Templates larger than `MaxMessageLength` no longer capture or retain formatted-token
+  renderings that CLEF cannot emit after the template is discarded. Safe message rendering
+  and captured fields remain available within their configured caps.
+- Finite logging enqueue, flush, shutdown, and process-exit flush timeouts of about 24.8 days
+  or longer no longer become infinite waits. Long waits use finite intervals and recalculate
+  their remaining budget; a null `EnqueueTimeout` still waits without limit.
+
 ## [0.13.0] - 2026-09-28
 
 This release lets configuration choose the output format of `HostLoom.Logging` and stops logging
