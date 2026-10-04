@@ -215,6 +215,8 @@ jobs:
           HostLoom.Leadership
           HostLoom.Leadership.DependencyInjection
           HostLoom.Leadership.Testing
+          HostLoom.Generators
+          HostLoom.Generators.Testing
           HostLoom.Redis
           HostLoom.Valkey
           LIST
