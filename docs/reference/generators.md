@@ -75,8 +75,9 @@ generator.TryGenerate(profile, buffer);                  // false if the span is
 
 `RandomStringProfile` accepts lengths in [1, 4096]. The presets — `Digits`,
 `HexLower`, `HexUpper`, `AlphaNumeric`, `UrlSafe`, and `HumanReadable`
-(thirty-two characters excluding the visually ambiguous `0`/`O` and
-`1`/`I`) — are the versioned contracts named above; a custom
+(thirty-one characters, `23456789ABCDEFGHJKMNPQRSTUVWXYZ`, excluding the
+visually ambiguous `0`/`O`, `1`/`I`, and `L`) — are the versioned contracts
+named above; a custom
 `RandomAlphabet` rejects duplicate and non-ASCII characters at construction
 so every character keeps equal selection weight.
 

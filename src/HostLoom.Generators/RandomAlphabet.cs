@@ -87,9 +87,9 @@ public sealed class RandomAlphabet
 
     /// <summary>
     /// Thirty-one characters, <c>23456789ABCDEFGHJKMNPQRSTUVWXYZ</c>, chosen to exclude the
-    /// visually ambiguous <c>0</c>/<c>O</c> and <c>1</c>/<c>I</c> so codes survive manual
-    /// transcription. A versioned compatibility contract: the exact characters and order are
-    /// pinned by tests.
+    /// visually ambiguous <c>0</c>/<c>O</c>, <c>1</c>/<c>I</c>, and <c>L</c> so codes survive
+    /// manual transcription. A versioned compatibility contract: the exact characters and order
+    /// are pinned by tests.
     /// </summary>
     public static RandomAlphabet HumanReadable { get; } = new("23456789ABCDEFGHJKMNPQRSTUVWXYZ");
 }

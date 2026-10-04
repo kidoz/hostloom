@@ -65,6 +65,7 @@ public sealed class RandomAlphabetTests
         Assert.DoesNotContain('O', RandomAlphabet.HumanReadable.Characters);
         Assert.DoesNotContain('1', RandomAlphabet.HumanReadable.Characters);
         Assert.DoesNotContain('I', RandomAlphabet.HumanReadable.Characters);
+        Assert.DoesNotContain('L', RandomAlphabet.HumanReadable.Characters);
         Assert.Equal(31, RandomAlphabet.HumanReadable.Length);
     }
 }
