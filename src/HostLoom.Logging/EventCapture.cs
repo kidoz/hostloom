@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections;
 using System.Globalization;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Text;
 
@@ -722,6 +723,30 @@ internal sealed class EventCapture(
                 return true;
             case ulong number:
                 entry.AddFieldFormattable(name, number, LogFieldKind.Number, null, source);
+                return true;
+            case nint number:
+                entry.AddFieldFormattable(name, number, LogFieldKind.Number, null, source);
+                return true;
+            case nuint number:
+                entry.AddFieldFormattable(name, number, LogFieldKind.Number, null, source);
+                return true;
+            case Int128 number:
+                entry.AddFieldFormattable(name, number, LogFieldKind.Number, null, source);
+                return true;
+            case UInt128 number:
+                entry.AddFieldFormattable(name, number, LogFieldKind.Number, null, source);
+                return true;
+            case BigInteger number:
+                entry.AddFieldFormattable(name, number, LogFieldKind.Number, null, source);
+                return true;
+            case Half number:
+                entry.AddFieldFormattable(
+                    name,
+                    number,
+                    Half.IsFinite(number) ? LogFieldKind.Number : LogFieldKind.Text,
+                    null,
+                    source
+                );
                 return true;
             case Guid id:
                 entry.AddFieldFormattable(name, id, LogFieldKind.Text, null, source);

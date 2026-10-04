@@ -29,6 +29,10 @@ are derived from release tags at publish time.
 - Finite logging enqueue, flush, shutdown, and process-exit flush timeouts of about 24.8 days
   or longer no longer become infinite waits. Long waits use finite intervals and recalculate
   their remaining budget; a null `EnqueueTimeout` still waits without limit.
+- `HostLoom.Logging` writes `Int128`, `UInt128`, `Half`, `nint`/`nuint`, and `BigInteger` as
+  JSON numbers on every capture path, like the other numeric scalars. A `{@...}` hole of one
+  used to become `{}` or an object of its flag properties, and a dictionary key of one lost its
+  digit spelling.
 
 ## [0.13.0] - 2026-09-28
 

@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using HostLoom.Logging;
@@ -556,6 +558,56 @@ namespace HostLoom.Tests
                 Encoding.UTF8.GetByteCount(line) < 64 * 1024,
                 $"a 1 MB key produced a {Encoding.UTF8.GetByteCount(line)}-byte record"
             );
+        }
+
+        [Fact]
+        public async Task Wide_and_native_integer_scalars_stay_json_numbers()
+        {
+            var (root, _) = await LogAsync(logger =>
+                logger.LogInformation(
+                    "wide {@I128} {@U128} {@Big} {@Native} {@UNative} {@Small} {@NotFinite}",
+                    Int128.MaxValue,
+                    UInt128.MaxValue,
+                    BigInteger.Parse(
+                        "123456789012345678901234567890123456789",
+                        CultureInfo.InvariantCulture
+                    ),
+                    (nint)42,
+                    (nuint)43,
+                    (Half)1.5,
+                    Half.NaN
+                )
+            );
+
+            // Off the scalar table these destructure to {} or to their flag properties instead.
+            Assert.Equal(
+                Int128.MaxValue.ToString(CultureInfo.InvariantCulture),
+                root.GetProperty("I128").GetRawText()
+            );
+            Assert.Equal(
+                UInt128.MaxValue.ToString(CultureInfo.InvariantCulture),
+                root.GetProperty("U128").GetRawText()
+            );
+            Assert.Equal(
+                "123456789012345678901234567890123456789",
+                root.GetProperty("Big").GetRawText()
+            );
+            Assert.Equal("42", root.GetProperty("Native").GetRawText());
+            Assert.Equal("43", root.GetProperty("UNative").GetRawText());
+            Assert.Equal("1.5", root.GetProperty("Small").GetRawText());
+            Assert.Equal("NaN", root.GetProperty("NotFinite").GetString());
+        }
+
+        [Fact]
+        public async Task A_wide_integer_dictionary_key_is_spelled_as_digits()
+        {
+            var map = new Dictionary<Int128, int> { [Int128.MaxValue] = 1 };
+            var (root, _) = await LogAsync(logger => logger.LogInformation("keys {@Map}", map));
+
+            // The key path shares the scalar table, so a wide integer key is plain digit text.
+            var member = Assert.Single(root.GetProperty("Map").EnumerateObject());
+            Assert.Equal(Int128.MaxValue.ToString(CultureInfo.InvariantCulture), member.Name);
+            Assert.Equal(1, member.Value.GetInt32());
         }
 
         [Fact]

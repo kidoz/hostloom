@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Numerics;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -363,6 +364,32 @@ internal sealed class Destructurer(
                 return true;
             case ulong number:
                 writer.WriteNumberValue(number);
+                return true;
+            case nint number:
+                writer.WriteNumberValue((long)number);
+                return true;
+            case nuint number:
+                writer.WriteNumberValue((ulong)number);
+                return true;
+            case Int128 number:
+                writer.WriteRawValue(number.ToString(CultureInfo.InvariantCulture));
+                return true;
+            case UInt128 number:
+                writer.WriteRawValue(number.ToString(CultureInfo.InvariantCulture));
+                return true;
+            case BigInteger number:
+                writer.WriteRawValue(number.ToString(CultureInfo.InvariantCulture));
+                return true;
+            case Half number:
+                if (Half.IsFinite(number))
+                {
+                    writer.WriteNumberValue((float)number);
+                }
+                else
+                {
+                    writer.WriteStringValue(number.ToString(CultureInfo.InvariantCulture));
+                }
+
                 return true;
             case Guid id:
                 writer.WriteStringValue(id);
