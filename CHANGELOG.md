@@ -8,6 +8,12 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- `examples/HostLoom.Examples.MappingAot`, a self-checking Native AOT sample that publishes the
+  mapping packages natively and verifies closed-map injection, the scoped `IMapper` dispatcher,
+  `MapMany` and `MapOrNull`, and an update map in the produced binary.
+
 ### Changed
 
 - Update MessagePack from 3.1.9 to 3.1.10, including its upstream security fix for
@@ -38,6 +44,24 @@ are derived from release tags at publish time.
 - Character-counted logging caps (`MaxStringLength` and the exception cap) no longer split a
   surrogate pair at the cut: an emoji straddling the boundary loses its lead unit instead of
   producing half a pair.
+- `HostLoom.Redis` invokes invalidation handlers outside the channel gate, as the Valkey channel
+  already did. A handler that subscribed, detached its own subscription, or disposed the channel
+  deadlocked the non-reentrant gate on the channel's single reader thread and silently stopped
+  all invalidation for the process.
+- Redis lock acquire and extend round a lease up to whole milliseconds. A positive
+  sub-millisecond lease used to truncate to `PEXPIRE 0`, deleting the lock while reporting
+  success; the Valkey adapter already rounded up.
+- `LeaderElector.ResignAsync` completes gracefully when leadership ends concurrently with the
+  call, instead of throwing `ObjectDisposedException` from the term's disposed cancellation
+  source.
+- A schedule's timeout timer that fires after its run scope has ended no longer throws
+  `ObjectDisposedException` on a timer thread, which terminated the process.
+- An outbox `PollInterval` beyond the `Task.Delay` ceiling of about 49.7 days is clamped to it.
+  Validation accepted the value, and the first poll wait then faulted the relay loop, leaving
+  messages pending until a restart.
+- `TieredCache` subscribes to its invalidation channel before starting the invalidation loop. A
+  `Subscribe` that threw left the constructor to propagate while the loop task parked forever,
+  rooting the whole cache graph for the process lifetime.
 
 ## [0.13.0] - 2026-09-28
 
