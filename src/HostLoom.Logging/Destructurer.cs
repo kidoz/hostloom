@@ -469,10 +469,7 @@ internal sealed class Destructurer(
 
     /// <summary>Keeps <see cref="DestructuringOptions.MaxStringLength"/> characters and marks a
     /// cut with a trailing "…" — for string values and dictionary keys alike.</summary>
-    private string Capped(string text) =>
-        text.Length <= options.MaxStringLength
-            ? text
-            : string.Concat(text.AsSpan(0, options.MaxStringLength), "…");
+    private string Capped(string text) => ExceptionText.Cap(text, options.MaxStringLength);
 
     /// <summary>A value's own <c>ToString()</c> may throw. Caught here, before anything of the
     /// element is written, so the sentinel lands where the value would have and the enclosing

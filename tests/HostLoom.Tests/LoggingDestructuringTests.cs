@@ -611,6 +611,29 @@ namespace HostLoom.Tests
         }
 
         [Fact]
+        public async Task A_string_cap_never_splits_a_surrogate_pair()
+        {
+            var (root, line) = await LogAsync(
+                logger => logger.LogInformation("emoji {@Value}", new { Text = "ab🙂cd" }),
+                options => options.Destructuring.MaxStringLength = 3
+            );
+
+            // The emoji straddles the cut: its lead unit is dropped with it, so the cap keeps
+            // one character fewer rather than writing half a pair.
+            Assert.Equal("ab…", root.GetProperty("Value").GetProperty("Text").GetString());
+            Assert.DoesNotContain("�", line, StringComparison.Ordinal);
+        }
+
+        [Theory]
+        [InlineData(0, "…")]
+        [InlineData(2, "ab…")]
+        [InlineData(3, "ab…")]
+        [InlineData(4, "ab🙂…")]
+        [InlineData(6, "ab🙂cd")]
+        public void A_character_cap_never_splits_a_surrogate_pair(int cap, string expected) =>
+            Assert.Equal(expected, ExceptionText.Cap("ab🙂cd", cap));
+
+        [Fact]
         public async Task Many_dictionary_keys_stop_inside_the_record_byte_budget()
         {
             var map = Enumerable

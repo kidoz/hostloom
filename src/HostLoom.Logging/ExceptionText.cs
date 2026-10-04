@@ -43,6 +43,18 @@ internal static class ExceptionText
         return Cap(text, maxLength);
     }
 
-    private static string Cap(string text, int maxLength) =>
-        text.Length <= maxLength ? text : string.Concat(text.AsSpan(0, maxLength), "…");
+    /// <summary>Keeps <paramref name="maxLength"/> UTF-16 units and marks a cut with a trailing
+    /// "…", never splitting a surrogate pair: an emoji straddling the cut loses its lead unit.
+    /// Shared by every character-counted cap, destructured strings and keys included.</summary>
+    internal static string Cap(string text, int maxLength)
+    {
+        if (text.Length <= maxLength)
+        {
+            return text;
+        }
+
+        var cut =
+            maxLength > 0 && char.IsHighSurrogate(text[maxLength - 1]) ? maxLength - 1 : maxLength;
+        return string.Concat(text.AsSpan(0, cut), "…");
+    }
 }

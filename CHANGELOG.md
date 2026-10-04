@@ -35,6 +35,9 @@ are derived from release tags at publish time.
   digit spelling.
 - A quoted CLEF `@r` rendering escapes the reverse solidus and control characters, not only the
   quotation mark, so a rendering is a string literal a JSON reader can hand back.
+- Character-counted logging caps (`MaxStringLength` and the exception cap) no longer split a
+  surrogate pair at the cut: an emoji straddling the boundary loses its lead unit instead of
+  producing half a pair.
 
 ## [0.13.0] - 2026-09-28
 
