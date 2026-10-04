@@ -71,7 +71,10 @@ if (generator.TryValidate(typed, profile, out string? normalized))
 ```
 
 Check digits are position-aware and detect transcription typos before submission; they are not
-authentication and add no entropy. `Normalize` is normalization only, never validation.
+authentication and add no entropy. `Normalize` is normalization only, never validation. A coupon
+alphabet must contain no whitespace, and every character must be unchanged by invariant
+uppercasing, so a generated code survives that normalization. Typed lowercase of an uppercase
+alphabet still validates.
 
 ## Opaque tokens
 

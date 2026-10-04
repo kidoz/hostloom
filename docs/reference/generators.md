@@ -153,7 +153,11 @@ it makes a typed-in code comparable but accepts any characters.
 
 The separator must be a printable ASCII character that is not a letter or
 digit and does not occur in the alphabet; an unacceptable separator is
-rejected at profile construction.
+rejected at profile construction. The alphabet must contain no whitespace,
+and every character must be unchanged by invariant uppercasing, so a code
+`Generate` just wrote survives `Normalize`. Typed lowercase of an uppercase
+alphabet still validates. `HexLower`, `AlphaNumeric`, and `UrlSafe` are not
+coupon alphabets.
 
 ## Opaque tokens and nonces
 

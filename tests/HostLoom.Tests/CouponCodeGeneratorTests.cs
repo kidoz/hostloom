@@ -124,6 +124,38 @@ public sealed class CouponCodeGeneratorTests
     }
 
     [Fact]
+    public void An_alphabet_that_normalization_changes_is_rejected()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new CouponCodeProfile(alphabet: RandomAlphabet.HexLower)
+        );
+        Assert.Throws<ArgumentException>(() =>
+            new CouponCodeProfile(alphabet: RandomAlphabet.AlphaNumeric)
+        );
+        Assert.Throws<ArgumentException>(() =>
+            new CouponCodeProfile(alphabet: new RandomAlphabet("ABCD "))
+        );
+    }
+
+    [Fact]
+    public void An_uppercase_alphabet_accepts_typed_lowercase()
+    {
+        var profile = new CouponCodeProfile(
+            partLength: 4,
+            partCount: 1,
+            alphabet: RandomAlphabet.HexUpper,
+            includeCheckDigit: true
+        );
+        var generator = new CouponCodeGenerator(new ScriptedRandomSource(10, 11, 12));
+
+        var code = generator.Generate(profile);
+
+        Assert.Equal("ABC4", code);
+        Assert.True(generator.TryValidate(" abc4 ", profile, out var normalized));
+        Assert.Equal(code, normalized);
+    }
+
+    [Fact]
     public void Null_profiles_are_rejected()
     {
         var generator = new CouponCodeGenerator();

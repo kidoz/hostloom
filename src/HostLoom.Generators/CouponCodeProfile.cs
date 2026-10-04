@@ -19,7 +19,11 @@ public sealed class CouponCodeProfile
     /// <paramref name="partCount"/> is outside [1, 6], or <paramref name="partLength"/> is
     /// outside [2, 16].
     /// </exception>
-    /// <exception cref="ArgumentException"><paramref name="separator"/> is not acceptable.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="separator"/> is not acceptable, or <paramref name="alphabet"/> contains
+    /// whitespace or a character that invariant uppercasing changes. Normalization trims and
+    /// uppercases before validation, so a generated character must survive that step unchanged.
+    /// </exception>
     public CouponCodeProfile(
         int partLength = 6,
         int partCount = 1,
@@ -57,6 +61,20 @@ public sealed class CouponCodeProfile
                 "The coupon separator must not occur in the alphabet.",
                 nameof(separator)
             );
+        }
+
+        // Normalize uppercases and trims before validation. A character that either step changes
+        // cannot round-trip, so reject it here instead of failing a code this generator just wrote.
+        for (var index = 0; index < effectiveAlphabet.Characters.Length; index++)
+        {
+            var character = effectiveAlphabet.Characters[index];
+            if (char.IsWhiteSpace(character) || char.ToUpperInvariant(character) != character)
+            {
+                throw new ArgumentException(
+                    $"Alphabet character at position {index} is whitespace or is changed by invariant uppercasing.",
+                    nameof(alphabet)
+                );
+            }
         }
 
         PartLength = partLength;
