@@ -114,6 +114,8 @@ packages are versioned together:
 | `HostLoom.Leadership.DependencyInjection` | Roles keyed by name, options validation, and hosting for electors |
 | `HostLoom.Leadership.Testing` | Scripted `ILeadership` for leader-only consumers |
 | `HostLoom.Scheduling.Leadership` | Runs exclusive schedules on the elected leader only |
+| `HostLoom.Generators` | Secure random strings, numeric codes, coupon codes, opaque tokens, and prefixed and GUID identifiers |
+| `HostLoom.Generators.Testing` | Deterministic `IRandomSource` fakes for generator tests |
 | `HostLoom.Valkey` | Standalone Valkey cache store, explicit invalidation, coordination locks, and health probes over ValkeyDotNet |
 | `HostLoom.Redis` | Redis cache store, invalidation channel, lock provider, and health probes over one connection |
 
@@ -1072,6 +1074,8 @@ src/HostLoom.Locking/            distributed lock kernel: contracts, retry polic
 src/HostLoom.Locking.DependencyInjection/ lock registration, validation, health checks
 src/HostLoom.Locking.Testing/    container-free lock composition, scripted, recording, faulting providers
 src/HostLoom.Locking.Pipelines/  distributed-lock filter for generic pipelines
+src/HostLoom.Generators/         dependency-free secure random strings, codes, tokens, and identifiers
+src/HostLoom.Generators.Testing/ deterministic seeded/scripted random sources and a numeric test sequence
 src/HostLoom.Valkey/             standalone Valkey cache, invalidation, locks, and connection owner
 src/HostLoom.Redis/              Redis store, invalidation channel, lock provider, owned connection
 src/HostLoom.Pipelines/          transport-neutral middleware pipelines
@@ -1096,6 +1100,7 @@ examples/HostLoom.Examples.Pipelines/ runnable pipeline tour: DI stages, manual 
 examples/HostLoom.Examples.CachingAot/ Native AOT sample for caching and locking
 examples/HostLoom.Examples.LoggingAot/ self-checking Native AOT sample for logging
 examples/HostLoom.Examples.MappingAot/ self-checking Native AOT sample for object mapping
+examples/HostLoom.Examples.GeneratorsAot/ self-checking Native AOT sample for the generators
 tests/HostLoom.Tests/            pipeline, round-trip, behavior, and fault tests
 tests/HostLoom.Conformance/      backend-neutral cache and lock scenarios shared by the unit and integration suites
 tests/HostLoom.IntegrationTests/ RabbitMQ, Kafka, and Redis against real servers

@@ -81,6 +81,7 @@ nav:
       - Locking: reference/locking.md
       - Scheduling: reference/scheduling.md
       - Leadership: reference/leadership.md
+      - Generators: reference/generators.md
       - Logging: reference/logging.md
       - WebSocket gateway: reference/websocket-gateway.md
       - Composition plans: reference/composition.md

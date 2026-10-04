@@ -39,6 +39,8 @@ recorded in `CHANGELOG.md`.
 | `HostLoom.Leadership.DependencyInjection` | Roles keyed by name, options validation, and hosting for electors |
 | `HostLoom.Leadership.Testing` | Scripted `ILeadership` for leader-only consumers |
 | `HostLoom.Scheduling.Leadership` | Runs exclusive schedules on the elected leader only |
+| `HostLoom.Generators` | Secure random strings, numeric codes, coupon codes, opaque tokens, and prefixed and GUID identifiers |
+| `HostLoom.Generators.Testing` | Deterministic `IRandomSource` fakes for generator tests |
 | `HostLoom.Valkey` | Standalone Valkey cache, explicit invalidation, coordination locks, and health probes over ValkeyDotNet |
 | `HostLoom.Redis` | Redis cache store, invalidation channel, lock provider, and health probes over one connection |
 | `HostLoom.Analyzers` | Compile-time checks for asynchronous, DI, mapping, and caching usage |
@@ -118,6 +120,9 @@ The package's conformance tests consume the schema and exact fixtures from
   `HostLoom.Caching`; `HostLoom.Locking.Pipelines` on `HostLoom.Pipelines`
   and `HostLoom.Locking`. Neither references a `DependencyInjection` package
   or the messaging core.
+- [`HostLoom.Generators`](generators.md) is dependency-free (pure BCL) and independent of the
+  messaging core; `HostLoom.Generators.Testing` depends on it alone and adds the deterministic
+  `IRandomSource` fakes, without a test framework dependency.
 - `HostLoom.Valkey` depends on both caching/locking `DependencyInjection` packages and
   `ValkeyDotNet` 1.1.0. SDK types stay in this adapter. Its Native AOT sample executes
   serialized L2, leases and explicit invalidation against a real standalone server.
@@ -138,11 +143,14 @@ The package's conformance tests consume the schema and exact fixtures from
 `HostLoom.Scheduling.Testing`, `HostLoom.Scheduling.Leadership`, `HostLoom.Leadership`,
 `HostLoom.Leadership.DependencyInjection`, `HostLoom.Leadership.Testing`, and
 `HostLoom.Logging` enable the .NET SDK Native AOT and trimming analyzers
-(`IsAotCompatible=true`).
+(`IsAotCompatible=true`), as does `HostLoom.Generators`.
 `examples/HostLoom.Examples.CachingAot` publishes with `PublishAot=true`
 and exercises a serialized cache round trip through a source-generated
 `JsonSerializerContext`, so the caching and locking packages are verified
 under Native AOT rather than only analyzed.
+`examples/HostLoom.Examples.GeneratorsAot` does the same for the generators:
+it resolves every generator from a service collection in the native binary
+and checks each output against its contract.
 `examples/HostLoom.Examples.LoggingAot` does the same for logging: it binds options from
 configuration, destructures preserved and masked types, and exits non-zero when its output
 differs. Destructuring reads members by reflection, so a native app preserves the types it
