@@ -476,5 +476,10 @@ of these `reason` values:
 | `provider_disposed` | it arrived after disposal started |
 | `shutdown_timeout` | disposal reached its deadline before the record was written |
 
+Every drop is counted at the record's own level, with one exception: when the writer thread must
+be abandoned because it stayed blocked past the shutdown deadlines, the records it leaves behind
+are counted in one bulk `shutdown_timeout` measurement tagged `level=None`, because their
+individual levels can no longer be attributed.
+
 `hostloom.logging.failures` counts the underlying failures by `component`: `formatter`, `sink`,
 `destructurer`, `enricher`, `scope`, or `capture`.
