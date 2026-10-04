@@ -153,9 +153,15 @@ namespace HostLoom.Tests
         public async Task Dictionary_keys_that_render_alike_are_written_once()
         {
             var map = new Dictionary<object, int> { [new SameText()] = 1, [new SameText()] = 2 };
-            var (_, line) = await LogAsync(logger => logger.LogInformation("map {@Map}", map));
+            var (root, _) = await LogAsync(logger => logger.LogInformation("map {@Map}", map));
 
-            Assert.Equal(1, Occurrences(line, "\"K\":"));
+            // Both objects have the same protected JSON key; ToString() is not used by '@'.
+            var entries = root.GetProperty("Map").EnumerateObject().ToArray();
+            Assert.Equal(2, entries.Length);
+            Assert.Equal("{}", entries[0].Name);
+            Assert.Equal(1, entries[0].Value.GetInt32());
+            Assert.Equal("…", entries[1].Name);
+            Assert.Equal("[Truncated]", entries[1].Value.GetString());
         }
 
         [Fact]

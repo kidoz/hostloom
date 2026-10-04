@@ -263,7 +263,10 @@ Delegates, `Type` and other reflection objects, assemblies, and modules are writ
 `ToString()`, never walked.
 
 Destructuring reads public properties with a public getter; a hidden (`new`) property is read
-once, from the most derived type. Dictionary keys that render to the same text are written once,
+once, from the most derived type. In a destructured dictionary, scalar keys keep their invariant
+text; complex keys become their protected JSON representation as key text, subject to the same
+depth, cycle, member, string, and byte limits as values. Their `ToString()` is never used.
+Dictionary keys that render to the same text are written once,
 the first entry winning, and the omission is marked with a `"…": "[Truncated]"` member.
 
 A log call never throws because of the caller's values. A `ToString()` that throws, in a plain

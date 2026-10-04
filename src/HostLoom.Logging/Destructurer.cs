@@ -5,6 +5,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 
 namespace HostLoom.Logging;
@@ -629,7 +630,7 @@ internal sealed class Destructurer(
     {
         writer.WriteStartObject();
         var members = 0;
-        // Keys that render alike (a key type without its own ToString(), or long keys sharing a
+        // Keys that render alike (the same protected representation, or long keys sharing a
         // capped prefix) would otherwise produce duplicate JSON keys; the first one wins.
         var written = new HashSet<string>(StringComparer.Ordinal);
         var omitted = false;
@@ -647,7 +648,7 @@ internal sealed class Destructurer(
                 }
 
                 // A key is caller data just like a value, so it is capped the same way.
-                var key = Capped(ToInvariantString(pair.Key));
+                var key = DictionaryKey(pair.Key, writer, depth, ref walk);
                 if (!written.Add(key))
                 {
                     omitted = true;
@@ -685,6 +686,77 @@ internal sealed class Destructurer(
         }
 
         writer.WriteEndObject();
+    }
+
+    /// <summary>Complex keys in a destructured dictionary are protected JSON rendered as key
+    /// text. They share the graph's depth, ancestors, and remaining byte budget; their own
+    /// ToString() must never bypass a member's protection.</summary>
+    private string DictionaryKey(object key, Utf8JsonWriter outer, int depth, ref Walk walk)
+    {
+        // Match the scalar table in TryWriteScalar. Plain collection holes keep their documented
+        // stringification semantics; strings and other scalar keys keep their existing spelling.
+        if (
+            walk.ObjectsAsText
+            || key
+                is string
+                    or bool
+                    or int
+                    or long
+                    or double
+                    or float
+                    or decimal
+                    or short
+                    or ushort
+                    or byte
+                    or sbyte
+                    or uint
+                    or ulong
+                    or Guid
+                    or DateTimeOffset
+                    or DateTime
+                    or TimeSpan
+                    or DateOnly
+                    or TimeOnly
+                    or char
+                    or byte[]
+                    or ReadOnlyMemory<byte>
+                    or Memory<byte>
+                    or Delegate
+                    or MemberInfo
+                    or Assembly
+                    or Module
+                    or Uri
+                    or Enum
+        )
+        {
+            return Capped(ToInvariantString(key));
+        }
+
+        var remaining = walk.ByteLimit - walk.Position(outer) - (depth + 1) - MarkerReserve;
+        if (remaining <= 0)
+        {
+            return "…";
+        }
+
+        var buffer = new ArrayBufferWriter<byte>(256);
+        using var writer = new Utf8JsonWriter(buffer, WriterOptions);
+        var keyWalk = new Walk(walk.Ancestors, buffer, remaining, objectsAsText: false);
+        try
+        {
+            WriteValue(writer, key, depth + 1, ref keyWalk);
+            writer.Flush();
+            return Capped(Encoding.UTF8.GetString(buffer.WrittenSpan));
+        }
+        catch (Exception)
+        {
+            metrics?.RecordFailure(LoggingMetrics.ComponentDestructurer);
+            return "[DestructuringFailed]";
+        }
+        finally
+        {
+            // A failed nested key walk must not leave ancestors in the enclosing graph.
+            Array.Clear(walk.Ancestors, depth + 1, walk.Ancestors.Length - depth - 1);
+        }
     }
 
     private static string ToInvariantString(object? value) =>

@@ -55,7 +55,12 @@ builder.Logging.AddHostLoomLogging(
     _ => sink = new CapturingSink(),
     builder.Configuration.GetSection("HostLoom:Logging"),
     // Every type written with {@...} under Native AOT, nested ones included.
-    logging => logging.Destructuring.Preserve<Order>().Preserve<Shipment>()
+    logging =>
+        logging
+            .Destructuring.Preserve<Order>()
+            .Preserve<Shipment>()
+            .Mask<Credential>(nameof(Credential.Secret), showLast: 4)
+            .Mask<StockAccount>(nameof(Credential.Secret))
 );
 
 using (var host = builder.Build())
@@ -67,6 +72,10 @@ using (var host = builder.Build())
     );
     Log.Totals(logger, [1, 2, 3], new Dictionary<string, double> { ["books"] = 1.5 }, [0xCA, 0xFE]);
     Log.Invoiced(logger, new Invoice(3, 99.5m));
+    Log.Stocked(
+        logger,
+        new Dictionary<StockAccount, int> { [new StockAccount("ada", "private-password")] = 7 }
+    );
 } // Disposing the host drains the logging pipeline into the sink.
 
 var lines = sink?.Lines() ?? [];
@@ -75,9 +84,9 @@ foreach (var line in lines)
     Console.WriteLine(line);
 }
 
-if (lines.Length != 3)
+if (lines.Length != 4)
 {
-    Console.WriteLine($"logging mismatches: 3 records expected, got {lines.Length}");
+    Console.WriteLine($"logging mismatches: 4 records expected, got {lines.Length}");
     return 1;
 }
 
@@ -98,6 +107,28 @@ Expect(
 Expect(Field(lines[1], "Items") == "[1,2,3]", "a list as a sequence");
 Expect(Field(lines[1], "Weights") == """{"books":1.5}""", "a dictionary as an object");
 Expect(Field(lines[1], "Receipt") == "\"CAFE\"", "a byte array as hex");
+using (var inventory = JsonDocument.Parse(Field(lines[3], "Inventory")!))
+{
+    var entry = inventory.RootElement.EnumerateObject().Single();
+    using var account = JsonDocument.Parse(entry.Name);
+    Expect(entry.Value.GetInt32() == 7, "a complex dictionary key retains its value");
+    Expect(
+        account.RootElement.GetProperty("Owner").GetString() == "ada",
+        "a preserved dictionary key is walked"
+    );
+    Expect(
+        !account.RootElement.TryGetProperty("Password", out _),
+        "a dictionary key excludes protected members"
+    );
+    Expect(
+        account.RootElement.GetProperty("Secret").GetString() == "***",
+        "base, derived, and attribute masks combine on a dictionary key"
+    );
+    Expect(
+        !lines[3].Contains("private", StringComparison.Ordinal),
+        "a dictionary key never stringifies its secrets"
+    );
+}
 
 // Nothing preserved Invoice. The JIT reads its members anyway; Native AOT has none to read, so
 // it writes the type tag alone and counts the type once. Members gone without a count would fail.
@@ -144,6 +175,11 @@ internal sealed record Order(
 
 internal sealed record Invoice(int Number, decimal Amount);
 
+internal record Credential([property: LogMasked] string Secret);
+
+internal sealed record StockAccount(string Owner, [property: NotLogged] string Password)
+    : Credential("private-token");
+
 internal static partial class Log
 {
     [LoggerMessage(Level = LogLevel.Information, Message = "Placed {@Order}")]
@@ -159,6 +195,9 @@ internal static partial class Log
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Invoiced {@Invoice}")]
     public static partial void Invoiced(ILogger logger, Invoice invoice);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Stocked {@Inventory}")]
+    public static partial void Stocked(ILogger logger, Dictionary<StockAccount, int> inventory);
 }
 
 /// <summary>Keeps every line the provider writes, for the checks above.</summary>

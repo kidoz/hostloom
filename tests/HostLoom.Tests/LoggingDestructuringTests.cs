@@ -439,6 +439,66 @@ namespace HostLoom.Tests
         }
 
         [Fact]
+        public async Task Scalar_dictionary_keys_keep_their_invariant_text()
+        {
+            var id = Guid.Parse("12345678-1234-1234-1234-123456789abc");
+            var map = new Dictionary<object, int>
+            {
+                [42] = 1,
+                [1.5m] = 2,
+                [true] = 3,
+                [id] = 4,
+                ["books"] = 5,
+            };
+            var (root, _) = await LogAsync(logger => logger.LogInformation("keys {@Map}", map));
+            var logged = root.GetProperty("Map");
+            Assert.Equal(1, logged.GetProperty("42").GetInt32());
+            Assert.Equal(2, logged.GetProperty("1.5").GetInt32());
+            Assert.Equal(3, logged.GetProperty("True").GetInt32());
+            Assert.Equal(4, logged.GetProperty(id.ToString()).GetInt32());
+            Assert.Equal(5, logged.GetProperty("books").GetInt32());
+        }
+
+        [Fact]
+        public async Task Complex_dictionary_keys_use_the_same_protection_as_values()
+        {
+            var account = new KeyAccount("ada", "private-password", "1234567890123456");
+            var (root, line) = await LogAsync(logger =>
+                logger.LogInformation(
+                    "keys {@Map} value {@Account}",
+                    new Dictionary<KeyAccount, int> { [account] = 7 },
+                    account
+                )
+            );
+
+            var member = Assert.Single(root.GetProperty("Map").EnumerateObject());
+            using var key = JsonDocument.Parse(member.Name);
+            Assert.Equal(root.GetProperty("Account").GetRawText(), key.RootElement.GetRawText());
+            Assert.Equal(7, member.Value.GetInt32());
+            Assert.DoesNotContain("private-password", line, StringComparison.Ordinal);
+            Assert.DoesNotContain("1234567890123456", line, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task Complex_dictionary_keys_preserve_cycle_and_getter_failure_protection()
+        {
+            var key = new KeyNode();
+            var map = new Dictionary<KeyNode, int> { [key] = 7 };
+            key.Parent = map;
+            var (root, line) = await LogAsync(logger => logger.LogInformation("keys {@Map}", map));
+
+            var member = Assert.Single(root.GetProperty("Map").EnumerateObject());
+            using var logged = JsonDocument.Parse(member.Name);
+            Assert.Equal("[Cycle]", logged.RootElement.GetProperty("Parent").GetString());
+            Assert.Equal(
+                "[DestructuringFailed]",
+                logged.RootElement.GetProperty("Broken").GetString()
+            );
+            Assert.Equal("***", logged.RootElement.GetProperty("Secret").GetString());
+            Assert.DoesNotContain("private", line, StringComparison.Ordinal);
+        }
+
+        [Fact]
         public async Task Legacy_destructurama_attributes_are_honored_by_name()
         {
             var dto = new LegacyDto { Name = "ada", ApiKey = "legacy-secret" };
@@ -579,6 +639,10 @@ namespace HostLoom.Tests
                 ["nested"] = new { Inner = new { Deep = new[] { new string('z', 50), "ä" } } },
                 ["empty"] = new Dictionary<string, int>(),
                 ["long"] = new string('q', 300),
+                ["complexKeys"] = new Dictionary<KeyAccount, int>
+                {
+                    [new KeyAccount("ada", "private-password", "1234567890123456")] = 7,
+                },
             };
             var destructurer = new Destructurer(new DestructuringOptions(), null);
             var full = destructurer.Destructure(value, int.MaxValue).ToArray();
@@ -775,6 +839,26 @@ namespace HostLoom.Tests
 
             [LogMasked]
             public string Secret => throw new InvalidOperationException(_failure);
+        }
+
+        private sealed record KeyAccount(
+            string Owner,
+            [property: NotLogged] string Password,
+            [property: LogMasked(ShowLast = 4)] string Card
+        );
+
+        private sealed class KeyNode
+        {
+            private readonly string _failure = "private-getter";
+
+            public object? Parent { get; set; }
+
+            public string Broken => throw new InvalidOperationException(_failure);
+
+            [LogMasked]
+            public string Secret => throw new InvalidOperationException(_failure);
+
+            public override string ToString() => "private-tostring";
         }
 
         private sealed class WithField
