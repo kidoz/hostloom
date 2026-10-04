@@ -8,6 +8,8 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-05
+
 The repository gains `HostLoom.Generators`, a dependency-free, trimming- and Native
 AOT-compatible package of secure generators: exact-length random strings over versioned preset
 alphabets, fixed-width numeric codes with a legacy `maxExclusive` adapter, human-readable coupon
@@ -22,6 +24,11 @@ uniqueness stays an atomic constraint in the owning service, and `DistinctBatch`
 only within one batch. The package is not a drop-in Powell.CouponCode replacement: the pinned
 1.0.3 artifact's alphabet, checksums, and grouping behavior are unverified, and old codes are
 never regenerated.
+
+Upgrading from 0.14.0 changes nothing an application already references: no existing package
+changes. `HostLoom.Generators` and `HostLoom.Generators.Testing` are published for the first
+time; the rest of the set is unchanged, and `@hostloom/websocket-client` ships separately,
+unchanged since its 0.3.0 release.
 
 ### Added
 
@@ -1868,7 +1875,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/kidoz/hostloom/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/kidoz/hostloom/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/kidoz/hostloom/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/kidoz/hostloom/compare/v0.11.0...v0.12.0
