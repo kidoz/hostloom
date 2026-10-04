@@ -29,23 +29,22 @@ var prefixed = container.GetRequiredService<PrefixedIdentifierGenerator>();
 var stringIds = container.GetRequiredService<IStringIdGenerator>();
 
 var confirmationCode = numericCodes.Generate(new NumericCodeProfile(digits: 5));
-Console.WriteLine($"confirmation code: {confirmationCode}");
+Console.WriteLine($"confirmation code length: {confirmationCode.Length}");
 Expect(
-    confirmationCode.Length == 5
-        && long.TryParse(confirmationCode, NumberStyles.None, CultureInfo.InvariantCulture, out _),
-    $"a five-digit confirmation code parses as five digits, got {confirmationCode}"
+    confirmationCode.Length == 5 && confirmationCode.All(static c => c is >= '0' and <= '9'),
+    $"a five-digit confirmation code is five digits, got length {confirmationCode.Length}"
 );
 
 var couponProfile = new CouponCodeProfile(partLength: 6, partCount: 1, includeCheckDigit: true);
 var coupon = coupons.Generate(couponProfile);
 var couponValid = coupons.TryValidate(coupon, couponProfile, out var normalizedCoupon);
 var canonicalCoupon = CouponCodeGenerator.Normalize(coupon);
-Console.WriteLine($"coupon: {coupon} (normalized: {canonicalCoupon})");
+Console.WriteLine($"coupon length: {coupon.Length}; normalized length: {canonicalCoupon.Length}");
 Expect(
     couponValid
         && normalizedCoupon is not null
         && coupons.TryValidate(canonicalCoupon, couponProfile, out _),
-    $"a single-part six-character coupon with a check digit round-trips through TryValidate and Normalize, got {coupon}"
+    $"a single-part six-character coupon with a check digit round-trips through TryValidate and Normalize, got length {coupon.Length}"
 );
 
 var numericId = numericCodes.Generate(new NumericIdProfile(1_000_000_000L, 10_000_000_000L));
@@ -66,17 +65,17 @@ Expect(
 var token = tokens.GenerateToken(byteLength: 32);
 var tokenBytes = new byte[32];
 var decodedLength = Base64Url.DecodeFromChars(token, tokenBytes);
-Console.WriteLine($"token: {token}");
+Console.WriteLine($"token length: {token.Length}; decoded byte length: {decodedLength}");
 Expect(
     token.Length == 43 && decodedLength == 32,
     $"a 32-byte token is 43 unpadded Base64Url characters and decodes back to 32 bytes, got {token.Length} characters decoding to {decodedLength} bytes"
 );
 
 var nonce = tokens.GenerateHexNonce(byteLength: 8);
-Console.WriteLine($"hex nonce: {nonce}");
+Console.WriteLine($"hex nonce length: {nonce.Length}");
 Expect(
     nonce.Length == 16 && nonce.All(static c => c is (>= '0' and <= '9') or (>= 'a' and <= 'f')),
-    $"an 8-byte hex nonce is 16 lowercase hex characters, got {nonce}"
+    $"an 8-byte hex nonce is 16 lowercase hex characters, got length {nonce.Length}"
 );
 
 var orderId = prefixed.Generate("ORD");
