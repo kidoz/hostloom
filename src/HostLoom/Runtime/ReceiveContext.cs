@@ -5,8 +5,9 @@ namespace HostLoom;
 
 /// <summary>
 /// Pipeline context for one inbound delivery, whether a request or an event. Filters registered
-/// through <see cref="HostLoomBuilder.ConfigureReceivePipeline"/> observe the decoded message before
-/// the handler runs, and observe handler faults as exceptions rather than as encoded fault envelopes.
+/// through <see cref="HostLoomBuilder.ConfigureReceivePipeline(Action{PipeBuilder{ReceiveContext}})"/>
+/// observe the decoded message before the handler runs, and observe handler faults as exceptions
+/// rather than as encoded fault envelopes.
 /// </summary>
 public abstract class ReceiveContext : PipeContext
 {

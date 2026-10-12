@@ -229,11 +229,18 @@ internal sealed record RequestRoute(
     string? AuthorizationPolicy
 );
 
+/// <param name="Name">The topic name exposed to WebSocket clients.</param>
+/// <param name="Source">The source event topic in HostLoom.</param>
+/// <param name="Subscription">The event subscription name used by the gateway.</param>
+/// <param name="EventType">The event contract forwarded to subscribers.</param>
+/// <param name="Keyed">Whether subscribers select events by key.</param>
 /// <param name="AllowTopicWideSubscription">
 /// Whether a subscribe without a key is accepted. A keyless registration is always topic-wide; a
 /// keyed registration must opt in, because a keyless subscriber to a keyed topic receives every
 /// key's events regardless of what the policy approved for one key.
 /// </param>
+/// <param name="KeySelector">The function extracting an event's subscription key.</param>
+/// <param name="AuthorizationPolicy">The optional policy used to authorize subscriptions.</param>
 internal sealed record TopicRoute(
     string Name,
     RequestAddress Source,

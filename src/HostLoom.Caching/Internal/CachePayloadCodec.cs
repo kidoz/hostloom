@@ -36,6 +36,11 @@ internal static class CachePayloadCodec
     private const int MaxTags = ushort.MaxValue;
 
     /// <summary>Serializes and wraps <paramref name="value"/>; the caller disposes the writer.</summary>
+    /// <param name="serializer">The serializer used to encode the value.</param>
+    /// <param name="value">The value to serialize.</param>
+    /// <param name="tags">The tag names to include in the envelope, when present.</param>
+    /// <param name="compressionThreshold">The minimum body length at which compression is attempted.</param>
+    /// <param name="destination">The caller-owned writer receiving the envelope.</param>
     /// <param name="bodyLength">
     /// The serialized body before compression. The caller bounds it, because a decoder trusts the
     /// declared uncompressed length only up to the same bound.
@@ -115,15 +120,20 @@ internal static class CachePayloadCodec
     }
 
     /// <summary>Unwraps and deserializes <paramref name="payload"/>.</summary>
+    /// <param name="serializer">The serializer used to decode the value.</param>
+    /// <param name="payload">The distributed-tier envelope to decode.</param>
     /// <param name="maxBodyBytes">
     /// Largest uncompressed body accepted. The length prefix comes from the store and a poisoned or
     /// truncated value can declare any size, so it buys a buffer only up to the bound the writer
     /// enforces.
     /// </param>
+    /// <param name="value">The decoded value, or default when no value was decoded.</param>
+    /// <param name="tags">The recovered tag names, when present.</param>
     /// <param name="isNull">
     /// Whether the payload is a remembered absence, in which case <paramref name="value"/> is
     /// default and the serializer was not consulted.
     /// </param>
+    /// <param name="failure">The decoding or deserialization error, when available.</param>
     public static PayloadDecodeStatus TryDecode<T>(
         ICacheValueSerializer serializer,
         ReadOnlySpan<byte> payload,

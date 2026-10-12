@@ -8,6 +8,12 @@
     <AnalysisLevel>latest-all</AnalysisLevel>
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <_HostLoomSourceDirectory>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)src'))</_HostLoomSourceDirectory>
+  </PropertyGroup>
+  <PropertyGroup Condition="$([System.String]::Copy('$(MSBuildProjectDirectory)').StartsWith('$(_HostLoomSourceDirectory)')) and '$(MSBuildProjectName)' != 'HostLoom.Analyzers' and '$(MSBuildProjectName)' != 'HostLoom.Composition.Generators'">
+    <!-- Ship existing API comments without introducing a documentation-coverage gate. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
   <PropertyGroup Label="Package metadata">
     <Product>HostLoom</Product>

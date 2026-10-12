@@ -36,10 +36,15 @@ internal sealed class LockHandle : ILockHandle
     private int _state;
     private bool _counted = true;
 
+    /// <param name="owner">The lock coordinator that owns this handle.</param>
+    /// <param name="key">The logical lock key.</param>
+    /// <param name="prefixedKey">The namespaced backend key.</param>
+    /// <param name="token">The ownership token used for release and renewal.</param>
     /// <param name="deadline">
     /// The lease the acquiring provider call asked for and the timestamp taken before it, which is
     /// the earliest instant the backend can have started the lease.
     /// </param>
+    /// <param name="autoExtend">Whether a heartbeat renews the lease automatically.</param>
     public LockHandle(
         DistributedLock owner,
         string key,

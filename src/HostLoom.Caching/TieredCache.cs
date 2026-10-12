@@ -886,6 +886,9 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             : CacheLookup.Miss<T>();
     }
 
+    /// <param name="key">The logical cache key.</param>
+    /// <param name="entry">The distributed-tier entry to decode.</param>
+    /// <param name="options">The call's cache options, when supplied.</param>
     /// <param name="generation">
     /// What the distributed read captured before it started: the key's stripe and the tag
     /// generation, or the whole generation for a bulk read. An invalidation since then leaves L1

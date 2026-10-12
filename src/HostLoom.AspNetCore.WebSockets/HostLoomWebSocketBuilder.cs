@@ -61,6 +61,11 @@ public sealed class HostLoomWebSocketBuilder
     /// <c>forbidden</c> unless <paramref name="allowTopicWideSubscription"/> is true, because a
     /// keyless subscriber would otherwise receive every key's events.
     /// </summary>
+    /// <param name="topic">The topic name exposed to WebSocket clients.</param>
+    /// <param name="source">The source event topic in HostLoom.</param>
+    /// <param name="keySelector">The function extracting an event's subscription key.</param>
+    /// <param name="subscription">The event subscription name used by the gateway.</param>
+    /// <param name="authorizationPolicy">The optional policy used to authorize subscriptions.</param>
     /// <param name="allowTopicWideSubscription">
     /// Whether a keyless subscribe is accepted and receives every key's events. Leave it false
     /// for tenant- or subject-scoped keys; when enabling it, ensure the policy authorizes the

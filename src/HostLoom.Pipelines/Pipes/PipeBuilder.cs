@@ -62,7 +62,9 @@ public sealed class PipeBuilder<TContext>
         Use(new ConcurrencyLimitFilter<TContext>(limit));
 
     /// <summary>Retries the remainder of the pipeline when it faults, per <paramref name="policy"/>.</summary>
+    /// <param name="policy">The retry count and delay policy.</param>
     /// <param name="shouldRetry">Decides whether a given fault is retryable. Retries everything when null.</param>
+    /// <param name="timeProvider">The clock used for retry delays; null uses the system clock.</param>
     public PipeBuilder<TContext> UseRetry(
         RetryPolicy policy,
         Func<Exception, bool>? shouldRetry = null,

@@ -21,6 +21,8 @@ namespace HostLoom.Logging;
 /// or serializer failure emits <c>"[DestructuringFailed]"</c> — never the value's
 /// <c>ToString()</c>.
 /// </summary>
+/// <param name="options">The bounds and member-handling policies used during capture.</param>
+/// <param name="metrics">The optional counters for capture failures.</param>
 /// <param name="nativeCode">Whether reflection sees only the members Native AOT kept; null
 /// detects it. Tests set it to reach the native branch on the JIT.</param>
 internal sealed class Destructurer(
@@ -80,6 +82,8 @@ internal sealed class Destructurer(
     /// for the cut marker itself, or a single scalar larger than the budget, can return more,
     /// and the caller must check the length.
     /// </summary>
+    /// <param name="value">The value to snapshot.</param>
+    /// <param name="byteBudget">The desired maximum encoded size in bytes.</param>
     /// <param name="objectsAsText">Serilog's capture for a collection in a hole without an
     /// operator: sequences and dictionaries keep their structure and scalars their types, but
     /// every other object is written as its invariant <c>ToString()</c> instead of its

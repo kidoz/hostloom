@@ -43,7 +43,11 @@ internal sealed class KafkaReplyConsumer : IAsyncDisposable
     private volatile bool _failed;
     private volatile bool _disposed;
 
+    /// <param name="options">The broker connection and reply-topic options.</param>
+    /// <param name="consumerFactory">The factory used to create the reply consumer.</param>
     /// <param name="deliver">Receives every reply record, on the consumer loop's thread.</param>
+    /// <param name="logger">The logger receiving consumer lifecycle and failure messages.</param>
+    /// <param name="clientTag">The client identifier tag attached to consumer metrics.</param>
     /// <param name="owner">Named by the <see cref="ObjectDisposedException"/> a start after disposal throws.</param>
     public KafkaReplyConsumer(
         KafkaOptions options,

@@ -145,6 +145,11 @@ public sealed class LocalCacheStore : IDisposable
     /// Writes <paramref name="value"/> with an absolute <paramref name="timeToLive"/>. A
     /// non-positive time to live writes nothing.
     /// </summary>
+    /// <param name="key">The logical cache key.</param>
+    /// <param name="value">The non-null value to store.</param>
+    /// <param name="timeToLive">The duration before the entry expires.</param>
+    /// <param name="tags">The tag names associated with the entry, when present.</param>
+    /// <param name="size">The entry's approximate size in bytes; null records zero bytes.</param>
     /// <param name="staleGrace">
     /// How long past expiry the entry stays readable through <see cref="TryGetWithinGrace{T}"/>.
     /// </param>
