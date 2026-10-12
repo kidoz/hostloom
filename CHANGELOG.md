@@ -15,6 +15,14 @@ compiles against: it changes what the packages let a reader see, how the Redis a
 resolve their connection when an application registers a multiplexer beside them, and which
 versions the whole set builds on.
 
+`HostLoom.Caching` no longer discards an explicit write. A `SetAsync` that overlapped an
+invalidation — routine while a Redis or Valkey subscription is being established, because the
+first acknowledged subscription raises a flush — was a silent no-op: the value reached neither
+tier, no error surfaced, and the next read missed without reporting degradation. An explicit
+set now always reaches the distributed tier, as `SetIfAbsentAsync` and `WarmupAsync` already
+did; only the in-process commit stays generation-guarded, and a factory's result is still
+discarded when an invalidation overlaps the fill.
+
 Every framework package except `HostLoom.Analyzers` now ships an XML documentation file.
 Generation is enabled for every project beneath `src/` except that package and the
 composition generator compiler, whose assemblies run inside a build rather than in an
@@ -59,6 +67,13 @@ release.
 
 ### Fixed
 
+- `TieredCache` writes an explicit `SetAsync` to the distributed tier even when an invalidation
+  moves the key's generation between the write's capture and its commit. The write was
+  previously discarded entirely — the value reached neither tier, nothing was reported, and a
+  later read missed without degrading. The flush an invalidation channel raises as a
+  subscription is established is enough to hit it, which is how the container-built Valkey
+  cache exposed it. A factory result is still discarded when an invalidation overlaps the fill,
+  and the in-process commit stays generation-guarded.
 - `HostLoom.Redis` explicitly constructs `RedisLockProvider` and `RedisCacheStore` over
   the shared `RedisConnection` when selected through `UseRedis`. Registering an
   `IConnectionMultiplexer` alongside HostLoom no longer causes ambiguous-constructor
