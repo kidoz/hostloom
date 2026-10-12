@@ -8,6 +8,39 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-10-12
+
+The sixteenth release of **HostLoom**. Nothing in it changes a signature an application
+compiles against: it changes what the packages let a reader see, how the Redis adapters
+resolve their connection when an application registers a multiplexer beside them, and which
+versions the whole set builds on.
+
+Every framework package except `HostLoom.Analyzers` now ships an XML documentation file.
+Generation is enabled for every project beneath `src/` except that package and the
+composition generator compiler, whose assemblies run inside a build rather than in an
+application, and the API comments are completed where parameters went undocumented, so
+IntelliSense and documentation tooling surface the same remarks the sources already carried.
+Nothing is enforced by it: there is no documentation-coverage gate, `CS1591` stays
+suppressed for the members that remain undocumented, and no member gained or lost a
+signature.
+
+`UseRedis` composes `RedisCacheStore` and `RedisLockProvider` over the `RedisConnection` the
+caching and locking builders share. Both types also offer a constructor for an
+application-supplied `IConnectionMultiplexer`, so registering a multiplexer beside HostLoom
+left two resolvable constructors for each; the registration now names the shared connection,
+both adapters retain the configured Redis options, and an application no longer has to
+replace the lock-provider registration by hand. A store or provider that an application
+registered itself is still used as it is.
+
+The pinned dependencies move to their latest stable versions, including `MessagePack` 3.1.11
+for its upstream fix to an LZ4 decompression integer overflow (GHSA-7rj2-5w9w-r9jx), and
+`HostLoom.Valkey` advertises the Native AOT compatibility it already declared through the
+`aot` package tag.
+
+No package is published for the first time; the whole set publishes at 0.15.1.
+`@hostloom/websocket-client` is not part of this NuGet set and has no changes since its 0.3.0
+release.
+
 ### Added
 
 - Every shipped framework package now carries its XML documentation file. Documentation
@@ -1900,7 +1933,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/kidoz/hostloom/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/kidoz/hostloom/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/kidoz/hostloom/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/kidoz/hostloom/compare/v0.12.0...v0.13.0
