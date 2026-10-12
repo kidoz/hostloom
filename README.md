@@ -48,8 +48,8 @@ implements:
   lifetime-aware aliases and positional open generics;
 - a composition ledger that reports registration decisions, including the
   components deliberately left out, once at host startup;
-- compile-time analyzers `HLM0001`–`HLM0008` for asynchronous, dependency-injection,
-  mapping, and cache-key usage;
+- compile-time analyzers `HLM0001`–`HLM0008` and `HLM0017` for asynchronous,
+  dependency-injection, mapping, and cache-key usage;
 - liveness and readiness health checks, and an execution-free pipeline probe;
 - in-memory, RabbitMQ, and Kafka broker adapters;
 - an authenticated raw-WebSocket RPC and live-subscription gateway with JSON,
@@ -152,7 +152,8 @@ should follow HostLoom's per-delivery scope (`HLM0003`), a destination member an
 assigns (`HLM0004`) and a map body whose completeness cannot be verified (`HLM0005`), the scoped
 mapping dispatcher captured in a singleton (`HLM0006`), a secret interpolated into a cache or lock
 key (`HLM0007`), and a get-or-create factory that ignores the cancellation token it was handed
-(`HLM0008`). See the [analyzer rule reference](src/HostLoom.Analyzers/README.md).
+(`HLM0008`), and a generic map whose completeness cannot be verified (`HLM0017`, informational).
+See the [analyzer rule reference](src/HostLoom.Analyzers/README.md).
 
 ## Quick start
 
