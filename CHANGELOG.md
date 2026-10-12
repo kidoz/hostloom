@@ -8,11 +8,21 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- Every shipped framework package now carries its XML documentation file. Documentation
+  generation is enabled for all source projects except the analyzers and the composition
+  generator compiler, and the existing API comments are completed where parameters went
+  undocumented, so IntelliSense and documentation tooling surface the same remarks the
+  sources already carried.
+
 ### Changed
 
 - Update `MessagePack` from 3.1.10 to 3.1.11, including its upstream fix for an LZ4
   decompression integer overflow (GHSA-7rj2-5w9w-r9jx), `Confluent.Kafka` from 2.15.1 to
   2.16.0, `StackExchange.Redis` from 3.3.1 to 3.4.0, and `xunit.v3` from 4.0.1 to 4.0.2.
+- `HostLoom.Valkey` advertises its Native AOT compatibility through the `aot` package tag,
+  matching its `IsAotCompatible` declaration.
 
 ### Fixed
 
