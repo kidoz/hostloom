@@ -164,6 +164,13 @@ their content is never logged. The bounds cannot tell a well-formed flush or rem
 foreign publisher apart from one of ours, which is what the channel pattern in the ACL below is
 for.
 
+Well-formed or not, everything the subscriptions deliver funnels into one queue bounded by
+`Caching:Invalidation:MaxPending` (default 1 000) and applied by a single reader, so a chatty
+server or a stalled reader cannot grow memory without limit. A full queue drops the newest
+message, counted on `hostloom.redis.invalidation.dropped` and
+`RedisCacheInvalidationChannel.DroppedMessages` and logged as `RedisInvalidationQueueFull`; an
+entry a dropped message would have removed stays in the in-process tier until it expires.
+
 ## Server-side account and TLS
 
 The package sets StackExchange.Redis's client-side `allowAdmin` flag because tracking needs the

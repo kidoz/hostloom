@@ -175,6 +175,7 @@ Tagged `hostloom.redis.client` with the configured client name.
 | `hostloom.redis.connection.state` | observable gauge | 1 while connected, 0 while down or reconnecting |
 | `hostloom.redis.reconnects` | counter | Connections restored after a failure |
 | `hostloom.redis.invalidation.malformed` | counter | Explicit-channel messages dropped for exceeding the size or item bounds or naming an invalid key or tag; tagged `hostloom.cache.namespace` instead of the client |
+| `hostloom.redis.invalidation.dropped` | counter | Received invalidation messages dropped because the fan-in queue reached `Caching:Invalidation:MaxPending`; tagged `hostloom.cache.namespace` instead of the client |
 | `hostloom.redis.tag.members_rejected` | counter | Tag-index members outside the namespace's cache-data prefix, forgotten from the index instead of unlinked |
 
 A reconnect also increments `hostloom.cache.invalidation.resubscribed` on the

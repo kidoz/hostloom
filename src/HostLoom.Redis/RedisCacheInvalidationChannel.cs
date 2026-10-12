@@ -59,11 +59,13 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     private Task? _disposing;
     private readonly SemaphoreSlim _trackingRefresh = new(0, 1);
 
-    // Everything the subscriptions deliver, applied by one reader. The subscription worker alone
-    // attaches and records handlers until disposal has joined it.
-    private readonly Channel<ReceivedMessage> _received = Channel.CreateUnbounded<ReceivedMessage>(
-        new UnboundedChannelOptions { SingleReader = true, AllowSynchronousContinuations = false }
-    );
+    // Everything the subscriptions deliver, applied by one reader. The queue is bounded so a
+    // chatty server or a stalled reader cannot grow memory without limit; a full queue drops the
+    // incoming message while DropWrite still reports the write as successful, so the drop
+    // callback is the only place the loss is observable. Created in the constructor because the
+    // bound comes from the options. The subscription worker alone attaches and records handlers
+    // until disposal has joined it.
+    private readonly Channel<ReceivedMessage> _received;
     private readonly List<OwnedSubscription> _owned = [];
     private readonly HashSet<string> _keyspacePatterns = new(StringComparer.Ordinal);
     private OwnedSubscription? _explicitSubscription;
@@ -71,6 +73,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     private long _trackingInitialisations;
     private int _trackingRecoveryPending;
     private long _malformed;
+    private long _dropped;
     private int _disposed;
 
     /// <summary>Creates the channel for the namespace in <paramref name="options"/> over the shared connection.</summary>
@@ -92,6 +95,17 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         );
         _channel = RedisChannel.Literal(options.Namespace + ":cache:invalidate");
         _logger = logger ?? NullLogger<RedisCacheInvalidationChannel>.Instance;
+        _received = Channel.CreateBounded<ReceivedMessage>(
+            new BoundedChannelOptions(options.Invalidation.MaxPending)
+            {
+                FullMode = BoundedChannelFullMode.DropWrite,
+                SingleReader = true,
+                AllowSynchronousContinuations = false,
+            },
+            // DropWrite discards the item and still reports the write as successful, so this
+            // callback is the only place the loss is observable.
+            itemDropped: _ => ReportDroppedMessage()
+        );
         _connection.Restored += OnRestored;
         _connection.SubscriptionRestored += OnSubscriptionRestored;
         _connection.TopologyChanged += OnTopologyChanged;
@@ -116,6 +130,13 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     /// would reject. Also counted on <c>hostloom.redis.invalidation.malformed</c>.
     /// </summary>
     public long MalformedMessages => Interlocked.Read(ref _malformed);
+
+    /// <summary>
+    /// Received messages dropped without dispatch because the fan-in queue had reached
+    /// <see cref="CacheInvalidationOptions.MaxPending"/>. The in-process entries they would have
+    /// removed stay until they expire. Also counted on <c>hostloom.redis.invalidation.dropped</c>.
+    /// </summary>
+    public long DroppedMessages => Interlocked.Read(ref _dropped);
 
     /// <inheritdoc />
     public async ValueTask PublishAsync(
@@ -868,6 +889,31 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         Dispatch(invalidation);
     }
 
+    /// <summary>Enqueues a message exactly as an owned subscription does; for tests without a server.</summary>
+    internal bool EnqueueReceived(
+        Action<RedisChannel, RedisValue> apply,
+        RedisChannel channel,
+        RedisValue message
+    ) => _received.Writer.TryWrite(new ReceivedMessage(apply, channel, message));
+
+    private void ReportDroppedMessage()
+    {
+        Interlocked.Increment(ref _dropped);
+        RedisDiagnostics.InvalidationDropped.Add(
+            1,
+            new KeyValuePair<string, object?>(RedisDiagnostics.NamespaceTag, _options.Namespace)
+        );
+        if (_logger.IsEnabled(LogLevel.Warning))
+        {
+            _logger.LogWarning(
+                new EventId(1321, "RedisInvalidationQueueFull"),
+                "The invalidation queue for {Channel} is full (Caching:Invalidation:MaxPending = {MaxPending}); received messages are being dropped and the in-process entries they would have removed stay until they expire.",
+                ChannelName,
+                _options.Invalidation.MaxPending
+            );
+        }
+    }
+
     internal void HandleTrackingMessage(RedisValue message)
     {
         // Redis sends a null payload for FLUSHDB and FLUSHALL, without any keys.
@@ -1013,7 +1059,8 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
 
         public Action<RedisChannel, RedisValue> Handler { get; }
 
-        // Refused only once disposal has completed the queue, when nothing is dispatched.
+        // Refused only once disposal has completed the queue, when nothing is dispatched; a full
+        // queue drops the message through the drop callback while TryWrite still reports success.
         private void Forward(RedisChannel channel, RedisValue message) =>
             _received.TryWrite(new ReceivedMessage(_apply, channel, message));
     }

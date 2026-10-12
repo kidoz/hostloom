@@ -21,7 +21,8 @@ are derived from release tags at publish time.
 
 The sixteenth release of **HostLoom**. Nothing in it changes a signature an application
 compiles against: it changes what the packages let a reader see, how the Redis adapters
-resolve their connection when an application registers a multiplexer beside them, and which
+resolve their connection when an application registers a multiplexer beside them, how the
+Redis invalidation fan-in behaves when the server outpaces the reader, and which
 versions the whole set builds on.
 
 `HostLoom.Caching` no longer discards an explicit write. A `SetAsync` that overlapped an
@@ -49,6 +50,15 @@ both adapters retain the configured Redis options, and an application no longer 
 replace the lock-provider registration by hand. A store or provider that an application
 registered itself is still used as it is.
 
+`HostLoom.Redis` bounds the queue every invalidation subscription fans into. That queue was
+previously unbounded: a server publishing faster than the local reader could apply messages
+— a chatty keyspace, a stalled event loop — grew memory without limit and without a signal.
+The queue now holds `Caching:Invalidation:MaxPending` messages and drops the newest
+undelivered one past that bound, reporting each drop on the new `DroppedMessages` property
+and the `hostloom.redis.invalidation.dropped` counter. The in-process entries a dropped
+message would have removed stay until they expire, the same trade the cache's own pending
+queue already makes.
+
 The pinned dependencies move forward, with one hold: `Confluent.Kafka` stays at 2.15.1
 because 2.16.0 fails Kafka topic administration against Apache Kafka 3.9, which the transport
 integration suite reproduces on every run. `HostLoom.Valkey` advertises the Native AOT
@@ -65,6 +75,9 @@ release.
   generator compiler, and the existing API comments are completed where parameters went
   undocumented, so IntelliSense and documentation tooling surface the same remarks the
   sources already carried.
+- `HostLoom.Redis` reports invalidation messages its subscription fan-in drops under load:
+  a `DroppedMessages` property on `RedisCacheInvalidationChannel` and a
+  `hostloom.redis.invalidation.dropped` counter tagged by namespace.
 
 ### Changed
 
@@ -73,6 +86,11 @@ release.
   3.4.0, and `xunit.v3` from 4.0.1 to 4.0.2. `Confluent.Kafka` stays at 2.15.1.
 - `HostLoom.Valkey` advertises its Native AOT compatibility through the `aot` package tag,
   matching its `IsAotCompatible` declaration.
+- The `HostLoom.Redis` invalidation fan-in queue is bounded by
+  `Caching:Invalidation:MaxPending` instead of growing without limit. A Redis instance
+  publishing faster than the local reader can apply now drops the newest undelivered message
+  and reports each drop, and the entries it would have removed stay in the in-process tier
+  until they expire — the same trade the cache's own pending queue already makes.
 
 ### Fixed
 

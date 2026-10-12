@@ -36,6 +36,12 @@ public static class RedisDiagnostics
         "Explicit invalidation messages dropped for exceeding the size or item bounds or carrying an invalid key or tag."
     );
 
+    internal static readonly Counter<long> InvalidationDropped = Meter.CreateCounter<long>(
+        "hostloom.redis.invalidation.dropped",
+        "{message}",
+        "Received invalidation messages dropped because the fan-in queue reached Caching:Invalidation:MaxPending."
+    );
+
     internal static readonly Counter<long> TagMembersRejected = Meter.CreateCounter<long>(
         "hostloom.redis.tag.members_rejected",
         "{member}",

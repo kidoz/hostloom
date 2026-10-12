@@ -123,6 +123,11 @@ counted on `hostloom.redis.invalidation.malformed`. A well-formed message
 from any client that may publish there still evicts or flushes every
 instance, which is what the next step is for.
 
+Well-formed or not, received messages funnel into one queue bounded by
+`Caching:Invalidation:MaxPending` (default 1 000); a full queue drops the
+newest message, counted on `hostloom.redis.invalidation.dropped`, and the
+in-process entries it would have removed stay until they expire.
+
 ## 7. Restrict the account and encrypt the connection
 
 The package sets StackExchange.Redis's client-side `allowAdmin` flag so it

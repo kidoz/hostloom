@@ -117,4 +117,86 @@ public sealed class RedisInvalidationBoundsTests
         Assert.Equal(["catalog:eu"], invalidation.Keys);
         Assert.Equal(["catalog"], invalidation.Tags);
     }
+
+    [Fact]
+    public async Task ReceivedQueue_DropsBeyondMaxPendingAndProcessesWhatFit()
+    {
+        var mux = Substitute.For<IConnectionMultiplexer>();
+        mux.ClientName.Returns("hostloom-buildhost-4242");
+        await using var connection = new RedisConnection(mux);
+        var options = new CachingOptions { Namespace = "svc", MaxKeyLength = 64 };
+        options.Invalidation.MaxPending = 4;
+        await using var channel = new RedisCacheInvalidationChannel(connection, options);
+
+        // The reader starts with the first subscription, so enqueueing beforehand fills the
+        // queue deterministically: the bound fit, the rest are dropped as they arrive.
+        for (var i = 0; i < 7; i++)
+        {
+            Assert.True(
+                channel.EnqueueReceived(
+                    (_, message) => channel.HandleExplicitMessage(message),
+                    RedisChannel.Literal("svc:cache:invalidate"),
+                    $"v1\nkcatalog:{i}"
+                )
+            );
+        }
+
+        Assert.Equal(3, channel.DroppedMessages);
+
+        var processed = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var remaining = 4;
+        var received = new List<CacheInvalidation>();
+        using var subscription = channel.Subscribe(invalidation =>
+        {
+            received.Add(invalidation);
+            if (Interlocked.Decrement(ref remaining) == 0)
+            {
+                processed.TrySetResult();
+            }
+        });
+
+        await processed.Task.WaitAsync(
+            TimeSpan.FromSeconds(10),
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(4, received.Count);
+        Assert.Equal(3, channel.DroppedMessages);
+    }
+
+    [Fact]
+    public async Task ReceivedQueue_RefusesWritesAndStopsCountingDropsAfterDisposal()
+    {
+        var mux = Substitute.For<IConnectionMultiplexer>();
+        mux.ClientName.Returns("hostloom-buildhost-4242");
+        await using var connection = new RedisConnection(mux);
+        var options = new CachingOptions { Namespace = "svc" };
+        options.Invalidation.MaxPending = 1;
+        var channel = new RedisCacheInvalidationChannel(connection, options);
+
+        channel.EnqueueReceived(
+            (_, message) => channel.HandleExplicitMessage(message),
+            RedisChannel.Literal("svc:cache:invalidate"),
+            "v1\nkcatalog:eu"
+        );
+        channel.EnqueueReceived(
+            (_, message) => channel.HandleExplicitMessage(message),
+            RedisChannel.Literal("svc:cache:invalidate"),
+            "v1\nkcatalog:us"
+        );
+        Assert.Equal(1, channel.DroppedMessages);
+
+        await channel.DisposeAsync();
+
+        Assert.False(
+            channel.EnqueueReceived(
+                (_, message) => channel.HandleExplicitMessage(message),
+                RedisChannel.Literal("svc:cache:invalidate"),
+                "v1\nkcatalog:uk"
+            )
+        );
+        Assert.Equal(1, channel.DroppedMessages);
+    }
 }
