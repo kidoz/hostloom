@@ -10,9 +10,9 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <ProjectReference Include="../../src/HostLoom.Composition/HostLoom.Composition.csproj" />
     <ProjectReference Include="../../src/HostLoom.Composition.Testing/HostLoom.Composition.Testing.csproj" />
-    <ProjectReference Include="../../src/HostLoom.Composition.Generators/HostLoom.Composition.Generators.csproj" />
+    <!-- The benchmark uses the generator both during compilation and at runtime. -->
+    <ProjectReference Include="../../src/HostLoom.Composition.Generators/HostLoom.Composition.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="true" />
     <ProjectReference Include="../../src/HostLoom.Diagnostics/HostLoom.Diagnostics.csproj" />
-    <Analyzer Include="../../src/HostLoom.Composition.Generators/bin/$(Configuration)/netstandard2.0/HostLoom.Composition.Generators.dll" />
     <Compile Include="../../examples/HostLoom.Examples.CompositionDiagnostics/ApplicationCompositionLedger.cs" Link="ApplicationCompositionLedger.cs" />
     <CompilerVisibleProperty Include="MSBuildProjectDirectory" />
   </ItemGroup>
