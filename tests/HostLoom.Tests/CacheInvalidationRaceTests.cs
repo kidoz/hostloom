@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Diagnostics.Metrics;
 using HostLoom.Caching;
 using HostLoom.Caching.Internal;
@@ -39,6 +40,74 @@ public sealed class CacheInvalidationRaceTests
             }
             select (operation, invalidation)
         );
+
+    [Theory(Timeout = 30_000)]
+    [InlineData("key")]
+    [InlineData("tag")]
+    [InlineData("flush")]
+    public async Task An_explicit_set_invalidated_before_its_store_write_still_reaches_L2(
+        string invalidation
+    )
+    {
+        var token = TestContext.Current.CancellationToken;
+        var options = new CachingOptions { Namespace = "explicit-" + Guid.NewGuid().ToString("N") };
+        var store = new InMemoryDistributedCacheStore();
+        var channel = Substitute.For<ICacheInvalidationChannel>();
+        Action<CacheInvalidation>? invalidate = null;
+        channel
+            .Subscribe(Arg.Any<Action<CacheInvalidation>>())
+            .Returns(call =>
+            {
+                invalidate = call.Arg<Action<CacheInvalidation>>();
+                return Substitute.For<IDisposable>();
+            });
+        var captured = Signal();
+        var release = Signal();
+        var entryOptions = new CacheEntryOptions(Expiration)
+        {
+            Tags = new PausingCaptureTags(captured, release, token),
+        };
+        using var listener = DirectionListener(
+            options.Namespace,
+            invalidation == "flush" ? "flushed" : "received",
+            out var applied
+        );
+        await using var cache = new TieredCache(options, store, Serializer, channel);
+        var pending = Task.Run(
+            async () => await cache.SetAsync("catalog:eu", "fresh", entryOptions, token),
+            token
+        );
+        try
+        {
+            await captured.Task.WaitAsync(Bound, token);
+            Assert.Equal(0, store.Count);
+            invalidate!(
+                invalidation switch
+                {
+                    "key" => new CacheInvalidation(["catalog:eu"], []),
+                    "tag" => new CacheInvalidation([], ["catalog"]),
+                    _ => CacheInvalidation.Flush,
+                }
+            );
+            await applied.Task.WaitAsync(Bound, token);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await pending.WaitAsync(Bound, token);
+        }
+
+        Assert.Equal(0, cache.LocalEntryCount);
+        Assert.Equal(1, store.Count);
+        var distributed = await cache.TryGetAsync<string>("catalog:eu", token);
+        Assert.True(distributed.Found);
+        Assert.Equal("fresh", distributed.Value);
+        Assert.Equal(CacheTier.L2, distributed.Tier);
+        Assert.False(distributed.Degraded);
+        var local = await cache.TryGetAsync<string>("catalog:eu", token);
+        Assert.Equal("fresh", local.Value);
+        Assert.Equal(CacheTier.L1, local.Tier);
+    }
 
     [Theory(Timeout = 30_000)]
     [MemberData(nameof(Overlaps))]
@@ -794,6 +863,35 @@ public sealed class CacheInvalidationRaceTests
         );
         listener.Start();
         return listener;
+    }
+
+    private sealed class PausingCaptureTags(
+        TaskCompletionSource captured,
+        TaskCompletionSource release,
+        CancellationToken token
+    ) : IReadOnlyCollection<string>
+    {
+        private int _enumerations;
+
+        public int Count => 1;
+
+        public IEnumerator<string> GetEnumerator()
+        {
+            var enumeration = Interlocked.Increment(ref _enumerations);
+            yield return "catalog";
+            // Validation enumerates first, generation capture second. Pause after capture has
+            // sampled both key and tag generations, before SetAsync can enter WriteAsync.
+            if (enumeration == 2)
+            {
+                captured.TrySetResult();
+                if (!release.Task.Wait(Bound, token))
+                {
+                    throw new TimeoutException("The generation capture was not released.");
+                }
+            }
+        }
+
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     private static TaskCompletionSource Signal() =>
