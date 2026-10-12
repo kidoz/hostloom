@@ -989,6 +989,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     {
         if (!_tier.IsCurrent(generation))
         {
+            NoteWriteSkipped(key);
             return false;
         }
         var degraded = false;
@@ -1035,6 +1036,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     {
         if (!_tier.IsCurrent(generation))
         {
+            NoteWriteSkipped(key);
             return false;
         }
         var degraded = false;
@@ -1372,6 +1374,24 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         }
 
         return kind;
+    }
+
+    /// <summary>
+    /// Records a write that an overlapping invalidation made stale. Nothing was written: the
+    /// caller's value reached neither tier, and no store failure was observed, so without this
+    /// the drop is indistinguishable from a write that landed and was later evicted.
+    /// </summary>
+    private void NoteWriteSkipped(string key)
+    {
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                new EventId(1008, "CacheWriteSkipped"),
+                "Write of '{Key}' in namespace '{Namespace}' was skipped: an invalidation moved its generation between capture and commit, so the value reached neither tier.",
+                key,
+                _options.Namespace
+            );
+        }
     }
 
     private static bool IsCallerCancellation(Exception exception, CancellationToken token) =>
