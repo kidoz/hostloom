@@ -3,7 +3,7 @@
     <Description>Standalone Valkey backend for HostLoom caching and coordination locks over ValkeyDotNet.</Description>
     <PackageId>HostLoom.Valkey</PackageId>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageTags>hostloom;valkey;cache;distributed-lock</PackageTags>
+    <PackageTags>hostloom;valkey;cache;distributed-lock;aot</PackageTags>
     <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
   <ItemGroup>
