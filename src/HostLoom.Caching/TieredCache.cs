@@ -264,6 +264,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 value,
                 options,
                 _tier.Capture(key, options.Tags),
+                fromFactory: false,
                 cancellationToken
             )
             .ConfigureAwait(false);
@@ -810,7 +811,14 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             }
             else if (options.Expiration > TimeSpan.Zero)
             {
-                degraded |= await WriteAsync(key, value, options, generation, cancellationToken)
+                degraded |= await WriteAsync(
+                        key,
+                        value,
+                        options,
+                        generation,
+                        fromFactory: true,
+                        cancellationToken
+                    )
                     .ConfigureAwait(false);
             }
 
@@ -1025,16 +1033,24 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         return degraded;
     }
 
-    /// <summary>Writes to the distributed tier, then the in-process tier. Returns whether it degraded.</summary>
+    /// <summary>
+    /// Writes to the distributed tier, then the in-process tier. Returns whether it degraded.
+    /// <paramref name="fromFactory"/> marks a value that came from a factory already running when
+    /// <paramref name="generation"/> was captured: an invalidation that overlapped such a fill
+    /// discards it entirely, because committing it would resurrect what the invalidation removed.
+    /// A write the caller issued is authoritative instead — it always reaches the distributed
+    /// tier, and only the in-process commit is skipped when an invalidation overlapped.
+    /// </summary>
     private async ValueTask<bool> WriteAsync<T>(
         string key,
         T value,
         CacheEntryOptions options,
         FillCapture generation,
+        bool fromFactory,
         CancellationToken cancellationToken
     )
     {
-        if (!_tier.IsCurrent(generation))
+        if (fromFactory && !_tier.IsCurrent(generation))
         {
             NoteWriteSkipped(key);
             return false;
@@ -1377,9 +1393,9 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     }
 
     /// <summary>
-    /// Records a write that an overlapping invalidation made stale. Nothing was written: the
-    /// caller's value reached neither tier, and no store failure was observed, so without this
-    /// the drop is indistinguishable from a write that landed and was later evicted.
+    /// Records a factory result an overlapping invalidation discarded. Nothing was written: the
+    /// value reached neither tier, and no store failure was observed, so without this the discard
+    /// is indistinguishable from a fill that landed and was later evicted.
     /// </summary>
     private void NoteWriteSkipped(string key)
     {
@@ -1387,7 +1403,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         {
             _logger.LogDebug(
                 new EventId(1008, "CacheWriteSkipped"),
-                "Write of '{Key}' in namespace '{Namespace}' was skipped: an invalidation moved its generation between capture and commit, so the value reached neither tier.",
+                "The factory result for '{Key}' in namespace '{Namespace}' was discarded: an invalidation moved its generation while it was being computed, so it reached neither tier.",
                 key,
                 _options.Namespace
             );
