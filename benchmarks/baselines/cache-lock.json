@@ -4,34 +4,34 @@
   "environment": {
     "BenchmarkDotNetVersion": "0.15.8",
     "ProcessorName": "Apple M4 Max",
-    "RuntimeVersion": ".NET 10.0.11 (10.0.11, 10.0.1126.37416)",
+    "RuntimeVersion": ".NET 10.0.12 (10.0.12, 10.0.1226.42308)",
     "Architecture": "Arm64"
   },
   "job": "ShortRun(IterationCount=3, LaunchCount=1, WarmupCount=3)",
   "benchmarks": {
     "HostLoom.Benchmarks.CachingBenchmarks.GetMany_100_keys": {
-      "meanNanoseconds": 3158.2043952941895,
+      "meanNanoseconds": 11939.991737365723,
       "allocatedBytes": 10224.0
     },
     "HostLoom.Benchmarks.CachingBenchmarks.L1_hit_state_overload": {
-      "meanNanoseconds": 50.36367846528689,
+      "meanNanoseconds": 194.61793025334677,
       "allocatedBytes": 0.0
     },
     "HostLoom.Benchmarks.CachingBenchmarks.L2_hit_through_serializer": {
-      "meanNanoseconds": 264.0142772992452,
+      "meanNanoseconds": 966.8765071233114,
       "allocatedBytes": 240.0
     },
     "HostLoom.Benchmarks.CachingBenchmarks.Miss_under_100_way_contention": {
-      "meanNanoseconds": 13047.315701802572,
-      "allocatedBytes": 10975.0
+      "meanNanoseconds": 32785.73524983724,
+      "allocatedBytes": 11092.0
     },
     "HostLoom.Benchmarks.LockingBenchmarks.Acquire_and_release": {
-      "meanNanoseconds": 467.1238663991292,
-      "allocatedBytes": 608.0
+      "meanNanoseconds": 1889.6902923583984,
+      "allocatedBytes": 888.0
     },
     "HostLoom.Benchmarks.LockingBenchmarks.Execute_with_lock": {
-      "meanNanoseconds": 498.9307581583659,
-      "allocatedBytes": 712.0
+      "meanNanoseconds": 1336.4527765909831,
+      "allocatedBytes": 992.0
     }
   }
 }
