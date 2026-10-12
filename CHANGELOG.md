@@ -22,8 +22,8 @@ are derived from release tags at publish time.
 The sixteenth release of **HostLoom**. Nothing in it changes a signature an application
 compiles against: it changes what the packages let a reader see, how the Redis adapters
 resolve their connection when an application registers a multiplexer beside them, how the
-Redis invalidation fan-in behaves when the server outpaces the reader, and which
-versions the whole set builds on.
+Redis invalidation fan-in behaves when the server outpaces the reader, what the core
+package draws from the shared frameworks, and which versions the whole set builds on.
 
 `HostLoom.Caching` no longer discards an explicit write. A `SetAsync` that overlapped an
 invalidation — routine while a Redis or Valkey subscription is being established, because the
@@ -59,6 +59,14 @@ and the `hostloom.redis.invalidation.dropped` counter. The in-process entries a 
 message would have removed stay until they expire, the same trade the cache's own pending
 queue already makes.
 
+`HostLoom` no longer references the `Microsoft.AspNetCore.App` shared framework. The kernel
+never called an ASP.NET Core API — it consumes only hosting, dependency-injection, logging,
+options, and health-check abstractions — and it now references exactly those five
+`Microsoft.Extensions.*` packages, so a worker or console consumer no longer resolves the
+ASP.NET Core runtime. Applications that host on ASP.NET Core already reference
+the framework themselves and are unaffected. The core package still makes no Native AOT
+claim.
+
 The pinned dependencies move forward, with one hold: `Confluent.Kafka` stays at 2.15.1
 because 2.16.0 fails Kafka topic administration against Apache Kafka 3.9, which the transport
 integration suite reproduces on every run. `HostLoom.Valkey` advertises the Native AOT
@@ -86,6 +94,10 @@ release.
   3.4.0, and `xunit.v3` from 4.0.1 to 4.0.2. `Confluent.Kafka` stays at 2.15.1.
 - `HostLoom.Valkey` advertises its Native AOT compatibility through the `aot` package tag,
   matching its `IsAotCompatible` declaration.
+- `HostLoom` references the five `Microsoft.Extensions.*` packages it actually uses instead
+  of the `Microsoft.AspNetCore.App` shared framework, so worker and console consumers no
+  longer pull in the ASP.NET Core runtime. Applications that host on ASP.NET Core
+  are unaffected.
 - The `HostLoom.Redis` invalidation fan-in queue is bounded by
   `Caching:Invalidation:MaxPending` instead of growing without limit. A Redis instance
   publishing faster than the local reader can apply now drops the newest undelivered message

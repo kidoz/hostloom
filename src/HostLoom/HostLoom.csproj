@@ -4,7 +4,14 @@
     <PackageId>HostLoom</PackageId>
   </PropertyGroup>
   <ItemGroup>
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <!-- Narrow package references instead of a Microsoft.AspNetCore.App framework reference:
+         the kernel uses only Microsoft.Extensions.* hosting, DI, logging, options, and health
+         check abstractions. -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
     <ProjectReference Include="../HostLoom.Pipelines/HostLoom.Pipelines.csproj" />
   </ItemGroup>
 </Project>
