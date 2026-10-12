@@ -15,6 +15,7 @@ public static class CachingBuilderRedisExtensions
     /// <see cref="RedisCacheInvalidationChannel"/> as the invalidation fan-out, over the one
     /// connection this process holds. Calling it on the locking builder as well shares that
     /// connection. A serializer is still required; see <c>UseSystemTextJson</c>.
+    /// The store uses that connection even when an <c>IConnectionMultiplexer</c> is also registered.
     /// </summary>
     /// <exception cref="InvalidOperationException">A store was already chosen.</exception>
     public static CachingBuilder UseRedis(
@@ -23,7 +24,19 @@ public static class CachingBuilderRedisExtensions
     )
     {
         ArgumentNullException.ThrowIfNull(builder);
+        var existingStore = builder.Services.FirstOrDefault(static descriptor =>
+            !descriptor.IsKeyedService && descriptor.ServiceType == typeof(RedisCacheStore)
+        );
         builder.UseStore<RedisCacheStore>("Redis");
+        if (existingStore is null)
+        {
+            // Both public constructors can be resolvable when the application registers a multiplexer.
+            builder.Services.Replace(
+                ServiceDescriptor.Singleton(static provider => new RedisCacheStore(
+                    provider.GetRequiredService<RedisConnection>()
+                ))
+            );
+        }
         RedisRegistration.AddConnection(builder.Services, configure);
         builder.Services.TryAddSingleton<ICacheInvalidationChannel>(
             static provider => new RedisCacheInvalidationChannel(

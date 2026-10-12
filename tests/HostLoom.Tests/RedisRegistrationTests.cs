@@ -9,6 +9,7 @@ using HostLoom.Redis.Internal;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
+using NSubstitute;
 using StackExchange.Redis;
 using Xunit;
 
@@ -167,6 +168,141 @@ public sealed class RedisRegistrationTests
         );
     }
 
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public async Task UseRedis_WithRegisteredMultiplexer_UsesSharedConnectionAndConfiguredOptions(
+        bool multiplexerFirst,
+        bool cachingFirst
+    )
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        var unrelated = Substitute.For<IConnectionMultiplexer>();
+        var shared = Substitute.For<IConnectionMultiplexer>();
+        var database = Substitute.For<IDatabase>();
+        shared.GetDatabase(3, Arg.Any<object>()).Returns(database);
+        database
+            .ScriptEvaluateAsync(
+                Arg.Any<string>(),
+                Arg.Any<RedisKey[]>(),
+                Arg.Any<RedisValue[]>(),
+                Arg.Any<CommandFlags>()
+            )
+            .Returns(RedisResult.Create(1L));
+        database.KeyDeleteAsync(Arg.Any<RedisKey[]>(), Arg.Any<CommandFlags>()).Returns(1L);
+        var connections = 0;
+        void Configure(RedisOptions options)
+        {
+            options.DatabaseIndex = 3;
+            options.UseHashTags = true;
+            options.ConnectionFactory = _ =>
+            {
+                connections++;
+                // The completed task returns a borrowed test double, not a scoped resource.
+#pragma warning disable CA2025
+                return Task.FromResult(shared);
+#pragma warning restore CA2025
+            };
+        }
+
+        if (multiplexerFirst)
+            services.AddSingleton(unrelated);
+        if (cachingFirst)
+        {
+            services.AddHostLoomCaching().UseRedis(Configure);
+            services.AddHostLoomLocking().UseRedis();
+        }
+        else
+        {
+            services.AddHostLoomLocking().UseRedis(Configure);
+            services.AddHostLoomCaching().UseRedis();
+        }
+        if (!multiplexerFirst)
+            services.AddSingleton(unrelated);
+        await using var provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true }
+        );
+
+        var locks = provider.GetRequiredService<RedisLockProvider>();
+        var store = provider.GetRequiredService<RedisCacheStore>();
+        Assert.Same(locks, provider.GetRequiredService<ILockProvider>());
+        Assert.Same(locks, provider.GetRequiredService<ILockProviderHealthProbe>());
+        Assert.Same(store, provider.GetRequiredService<IDistributedCacheStore>());
+        Assert.Same(store, provider.GetRequiredService<ICacheStoreHealthProbe>());
+        Assert.False(provider.GetRequiredService<RedisConnection>().IsConnected);
+        Assert.Equal(0, connections);
+
+        Assert.True(
+            await locks.ReleaseAsync(
+                "catalog:lock:refresh",
+                "owner",
+                TestContext.Current.CancellationToken
+            )
+        );
+        await store.RemoveAsync(["catalog:cache:data:eu"], TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, connections);
+        shared.Received(2).GetDatabase(3, Arg.Any<object>());
+        unrelated.DidNotReceive().GetDatabase(Arg.Any<int>(), Arg.Any<object>());
+        await database
+            .Received(1)
+            .ScriptEvaluateAsync(
+                Arg.Any<string>(),
+                Arg.Is<RedisKey[]>(keys =>
+                    keys.Length == 1 && keys[0] == (RedisKey)"{catalog}:lock:refresh"
+                ),
+                Arg.Any<RedisValue[]>(),
+                Arg.Any<CommandFlags>()
+            );
+        await database
+            .Received(1)
+            .KeyDeleteAsync(
+                Arg.Is<RedisKey[]>(keys =>
+                    keys.Length == 1 && keys[0] == (RedisKey)"{catalog}:cache:data:eu"
+                ),
+                Arg.Any<CommandFlags>()
+            );
+
+        await locks.DisposeAsync();
+        await store.DisposeAsync();
+        Assert.Same(
+            shared,
+            await provider
+                .GetRequiredService<RedisConnection>()
+                .GetMultiplexerAsync(TestContext.Current.CancellationToken)
+        );
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task UseRedis_PreservesExplicitStoreAndProviderRegistrations(bool useFactory)
+    {
+        await using var connection = new RedisConnection(Substitute.For<IConnectionMultiplexer>());
+        await using var store = new RedisCacheStore(connection);
+        await using var locks = new RedisLockProvider(connection);
+        var services = new ServiceCollection();
+        if (useFactory)
+        {
+            services.AddSingleton(_ => store);
+            services.AddSingleton(_ => locks);
+        }
+        else
+        {
+            services.AddSingleton(store);
+            services.AddSingleton(locks);
+        }
+        services.AddHostLoomCaching().UseRedis(Quick);
+        services.AddHostLoomLocking().UseRedis();
+        await using var provider = services.BuildServiceProvider();
+
+        Assert.Same(store, provider.GetRequiredService<IDistributedCacheStore>());
+        Assert.Same(locks, provider.GetRequiredService<ILockProvider>());
+    }
+
     [Fact]
     public void UseRedis_AfterUseInMemory_ThrowsNamingInMemory()
     {
@@ -174,10 +310,25 @@ public sealed class RedisRegistrationTests
         var builder = services
             .AddHostLoomCaching(caching => caching.Namespace = "svc")
             .UseInMemory();
+        var registrations = services.ToArray();
 
         var exception = Assert.Throws<InvalidOperationException>(() => builder.UseRedis(Quick));
 
         Assert.Contains("InMemory", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(registrations, services);
+    }
+
+    [Fact]
+    public void UseRedis_OnLockingAfterUseInMemory_DoesNotChangeRegistrations()
+    {
+        var services = new ServiceCollection();
+        var builder = services.AddHostLoomLocking().UseInMemory();
+        var registrations = services.ToArray();
+
+        var exception = Assert.Throws<InvalidOperationException>(() => builder.UseRedis(Quick));
+
+        Assert.Contains("InMemory", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(registrations, services);
     }
 
     [Fact]
