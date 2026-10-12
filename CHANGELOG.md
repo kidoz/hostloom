@@ -8,6 +8,21 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Changed
+
+- Update `MessagePack` from 3.1.10 to 3.1.11, including its upstream fix for an LZ4
+  decompression integer overflow (GHSA-7rj2-5w9w-r9jx), `Confluent.Kafka` from 2.15.1 to
+  2.16.0, `StackExchange.Redis` from 3.3.1 to 3.4.0, and `xunit.v3` from 4.0.1 to 4.0.2.
+
+### Fixed
+
+- `HostLoom.Redis` explicitly constructs `RedisLockProvider` and `RedisCacheStore` over
+  the shared `RedisConnection` when selected through `UseRedis`. Registering an
+  `IConnectionMultiplexer` alongside HostLoom no longer causes ambiguous-constructor
+  failures. Both adapters retain the configured Redis options, and applications no longer
+  need to replace the lock-provider registration manually. Existing caller-provided
+  instances and factories remain in use.
+
 ## [0.15.0] - 2026-10-05
 
 The repository gains `HostLoom.Generators`, a dependency-free, trimming- and Native

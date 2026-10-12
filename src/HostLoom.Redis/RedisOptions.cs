@@ -148,7 +148,7 @@ public sealed class RedisOptions
         // behind its client-side admin flag. This grants nothing on the server; ACLs still apply.
         configuration.AllowAdmin = true;
         // RESP2 keeps pub/sub on a dedicated connection, which is the connection client tracking
-        // redirects invalidations to; under RESP3 the library multiplexes both over one socket.
+        // redirects invalidations to.
         configuration.Protocol = RedisProtocol.Resp2;
         // Cluster role changes can occur on existing sockets. Refresh within five seconds
         // instead of the SDK's one-minute default; retain a caller's faster cadence.
