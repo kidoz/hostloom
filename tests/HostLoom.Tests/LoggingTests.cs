@@ -208,7 +208,7 @@ public sealed class LoggingTests
         );
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task A_full_queue_drops_below_warning_and_keeps_the_warnings()
     {
         var sink = NewBlockingSink();
@@ -226,6 +226,7 @@ public sealed class LoggingTests
 
         for (var i = 0; i < 500; i++)
         {
+            TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
             logger.LogFast(LogLevel.Information, $"flood {i}");
         }
 
@@ -297,10 +298,10 @@ public sealed class LoggingTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task A_warning_waits_at_most_the_default_enqueue_timeout_for_a_stalled_sink()
     {
-        var sink = NewBlockingSink();
+        var sink = NewStuckSink();
         await using var provider = new HostLoomLoggerProvider(
             new JsonLogFormatter(),
             sink,
@@ -308,8 +309,13 @@ public sealed class LoggingTests
         );
         var logger = provider.CreateLogger("Stalled");
 
-        // The sink holds the writer inside the first record; Information records are dropped as
-        // soon as the one-record queue behind it is full, which is how the test knows it is.
+        // Park the writer inside the first record before measuring. Without that barrier a loaded
+        // machine can still have the first record waiting in the queue when the warning arrives,
+        // and the writer then frees the slot in time for the warning to be admitted instead of
+        // dropped. Information records are dropped as soon as the one-record queue behind the
+        // parked writer is full, which is how the test knows it is.
+        logger.LogFast(LogLevel.Information, $"taken by the writer");
+        sink.WaitUntilWriting();
         for (var i = 0; i < 1000 && provider.Dropped == 0; i++)
         {
             logger.LogFast(LogLevel.Information, $"fills the queue {i}");
@@ -670,7 +676,7 @@ public sealed class LoggingTests
         sink.Release();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task Dropped_records_surface_through_the_meter()
     {
         long observed = 0;
@@ -718,6 +724,7 @@ public sealed class LoggingTests
         var logger = provider.CreateLogger("Metered");
         for (var i = 0; i < 200; i++)
         {
+            TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
             logger.LogFast(LogLevel.Information, $"flood {i}");
         }
 
