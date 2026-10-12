@@ -14,6 +14,7 @@ configuration needs.
 | `HostLoom.Locking` | `ActivitySource` and `Meter` | every `DistributedLock` |
 | `HostLoom.Scheduling` | `ActivitySource` and `Meter` | every `Scheduler` |
 | `HostLoom.Leadership` | `ActivitySource` and `Meter` | every `LeaderElector` |
+| `HostLoom.NodeLeasing` | `ActivitySource` and `Meter` | every `NodeIdElector` |
 | `HostLoom.Redis` | `ActivitySource` and `Meter` | the Redis connection |
 | `HostLoom.Transport.RabbitMq` | `Meter` | the RabbitMQ transport |
 | `HostLoom.Transport.Kafka` | `Meter` | the Kafka transport |
@@ -22,10 +23,10 @@ configuration needs.
 ```csharp
 builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics => metrics.AddMeter(
-        "HostLoom", "HostLoom.Pipelines", "HostLoom.Logging", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Scheduling", "HostLoom.Leadership", "HostLoom.Redis",
+        "HostLoom", "HostLoom.Pipelines", "HostLoom.Logging", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Scheduling", "HostLoom.Leadership", "HostLoom.NodeLeasing", "HostLoom.Redis",
         "HostLoom.Transport.RabbitMq", "HostLoom.Transport.Kafka", "HostLoom.AspNetCore.WebSockets"))
     .WithTracing(tracing => tracing.AddSource(
-        "HostLoom", "HostLoom.Pipelines", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Scheduling", "HostLoom.Leadership",
+        "HostLoom", "HostLoom.Pipelines", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Scheduling", "HostLoom.Leadership", "HostLoom.NodeLeasing",
         "HostLoom.AspNetCore.WebSockets"));
 ```
 
@@ -150,6 +151,17 @@ Identity is the `hostloom.leader.role` tag. The `leader.acquire` activity carrie
 | `hostloom.leader.is_leader` | observable gauge | 1 while this instance leads the role, 0 otherwise |
 | `hostloom.leader.changes` | counter | Transitions, tagged `hostloom.leader.reason` (`acquired`, `lost`, `resigned`, `stopped`) |
 | `hostloom.leader.renew.duration` | histogram (s) | Lease renewals, tagged `hostloom.leader.outcome`: `renewed`; `refused`, which ends leadership; or `failed`, a provider failure while the lease still runs, which is retried |
+
+## Node-leasing instruments (`HostLoom.NodeLeasing`)
+
+Identity is the `hostloom.node.pool` tag. The `nodeid.acquire` activity carries the pool, whether the scan acquired, and the acquired ID.
+
+| Instrument | Kind | Meaning |
+| --- | --- | --- |
+| `hostloom.node.assigned` | observable gauge | 1 while this instance holds an ID in the pool, 0 otherwise |
+| `hostloom.node.assignment.changes` | counter | Transitions, tagged `hostloom.node.reason` (`acquired`, `lost`, `released`, `stopped`) |
+| `hostloom.node.renew.duration` | histogram (s) | Lease renewals, tagged `hostloom.node.outcome`: `renewed`; `refused`, which ends the assignment; or `failed`, a provider failure while the lease still runs, which is retried |
+| `hostloom.node.loop.faults` | counter | Unexpected exceptions the elector loop caught and backed off from |
 
 Activities: `lock.acquire` and `lock.execute`, tagged `hostloom.lock.key`,
 `hostloom.lock.acquired`, `hostloom.lock.wait_ms`, and `hostloom.lock.hold_ms`.

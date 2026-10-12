@@ -8,6 +8,15 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- `HostLoom.NodeLeasing`, lease-based node-ID leasing over the distributed lock: a pool of
+  small integer IDs (Snowflake-style worker IDs), one elector per pool with a sticky scan and
+  explicit renewal, an assignment token, and the honest guarantee statement (at most one holder
+  per ID bounded by the lease plus clock skew, no fencing);
+  `HostLoom.NodeLeasing.DependencyInjection`, pools keyed by name with options validation and
+  hosting; and `HostLoom.NodeLeasing.Testing`, the scripted `INodeLeasing` double.
+
 ## [0.15.1] - 2026-10-12
 
 The sixteenth release of **HostLoom**. Nothing in it changes a signature an application
