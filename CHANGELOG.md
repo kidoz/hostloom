@@ -52,8 +52,10 @@ release.
 ### Changed
 
 - Update `MessagePack` from 3.1.10 to 3.1.11, including its upstream fix for an LZ4
-  decompression integer overflow (GHSA-7rj2-5w9w-r9jx), `Confluent.Kafka` from 2.15.1 to
-  2.16.0, `StackExchange.Redis` from 3.3.1 to 3.4.0, and `xunit.v3` from 4.0.1 to 4.0.2.
+  decompression integer overflow (GHSA-7rj2-5w9w-r9jx), `StackExchange.Redis` from 3.3.1 to
+  3.4.0, and `xunit.v3` from 4.0.1 to 4.0.2. `Confluent.Kafka` stays at 2.15.1: 2.16.0 fails
+  Kafka topic administration against Apache Kafka 3.9 with a controller timeout or a destroyed
+  broker handle, which the transport integration suite reproduces on every run.
 - `HostLoom.Valkey` advertises its Native AOT compatibility through the `aot` package tag,
   matching its `IsAotCompatible` declaration.
 
