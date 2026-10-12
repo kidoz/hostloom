@@ -32,10 +32,10 @@ both adapters retain the configured Redis options, and an application no longer 
 replace the lock-provider registration by hand. A store or provider that an application
 registered itself is still used as it is.
 
-The pinned dependencies move to their latest stable versions, including `MessagePack` 3.1.11
-for its upstream fix to an LZ4 decompression integer overflow (GHSA-7rj2-5w9w-r9jx), and
-`HostLoom.Valkey` advertises the Native AOT compatibility it already declared through the
-`aot` package tag.
+The pinned dependencies move forward, with one hold: `Confluent.Kafka` stays at 2.15.1
+because 2.16.0 fails Kafka topic administration against Apache Kafka 3.9, which the transport
+integration suite reproduces on every run. `HostLoom.Valkey` advertises the Native AOT
+compatibility it already declared through the `aot` package tag.
 
 No package is published for the first time; the whole set publishes at 0.15.1.
 `@hostloom/websocket-client` is not part of this NuGet set and has no changes since its 0.3.0
@@ -53,9 +53,7 @@ release.
 
 - Update `MessagePack` from 3.1.10 to 3.1.11, including its upstream fix for an LZ4
   decompression integer overflow (GHSA-7rj2-5w9w-r9jx), `StackExchange.Redis` from 3.3.1 to
-  3.4.0, and `xunit.v3` from 4.0.1 to 4.0.2. `Confluent.Kafka` stays at 2.15.1: 2.16.0 fails
-  Kafka topic administration against Apache Kafka 3.9 with a controller timeout or a destroyed
-  broker handle, which the transport integration suite reproduces on every run.
+  3.4.0, and `xunit.v3` from 4.0.1 to 4.0.2. `Confluent.Kafka` stays at 2.15.1.
 - `HostLoom.Valkey` advertises its Native AOT compatibility through the `aot` package tag,
   matching its `IsAotCompatible` declaration.
 
