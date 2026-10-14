@@ -114,6 +114,9 @@ packages are versioned together:
 | `HostLoom.Leadership.DependencyInjection` | Roles keyed by name, options validation, and hosting for electors |
 | `HostLoom.Leadership.Testing` | Scripted `ILeadership` for leader-only consumers |
 | `HostLoom.Scheduling.Leadership` | Runs exclusive schedules on the elected leader only |
+| `HostLoom.NodeLeasing` | Lease-based node-ID leasing over the distributed lock, one elector per pool, assignment token |
+| `HostLoom.NodeLeasing.DependencyInjection` | Pools keyed by name, options validation, and hosting for electors |
+| `HostLoom.NodeLeasing.Testing` | Scripted `INodeLeasing` for node-ID consumers |
 | `HostLoom.Generators` | Secure random strings, numeric codes, coupon codes, opaque tokens, and prefixed and GUID identifiers |
 | `HostLoom.Generators.Testing` | Deterministic `IRandomSource` fakes for generator tests |
 | `HostLoom.Valkey` | Standalone Valkey cache store, explicit invalidation, coordination locks, and health probes over ValkeyDotNet |
@@ -137,7 +140,7 @@ without a stored write token; ordinary .NET `vX.Y.Z` releases remain independent
 Install only the runtime and transport needed by the application, for example:
 
 ```text
-dotnet add package HostLoom.Transport.RabbitMq --version 0.15.1
+dotnet add package HostLoom.Transport.RabbitMq --version 0.16.0
 ```
 
 The analyzer package is optional and has no runtime dependency:

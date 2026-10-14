@@ -8,6 +8,61 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-14
+
+The seventeenth release of **HostLoom**. Its headline is a new package family — lease-based
+node-ID leasing over the distributed lock, for the services that must tell their instances
+apart by a small integer, a Snowflake-style worker ID or a shard slot, without ever letting
+two holders share one. Alongside it, a mapping registration a host may reach twice without
+failing, a bound on the queue a Redis invalidation subscription fans into, and a core package
+that no longer draws the ASP.NET Core shared framework.
+
+`HostLoom.NodeLeasing` leases a pool of small integer IDs to the instances of a service. One
+elector per pool hands out the IDs zero to `NodeLeasing:PoolSize` minus one, scanning with the
+ID it last held first, for stickiness across a restart, then ascending from a random offset,
+and taking the first ID a skip-if-busy acquisition grants on `nodeid:{pool}:{id}`. The holder
+renews explicitly — a renewal the backend refuses or a lease that runs out steps it back to
+candidate at once — and an assignment token bounds what it does with a belief that outlives
+the lease. The guarantee is stated as narrowly as it is kept: at most one holder per ID while
+clocks and the lock backend behave, with a window on expiry bounded by `NodeLeasing:Lease`
+plus clock skew, and no fencing. `HostLoom.NodeLeasing.DependencyInjection` registers pools
+keyed by name with options validation and hosting, and `HostLoom.NodeLeasing.Testing` ships
+the scripted `INodeLeasing` double for consumers that only need to know which ID they were
+handed.
+
+`MappingBuilder.TryAdd<TMapper>`, its explicit-pair overload, and the `TryAddUpdate`
+counterparts close the composition gap in mapping registration: when a host composes several
+builders and one shared registration is reached more than once, a pair already registered by
+the same map class — with its lifetime — is left in place, while a different implementation
+for that pair is still rejected as a duplicate. The factory and instance overloads keep no
+`TryAdd` counterpart, because a registration built from a runtime object cannot be recognized
+as the same map on a second call.
+
+`HostLoom.Redis` bounds the queue every invalidation subscription fans into. That queue was
+previously unbounded: a server publishing faster than the local reader could apply messages
+— a chatty keyspace, a stalled event loop — grew memory without limit and without a signal.
+The queue now holds `Caching:Invalidation:MaxPending` messages and drops the newest
+undelivered one past that bound, reporting each drop on the new `DroppedMessages` property
+and the `hostloom.redis.invalidation.dropped` counter. The in-process entries a dropped
+message would have removed stay until they expire, the same trade the cache's own pending
+queue already makes.
+
+`HostLoom` no longer references the `Microsoft.AspNetCore.App` shared framework. The kernel
+never called an ASP.NET Core API — it consumes only hosting, dependency-injection, logging,
+options, and health-check abstractions — and it now references exactly those five
+`Microsoft.Extensions.*` packages, so a worker or console consumer no longer resolves the
+ASP.NET Core runtime. Applications that host on ASP.NET Core already reference the framework
+themselves and are unaffected. The core package still makes no Native AOT claim.
+
+Upgrading from 0.15.1 changes no signature an application compiles against. The one
+dependency-level change is `HostLoom`'s framework reference, and an application that hosts on
+ASP.NET Core references the framework itself, so it is unaffected; a worker or console
+consumer simply stops resolving a runtime it never used. `HostLoom.NodeLeasing`,
+`HostLoom.NodeLeasing.DependencyInjection`, and `HostLoom.NodeLeasing.Testing` are published
+for the first time; the remaining packages carry the changes above and nothing else.
+`@hostloom/websocket-client` is not part of this NuGet set and has no changes since its 0.3.0
+release.
+
 ### Added
 
 - `HostLoom.NodeLeasing`, lease-based node-ID leasing over the distributed lock: a pool of
@@ -17,18 +72,35 @@ are derived from release tags at publish time.
   `HostLoom.NodeLeasing.DependencyInjection`, pools keyed by name with options validation and
   hosting; and `HostLoom.NodeLeasing.Testing`, the scripted `INodeLeasing` double.
 
+- `HostLoom.Redis` reports invalidation messages its subscription fan-in drops under load:
+  a `DroppedMessages` property on `RedisCacheInvalidationChannel` and a
+  `hostloom.redis.invalidation.dropped` counter tagged by namespace.
+
 - `MappingBuilder.TryAdd<TMapper>` and `TryAdd<TSource, TDestination, TMapper>`, with
   `TryAddUpdate` counterparts, for a registration a host may reach twice: a pair already
   registered by the same map class is left in place — with its lifetime — while a different
-  implementation for the same pair is still rejected as a duplicate.
+  implementation for the same pair is still rejected as a duplicate. The factory and instance
+  overloads keep no `TryAdd` counterpart, because a registration built from a runtime object
+  cannot be recognized as the same map on a second call.
+
+### Changed
+
+- The `HostLoom.Redis` invalidation fan-in queue is bounded by
+  `Caching:Invalidation:MaxPending` instead of growing without limit. A Redis instance
+  publishing faster than the local reader can apply now drops the newest undelivered message
+  and reports each drop, and the entries it would have removed stay in the in-process tier
+  until they expire — the same trade the cache's own pending queue already makes.
+- `HostLoom` references the five `Microsoft.Extensions.*` packages it actually uses instead
+  of the `Microsoft.AspNetCore.App` shared framework, so worker and console consumers no
+  longer pull in the ASP.NET Core runtime. Applications that host on ASP.NET Core
+  are unaffected.
 
 ## [0.15.1] - 2026-10-12
 
 The sixteenth release of **HostLoom**. Nothing in it changes a signature an application
 compiles against: it changes what the packages let a reader see, how the Redis adapters
-resolve their connection when an application registers a multiplexer beside them, how the
-Redis invalidation fan-in behaves when the server outpaces the reader, what the core
-package draws from the shared frameworks, and which versions the whole set builds on.
+resolve their connection when an application registers a multiplexer beside them, and which
+versions the whole set builds on.
 
 `HostLoom.Caching` no longer discards an explicit write. A `SetAsync` that overlapped an
 invalidation — routine while a Redis or Valkey subscription is being established, because the
@@ -55,23 +127,6 @@ both adapters retain the configured Redis options, and an application no longer 
 replace the lock-provider registration by hand. A store or provider that an application
 registered itself is still used as it is.
 
-`HostLoom.Redis` bounds the queue every invalidation subscription fans into. That queue was
-previously unbounded: a server publishing faster than the local reader could apply messages
-— a chatty keyspace, a stalled event loop — grew memory without limit and without a signal.
-The queue now holds `Caching:Invalidation:MaxPending` messages and drops the newest
-undelivered one past that bound, reporting each drop on the new `DroppedMessages` property
-and the `hostloom.redis.invalidation.dropped` counter. The in-process entries a dropped
-message would have removed stay until they expire, the same trade the cache's own pending
-queue already makes.
-
-`HostLoom` no longer references the `Microsoft.AspNetCore.App` shared framework. The kernel
-never called an ASP.NET Core API — it consumes only hosting, dependency-injection, logging,
-options, and health-check abstractions — and it now references exactly those five
-`Microsoft.Extensions.*` packages, so a worker or console consumer no longer resolves the
-ASP.NET Core runtime. Applications that host on ASP.NET Core already reference
-the framework themselves and are unaffected. The core package still makes no Native AOT
-claim.
-
 The pinned dependencies move forward, with one hold: `Confluent.Kafka` stays at 2.15.1
 because 2.16.0 fails Kafka topic administration against Apache Kafka 3.9, which the transport
 integration suite reproduces on every run. `HostLoom.Valkey` advertises the Native AOT
@@ -88,9 +143,6 @@ release.
   generator compiler, and the existing API comments are completed where parameters went
   undocumented, so IntelliSense and documentation tooling surface the same remarks the
   sources already carried.
-- `HostLoom.Redis` reports invalidation messages its subscription fan-in drops under load:
-  a `DroppedMessages` property on `RedisCacheInvalidationChannel` and a
-  `hostloom.redis.invalidation.dropped` counter tagged by namespace.
 
 ### Changed
 
@@ -99,15 +151,6 @@ release.
   3.4.0, and `xunit.v3` from 4.0.1 to 4.0.2. `Confluent.Kafka` stays at 2.15.1.
 - `HostLoom.Valkey` advertises its Native AOT compatibility through the `aot` package tag,
   matching its `IsAotCompatible` declaration.
-- `HostLoom` references the five `Microsoft.Extensions.*` packages it actually uses instead
-  of the `Microsoft.AspNetCore.App` shared framework, so worker and console consumers no
-  longer pull in the ASP.NET Core runtime. Applications that host on ASP.NET Core
-  are unaffected.
-- The `HostLoom.Redis` invalidation fan-in queue is bounded by
-  `Caching:Invalidation:MaxPending` instead of growing without limit. A Redis instance
-  publishing faster than the local reader can apply now drops the newest undelivered message
-  and reports each drop, and the entries it would have removed stay in the in-process tier
-  until they expire — the same trade the cache's own pending queue already makes.
 
 ### Fixed
 
@@ -1992,7 +2035,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/kidoz/hostloom/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/kidoz/hostloom/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/kidoz/hostloom/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/kidoz/hostloom/compare/v0.13.0...v0.14.0
