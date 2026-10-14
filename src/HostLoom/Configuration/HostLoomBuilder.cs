@@ -32,7 +32,15 @@ public sealed class HostLoomBuilder
         );
 
         Services.AddScoped<IRequestHandler<TRequest, TResponse>, THandler>();
-        Services.AddScoped<RequestExecutor<TRequest, TResponse>>();
+        var configuration = Configuration;
+        Services.AddScoped(provider =>
+        {
+            configuration.ValidateOpenBehaviorConstraints(typeof(TRequest), typeof(TResponse));
+            return new RequestExecutor<TRequest, TResponse>(
+                provider.GetRequiredService<IRequestHandler<TRequest, TResponse>>(),
+                provider.GetServices<IRequestBehavior<TRequest, TResponse>>()
+            );
+        });
         Services.TryAddTransient<
             IRequestClient<TRequest, TResponse>,
             RequestClient<TRequest, TResponse>
@@ -112,6 +120,47 @@ public sealed class HostLoomBuilder
         where TBehavior : class, IRequestBehavior<TRequest, TResponse>
     {
         Services.AddScoped<IRequestBehavior<TRequest, TResponse>, TBehavior>();
+        return this;
+    }
+
+    /// <summary>
+    /// Registers an open-generic behavior (for example <c>typeof(ValidationBehavior&lt;,&gt;)</c>)
+    /// that wraps every request handler whose contract satisfies the behavior's generic
+    /// constraints. Open and closed behaviors run together in registration order. A behavior
+    /// whose constraints reject a request type fails that request's resolution instead of
+    /// being skipped silently.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// The type is not a concrete open generic class implementing
+    /// <c>IRequestBehavior&lt;TRequest, TResponse&gt;</c> with its two type parameters in that order.
+    /// </exception>
+    public HostLoomBuilder AddOpenBehavior(Type openBehaviorType)
+    {
+        ArgumentNullException.ThrowIfNull(openBehaviorType);
+        var genericArguments = openBehaviorType.GetGenericArguments();
+        if (
+            !openBehaviorType.IsGenericTypeDefinition
+            || !openBehaviorType.IsClass
+            || openBehaviorType.IsAbstract
+            || genericArguments.Length != 2
+            || openBehaviorType
+                .GetInterfaces()
+                .All(candidate =>
+                    !candidate.IsGenericType
+                    || candidate.GetGenericTypeDefinition() != typeof(IRequestBehavior<,>)
+                    || !candidate.GetGenericArguments().SequenceEqual(genericArguments)
+                )
+        )
+        {
+            throw new ArgumentException(
+                "Open behaviors must be concrete open generic classes with two type parameters "
+                    + "implementing IRequestBehavior<TRequest, TResponse> in that order.",
+                nameof(openBehaviorType)
+            );
+        }
+
+        Services.AddScoped(typeof(IRequestBehavior<,>), openBehaviorType);
+        Configuration.AddOpenBehavior(openBehaviorType);
         return this;
     }
 

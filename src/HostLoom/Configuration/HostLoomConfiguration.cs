@@ -18,6 +18,7 @@ internal sealed class HostLoomConfiguration
         Dictionary<string, SubscriberRegistration>
     > _subscriptions = [];
     private readonly HashSet<string> _messageTypes = new(StringComparer.Ordinal);
+    private readonly List<Type> _openBehaviorTypes = [];
     private bool _inbox;
     private bool _outbox;
 
@@ -25,6 +26,18 @@ internal sealed class HostLoomConfiguration
 
     /// <summary>Endpoints that registered at least one stream handler.</summary>
     public IReadOnlyCollection<RequestAddress> StreamEndpoints => _streams.Keys;
+
+    public void AddOpenBehavior(Type behaviorType) => _openBehaviorTypes.Add(behaviorType);
+
+    public void ValidateOpenBehaviorConstraints(Type requestType, Type responseType)
+    {
+        // DI skips incompatible open generics when resolving an IEnumerable. Validate before
+        // resolution so a request cannot reach its handler with a behavior silently omitted.
+        foreach (var behaviorType in _openBehaviorTypes)
+        {
+            _ = behaviorType.MakeGenericType(requestType, responseType);
+        }
+    }
 
     /// <summary>
     /// Records the one inbox registration. A second would append another filter over the same

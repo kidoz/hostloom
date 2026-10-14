@@ -101,13 +101,232 @@ public sealed class RequestResponseTests
         _ = greeter.DidNotReceive().HandleAsync(Arg.Any<Greet>(), Arg.Any<CancellationToken>());
     }
 
-    public sealed record Greet(string Name) : IRequest<Greeting>;
+    [Fact]
+    public async Task Open_behavior_wraps_every_matching_request_type()
+    {
+        var calls = new List<string>();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(calls);
+        builder
+            .Services.AddHostLoom()
+            .UseInMemory()
+            .AddHandler<Greet, Greeting, GreetHandler>("greeter")
+            .AddHandler<LookupRate, RateQuote, LookupRateHandler>("rates")
+            .AddOpenBehavior(typeof(RecordingOpenBehavior<,>));
+
+        using var host = builder.Build();
+        await host.StartAsync(TestContext.Current.CancellationToken);
+
+        var greeter = host.Services.GetRequiredService<IRequestClient<Greet, Greeting>>();
+        var greeting = await greeter.GetResponseAsync(
+            "greeter",
+            new Greet("Ada"),
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var rates = host.Services.GetRequiredService<IRequestClient<LookupRate, RateQuote>>();
+        var quote = await rates.GetResponseAsync(
+            "rates",
+            new LookupRate("EUR/USD"),
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal("Hello, Ada!", greeting.Text);
+        Assert.Equal(1.08m, quote.Value);
+        Assert.Equal(
+            [
+                "open-before:Greet",
+                "handler",
+                "open-after:Greet",
+                "open-before:LookupRate",
+                "open-after:LookupRate",
+            ],
+            calls
+        );
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Open_and_closed_behaviors_run_in_registration_order(bool openFirst)
+    {
+        var calls = new List<string>();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(calls);
+        var hostLoom = builder
+            .Services.AddHostLoom()
+            .UseInMemory()
+            .AddHandler<Greet, Greeting, GreetHandler>("greeter");
+        if (openFirst)
+        {
+            hostLoom
+                .AddOpenBehavior(typeof(RecordingOpenBehavior<,>))
+                .AddBehavior<Greet, Greeting, RecordingBehavior>();
+        }
+        else
+        {
+            hostLoom
+                .AddBehavior<Greet, Greeting, RecordingBehavior>()
+                .AddOpenBehavior(typeof(RecordingOpenBehavior<,>));
+        }
+
+        using var host = builder.Build();
+        await host.StartAsync(TestContext.Current.CancellationToken);
+        var client = host.Services.GetRequiredService<IRequestClient<Greet, Greeting>>();
+
+        await client.GetResponseAsync(
+            "greeter",
+            new Greet("Ada"),
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(
+            openFirst
+                ? ["open-before:Greet", "before", "handler", "after", "open-after:Greet"]
+                : ["before", "open-before:Greet", "handler", "open-after:Greet", "after"],
+            calls
+        );
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task An_incompatible_open_behavior_fails_before_the_handler_runs(
+        bool behaviorFirst
+    )
+    {
+        var calls = new List<string>();
+        var rates = Substitute.For<IRequestHandler<LookupRate, RateQuote>>();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(calls);
+        var hostLoom = builder.Services.AddHostLoom().UseInMemory();
+        if (behaviorFirst)
+        {
+            hostLoom.AddOpenBehavior(typeof(ValidatedBehavior<,>));
+        }
+
+        hostLoom
+            .AddHandler<Greet, Greeting, GreetHandler>("greeter")
+            .AddHandler<LookupRate, RateQuote, LookupRateHandler>("rates");
+        if (!behaviorFirst)
+        {
+            hostLoom.AddOpenBehavior(typeof(ValidatedBehavior<,>));
+        }
+        builder.Services.AddScoped<IRequestHandler<LookupRate, RateQuote>>(_ => rates);
+
+        using var host = builder.Build();
+        await host.StartAsync(TestContext.Current.CancellationToken);
+        var greeter = host.Services.GetRequiredService<IRequestClient<Greet, Greeting>>();
+        var greeting = await greeter.GetResponseAsync(
+            "greeter",
+            new Greet("Ada"),
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        Assert.Equal("Hello, Ada!", greeting.Text);
+        Assert.Equal(["validated", "handler"], calls);
+
+        var client = host.Services.GetRequiredService<IRequestClient<LookupRate, RateQuote>>();
+        var exception = await Assert.ThrowsAsync<RemoteRequestException>(async () =>
+            await client.GetResponseAsync(
+                "rates",
+                new LookupRate("EUR/USD"),
+                cancellationToken: TestContext.Current.CancellationToken
+            )
+        );
+        Assert.Equal("HandlerFault", exception.ErrorType);
+        _ = rates.DidNotReceive().HandleAsync(Arg.Any<LookupRate>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void AddOpenBehavior_rejects_closed_or_unrelated_types()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        var hostLoom = builder.Services.AddHostLoom();
+
+        Assert.Throws<ArgumentException>(() => hostLoom.AddOpenBehavior(typeof(RecordingBehavior)));
+        Assert.Throws<ArgumentException>(() => hostLoom.AddOpenBehavior(typeof(string)));
+        Assert.Throws<ArgumentException>(() =>
+            hostLoom.AddOpenBehavior(typeof(AbstractBehavior<,>))
+        );
+        Assert.Throws<ArgumentException>(() =>
+            hostLoom.AddOpenBehavior(typeof(SingleTypeBehavior<>))
+        );
+        Assert.Throws<ArgumentNullException>(() => hostLoom.AddOpenBehavior(null!));
+    }
+
+    public interface IValidatedRequest;
+
+    public sealed record Greet(string Name) : IRequest<Greeting>, IValidatedRequest;
 
     public sealed record Greeting(string Text);
 
     public sealed record Fail : IRequest<Never>;
 
     public sealed record Never;
+
+    public sealed record LookupRate(string Pair) : IRequest<RateQuote>;
+
+    public sealed record RateQuote(decimal Value);
+
+    public abstract class AbstractBehavior<TRequest, TResponse>
+        : IRequestBehavior<TRequest, TResponse>
+        where TRequest : IRequest<TResponse>
+    {
+        public abstract ValueTask<TResponse> HandleAsync(
+            TRequest request,
+            RequestHandlerDelegate<TResponse> next,
+            CancellationToken cancellationToken
+        );
+    }
+
+    public sealed class SingleTypeBehavior<TRequest> : IRequestBehavior<TRequest, Greeting>
+        where TRequest : IRequest<Greeting>
+    {
+        public ValueTask<Greeting> HandleAsync(
+            TRequest request,
+            RequestHandlerDelegate<Greeting> next,
+            CancellationToken cancellationToken
+        ) => next(cancellationToken);
+    }
+
+    public sealed class ValidatedBehavior<TRequest, TResponse>(List<string> calls)
+        : IRequestBehavior<TRequest, TResponse>
+        where TRequest : class, IRequest<TResponse>, IValidatedRequest
+    {
+        public ValueTask<TResponse> HandleAsync(
+            TRequest request,
+            RequestHandlerDelegate<TResponse> next,
+            CancellationToken cancellationToken
+        )
+        {
+            calls.Add("validated");
+            return next(cancellationToken);
+        }
+    }
+
+    public sealed class LookupRateHandler : IRequestHandler<LookupRate, RateQuote>
+    {
+        public ValueTask<RateQuote> HandleAsync(
+            LookupRate request,
+            CancellationToken cancellationToken
+        ) => ValueTask.FromResult(new RateQuote(1.08m));
+    }
+
+    public sealed class RecordingOpenBehavior<TRequest, TResponse>(List<string> calls)
+        : IRequestBehavior<TRequest, TResponse>
+        where TRequest : class, IRequest<TResponse>
+    {
+        public async ValueTask<TResponse> HandleAsync(
+            TRequest request,
+            RequestHandlerDelegate<TResponse> next,
+            CancellationToken cancellationToken
+        )
+        {
+            calls.Add($"open-before:{typeof(TRequest).Name}");
+            var response = await next(cancellationToken);
+            calls.Add($"open-after:{typeof(TRequest).Name}");
+            return response;
+        }
+    }
 
     public sealed class GreetHandler(List<string> calls) : IRequestHandler<Greet, Greeting>
     {
