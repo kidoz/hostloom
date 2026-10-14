@@ -39,10 +39,11 @@ covers the cache and lock contracts, whose members all return `ValueTask`.
 
 ### HLM0003
 
-Register implementations of `IRequestHandler<,>`, `IEventHandler<>`, and `IRequestBehavior<,>` as
-scoped services. HostLoom creates a dependency-injection scope per delivery; a singleton handler or
-behavior can share mutable state between deliveries or capture scoped dependencies. `AddHandler`,
-`AddSubscriber`, and `AddBehavior` already apply the correct scoped lifetime.
+Register implementations of `IRequestHandler<,>`, `IStreamRequestHandler<,>`, `IEventHandler<>`,
+and `IRequestBehavior<,>` as scoped services. HostLoom creates a dependency-injection scope per
+delivery; a singleton handler or behavior can share mutable state between deliveries or capture
+scoped dependencies. `AddHandler`, `AddStreamHandler`, `AddSubscriber`, and `AddBehavior` already
+apply the correct scoped lifetime.
 
 ### HLM0004
 

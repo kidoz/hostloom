@@ -181,11 +181,16 @@ internal static class AnalyzerSymbolHelpers
         }
 
         string metadataName = namedType.OriginalDefinition.MetadataName;
-        return string.Equals(
-                namedType.ContainingNamespace?.ToDisplayString(),
-                "System.Threading.Tasks",
-                StringComparison.Ordinal
-            )
+        string? ns = namedType.ContainingNamespace?.ToDisplayString();
+        if (
+            string.Equals(ns, "System.Collections.Generic", StringComparison.Ordinal)
+            && string.Equals(metadataName, "IAsyncEnumerable`1", StringComparison.Ordinal)
+        )
+        {
+            return true;
+        }
+
+        return string.Equals(ns, "System.Threading.Tasks", StringComparison.Ordinal)
             && (
                 string.Equals(metadataName, "Task", StringComparison.Ordinal)
                 || string.Equals(metadataName, "Task`1", StringComparison.Ordinal)
@@ -232,6 +237,11 @@ internal static class AnalyzerSymbolHelpers
         }
 
         return string.Equals(definition.MetadataName, "IRequestHandler`2", StringComparison.Ordinal)
+            || string.Equals(
+                definition.MetadataName,
+                "IStreamRequestHandler`2",
+                StringComparison.Ordinal
+            )
             || string.Equals(definition.MetadataName, "IEventHandler`1", StringComparison.Ordinal)
             || string.Equals(
                 definition.MetadataName,

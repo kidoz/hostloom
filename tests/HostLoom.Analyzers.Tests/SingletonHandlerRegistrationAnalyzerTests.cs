@@ -21,13 +21,14 @@ public sealed class SingletonHandlerRegistrationAnalyzerTests
                         services.AddSingleton<GreetingHandler>();
                         services.TryAddSingleton<AuditHandler>();
                         services.AddKeyedSingleton<GreetingBehavior>("greetings");
+                        services.AddSingleton<CatalogPagesHandler>();
                     }
                 }
                 """,
             new SingletonHandlerRegistrationAnalyzer()
         );
 
-        Assert.Equal(3, diagnostics.Length);
+        Assert.Equal(4, diagnostics.Length);
         Assert.All(
             diagnostics,
             diagnostic =>
@@ -52,6 +53,7 @@ public sealed class SingletonHandlerRegistrationAnalyzerTests
                         services.AddScoped<GreetingHandler>();
                         services.AddScoped<AuditHandler>();
                         services.AddScoped<GreetingBehavior>();
+                        services.AddScoped<CatalogPagesHandler>();
                         services.AddSingleton<ThreadSafeCache>();
                     }
                 }
@@ -65,6 +67,7 @@ public sealed class SingletonHandlerRegistrationAnalyzerTests
     }
 
     private const string Contracts = """
+        using System.Collections.Generic;
         using System.Threading;
         using System.Threading.Tasks;
         using HostLoom;
@@ -88,6 +91,19 @@ public sealed class SingletonHandlerRegistrationAnalyzerTests
             public ValueTask HandleAsync(
                 AuditEvent @event,
                 CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        }
+
+        internal sealed record CatalogPages(string Region) : IStreamRequest<string>;
+
+        internal sealed class CatalogPagesHandler : IStreamRequestHandler<CatalogPages, string>
+        {
+            public async IAsyncEnumerable<string> HandleAsync(
+                CatalogPages request,
+                CancellationToken cancellationToken)
+            {
+                yield return "books";
+                await Task.CompletedTask;
+            }
         }
 
         internal sealed class GreetingBehavior : IRequestBehavior<GreetingRequest, GreetingResponse>

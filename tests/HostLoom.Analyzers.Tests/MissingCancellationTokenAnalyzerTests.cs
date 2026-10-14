@@ -42,6 +42,44 @@ public sealed class MissingCancellationTokenAnalyzerTests
     }
 
     [Fact]
+    public async Task Reports_an_omitted_stream_cancellation_token()
+    {
+        Diagnostic diagnostic = Assert.Single(
+            await AnalyzerTestHarness.AnalyzeAsync(
+                ConsumerContracts
+                    + """
+
+                    internal static class Consumer
+                    {
+                        public static async Task ReadAsync(
+                            IStreamRequestClient<CatalogPages, string> client,
+                            CancellationToken stoppingToken)
+                        {
+                            await foreach (
+                                var page in client.StreamAsync("catalog", new CatalogPages("eu"))
+                            )
+                            {
+                                _ = page;
+                            }
+                        }
+                    }
+                    """,
+                new MissingCancellationTokenAnalyzer()
+            )
+        );
+
+        Assert.Equal(
+            HostLoomDiagnosticDescriptors.MissingCancellationTokenDiagnosticId,
+            diagnostic.Id
+        );
+        Assert.Contains(
+            "StreamAsync",
+            diagnostic.GetMessage(CultureInfo.InvariantCulture),
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
     public async Task Recognizes_a_pipeline_context_cancellation_token()
     {
         Diagnostic diagnostic = Assert.Single(
@@ -177,6 +215,7 @@ public sealed class MissingCancellationTokenAnalyzerTests
 
     private const string ConsumerContracts = """
         using System;
+        using System.Collections.Generic;
         using System.Threading;
         using System.Threading.Tasks;
         using HostLoom;
@@ -185,5 +224,6 @@ public sealed class MissingCancellationTokenAnalyzerTests
         internal sealed record GreetingResponse(string Text);
         internal sealed record GreetingRequest : IRequest<GreetingResponse>;
         internal sealed record GreetingEvent : IEvent;
+        internal sealed record CatalogPages(string Region) : IStreamRequest<string>;
         """;
 }

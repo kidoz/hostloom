@@ -52,7 +52,7 @@ public static class HostLoomDiagnosticDescriptors
         "Usage",
         DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
-        description: "HostLoom creates one dependency-injection scope per delivery and registers request handlers, event handlers, and behaviors as scoped services. Singleton registrations can share mutable state between deliveries or capture scoped dependencies.",
+        description: "HostLoom creates one dependency-injection scope per delivery and registers request handlers, stream handlers, event handlers, and behaviors as scoped services. Singleton registrations can share mutable state between deliveries or capture scoped dependencies.",
         helpLinkUri: "https://github.com/kidoz/hostloom/tree/main/src/HostLoom.Analyzers#hlm0003"
     );
 
