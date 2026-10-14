@@ -18,6 +18,9 @@ A transport package is also required — see the
 | `IRequestHandler<in TRequest, TResponse>` | `ValueTask<TResponse> HandleAsync(TRequest request, CancellationToken cancellationToken)` |
 | `IRequestBehavior<in TRequest, TResponse>` | `ValueTask<TResponse> HandleAsync(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken cancellationToken)` |
 | `IRequestClient<in TRequest, TResponse>` | `ValueTask<TResponse> GetResponseAsync(RequestAddress destination, TRequest request, TimeSpan? timeout = null, CancellationToken cancellationToken = default)` |
+| `IStreamRequest<out TItem>` | marker; a sequence of items, delivered in process |
+| `IStreamRequestHandler<in TRequest, TItem>` | `IAsyncEnumerable<TItem> HandleAsync(TRequest request, CancellationToken cancellationToken)` |
+| `IStreamRequestClient<in TRequest, TItem>` | `IAsyncEnumerable<TItem> StreamAsync(RequestAddress destination, TRequest request, TimeSpan? timeout = null, CancellationToken cancellationToken = default)` |
 | `IEvent` | marker |
 | `IEventHandler<in TEvent>` | `ValueTask HandleAsync(TEvent @event, CancellationToken cancellationToken)` |
 | `IPublishEndpoint` | `ValueTask PublishAsync<TEvent>(RequestAddress topic, TEvent @event, CancellationToken cancellationToken = default) where TEvent : class, IEvent` |
@@ -36,6 +39,8 @@ returns a `HostLoomBuilder`:
 | Method | Effect and lifetimes |
 | --- | --- |
 | `AddHandler<TRequest, TResponse, THandler>(RequestAddress endpoint)` | handler **scoped**; makes `IRequestClient<TRequest, TResponse>` resolvable (**transient**) |
+| `AddStreamHandler<TRequest, TItem, THandler>(RequestAddress endpoint)` | stream handler **scoped**, one scope per enumeration; makes `IStreamRequestClient<TRequest, TItem>` resolvable (**transient**) |
+| `AddStreamClient<TRequest, TItem>()` | stream client **transient**; for an application that does not host the handler |
 | `AddSubscriber<TEvent, THandler>(RequestAddress topic, string subscription = "default")` | handler **scoped** |
 | `AddBehavior<TRequest, TResponse, TBehavior>()` | behavior **scoped**; additive — multiple behaviors run for one request |
 | `AddRequestClient<TRequest, TResponse>()` | client **transient**; for applications with no local handler |
@@ -55,7 +60,7 @@ singletons defeats that isolation — the `HLM0003`
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `RequestTimeout` | 30 seconds | How long a client waits for a reply before failing; overridable per call via `GetResponseAsync`'s `timeout` parameter |
+| `RequestTimeout` | 30 seconds | How long a client waits for a reply before failing; overridable per call via `GetResponseAsync`'s `timeout` parameter. For a stream it bounds only the wait for a listener to accept, not the gaps between items |
 | `IncludeFaultDetails` | `false` | Forward every handler exception's type name and message in the fault envelope. Off, a caller sees `HandlerFault` / "The request handler failed." for everything except a `RemoteFaultException`; the full exception is logged on the handling side either way |
 
 ## Exceptions
@@ -67,7 +72,7 @@ singletons defeats that isolation — the `HLM0003`
 | `RequestTimeoutException` (`: TimeoutException`) | no reply within the timeout | `RequestAddress Address`, `TimeSpan Timeout` |
 | `MessagingTransportException` | the transport could not carry a request or event: the broker refused or lost the connection, rejected the publication, or its client library failed; whether the broker accepted the message is unknown, so a retry can deliver twice | `RequestAddress Address`; the client library's exception as `InnerException` |
 | `MalformedEnvelopeException` | an envelope cannot be decoded, has no message id, has an unusable correlation id, or lacks a name or fault field its kind requires ([validation](wire-envelope.md#identifier-and-name-validation)) | message only |
-| `NotSupportedException` | publishing through a transport without `IEventBroker` | — |
+| `NotSupportedException` | publishing through a transport without `IEventBroker`, or streaming through a transport without `IStreamRequestBroker`; a registered stream endpoint also fails host startup | — |
 
 ## Serialization boundary
 
@@ -83,6 +88,51 @@ object? Deserialize(ReadOnlySpan<byte> payload, Type type);
 The default is `SystemTextJsonMessageSerializer`, registered with
 `TryAddSingleton` — register your own `IMessageSerializer` before
 `AddHostLoom` to replace it.
+
+## Streams
+
+`IStreamRequest<TItem>` is a request whose handler yields items instead of returning one
+response. `AddStreamHandler` registers the handler on an endpoint. `StreamAsync` reads them.
+The in-memory transport is the only one that delivers a stream. RabbitMQ and Kafka do not:
+registering a stream endpoint fails host startup, and calling `StreamAsync` throws
+`NotSupportedException` before it waits.
+
+A stream does not use a wire envelope. The handler receives the caller's request instance and
+the caller receives the instances the handler yields. Request behaviors and the receive
+pipeline do not wrap it, because those complete one delivery and a stream completes when the
+caller finishes reading. The handler is still resolved from a dependency-injection scope, and
+that scope stays alive until the enumeration ends, then disposes.
+
+The timeout covers the wait for a listener, including an address with none
+(`RequestTimeoutException` on the transport's clock). It does not limit the time between
+items. Cancelling the token passed to `StreamAsync`, or the token on the enumerating loop,
+cancels the handler. An exception thrown by the handler reaches the caller unchanged.
+Stopping the listener or disposing the transport ends an open stream with
+`ObjectDisposedException`.
+
+A message type is registered once. The same contract cannot be both an `IRequest<TResponse>`
+handler and a stream handler.
+
+```csharp
+public sealed record ListCatalog(string Region) : IStreamRequest<string>;
+
+builder.Services
+    .AddHostLoom()
+    .UseInMemory()
+    .AddStreamHandler<ListCatalog, string, ListCatalogHandler>("catalog");
+
+var client = host.Services.GetRequiredService<IStreamRequestClient<ListCatalog, string>>();
+await foreach (
+    var category in client.StreamAsync(
+        "catalog",
+        new ListCatalog("eu"),
+        cancellationToken: stoppingToken
+    )
+)
+{
+    // the handler's items, in yield order
+}
+```
 
 ## Receive context
 

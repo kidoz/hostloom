@@ -30,7 +30,8 @@ implements:
 - lease-based leader election over the distributed lock, one elector per role
   with a leadership token, leader-only schedules, and a leader-gated channel;
 - typed `IRequest<TResponse>` contracts with handler, behavior, and client
-  abstractions;
+  abstractions, and in-process `IStreamRequest<TItem>` streams on the in-memory
+  transport;
 - typed `IEvent` contracts published to a topic and fanned out to named
   subscriptions;
 - a configurable receive pipeline wrapping handler execution on every transport;
@@ -86,7 +87,7 @@ packages are versioned together:
 | `HostLoom.Pipelines` | Transport-neutral asynchronous pipelines |
 | `HostLoom.Pipelines.DependencyInjection` | Named stages, per-run resolution, and instrumentation |
 | `HostLoom.Pipelines.Testing` | Deterministic pipeline test doubles and harnesses |
-| `HostLoom.Transport.InMemory` | In-process request and event transport |
+| `HostLoom.Transport.InMemory` | In-process request, stream, and event transport |
 | `HostLoom.Transport.RabbitMq` | RabbitMQ request and fan-out event transport |
 | `HostLoom.Transport.Kafka` | Kafka request and consumer-group event transport |
 | `HostLoom.AspNetCore.WebSockets` | Authenticated WebSocket RPC and subscriptions |

@@ -44,10 +44,13 @@ contracts, and the runtime is free to change shape underneath them.
 
 The transport SPI is equally small: a transport is an `IRequestBroker`
 (listen and request over byte frames), optionally an `IEventBroker`
-(publish/subscribe), and optionally an `IBrokerHealthProbe`. Everything a
-transport does not implement is an explicit, early failure rather than a
-silent degradation — publishing through a transport without pub/sub
-throws, and registering a subscription against one fails at startup.
+(publish/subscribe), optionally an `IStreamRequestBroker` (in-process item
+sequences, with no reply envelope), and optionally an `IBrokerHealthProbe`.
+Everything a transport does not implement is an explicit, early failure
+rather than a silent degradation — publishing through a transport without
+pub/sub throws, registering a subscription against one fails at startup,
+and a stream endpoint or `StreamAsync` call on a transport without
+streaming fails the same way.
 
 ## Scoped by delivery attempt
 

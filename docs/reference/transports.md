@@ -66,11 +66,14 @@ Rationale for the differences: [transport semantics](../explanation/transports.m
 | Capability | Contract | In-memory | RabbitMQ | Kafka |
 | --- | --- | --- | --- | --- |
 | Request/response | `IRequestBroker` | yes | yes | yes |
+| In-process stream | `IStreamRequestBroker` | yes | no | no |
 | Publish/subscribe | `IEventBroker` | yes | yes | yes |
 | Broker health probe | `IBrokerHealthProbe` | local state | not yet | local startup state |
 
 A transport without `IEventBroker` rejects publishing (throws) and fails
-subscription registration at startup. A transport without
+subscription registration at startup. A transport without `IStreamRequestBroker`
+rejects `StreamAsync` before it waits and fails host startup when a stream
+endpoint is registered. A transport without
 `IBrokerHealthProbe` is treated as reachable by the readiness check —
 RabbitMQ therefore cannot currently report a broker outage through this contract. Kafka
 reports reply-consumer initialization failure and pending assignment; its probe does not
@@ -101,6 +104,9 @@ this table: it fails host startup with the client library's own exception.
 | Situation | Caller sees |
 | --- | --- |
 | Request to an address with no listener | `RequestTimeoutException` once the whole timeout has passed on the registered `TimeProvider` |
+| Stream to an address with no listener | `RequestTimeoutException` once that same timeout has passed. The timeout does not bound the gaps between items after a listener accepts |
+| The stream listener stops, or the transport is disposed, while the caller is reading | `ObjectDisposedException`. The handler's token is cancelled |
+| The stream handler throws | That exception, unchanged. Items are not encoded, so there is no fault envelope |
 | The listener stops while its handler is running | `RequestTimeoutException` once the whole timeout has passed; the handler's token is cancelled and no reply comes |
 | The listener's frame handler throws, which the HostLoom dispatcher does only for a malformed frame | That exception, unchanged: nothing sits between the two |
 | The transport is disposed while a request waits, bound or not | `ObjectDisposedException` at once |

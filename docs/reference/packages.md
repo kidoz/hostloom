@@ -11,7 +11,7 @@ recorded in `CHANGELOG.md`.
 | `HostLoom.Pipelines` | Transport-neutral asynchronous pipelines |
 | `HostLoom.Pipelines.DependencyInjection` | Named stages, per-run resolution, and instrumentation |
 | `HostLoom.Pipelines.Testing` | Deterministic pipeline test doubles and harnesses |
-| `HostLoom.Transport.InMemory` | In-process request and event transport |
+| `HostLoom.Transport.InMemory` | In-process request, stream, and event transport |
 | `HostLoom.Transport.RabbitMq` | RabbitMQ request and fan-out event transport |
 | `HostLoom.Transport.Kafka` | Kafka request and consumer-group event transport |
 | `HostLoom.AspNetCore.WebSockets` | Authenticated WebSocket RPC and subscriptions |
