@@ -42,6 +42,42 @@ public sealed class HostLoomBuilder
     }
 
     /// <summary>
+    /// Registers <typeparamref name="THandler"/> for <typeparamref name="TRequest"/> on
+    /// <paramref name="endpoint"/>. The handler is scoped, one scope per enumeration, and
+    /// <see cref="IStreamRequestClient{TRequest, TItem}"/> becomes resolvable.
+    /// </summary>
+    /// <remarks>
+    /// The stream does not pass through the receive pipeline or request behaviors. Those wrap
+    /// one completion per delivery, and a stream completes when the caller finishes reading.
+    /// A transport that does not implement <see cref="IStreamRequestBroker"/> fails host startup
+    /// when any stream endpoint is registered, and a client call fails before it waits.
+    /// </remarks>
+    public HostLoomBuilder AddStreamHandler<TRequest, TItem, THandler>(RequestAddress endpoint)
+        where TRequest : class, IStreamRequest<TItem>
+        where THandler : class, IStreamRequestHandler<TRequest, TItem>
+    {
+        Configuration.AddStreamHandler(
+            new StreamHandlerRegistration(
+                MessageTypeName.For<TRequest>(),
+                typeof(TRequest),
+                typeof(TItem),
+                typeof(StreamExecutor<TRequest, TItem>)
+            ),
+            endpoint
+        );
+
+        Services.AddScoped<IStreamRequestHandler<TRequest, TItem>, THandler>();
+        Services.AddScoped(provider => new StreamExecutor<TRequest, TItem>(
+            provider.GetRequiredService<IStreamRequestHandler<TRequest, TItem>>()
+        ));
+        Services.TryAddTransient<
+            IStreamRequestClient<TRequest, TItem>,
+            StreamRequestClient<TRequest, TItem>
+        >();
+        return this;
+    }
+
+    /// <summary>
     /// Subscribes <typeparamref name="THandler"/> to <typeparamref name="TEvent"/> on
     /// <paramref name="topic"/>. Subscriptions are named: two names on one topic each receive every
     /// event, while two handlers under one name share a delivery and a scope.
@@ -85,6 +121,20 @@ public sealed class HostLoomBuilder
         Services.TryAddTransient<
             IRequestClient<TRequest, TResponse>,
             RequestClient<TRequest, TResponse>
+        >();
+        return this;
+    }
+
+    /// <summary>
+    /// Makes <see cref="IStreamRequestClient{TRequest, TItem}"/> resolvable for an application
+    /// that sends the stream and does not host its handler.
+    /// </summary>
+    public HostLoomBuilder AddStreamClient<TRequest, TItem>()
+        where TRequest : class, IStreamRequest<TItem>
+    {
+        Services.TryAddTransient<
+            IStreamRequestClient<TRequest, TItem>,
+            StreamRequestClient<TRequest, TItem>
         >();
         return this;
     }

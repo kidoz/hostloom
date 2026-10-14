@@ -10,6 +10,10 @@ internal sealed class HostLoomConfiguration
         Dictionary<string, HandlerRegistration>
     > _endpoints = [];
     private readonly Dictionary<
+        RequestAddress,
+        Dictionary<string, StreamHandlerRegistration>
+    > _streams = [];
+    private readonly Dictionary<
         TopicSubscription,
         Dictionary<string, SubscriberRegistration>
     > _subscriptions = [];
@@ -18,6 +22,9 @@ internal sealed class HostLoomConfiguration
     private bool _outbox;
 
     public IReadOnlyCollection<RequestAddress> Endpoints => _endpoints.Keys;
+
+    /// <summary>Endpoints that registered at least one stream handler.</summary>
+    public IReadOnlyCollection<RequestAddress> StreamEndpoints => _streams.Keys;
 
     /// <summary>
     /// Records the one inbox registration. A second would append another filter over the same
@@ -91,6 +98,28 @@ internal sealed class HostLoomConfiguration
         handlers.Add(registration.MessageType, registration);
     }
 
+    /// <summary>
+    /// Records one stream handler. A message type already registered as a request or a stream
+    /// is rejected: both are looked up by the same logical name, and one type cannot be both.
+    /// </summary>
+    public void AddStreamHandler(StreamHandlerRegistration registration, RequestAddress endpoint)
+    {
+        if (!_messageTypes.Add(registration.MessageType))
+        {
+            throw new InvalidOperationException(
+                $"A handler for '{registration.MessageType}' is already registered."
+            );
+        }
+
+        if (!_streams.TryGetValue(endpoint, out var handlers))
+        {
+            handlers = new Dictionary<string, StreamHandlerRegistration>(StringComparer.Ordinal);
+            _streams[endpoint] = handlers;
+        }
+
+        handlers.Add(registration.MessageType, registration);
+    }
+
     /// <summary>Every (topic, subscription) pair that must be attached at startup.</summary>
     public IReadOnlyCollection<TopicSubscription> Subscriptions => _subscriptions.Keys;
 
@@ -151,12 +180,31 @@ internal sealed class HostLoomConfiguration
         return _endpoints.TryGetValue(endpoint, out var handlers)
             && handlers.TryGetValue(messageType, out registration);
     }
+
+    /// <summary>Resolves a stream handler on the endpoint that accepted the stream.</summary>
+    public bool TryGetStreamHandler(
+        RequestAddress endpoint,
+        string messageType,
+        [NotNullWhen(true)] out StreamHandlerRegistration? registration
+    )
+    {
+        registration = null;
+        return _streams.TryGetValue(endpoint, out var handlers)
+            && handlers.TryGetValue(messageType, out registration);
+    }
 }
 
 internal sealed record HandlerRegistration(
     string MessageType,
     Type RequestType,
     Type ResponseType,
+    Type ExecutorType
+);
+
+internal sealed record StreamHandlerRegistration(
+    string MessageType,
+    Type RequestType,
+    Type ItemType,
     Type ExecutorType
 );
 

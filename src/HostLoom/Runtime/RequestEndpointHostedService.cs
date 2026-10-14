@@ -20,7 +20,11 @@ internal sealed class RequestEndpointHostedService(
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        if (configuration.Endpoints.Count == 0 && configuration.Subscriptions.Count == 0)
+        if (
+            configuration.Endpoints.Count == 0
+            && configuration.StreamEndpoints.Count == 0
+            && configuration.Subscriptions.Count == 0
+        )
         {
             return;
         }
@@ -40,6 +44,31 @@ internal sealed class RequestEndpointHostedService(
                     )
                     .ConfigureAwait(false);
                 _subscriptions.Add(subscription);
+            }
+
+            if (configuration.StreamEndpoints.Count > 0)
+            {
+                if (broker is not IStreamRequestBroker streams)
+                {
+                    throw new NotSupportedException(
+                        $"The configured transport '{broker.GetType().Name}' does not stream, "
+                            + $"but {configuration.StreamEndpoints.Count} stream endpoint(s) are registered. "
+                            + "IStreamRequest is delivered only by an in-process transport."
+                    );
+                }
+
+                foreach (var endpoint in configuration.StreamEndpoints)
+                {
+                    var address = endpoint;
+                    var subscription = await streams
+                        .ListenAsync(
+                            address,
+                            (request, token) => dispatcher.DispatchStream(address, request, token),
+                            cancellationToken
+                        )
+                        .ConfigureAwait(false);
+                    _subscriptions.Add(subscription);
+                }
             }
 
             if (configuration.Subscriptions.Count > 0)

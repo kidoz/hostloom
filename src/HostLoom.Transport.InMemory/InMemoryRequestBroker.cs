@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -14,9 +15,14 @@ namespace HostLoom.Transport.InMemory;
 /// <see cref="RequestTimeoutException"/>, as it would against a broker with no consumer. So does
 /// a request whose listener stops while its handler is running: the handler's token is
 /// cancelled, no reply will come, and the requester waits for its own timeout rather than
-/// seeing the listener's cancellation. An exception the listener's frame handler throws, which
+/// seeing the listener's cancellation. A stream with no listener times out the same way. A
+/// stream whose listener stops, or a stream still open when the transport is disposed, ends
+/// with <see cref="ObjectDisposedException"/> because the caller is already reading items and
+/// there is no later reply to time out. An exception the listener's frame handler throws, which
 /// the HostLoom dispatcher does only for a malformed frame, reaches the requester unchanged.
-/// Disposing the transport ends every waiting request with <see cref="ObjectDisposedException"/>.
+/// A stream handler's exception reaches the reader unchanged: the items never crossed a
+/// process boundary, so there is no fault envelope to sanitize. Disposing the transport ends
+/// every waiting request with <see cref="ObjectDisposedException"/>.
 /// </para>
 /// <para>
 /// Stopping a listener or subscription, and disposing the transport, cancel the handlers still
@@ -29,12 +35,20 @@ namespace HostLoom.Transport.InMemory;
 /// transport has been disposed.
 /// </para>
 /// </remarks>
-public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBrokerHealthProbe
+public sealed class InMemoryRequestBroker
+    : IRequestBroker,
+        IStreamRequestBroker,
+        IEventBroker,
+        IBrokerHealthProbe
 {
     /// <summary>How long stopping waits for the handlers it cancelled before it gives up on them.</summary>
     internal static readonly TimeSpan HandlerDrainBound = TimeSpan.FromSeconds(5);
 
     private readonly ConcurrentDictionary<RequestAddress, RequestSubscription> _handlers = new();
+    private readonly ConcurrentDictionary<RequestAddress, StreamSubscription> _streams = new();
+    private readonly ConcurrentDictionary<TaskCompletionSource, byte> _streamWaits = new(
+        ReferenceEqualityComparer.Instance
+    );
     private readonly ConcurrentDictionary<
         TaskCompletionSource<ReadOnlyMemory<byte>>,
         byte
@@ -108,6 +122,161 @@ public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBroke
             );
         }
         return subscription;
+    }
+
+    /// <inheritdoc />
+    public async ValueTask<IAsyncDisposable> ListenAsync(
+        RequestAddress address,
+        StreamRequestHandler handler,
+        CancellationToken cancellationToken
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(handler);
+        var subscription = new StreamSubscription(this, address, handler);
+        bool added;
+        lock (_lifecycleGate)
+            added = !_disposed && _streams.TryAdd(address, subscription);
+        if (!added)
+        {
+            await subscription.DisposeAsync().ConfigureAwait(false);
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            throw new InvalidOperationException(
+                $"The in-memory endpoint '{address}' already has a stream listener."
+            );
+        }
+
+        return subscription;
+    }
+
+    /// <inheritdoc />
+    public IAsyncEnumerable<object?> StreamAsync(
+        RequestAddress address,
+        object request,
+        TimeSpan timeout,
+        CancellationToken cancellationToken
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(request);
+        if (timeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(timeout),
+                "The request timeout must be positive."
+            );
+        }
+
+        return Read(cancellationToken);
+
+        // The compiler links this argument with the token passed to GetAsyncEnumerator.
+        async IAsyncEnumerable<object?> Read(
+            [EnumeratorCancellation] CancellationToken enumeratorToken = default
+        )
+        {
+            StreamSubscription? subscription;
+            bool entered;
+            lock (_lifecycleGate)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                entered =
+                    _streams.TryGetValue(address, out subscription) && subscription!.TryEnter();
+            }
+
+            if (!entered)
+            {
+                await ThrowWhenUnboundAsync(address, timeout, enumeratorToken)
+                    .ConfigureAwait(false);
+                yield break;
+            }
+
+            // The listener's token is not the caller's. Linking them makes a stop cancel the
+            // handler, and the catch below tells a caller cancellation from a listener stop.
+            using var delivery = CancellationTokenSource.CreateLinkedTokenSource(
+                enumeratorToken,
+                subscription!.Token
+            );
+            IAsyncEnumerator<object?>? enumerator = null;
+            try
+            {
+                var sequence = subscription.Handler(request, delivery.Token);
+                if (sequence is null)
+                {
+                    throw new InvalidOperationException(
+                        $"The stream listener on '{address}' returned no sequence."
+                    );
+                }
+
+                enumerator = sequence.GetAsyncEnumerator(delivery.Token);
+                while (true)
+                {
+                    bool more;
+                    try
+                    {
+                        more = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (delivery.Token.IsCancellationRequested)
+                    {
+                        if (enumeratorToken.IsCancellationRequested)
+                        {
+                            throw;
+                        }
+
+                        throw new ObjectDisposedException(nameof(InMemoryRequestBroker));
+                    }
+
+                    if (!more)
+                    {
+                        yield break;
+                    }
+
+                    yield return enumerator.Current;
+                }
+            }
+            finally
+            {
+                if (enumerator is not null)
+                {
+                    await enumerator.DisposeAsync().ConfigureAwait(false);
+                }
+
+                subscription!.Exit();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Waits out <paramref name="timeout"/> on the transport clock. Nothing completes the wait,
+    /// so it ends as a timeout, as a cancellation, or as disposal — the same three endings an
+    /// unbound request has.
+    /// </summary>
+    private async Task ThrowWhenUnboundAsync(
+        RequestAddress address,
+        TimeSpan timeout,
+        CancellationToken cancellationToken
+    )
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_lifecycleGate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _streamWaits.TryAdd(gate, 0);
+        }
+
+        try
+        {
+            await gate.Task.WaitAsync(timeout, _clock, cancellationToken).ConfigureAwait(false);
+        }
+        catch (TimeoutException exception)
+        {
+            throw new RequestTimeoutException(address, timeout, exception);
+        }
+        finally
+        {
+            _streamWaits.TryRemove(gate, out _);
+        }
     }
 
     public async ValueTask<IAsyncDisposable> SubscribeAsync(
@@ -283,6 +452,14 @@ public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBroke
                 _ = reply.Task.Exception;
             }
         }
+
+        foreach (var wait in _streamWaits.Keys)
+        {
+            if (wait.TrySetException(new ObjectDisposedException(nameof(InMemoryRequestBroker))))
+            {
+                _ = wait.Task.Exception;
+            }
+        }
         // Concurrently, so the handlers of every subscription share one drain bound.
         await Task.WhenAll(_open.Keys.Select(static subscription => subscription.StopAsync()))
             .ConfigureAwait(false);
@@ -427,6 +604,19 @@ public sealed class InMemoryRequestBroker : IRequestBroker, IEventBroker, IBroke
         public override string Name => $"listener on '{address}'";
 
         protected override void Remove() => Owner._handlers.TryRemove(new(address, this));
+    }
+
+    private sealed class StreamSubscription(
+        InMemoryRequestBroker owner,
+        RequestAddress address,
+        StreamRequestHandler handler
+    ) : Subscription(owner)
+    {
+        public StreamRequestHandler Handler { get; } = handler;
+
+        public override string Name => $"stream listener on '{address}'";
+
+        protected override void Remove() => Owner._streams.TryRemove(new(address, this));
     }
 
     private sealed class EventSubscription(

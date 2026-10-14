@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using HostLoom.Pipelines;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -39,6 +41,7 @@ internal sealed class MessageDispatcher
     private readonly HostLoomConfiguration _configuration;
     private readonly IMessageSerializer _serializer;
     private readonly ReceivePipeline _receivePipeline;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly bool _includeFaultDetails;
     private readonly ILogger<MessageDispatcher> _logger;
 
@@ -46,6 +49,7 @@ internal sealed class MessageDispatcher
         HostLoomConfiguration configuration,
         IMessageSerializer serializer,
         ReceivePipeline receivePipeline,
+        IServiceScopeFactory scopeFactory,
         IOptions<HostLoomOptions>? options = null,
         ILogger<MessageDispatcher>? logger = null
     )
@@ -53,6 +57,7 @@ internal sealed class MessageDispatcher
         _configuration = configuration;
         _serializer = serializer;
         _receivePipeline = receivePipeline;
+        _scopeFactory = scopeFactory;
         _includeFaultDetails = options?.Value.IncludeFaultDetails ?? false;
         _logger = logger ?? NullLogger<MessageDispatcher>.Instance;
     }
@@ -198,6 +203,100 @@ internal sealed class MessageDispatcher
                 Stopwatch.GetElapsedTime(start).TotalSeconds,
                 tags
             );
+        }
+    }
+
+    /// <summary>
+    /// Runs the stream handler for <paramref name="request"/> on <paramref name="endpoint"/>
+    /// inside one dependency-injection scope that lives until the caller finishes reading.
+    /// </summary>
+    /// <remarks>
+    /// The scope is per enumeration, not per item, so a handler can take scoped services and
+    /// use them for every item. The receive pipeline does not wrap the enumeration: a filter
+    /// completes one delivery, and a stream completes when the caller stops.
+    /// </remarks>
+    public IAsyncEnumerable<object?> DispatchStream(
+        RequestAddress endpoint,
+        object request,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var messageType = MessageTypeName.For(request.GetType());
+        if (!_configuration.TryGetStreamHandler(endpoint, messageType, out var registration))
+        {
+            throw new InvalidOperationException(
+                $"No stream handler is registered for '{messageType}' on endpoint '{endpoint}'."
+            );
+        }
+
+        return Enumerate(endpoint, registration, request, messageType, cancellationToken);
+    }
+
+    private async IAsyncEnumerable<object?> Enumerate(
+        RequestAddress endpoint,
+        StreamHandlerRegistration registration,
+        object request,
+        string messageType,
+        [EnumeratorCancellation] CancellationToken cancellationToken
+    )
+    {
+        using var activity = HostLoomDiagnostics.ActivitySource.StartActivity(
+            "hostloom handle stream"
+        );
+        activity?.SetTag("messaging.operation.type", "process");
+        activity?.SetTag("messaging.destination.name", endpoint.Value);
+        activity?.SetTag("messaging.message.type", messageType);
+
+        var scope = _scopeFactory.CreateAsyncScope();
+        try
+        {
+            var executor = (IStreamExecutor)
+                scope.ServiceProvider.GetRequiredService(registration.ExecutorType);
+            var enumerator = executor
+                .ExecuteAsync(request, cancellationToken)
+                .GetAsyncEnumerator(cancellationToken);
+            try
+            {
+                while (true)
+                {
+                    bool more;
+                    try
+                    {
+                        more = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
+                        _logger.LogError(
+                            exception,
+                            "Stream '{MessageType}' on endpoint '{Endpoint}' faulted.",
+                            messageType,
+                            endpoint.Value
+                        );
+                        throw;
+                    }
+
+                    if (!more)
+                    {
+                        yield break;
+                    }
+
+                    yield return enumerator.Current;
+                }
+            }
+            finally
+            {
+                await enumerator.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            await scope.DisposeAsync().ConfigureAwait(false);
         }
     }
 
