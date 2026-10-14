@@ -8,6 +8,22 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- `IStreamRequest<TItem>` is an in-process stream: `AddStreamHandler` registers one scoped
+  handler, `IStreamRequestClient.StreamAsync` yields its items, and each enumeration gets its
+  own dependency-injection scope. The in-memory transport delivers it. A broker transport fails
+  host startup when a stream endpoint is registered, and fails the client call before it waits.
+  Stream items are the handler's instances, not wire envelopes, and stream handlers do not run
+  inside the receive pipeline or request behaviors. The request timeout bounds only the wait
+  for a listener to accept the stream. Cancelling the caller cancels the handler. Stopping the
+  listener or disposing the transport ends an open stream with `ObjectDisposedException`.
+- `HostLoomBuilder.AddOpenBehavior(Type)` registers an open-generic request behavior (for
+  example `typeof(ValidationBehavior<,>)`) once, and the container closes it around every
+  request handler whose contract satisfies the behavior's generic constraints. Open and
+  closed behaviors run together in registration order. A behavior whose constraints reject a
+  request type fails that request's resolution instead of being skipped silently.
+
 ## [0.16.0] - 2026-10-14
 
 The seventeenth release of **HostLoom**. Its headline is a new package family — lease-based
