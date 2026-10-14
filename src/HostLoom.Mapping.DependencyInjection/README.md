@@ -19,6 +19,14 @@ creating one — with the same inference, explicit-triple, factory, and instance
 call registers exactly one contract, so a class that both creates and updates one pair goes
 through `Add` and `AddUpdate`; the two are distinct services and coexist.
 
+`Add` rejects a duplicate pair, which is what catches two maps fighting over one pair. Where a
+host composes several builders and one shared registration is reached more than once, use
+`TryAdd<TMapper>()`: a pair already registered by the same map class, and its lifetime, is left in
+place, while a different map class for that pair is still rejected. The same rule carries to the
+explicit-pair overload and to `TryAddUpdate`; the factory and instance overloads have no `TryAdd`
+counterpart, because a registration built from a runtime object cannot be recognized as the same
+map on a second call.
+
 Each `IMapper<TSource, TDestination>` is transient by default. The non-generic `IMapper`
 dispatcher is scoped and resolves closed map contracts from the current scope, so it must be
 resolved from a scope rather than the root provider and cannot be injected into a singleton —
