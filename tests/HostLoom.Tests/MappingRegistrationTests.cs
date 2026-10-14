@@ -118,6 +118,183 @@ public sealed class MappingRegistrationTests
         );
     }
 
+    // -- TryAdd: the tolerance a composed host needs ----------------------------------------------
+
+    [Fact]
+    public void TryAdd_registers_the_map_when_the_pair_is_absent()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(new Trim(true));
+        services.AddHostLoomMapping(mapping => mapping.TryAdd<LineMapper>());
+        using var provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true }
+        );
+        using var scope = provider.CreateScope();
+
+        var mapper = scope.ServiceProvider.GetRequiredService<IMapper<Line, LineDto>>();
+
+        Assert.Equal("a", mapper.Map(new Line(" a ", 1)).Sku);
+        Assert.Equal(
+            [new MappedTypePair(typeof(Line), typeof(LineDto))],
+            services.GetMappedPairs().Pairs
+        );
+        Assert.Single(
+            services,
+            descriptor =>
+                descriptor.IsKeyedService is false
+                && descriptor.ServiceType == typeof(IMapper<Line, LineDto>)
+        );
+    }
+
+    [Fact]
+    public void A_repeated_TryAdd_of_one_map_class_keeps_the_first_registration()
+    {
+        // The composed-builder case: two builders each pull in the same shared registration.
+        var services = new ServiceCollection();
+        services.AddSingleton(new Trim(true));
+        services.AddHostLoomMapping(mapping =>
+            mapping.TryAdd<LineMapper>(ServiceLifetime.Singleton)
+        );
+        services.AddHostLoomMapping(mapping => mapping.TryAdd<LineMapper>());
+        using var provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true }
+        );
+
+        var first = provider.GetRequiredService<IMapper<Line, LineDto>>();
+        var second = provider.GetRequiredService<IMapper<Line, LineDto>>();
+
+        // The first call's lifetime is the one that stands, so a second composition cannot
+        // silently demote a singleton, and the registry records the pair exactly once.
+        Assert.Same(first, second);
+        Assert.Equal("a", first.Map(new Line(" a ", 1)).Sku);
+        Assert.Single(
+            services,
+            descriptor =>
+                descriptor.IsKeyedService is false
+                && descriptor.ServiceType == typeof(IMapper<Line, LineDto>)
+        );
+        Assert.Equal(
+            [new MappedTypePair(typeof(Line), typeof(LineDto))],
+            services.GetMappedPairs().Pairs
+        );
+    }
+
+    [Fact]
+    public void TryAdd_after_Add_of_the_same_map_adds_nothing()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(new Trim(true));
+        services.AddHostLoomMapping(mapping => mapping.Add<LineMapper>().TryAdd<LineMapper>());
+        using var provider = services.BuildServiceProvider();
+
+        Assert.Equal(
+            "a",
+            provider.GetRequiredService<IMapper<Line, LineDto>>().Map(new Line(" a ", 1)).Sku
+        );
+        Assert.Single(
+            services,
+            descriptor =>
+                descriptor.IsKeyedService is false
+                && descriptor.ServiceType == typeof(IMapper<Line, LineDto>)
+        );
+    }
+
+    [Fact]
+    public void A_repeated_TryAdd_does_not_re_validate_a_lifetime_it_will_not_apply()
+    {
+        // The retained registration is authoritative: the second call is a no-op, not a
+        // validation of a request that will not take effect. A transient request against the
+        // existing singleton is therefore accepted, where a first registration would be refused.
+        var services = new ServiceCollection();
+        services.AddSingleton(new Trim(true));
+        services.AddHostLoomMapping(
+            mapping => mapping.Add<LineMapper>(ServiceLifetime.Singleton),
+            ServiceLifetime.Singleton
+        );
+
+        services.AddHostLoomMapping(mapping => mapping.TryAdd<LineMapper>());
+
+        Assert.Equal(
+            typeof(LineMapper),
+            Assert
+                .Single(
+                    services,
+                    descriptor =>
+                        descriptor.IsKeyedService is false
+                        && descriptor.ServiceType == typeof(IMapper<Line, LineDto>)
+                )
+                .ImplementationType
+        );
+    }
+
+    [Fact]
+    public void TryAdd_of_a_different_map_for_a_registered_pair_still_fails()
+    {
+        var services = new ServiceCollection();
+        services.AddHostLoomMapping(mapping => mapping.Add<Line, LineDto, TwoPairMapper>());
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            services.AddHostLoomMapping(mapping => mapping.TryAdd<LineMapper>())
+        );
+
+        Assert.Contains("already registered", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(
+            typeof(TwoPairMapper),
+            Assert
+                .Single(
+                    services,
+                    descriptor =>
+                        descriptor.IsKeyedService is false
+                        && descriptor.ServiceType == typeof(IMapper<Line, LineDto>)
+                )
+                .ImplementationType
+        );
+    }
+
+    [Fact]
+    public void TryAddUpdate_repeats_keep_the_first_registration()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(new Trim(true));
+        services.AddHostLoomMapping(mapping =>
+            mapping
+                .TryAddUpdate<LineUpdateMapper>(ServiceLifetime.Singleton)
+                .TryAddUpdate<LineUpdateMapper>()
+        );
+        using var provider = services.BuildServiceProvider();
+
+        var first = provider.GetRequiredService<IUpdateMapper<Line, LineDto>>();
+        var destination = new LineDto { Sku = "x", Quantity = 0 };
+
+        first.MapInto(new Line(" a ", 2), destination);
+
+        Assert.Same(first, provider.GetRequiredService<IUpdateMapper<Line, LineDto>>());
+        Assert.Equal("a", destination.Sku);
+        Assert.Single(
+            services,
+            descriptor =>
+                descriptor.IsKeyedService is false
+                && descriptor.ServiceType == typeof(IUpdateMapper<Line, LineDto>)
+        );
+        Assert.Equal(
+            [new MappedTypePair(typeof(Line), typeof(LineDto))],
+            services.GetMappedPairs().UpdatePairs
+        );
+    }
+
+    [Fact]
+    public void TryAddUpdate_of_a_different_map_for_a_registered_pair_still_fails()
+    {
+        var services = new ServiceCollection();
+        services.AddHostLoomMapping(mapping =>
+            mapping.AddUpdate<Line, LineDto, PassthroughLineUpdateMapper>()
+        );
+
+        Assert.Throws<InvalidOperationException>(() =>
+            services.AddHostLoomMapping(mapping => mapping.TryAddUpdate<LineUpdateMapper>())
+        );
+    }
+
     // -- Registry shape ---------------------------------------------------------------------------
 
     [Fact]
@@ -359,6 +536,15 @@ public sealed class MappingRegistrationTests
         public void MapInto(Line source, LineDto destination)
         {
             destination.Sku = trim.Enabled ? source.Sku.Trim() : source.Sku;
+            destination.Quantity = source.Quantity;
+        }
+    }
+
+    public sealed class PassthroughLineUpdateMapper : IUpdateMapper<Line, LineDto>
+    {
+        public void MapInto(Line source, LineDto destination)
+        {
+            destination.Sku = source.Sku;
             destination.Quantity = source.Quantity;
         }
     }

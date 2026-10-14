@@ -754,6 +754,7 @@ public sealed class MappingTests
         Action<MappingBuilder>[] registrations =
         [
             mapping => mapping.Add<StampedCustomerMapper>(mapLifetime),
+            mapping => mapping.TryAdd<StampedCustomerMapper>(mapLifetime),
             mapping =>
                 mapping.Add<Customer, StampedCustomerDto, StampedCustomerMapper>(mapLifetime),
             mapping =>

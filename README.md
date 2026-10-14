@@ -500,8 +500,11 @@ class.
 Inject `IMapper<Customer, CustomerDto>` into a component that needs one pair — that is the shape to
 reach for, and the fastest. Orchestration code coordinating several pairs can inject the scoped
 `IMapper` dispatcher and write `mapper.From(customer).To<CustomerDto>()`. Map classes are transient
-by default, duplicate pairs fail at registration, and a missing pair throws
-`MappingNotFoundException` naming both types and what the source *is* registered to map to.
+by default, and a missing pair throws `MappingNotFoundException` naming both types and what the
+source *is* registered to map to. Duplicate pairs fail at registration; `TryAdd<TMapper>()` — with
+an explicit-pair and a `TryAddUpdate` counterpart — is the tolerance a host needs when several
+builders compose one shared registration, leaving a pair already registered by the same map class,
+and its lifetime, in place while still rejecting a different map for the same pair.
 
 Sequences and null are extension methods whose names carry the policy — `MapMany` rejects a null
 source, `MapManyOrEmpty` treats it as empty, `MapOrNull` maps one value through null — so every

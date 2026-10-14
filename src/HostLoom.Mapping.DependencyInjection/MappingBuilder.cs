@@ -151,6 +151,82 @@ public sealed class MappingBuilder
     }
 
     /// <summary>
+    /// Registers <typeparamref name="TMapper"/> for the single type pair it already declares,
+    /// unless that same map is already registered.
+    /// </summary>
+    /// <remarks>
+    /// The same as <see cref="Add{TMapper}(ServiceLifetime)"/> except for the duplicate-pair rule,
+    /// relaxed exactly as far as composition needs. A host that composes several builders can
+    /// reach one shared registration more than once; the second call finds the pair registered by
+    /// this same map class, leaves it and its lifetime as the first call left them, and adds
+    /// nothing. A pair registered by any other implementation is still rejected, because the two
+    /// maps would disagree about one pair and the order the builders ran in is not a statement of
+    /// intent. There is no TryAdd counterpart for the factory and instance overloads: those
+    /// register a runtime object rather than a type, so a repeated one cannot be recognized as the
+    /// same map and the duplicate-pair rule stays in force there.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// <typeparamref name="TMapper"/> implements no closed
+    /// <see cref="IMapper{TSource, TDestination}"/>, implements more than one, or its pair is
+    /// already registered by a different implementation.
+    /// </exception>
+    public MappingBuilder TryAdd<
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicConstructors
+                | DynamicallyAccessedMemberTypes.Interfaces
+        )]
+            TMapper
+    >(ServiceLifetime lifetime = ServiceLifetime.Transient)
+        where TMapper : class
+    {
+        var serviceType =
+            CreationPair<TMapper>.ServiceType
+            ?? throw new InvalidOperationException(CreationPair<TMapper>.Diagnostic);
+        if (AlreadyRegisteredBy(serviceType, typeof(TMapper), MapKind.Creation))
+        {
+            return this;
+        }
+
+        EnsureLifetimeMatchesDispatcher(lifetime, typeof(TMapper).Name);
+        Services.Add(new ServiceDescriptor(serviceType, typeof(TMapper), lifetime));
+        _registry.Record(CreationPair<TMapper>.Source!, CreationPair<TMapper>.Destination!);
+        return this;
+    }
+
+    /// <summary>
+    /// Registers <typeparamref name="TMapper"/> for one type pair, unless that same map is already
+    /// registered; the duplicate-pair rule is
+    /// <see cref="TryAdd{TMapper}(ServiceLifetime)"/>'s.
+    /// </summary>
+    public MappingBuilder TryAdd<
+        TSource,
+        TDestination,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TMapper
+    >(ServiceLifetime lifetime = ServiceLifetime.Transient)
+        where TSource : notnull
+        where TDestination : notnull
+        where TMapper : class, IMapper<TSource, TDestination>
+    {
+        if (
+            AlreadyRegisteredBy(
+                typeof(IMapper<TSource, TDestination>),
+                typeof(TMapper),
+                MapKind.Creation
+            )
+        )
+        {
+            return this;
+        }
+
+        EnsureLifetimeMatchesDispatcher(lifetime, typeof(TMapper).Name);
+        Services.Add(
+            new ServiceDescriptor(typeof(IMapper<TSource, TDestination>), typeof(TMapper), lifetime)
+        );
+        _registry.Record(typeof(TSource), typeof(TDestination));
+        return this;
+    }
+
+    /// <summary>
     /// Registers <typeparamref name="TMapper"/> as the update map for the single pair it declares,
     /// inferred from the one closed <see cref="IUpdateMapper{TSource, TDestination}"/> it
     /// implements. Transient by default, like a creation map.
@@ -255,6 +331,78 @@ public sealed class MappingBuilder
         ArgumentNullException.ThrowIfNull(mapper);
         EnsureNotRegistered(typeof(IUpdateMapper<TSource, TDestination>), MapKind.Update);
         Services.AddSingleton(mapper);
+        _registry.RecordUpdate(typeof(TSource), typeof(TDestination));
+        return this;
+    }
+
+    /// <summary>
+    /// Registers <typeparamref name="TMapper"/> as the update map for the single pair it declares,
+    /// unless that same map is already registered.
+    /// </summary>
+    /// <remarks>
+    /// The creation and update contracts are registered independently, so a host composing several
+    /// builders can repeat one of them while the other is still absent; the rule is
+    /// <see cref="TryAdd{TMapper}(ServiceLifetime)"/>'s, applied to update maps.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// <typeparamref name="TMapper"/> implements no closed
+    /// <see cref="IUpdateMapper{TSource, TDestination}"/>, implements more than one, or its pair
+    /// already has an update map from a different implementation.
+    /// </exception>
+    public MappingBuilder TryAddUpdate<
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicConstructors
+                | DynamicallyAccessedMemberTypes.Interfaces
+        )]
+            TMapper
+    >(ServiceLifetime lifetime = ServiceLifetime.Transient)
+        where TMapper : class
+    {
+        var serviceType =
+            UpdatePair<TMapper>.ServiceType
+            ?? throw new InvalidOperationException(UpdatePair<TMapper>.Diagnostic);
+        if (AlreadyRegisteredBy(serviceType, typeof(TMapper), MapKind.Update))
+        {
+            return this;
+        }
+
+        Services.Add(new ServiceDescriptor(serviceType, typeof(TMapper), lifetime));
+        _registry.RecordUpdate(UpdatePair<TMapper>.Source!, UpdatePair<TMapper>.Destination!);
+        return this;
+    }
+
+    /// <summary>
+    /// Registers <typeparamref name="TMapper"/> as the update map for one explicit pair, unless
+    /// that same map is already registered; the duplicate-pair rule is
+    /// <see cref="TryAdd{TMapper}(ServiceLifetime)"/>'s.
+    /// </summary>
+    public MappingBuilder TryAddUpdate<
+        TSource,
+        TDestination,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TMapper
+    >(ServiceLifetime lifetime = ServiceLifetime.Transient)
+        where TSource : notnull
+        where TDestination : class
+        where TMapper : class, IUpdateMapper<TSource, TDestination>
+    {
+        if (
+            AlreadyRegisteredBy(
+                typeof(IUpdateMapper<TSource, TDestination>),
+                typeof(TMapper),
+                MapKind.Update
+            )
+        )
+        {
+            return this;
+        }
+
+        Services.Add(
+            new ServiceDescriptor(
+                typeof(IUpdateMapper<TSource, TDestination>),
+                typeof(TMapper),
+                lifetime
+            )
+        );
         _registry.RecordUpdate(typeof(TSource), typeof(TDestination));
         return this;
     }
@@ -439,7 +587,35 @@ public sealed class MappingBuilder
 
     private void EnsureNotRegistered(Type serviceType, MapKind kind)
     {
-        var registered = false;
+        if (FindRegistration(serviceType) is not null)
+        {
+            throw DuplicatePair(serviceType, kind);
+        }
+    }
+
+    /// <summary>
+    /// Answers both duplicate questions for a class-based registration in one scan: false to
+    /// register, true when this same map is already registered, and a throw when another
+    /// implementation owns the pair.
+    /// </summary>
+    private bool AlreadyRegisteredBy(Type serviceType, Type implementationType, MapKind kind)
+    {
+        var existing = FindRegistration(serviceType);
+        if (existing is null)
+        {
+            return false;
+        }
+
+        if (existing.ImplementationType == implementationType)
+        {
+            return true;
+        }
+
+        throw DuplicatePair(serviceType, kind);
+    }
+
+    private ServiceDescriptor? FindRegistration(Type serviceType)
+    {
         foreach (var service in Services)
         {
             // Keyed descriptors are skipped on purpose: the dispatcher resolves this pair
@@ -447,19 +623,20 @@ public sealed class MappingBuilder
             // would leave the pair unregisterable here and unresolvable at run time.
             if (service.IsKeyedService is false && service.ServiceType == serviceType)
             {
-                registered = true;
-                break;
+                return service;
             }
         }
 
-        if (registered)
-        {
-            var what = kind is MapKind.Update ? "An update mapping" : "A mapping";
-            throw new InvalidOperationException(
-                $"{what} from '{serviceType.GenericTypeArguments[0].FullName}' to "
-                    + $"'{serviceType.GenericTypeArguments[1].FullName}' is already registered. "
-                    + "Use a distinct destination type for a different semantic view."
-            );
-        }
+        return null;
+    }
+
+    private static InvalidOperationException DuplicatePair(Type serviceType, MapKind kind)
+    {
+        var what = kind is MapKind.Update ? "An update mapping" : "A mapping";
+        return new InvalidOperationException(
+            $"{what} from '{serviceType.GenericTypeArguments[0].FullName}' to "
+                + $"'{serviceType.GenericTypeArguments[1].FullName}' is already registered. "
+                + "Use a distinct destination type for a different semantic view."
+        );
     }
 }

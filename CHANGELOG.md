@@ -17,6 +17,11 @@ are derived from release tags at publish time.
   `HostLoom.NodeLeasing.DependencyInjection`, pools keyed by name with options validation and
   hosting; and `HostLoom.NodeLeasing.Testing`, the scripted `INodeLeasing` double.
 
+- `MappingBuilder.TryAdd<TMapper>` and `TryAdd<TSource, TDestination, TMapper>`, with
+  `TryAddUpdate` counterparts, for a registration a host may reach twice: a pair already
+  registered by the same map class is left in place — with its lifetime — while a different
+  implementation for the same pair is still rejected as a duplicate.
+
 ## [0.15.1] - 2026-10-12
 
 The sixteenth release of **HostLoom**. Nothing in it changes a signature an application
