@@ -23,7 +23,8 @@ public sealed class LeadershipBuilder
     /// Registers an elector for <paramref name="role"/>, resolved as <see cref="ILeadership"/> and
     /// <see cref="LeaderElector"/> keyed by the role, over the <c>IDistributedLock</c> registered
     /// by <c>AddHostLoomLocking</c>. The options are named by the role and validated when the host
-    /// starts, including <c>Leadership:Lease</c> against the lock's <c>Locking:MaxLease</c>. When
+    /// starts, including the resolved key against <c>Locking:MaxKeyLength</c> and
+    /// <c>Leadership:Lease</c> against the lock's <c>Locking:MaxLease</c>. When
     /// exactly one role is registered, the unkeyed <see cref="ILeadership"/> resolves it as well.
     /// </summary>
     /// <exception cref="InvalidOperationException">

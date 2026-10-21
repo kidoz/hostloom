@@ -1,7 +1,7 @@
 namespace HostLoom.Leadership;
 
 /// <summary>
-/// How one role is elected. <see cref="Validate"/> reports every violation with the option key it
+/// How one role is elected. <see cref="Validate()"/> reports every violation with the option key it
 /// names, so a container-free composition fails the same way a hosted one does.
 /// </summary>
 public sealed class LeadershipOptions
@@ -9,10 +9,26 @@ public sealed class LeadershipOptions
     /// <summary>
     /// The longest wait the elector can schedule on its clock: <c>uint.MaxValue - 1</c>
     /// milliseconds, the bound <see cref="Task.Delay(TimeSpan, TimeProvider, CancellationToken)"/>
-    /// accepts. <see cref="Validate"/> keeps every cadence within it so the loop can never fail on
+    /// accepts. <see cref="Validate()"/> keeps every cadence within it so the loop can never fail on
     /// an out-of-range delay.
     /// </summary>
     public static readonly TimeSpan MaxDelay = TimeSpan.FromMilliseconds(uint.MaxValue - 1);
+
+    /// <summary>
+    /// Optional exact consumer lock key, before the lock namespace prefix. Overrides
+    /// <see cref="LockKeyFormat"/>. Replicas of one role must use the same key; independent roles
+    /// sharing a lock namespace must use different keys. Changing it requires a coordinated cutover.
+    /// The key is captured when the elector is constructed and must satisfy lock-key validation.
+    /// </summary>
+    public string? LockKey { get; set; }
+
+    /// <summary>
+    /// Consumer lock-key pattern used when <see cref="LockKey"/> is null. Every occurrence of
+    /// the case-sensitive <c>{role}</c> placeholder is replaced by the role; at least one is
+    /// required. Other characters, including braces used for Redis hash tags, are literal.
+    /// Defaults to <c>leader:{role}</c>. The resolved key is captured at elector construction.
+    /// </summary>
+    public string LockKeyFormat { get; set; } = "leader:{role}";
 
     /// <summary>
     /// How long the lease lasts without a renewal, and so how long a crashed leader keeps the role.
@@ -40,10 +56,24 @@ public sealed class LeadershipOptions
     /// </summary>
     public UncoordinatedLeadership WhenUncoordinated { get; set; } = UncoordinatedLeadership.Follow;
 
-    /// <summary>Every violation, each naming the option key at fault. Empty when the options are usable.</summary>
-    public IReadOnlyList<string> Validate()
+    /// <summary>
+    /// Checks key syntax and timing options. Use <see cref="Validate(string, int)"/> to also
+    /// check the resolved key against a role and the lock's configured maximum key length.
+    /// </summary>
+    public IReadOnlyList<string> Validate() => ValidateCore(null, int.MaxValue);
+
+    private List<string> ValidateCore(string? role, int maxKeyLength)
     {
         List<string> problems = [];
+        try
+        {
+            ResolveKey(role, maxKeyLength);
+        }
+        catch (ArgumentException exception)
+        {
+            problems.Add(exception.Message);
+        }
+
         if (Lease <= TimeSpan.Zero)
         {
             problems.Add("Leadership:Lease must be positive.");
@@ -92,5 +122,66 @@ public sealed class LeadershipOptions
         }
 
         return problems;
+    }
+
+    /// <summary>
+    /// Checks syntax, timing options, and the resolved key for <paramref name="role"/> against
+    /// <paramref name="maxKeyLength"/>, the consumer key limit before namespace prefixing.
+    /// </summary>
+    public IReadOnlyList<string> Validate(string role, int maxKeyLength = 512)
+    {
+        LeadershipRole.Validate(role);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxKeyLength);
+        return ValidateCore(role, maxKeyLength);
+    }
+
+    /// <summary>
+    /// Resolves and validates the consumer key for <paramref name="role"/>, before namespace
+    /// prefixing. An exact <see cref="LockKey"/> takes precedence over <see cref="LockKeyFormat"/>.
+    /// </summary>
+    /// <exception cref="ArgumentException">The role, pattern, or resolved key is invalid.</exception>
+    public string ResolveLockKey(string role, int maxKeyLength = 512)
+    {
+        LeadershipRole.Validate(role);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxKeyLength);
+        return ResolveKey(role, maxKeyLength);
+    }
+
+    private string ResolveKey(string? role, int maxKeyLength)
+    {
+        if (
+            LockKey is null
+            && (
+                LockKeyFormat is null || !LockKeyFormat.Contains("{role}", StringComparison.Ordinal)
+            )
+        )
+        {
+            throw new ArgumentException(
+                "Leadership:LockKeyFormat must contain the {role} placeholder."
+            );
+        }
+
+        // With no role yet, validate the pattern's syntax without imposing a length limit.
+        var key =
+            LockKey
+            ?? (
+                role is null
+                    ? LockKeyFormat
+                    : LockKeyFormat.Replace("{role}", role, StringComparison.Ordinal)
+            );
+        try
+        {
+            HostLoom.Locking.LockKey.Validate(key, maxKeyLength);
+        }
+        catch (ArgumentException exception)
+        {
+            var keyOption = LockKey is not null ? "LockKey" : "LockKeyFormat";
+            throw new ArgumentException(
+                $"Leadership:{keyOption} resolves to an invalid lock key: " + exception.Message,
+                exception
+            );
+        }
+
+        return key;
     }
 }

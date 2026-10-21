@@ -5,8 +5,8 @@ using Microsoft.Extensions.Options;
 namespace HostLoom.Leadership.DependencyInjection;
 
 /// <summary>
-/// Runs <see cref="LeadershipOptions.Validate"/> for every role's named options when the host
-/// starts, and adds the one rule only the container knows: the role's lease must fit within
+/// Runs <see cref="LeadershipOptions.Validate(string, int)"/> for every role's named options when the host
+/// starts, checking resolved keys against <c>Locking:MaxKeyLength</c>. The role's lease must fit within
 /// <c>Locking:MaxLease</c> of the lock the electors run over, which would otherwise cap it silently.
 /// </summary>
 internal sealed class LeadershipOptionsValidator(IServiceProvider services)
@@ -14,8 +14,18 @@ internal sealed class LeadershipOptionsValidator(IServiceProvider services)
 {
     public ValidateOptionsResult Validate(string? name, LeadershipOptions options)
     {
-        List<string> problems = [.. options.Validate()];
-        if (MaxLease() is { } maxLease && options.Lease > maxLease)
+        var locks = ComposedLock();
+        List<string> problems =
+        [
+            .. name is null or ""
+                ? options.Validate()
+                : options.Validate(name, locks?.MaxKeyLength ?? int.MaxValue),
+        ];
+        if (
+            locks is { Enabled: true }
+            && locks.Describe().MaxLease is var maxLease
+            && options.Lease > maxLease
+        )
         {
             problems.Add(
                 $"Leadership:Lease ({options.Lease}) must be at most Locking:MaxLease ({maxLease}); "
@@ -34,11 +44,9 @@ internal sealed class LeadershipOptionsValidator(IServiceProvider services)
     }
 
     /// <summary>
-    /// <c>Locking:MaxLease</c> of the registered lock when it is a coordinating
-    /// <see cref="DistributedLock"/>; <see langword="null"/> for any other lock, for single-instance
-    /// mode, which takes no lease, and when no lock is registered, which the elector reports itself.
+    /// The registered HostLoom lock, when available. Invalid lock options report their own errors.
     /// </summary>
-    private TimeSpan? MaxLease()
+    private DistributedLock? ComposedLock()
     {
         IDistributedLock? locks;
         try
@@ -51,8 +59,6 @@ internal sealed class LeadershipOptionsValidator(IServiceProvider services)
             return null;
         }
 
-        return locks is DistributedLock { Enabled: true } composed
-            ? composed.Describe().MaxLease
-            : null;
+        return locks as DistributedLock;
     }
 }

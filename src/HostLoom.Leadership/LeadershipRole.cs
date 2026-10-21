@@ -6,12 +6,12 @@ public static class LeadershipRole
     /// <summary>The longest role name accepted.</summary>
     public const int MaxLength = 128;
 
-    /// <summary>The prefix every role's lock key carries: <c>leader:{role}</c>.</summary>
+    /// <summary>The default lock key prefix: <c>leader:{role}</c>, unless overridden by options.</summary>
     public const string KeyPrefix = "leader:";
 
     /// <summary>
     /// Rejects a role that is empty, longer than <see cref="MaxLength"/>, or contains whitespace
-    /// or control characters. A role becomes the suffix of the lock key.
+    /// or control characters. A role becomes the suffix of the default lock key.
     /// </summary>
     /// <exception cref="ArgumentException">The role is not acceptable.</exception>
     public static void Validate(string role)
@@ -37,7 +37,7 @@ public static class LeadershipRole
         }
     }
 
-    /// <summary>The lock key for <paramref name="role"/>, before the lock's own namespace prefix.</summary>
+    /// <summary>The default lock key for <paramref name="role"/>, before the lock's own namespace prefix.</summary>
     public static string KeyFor(string role)
     {
         Validate(role);

@@ -5,7 +5,7 @@ namespace HostLoom.Leadership;
 /// <summary>Execution-free description of an elector, safe to call from a health or debug endpoint.</summary>
 public static class LeadershipProbe
 {
-    /// <summary>Describes <paramref name="elector"/>: role, state, term, coordination, lease, renewal, and retry cadence.</summary>
+    /// <summary>Describes <paramref name="elector"/>: role, lock key, state, term, coordination, lease, renewal, and retry cadence.</summary>
     public static LeadershipDescription Describe(LeaderElector elector)
     {
         ArgumentNullException.ThrowIfNull(elector);
@@ -16,6 +16,7 @@ public static class LeadershipProbe
         List<string> lines =
         [
             $"Role = {elector.Role}: {StatusName(state)}, term {elector.Term.ToString(invariant)}",
+            $"LockKey = {elector.LockKey} (resolved at construction, before the lock namespace prefix)",
             string.Create(
                 invariant,
                 $"Leadership:Lease = {options.Lease}, renewed every Leadership:RenewInterval = {options.RenewInterval}"
@@ -38,7 +39,10 @@ public static class LeadershipProbe
             options.Lease,
             options.RenewInterval,
             lines
-        );
+        )
+        {
+            LockKey = elector.LockKey,
+        };
     }
 
     internal static string StatusName(LeadershipStatus status) =>
@@ -67,7 +71,11 @@ public sealed record LeadershipDescription(
     TimeSpan Lease,
     TimeSpan RenewInterval,
     IReadOnlyList<string> Lines
-);
+)
+{
+    /// <summary>The captured consumer key before namespace prefixing; see <see cref="LeaderElector.LockKey"/>.</summary>
+    public string LockKey { get; init; } = "";
+}
 
 /// <summary>Where an elector stands.</summary>
 public enum LeadershipStatus

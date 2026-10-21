@@ -7,7 +7,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace HostLoom.Leadership;
 
 /// <summary>
-/// Elects one leader for a role by holding the lock <c>leader:{role}</c>: a candidate tries a
+/// Elects one leader for a role by holding the resolved <see cref="LeadershipOptions.LockKey"/>
+/// or <see cref="LeadershipOptions.LockKeyFormat"/>, <c>leader:{role}</c> by default: a candidate tries a
 /// skip-if-busy acquisition on a jittered cadence, a leader renews the lease itself every
 /// <see cref="LeadershipOptions.RenewInterval"/>, and a renewal the backend refuses or a lease
 /// that runs out steps the instance back to candidate at once, where it waits one retry interval
@@ -31,7 +32,6 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
     private static readonly CancellationToken NotLeading = new(canceled: true);
 
     private readonly IDistributedLock _locks;
-    private readonly string _key;
     private readonly TimeProvider _clock;
     private readonly ILogger<LeaderElector> _logger;
     private readonly Lock _gate = new();
@@ -52,7 +52,7 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
     /// <summary>Composes the elector.</summary>
     /// <param name="role">The role; see <see cref="LeadershipRole.Validate"/>.</param>
     /// <param name="locks">The lock the role is elected over; its namespace prefixes the key.</param>
-    /// <param name="options">Lease, renewal, and retry cadence.</param>
+    /// <param name="options">Lock key, lease, renewal, and retry cadence.</param>
     /// <param name="timeProvider">The clock every wait uses; the system clock by default.</param>
     /// <param name="logger">Receives the events in <see cref="LeadershipEvents"/>.</param>
     /// <exception cref="ArgumentException">The role or the options are not acceptable.</exception>
@@ -66,8 +66,8 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(locks);
         ArgumentNullException.ThrowIfNull(options);
-        _key = LeadershipRole.KeyFor(role);
-        var problems = options.Validate();
+        var maxKeyLength = locks is DistributedLock composed ? composed.MaxKeyLength : int.MaxValue;
+        var problems = options.Validate(role, maxKeyLength);
         if (problems.Count > 0)
         {
             throw new ArgumentException(
@@ -76,6 +76,7 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
             );
         }
 
+        LockKey = options.ResolveLockKey(role, maxKeyLength);
         Role = role;
         Options = options;
         _locks = locks;
@@ -88,7 +89,13 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
     /// <inheritdoc />
     public string Role { get; }
 
-    /// <summary>The cadence this elector was composed with.</summary>
+    /// <summary>
+    /// The resolved consumer lock key, before namespace prefixing. Captured at construction;
+    /// changing <see cref="Options"/> does not move this elector to a different election.
+    /// </summary>
+    public string LockKey { get; }
+
+    /// <summary>The options this elector was composed with; its lock key is captured separately.</summary>
     public LeadershipOptions Options { get; }
 
     /// <summary>Where the elector stands.</summary>
@@ -359,7 +366,7 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
         {
             var handle = await _locks
                 .TryAcquireAsync(
-                    _key,
+                    LockKey,
                     new LockOptions
                     {
                         Lease = Options.Lease,
