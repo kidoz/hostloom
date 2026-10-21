@@ -88,6 +88,9 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
     /// <summary>The namespace every provider key is prefixed with.</summary>
     public string Namespace => Options.Namespace;
 
+    /// <summary>Longest consumer key accepted, before the namespace prefix.</summary>
+    public int MaxKeyLength => Options.MaxKeyLength;
+
     /// <summary>Whether the lock coordinates across instances or runs actions immediately.</summary>
     public bool Enabled => Options.Enabled;
 
