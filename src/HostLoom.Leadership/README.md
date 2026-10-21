@@ -3,7 +3,7 @@
 `HostLoom.Leadership` elects one leader for a role among the instances of a service, over the
 HostLoom distributed lock. It is the lease-based election that Kubernetes controllers, Spring
 Integration's leader initiator, and most cloud services use: a candidate tries to take the lease
-`leader:{role}`, the leader renews it on its own cadence, and a renewal the backend refuses or a
+`leader:{role}` by default, the leader renews it on its own cadence, and a renewal the backend refuses or a
 lease that runs out steps the instance back to candidate at once. A renewal that fails at the
 provider while the lease still runs keeps leadership and the term: the leader retries, at the
 renewal cadence or at half the remaining lease when that is sooner, until an extension succeeds
@@ -18,6 +18,29 @@ await elector.StartAsync();
 await elector.WaitForLeadershipAsync(stoppingToken);
 await RunLeaderLoopAsync(elector.LeadershipToken);   // ends when leadership does
 ```
+
+Set `LeadershipOptions.LockKeyFormat` for a naming convention, or `LockKey` for an exact
+override. With namespace `billing`, role `scheduler`, and format `election:eu:{role}`, the
+provider key is `billing:lock:election:eu:scheduler`. The default format is `leader:{role}`.
+An exact key takes precedence and is used literally, without placeholder expansion.
+
+Formats require the case-sensitive `{role}` placeholder; every occurrence is replaced.
+All other characters are literal, including braces used for Redis hash tags:
+`{elections}:{role}` resolves to `{elections}:scheduler`. Use an exact key for a name without
+the role. Resolved keys must be nonempty and have no whitespace or control characters.
+Both constructor and hosted composition check `DistributedLock.MaxKeyLength` (512 by default)
+before starting; a custom `IDistributedLock` remains responsible for its own length limit,
+which the leadership kernel cannot inspect.
+
+`LeaderElector.LockKey` and `LeadershipProbe.Describe(elector).LockKey` report the captured
+consumer key before namespace prefixing. Mutating options does not re-key an existing elector,
+including on retries or resignation. `Validate()` checks syntax and timing;
+`Validate(role, maxKeyLength)` also checks expanded key length, and `ResolveLockKey(role, maxKeyLength)`
+resolves and validates the consumer key without starting an election.
+
+Replicas must agree on the namespace and resolved key; independent roles sharing a namespace
+need distinct keys. Changing either creates a separate election: stop all old replicas and
+allow their leases to expire before starting the new identity, including on rollback.
 
 **The guarantee.** At most one leader per role while clocks and the lock backend behave. On
 lease expiry there is a window, bounded by `Leadership:Lease` plus clock skew, in which the

@@ -34,7 +34,7 @@ the Kubernetes Lease election and is not consensus.
 
 | Member | Behaviour |
 | --- | --- |
-| `Role` | the role name; the lock key is `leader:{role}` under the lock's namespace |
+| `Role` | the role name; the default lock key is `leader:{role}` under the lock's namespace |
 | `IsLeader` | `true` while this instance believes it leads |
 | `IsCoordinated` | `false` when the lock does not coordinate (`Locking:Enabled = false`); `IsLeader` then follows `Leadership:WhenUncoordinated` on every instance alike, and nothing excludes another instance from leading |
 | `Term` | rises on every acquisition by this instance; not a fencing token |
@@ -82,22 +82,43 @@ once, `ResignAsync` steps down and stays a candidate. The loop:
   off one retry interval plus jitter before continuing as a candidate. A term in
   progress is stepped down first, so its token cancels and its change is raised.
 
-`LeadershipProbe.Describe(elector)` reports role, status, coordination, term,
-lease, and cadence without executing anything.
+`LeaderElector.LockKey` reports the captured consumer key before namespace prefixing.
+`LeadershipProbe.Describe(elector)` reports that key as `LockKey`, plus role, status,
+coordination, term, lease, and cadence without executing anything.
 
 ## Configuration (`LeadershipOptions`)
 
 | Key | Default | Meaning |
 | --- | --- | --- |
+| `Leadership:LockKey` | `null` | optional exact consumer key before namespace prefixing; takes precedence over the format and is used literally |
+| `Leadership:LockKeyFormat` | `leader:{role}` | pattern used when `LockKey` is null; requires the case-sensitive `{role}` placeholder; every occurrence is replaced, all other characters are literal |
 | `Leadership:Lease` | 15 seconds | how long the lease lasts without a renewal; a crashed leader keeps the role this long; at most `Locking:MaxLease`, checked when the host starts |
 | `Leadership:RenewInterval` | 5 seconds | renewal cadence; at most half the lease |
 | `Leadership:RetryInterval` | 2 seconds | candidate cadence, and the pause after a loss or a resignation |
 | `Leadership:RetryJitter` | 1 second | additive jitter on the candidate cadence |
 | `Leadership:WhenUncoordinated` | `Follow` | what to do over a disabled lock: `Follow` never leads, so replicas cannot all lead by accident; `Lead` leads without coordination, for a single instance or local development |
 
-`Validate()` returns every violation naming the key; the elector's constructor
-throws with the same text, and the `DependencyInjection` package validates each
-role's named options when the host starts. There it also checks
+With locking namespace `billing`, role `scheduler`, and `LockKeyFormat = "election:eu:{role}"`,
+the final key is `billing:lock:election:eu:scheduler`. `LockKey = "leader"` overrides the
+format and produces `billing:lock:leader`. Formats preserve literal braces, so
+`{elections}:{role}` produces `{elections}:scheduler` before namespace prefixing, retaining
+the Redis hash tag. Other placeholder names are not expanded.
+
+Resolved keys must be nonempty, contain no whitespace or controls, and fit
+`Locking:MaxKeyLength` (512 by default). The elector captures its key at construction;
+changing options does not move it to a different election, even after resignation or retry.
+Replicas must agree on the namespace and resolved key; independent roles sharing a namespace
+must use different keys. Changing either requires stopping all old replicas and waiting for
+their leases to expire before starting the new identity. Apply the same procedure on rollback.
+
+`Validate()` checks key syntax and timing options, naming the option at fault.
+`Validate(role, maxKeyLength)` also checks the expanded key against the given limit;
+`ResolveLockKey(role, maxKeyLength)` resolves and validates the consumer key. The default
+limit for these methods is 512. Both the elector's constructor and the `DependencyInjection`
+package's startup validation use the registered `DistributedLock.MaxKeyLength`, so larger
+configured limits are honoured and smaller limits fail before election starts. For a custom
+`IDistributedLock` the implementation enforces its own length limit, which the elector cannot inspect.
+The `DependencyInjection` package validates each role's named options and also checks
 `Leadership:Lease` against `Locking:MaxLease` of the registered lock and fails
 naming the role and both values, since the lock would otherwise cap the lease
 silently; a container-free elector gets the capped lease. Single-instance mode
@@ -117,6 +138,21 @@ services
     .AddRole("scheduler")
     .AddRole("reconciler", leadership => leadership.Lease = TimeSpan.FromSeconds(30));
 ```
+
+Use named options for per-role configuration. To share a format across every role,
+configure all named instances before adding role-specific overrides:
+
+```csharp
+services.ConfigureAll<LeadershipOptions>(options =>
+    options.LockKeyFormat = "election:eu:{role}");
+services.AddHostLoomLeadership()
+    .AddRole("scheduler")
+    .AddRole("reconciler", options => options.LockKey = "legacy:reconciler");
+```
+
+The same properties bind from configuration sections through the standard options APIs;
+`Configure<LeadershipOptions>(role, section)` targets one role, while
+`ConfigureAll<LeadershipOptions>(options => section.Bind(options))` targets all roles.
 
 Each role's `LeaderElector` and `ILeadership` are keyed by the role name; with
 exactly one role the unkeyed `ILeadership` resolves it too, and with several the

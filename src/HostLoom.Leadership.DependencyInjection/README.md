@@ -26,6 +26,26 @@ double after the builder to replace the electors deliberately, or register it ke
 do not add. The hosted service starts every elector with the host and stops each with the host,
 releasing the leases they hold so a graceful restart hands over at once.
 
+Each role has a configurable consumer lock key, before the lock's namespace prefix.
+Share a format with named-options configuration, and override individual roles when needed:
+
+```csharp
+services.ConfigureAll<LeadershipOptions>(options =>
+    options.LockKeyFormat = "election:eu:{role}");
+services.AddHostLoomLeadership()
+    .AddRole("scheduler")
+    .AddRole("reconciler", options => options.LockKey = "legacy:reconciler");
+```
+
+With namespace `billing`, the keys above are `billing:lock:election:eu:scheduler` and
+`billing:lock:legacy:reconciler`. The default format is `leader:{role}`; an exact `LockKey`
+overrides it without placeholder expansion. Formats require `{role}` and replace every
+occurrence; other characters are literal. Startup validation checks the resolved key against
+`Locking:MaxKeyLength` as well as checking key syntax. `LeaderElector.LockKey` and its probe
+report the captured consumer key. Changing a deployed key or namespace requires a coordinated
+cutover: stop all old replicas and wait for their leases to expire before starting the new
+identity, including on rollback.
+
 A leader-only background loop is then:
 
 ```csharp
