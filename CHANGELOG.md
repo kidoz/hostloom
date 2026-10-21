@@ -10,6 +10,12 @@ are derived from release tags at publish time.
 
 ### Added
 
+- Leadership lock-key configuration: `LeadershipOptions.LockKey` selects an exact consumer
+  key, and `LockKeyFormat` shares a naming convention through the `{role}` placeholder.
+  The default remains `leader:{role}`. Resolved keys are captured at construction and checked
+  against the lock's configured `MaxKeyLength` before election starts; `LeaderElector.LockKey`
+  and its probe report the captured identity. Changing a deployed key requires a coordinated
+  stop-all cutover. `DistributedLock.MaxKeyLength` exposes the configured consumer key limit.
 - `IStreamRequest<TItem>` is an in-process stream: `AddStreamHandler` registers one scoped
   handler, `IStreamRequestClient.StreamAsync` yields its items, and each enumeration gets its
   own dependency-injection scope. The in-memory transport delivers it. A broker transport fails
