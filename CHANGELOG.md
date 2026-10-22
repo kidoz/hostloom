@@ -8,14 +8,46 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-10-22
+
+The eighteenth release of **HostLoom**. It adds in-process stream requests to the messaging
+kernel, open-generic request behaviors to the container, and configurable lock keys to leader
+election. Nothing in it changes a signature an application compiles against.
+
+`HostLoom` gains in-process streams. A handler registered with `AddStreamHandler` implements
+`IStreamRequestHandler<TRequest, TItem>`; `IStreamRequestClient.StreamAsync` yields its items,
+and each enumeration receives its own dependency-injection scope. The in-memory transport
+carries a stream as the handler's own item instances rather than wire envelopes, so stream
+items are not serialized and do not run inside the receive pipeline or request behaviors. A
+broker transport fails host startup when a stream endpoint is registered, and fails the client
+call before it waits, because none implements streaming. The request timeout bounds only the
+wait for a listener to accept the stream; cancelling the caller cancels the handler, and
+stopping the listener or disposing the transport ends an open stream with
+`ObjectDisposedException`.
+
+`HostLoomBuilder.AddOpenBehavior(Type)` registers an open-generic request behavior once — for
+example `typeof(ValidationBehavior<,>)` — and the container closes it around every request
+handler whose contract satisfies the behavior's generic constraints. Open and closed behaviors
+run together in registration order, and a behavior whose constraints reject a request type
+fails that request's resolution instead of being skipped silently.
+
+`HostLoom.Leadership` lets a role choose the lock key it elects over.
+`LeadershipOptions.LockKey` selects an exact consumer key and `LockKeyFormat` shares a naming
+convention through the `{role}` placeholder; both resolve before the lock's
+`{namespace}:lock:` prefix, and the default remains `leader:{role}`. The resolved key is
+captured when the elector is constructed and used for acquisition, renewal, and release, so
+mutating options does not move a running elector to a different election. Construction and
+hosted startup check the key against the lock's configured `MaxKeyLength`, now exposed by
+`DistributedLock`, and `LeaderElector.LockKey` and the probe report the captured identity.
+Braces in a custom key are literal and do not select a Redis Cluster slot. Changing a deployed
+key or namespace creates a separate election and requires a coordinated stop-all cutover.
+
+No package is published for the first time; the whole set publishes at 0.16.1.
+`@hostloom/websocket-client` is not part of this NuGet set and has no changes since its 0.3.0
+release.
+
 ### Added
 
-- Leadership lock-key configuration: `LeadershipOptions.LockKey` selects an exact consumer
-  key, and `LockKeyFormat` shares a naming convention through the `{role}` placeholder.
-  The default remains `leader:{role}`. Resolved keys are captured at construction and checked
-  against the lock's configured `MaxKeyLength` before election starts; `LeaderElector.LockKey`
-  and its probe report the captured identity. Changing a deployed key requires a coordinated
-  stop-all cutover. `DistributedLock.MaxKeyLength` exposes the configured consumer key limit.
 - `IStreamRequest<TItem>` is an in-process stream: `AddStreamHandler` registers one scoped
   handler, `IStreamRequestClient.StreamAsync` yields its items, and each enumeration gets its
   own dependency-injection scope. The in-memory transport delivers it. A broker transport fails
@@ -29,6 +61,12 @@ are derived from release tags at publish time.
   request handler whose contract satisfies the behavior's generic constraints. Open and
   closed behaviors run together in registration order. A behavior whose constraints reject a
   request type fails that request's resolution instead of being skipped silently.
+- Leadership lock-key configuration: `LeadershipOptions.LockKey` selects an exact consumer
+  key, and `LockKeyFormat` shares a naming convention through the `{role}` placeholder.
+  The default remains `leader:{role}`. Resolved keys are captured at construction and checked
+  against the lock's configured `MaxKeyLength` before election starts; `LeaderElector.LockKey`
+  and its probe report the captured identity. Changing a deployed key requires a coordinated
+  stop-all cutover. `DistributedLock.MaxKeyLength` exposes the configured consumer key limit.
 
 ## [0.16.0] - 2026-10-14
 
@@ -2057,7 +2095,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/kidoz/hostloom/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/kidoz/hostloom/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/kidoz/hostloom/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/kidoz/hostloom/compare/v0.14.0...v0.15.0
