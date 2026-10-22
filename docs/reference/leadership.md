@@ -101,8 +101,11 @@ coordination, term, lease, and cadence without executing anything.
 With locking namespace `billing`, role `scheduler`, and `LockKeyFormat = "election:eu:{role}"`,
 the final key is `billing:lock:election:eu:scheduler`. `LockKey = "leader"` overrides the
 format and produces `billing:lock:leader`. Formats preserve literal braces, so
-`{elections}:{role}` produces `{elections}:scheduler` before namespace prefixing, retaining
-the Redis hash tag. Other placeholder names are not expanded.
+`{elections}:{role}` produces `{elections}:scheduler` before namespace prefixing. Consumer
+braces do not become the Redis Cluster hash tag: cluster mode requires `UseHashTags`, which
+wraps the namespace first (`{billing}:lock:{elections}:scheduler`), and Redis hashes only the
+first `{...}`, so slot selection stays on the namespace tag. Other placeholder names are not
+expanded.
 
 Resolved keys must be nonempty, contain no whitespace or controls, and fit
 `Locking:MaxKeyLength` (512 by default). The elector captures its key at construction;

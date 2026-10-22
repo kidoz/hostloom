@@ -25,8 +25,8 @@ public sealed class LeadershipOptions
     /// <summary>
     /// Consumer lock-key pattern used when <see cref="LockKey"/> is null. Every occurrence of
     /// the case-sensitive <c>{role}</c> placeholder is replaced by the role; at least one is
-    /// required. Other characters, including braces used for Redis hash tags, are literal.
-    /// Defaults to <c>leader:{role}</c>. The resolved key is captured at elector construction.
+    /// required. Other characters, including braces, are literal. Defaults to
+    /// <c>leader:{role}</c>. The resolved key is captured at elector construction.
     /// </summary>
     public string LockKeyFormat { get; set; } = "leader:{role}";
 

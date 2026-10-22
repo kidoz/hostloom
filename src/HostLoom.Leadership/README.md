@@ -25,9 +25,12 @@ provider key is `billing:lock:election:eu:scheduler`. The default format is `lea
 An exact key takes precedence and is used literally, without placeholder expansion.
 
 Formats require the case-sensitive `{role}` placeholder; every occurrence is replaced.
-All other characters are literal, including braces used for Redis hash tags:
-`{elections}:{role}` resolves to `{elections}:scheduler`. Use an exact key for a name without
-the role. Resolved keys must be nonempty and have no whitespace or control characters.
+All other characters are literal, including braces: `{elections}:{role}` resolves to
+`{elections}:scheduler`. Consumer braces do not select the Redis Cluster slot: cluster mode
+requires `UseHashTags`, which wraps the namespace first
+(`{billing}:lock:{elections}:scheduler`), and Redis hashes only the first `{...}`, so the slot
+stays on the namespace. Use an exact key for a name without the role. Resolved keys must be
+nonempty and have no whitespace or control characters.
 Both constructor and hosted composition check `DistributedLock.MaxKeyLength` (512 by default)
 before starting; a custom `IDistributedLock` remains responsible for its own length limit,
 which the leadership kernel cannot inspect.

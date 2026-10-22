@@ -153,7 +153,7 @@ public sealed class LeadershipKeyTests
     [InlineData("{role}:active:{role}", "Scheduler:active:Scheduler")]
     [InlineData("{elections}:{role}", "{elections}:Scheduler")]
     [InlineData("{{role}}:active", "{Scheduler}:active")]
-    public void Patterns_replace_only_the_role_placeholder_and_preserve_case_and_hash_tags(
+    public void Patterns_replace_only_the_role_placeholder_and_preserve_case_and_braces(
         string format,
         string expected
     )
