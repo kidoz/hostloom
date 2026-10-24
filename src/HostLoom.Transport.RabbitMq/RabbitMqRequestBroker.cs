@@ -106,7 +106,8 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
-        _maxFrameBytes = messagingOptions?.Value.MaxFrameBytes ?? HostLoomOptions.DefaultMaxFrameBytes;
+        _maxFrameBytes =
+            messagingOptions?.Value.MaxFrameBytes ?? HostLoomOptions.DefaultMaxFrameBytes;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_maxFrameBytes);
         ArgumentOutOfRangeException.ThrowIfLessThan(_options.MaxConcurrentPublishes, 1);
         if (
@@ -1256,7 +1257,9 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     private void ValidateFrameSize(int length)
     {
         if (length > _maxFrameBytes)
-            throw new MalformedEnvelopeException($"The broker frame exceeds HostLoomOptions.MaxFrameBytes ({_maxFrameBytes} bytes).");
+            throw new MalformedEnvelopeException(
+                $"The broker frame exceeds HostLoomOptions.MaxFrameBytes ({_maxFrameBytes} bytes)."
+            );
     }
 
     /// <summary>

@@ -24,8 +24,12 @@ public static class ServiceCollectionExtensions
             configuration = new HostLoomConfiguration();
             services.AddSingleton(configuration);
             services.AddSingleton<EndpointRuntimeState>();
-            services.AddOptions<HostLoomOptions>()
-                .Validate(static options => options.MaxFrameBytes > 0, "HostLoomOptions.MaxFrameBytes must be positive.")
+            services
+                .AddOptions<HostLoomOptions>()
+                .Validate(
+                    static options => options.MaxFrameBytes > 0,
+                    "HostLoomOptions.MaxFrameBytes must be positive."
+                )
                 .ValidateOnStart();
             services.TryAddSingleton<IMessageSerializer, SystemTextJsonMessageSerializer>();
             services.TryAddSingleton<ReceivePipeline>();

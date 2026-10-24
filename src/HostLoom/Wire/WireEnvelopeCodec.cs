@@ -17,7 +17,9 @@ internal static class WireEnvelopeCodec
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxFrameBytes);
         if (frame.Length > maxFrameBytes)
-            throw new MalformedEnvelopeException($"The broker frame exceeds HostLoomOptions.MaxFrameBytes ({maxFrameBytes} bytes).");
+            throw new MalformedEnvelopeException(
+                $"The broker frame exceeds HostLoomOptions.MaxFrameBytes ({maxFrameBytes} bytes)."
+            );
 
         MessageEnvelope envelope;
         try

@@ -93,7 +93,8 @@ public sealed class InMemoryRequestBroker
         IOptions<HostLoomOptions>? messagingOptions = null
     )
     {
-        _maxFrameBytes = messagingOptions?.Value.MaxFrameBytes ?? HostLoomOptions.DefaultMaxFrameBytes;
+        _maxFrameBytes =
+            messagingOptions?.Value.MaxFrameBytes ?? HostLoomOptions.DefaultMaxFrameBytes;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_maxFrameBytes);
         _logger = logger ?? NullLogger<InMemoryRequestBroker>.Instance;
         _clock = timeProvider ?? TimeProvider.System;
@@ -455,7 +456,9 @@ public sealed class InMemoryRequestBroker
     private void ValidateFrameSize(int length)
     {
         if (length > _maxFrameBytes)
-            throw new MalformedEnvelopeException($"The broker frame exceeds HostLoomOptions.MaxFrameBytes ({_maxFrameBytes} bytes).");
+            throw new MalformedEnvelopeException(
+                $"The broker frame exceeds HostLoomOptions.MaxFrameBytes ({_maxFrameBytes} bytes)."
+            );
     }
 
     /// <summary>
