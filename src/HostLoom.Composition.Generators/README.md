@@ -104,7 +104,10 @@ and dependencies, including in Native AOT. It does not prove every possible clos
 HLM0016 follows known registrations through implementations with exactly one public constructor,
 including transient intermediates, aliases, enumerable services and compatible open registrations.
 Direct closed registrations precede open registrations; explicit enumerable registrations precede
-automatic collection construction. Open singleton implementations can expose known capture paths.
+automatic collection construction. Capture checks follow the registrations retained after each
+rule's skip and replacement effects, using the same replacement predicates as runtime application.
+Removed singleton roots and dependency registrations do not participate. Open singleton
+implementations can expose known capture paths.
 Keyed parameters, external registrations, factory bodies, `Skip` policies and uncertain constructor
 choices are unverified. Traversal stops at cycles and after a plan-sized depth bound for expanding
 generic paths. No diagnostic means no capture was proved within that scope, not that the provider
