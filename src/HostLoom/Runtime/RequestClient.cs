@@ -52,7 +52,7 @@ internal sealed class RequestClient<TRequest, TResponse>(
             )
             .ConfigureAwait(false);
 
-        var response = WireEnvelopeCodec.Decode(responseFrame.Span);
+        var response = WireEnvelopeCodec.Decode(responseFrame.Span, options.Value.MaxFrameBytes);
         if (response.CorrelationId != requestId)
         {
             throw new MalformedEnvelopeException(

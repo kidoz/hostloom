@@ -13,8 +13,12 @@ internal static class WireEnvelopeCodec
     public static byte[] Encode(MessageEnvelope envelope) =>
         JsonSerializer.SerializeToUtf8Bytes(envelope, Options);
 
-    public static MessageEnvelope Decode(ReadOnlySpan<byte> frame)
+    public static MessageEnvelope Decode(ReadOnlySpan<byte> frame, int maxFrameBytes)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxFrameBytes);
+        if (frame.Length > maxFrameBytes)
+            throw new MalformedEnvelopeException($"The broker frame exceeds HostLoomOptions.MaxFrameBytes ({maxFrameBytes} bytes).");
+
         MessageEnvelope envelope;
         try
         {

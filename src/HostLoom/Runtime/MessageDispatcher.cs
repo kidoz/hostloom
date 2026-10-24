@@ -43,6 +43,7 @@ internal sealed class MessageDispatcher
     private readonly ReceivePipeline _receivePipeline;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly bool _includeFaultDetails;
+    private readonly int _maxFrameBytes;
     private readonly ILogger<MessageDispatcher> _logger;
 
     public MessageDispatcher(
@@ -59,6 +60,7 @@ internal sealed class MessageDispatcher
         _receivePipeline = receivePipeline;
         _scopeFactory = scopeFactory;
         _includeFaultDetails = options?.Value.IncludeFaultDetails ?? false;
+        _maxFrameBytes = options?.Value.MaxFrameBytes ?? HostLoomOptions.DefaultMaxFrameBytes;
         _logger = logger ?? NullLogger<MessageDispatcher>.Instance;
     }
 
@@ -68,7 +70,7 @@ internal sealed class MessageDispatcher
         CancellationToken cancellationToken
     )
     {
-        var request = WireEnvelopeCodec.Decode(requestFrame.Span);
+        var request = WireEnvelopeCodec.Decode(requestFrame.Span, _maxFrameBytes);
 
         if (request.Kind is not MessageKind.Request)
         {

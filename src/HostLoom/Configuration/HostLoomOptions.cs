@@ -2,6 +2,16 @@ namespace HostLoom;
 
 public sealed class HostLoomOptions
 {
+    /// <summary>The default encoded-frame limit: one mebibyte.</summary>
+    public const int DefaultMaxFrameBytes = 1024 * 1024;
+
+    /// <summary>
+    /// Maximum encoded request, event, response or fault frame size in bytes, inclusive.
+    /// Must be positive. Checked before decoding JSON or Base64 payloads; broker SDK receive
+    /// buffers are outside this limit. In-process typed streams have no encoded frame.
+    /// </summary>
+    public int MaxFrameBytes { get; set; } = DefaultMaxFrameBytes;
+
     public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>

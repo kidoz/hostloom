@@ -1,12 +1,14 @@
 using System.Diagnostics;
 using HostLoom.Pipelines;
+using Microsoft.Extensions.Options;
 
 namespace HostLoom;
 
 internal sealed class EventDispatcher(
     HostLoomConfiguration configuration,
     IMessageSerializer serializer,
-    ReceivePipeline receivePipeline
+    ReceivePipeline receivePipeline,
+    IOptions<HostLoomOptions> options
 )
 {
     public async ValueTask DispatchAsync(
@@ -16,7 +18,7 @@ internal sealed class EventDispatcher(
         CancellationToken cancellationToken
     )
     {
-        var envelope = WireEnvelopeCodec.Decode(frame.Span);
+        var envelope = WireEnvelopeCodec.Decode(frame.Span, options.Value.MaxFrameBytes);
         if (envelope.Kind is not MessageKind.Event)
         {
             throw new MalformedEnvelopeException(

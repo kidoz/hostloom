@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace HostLoom.Transport.InMemory;
 
@@ -43,6 +44,7 @@ public sealed class InMemoryRequestBroker
 {
     /// <summary>How long stopping waits for the handlers it cancelled before it gives up on them.</summary>
     internal static readonly TimeSpan HandlerDrainBound = TimeSpan.FromSeconds(5);
+    private readonly int _maxFrameBytes;
 
     private readonly ConcurrentDictionary<RequestAddress, RequestSubscription> _handlers = new();
     private readonly ConcurrentDictionary<RequestAddress, StreamSubscription> _streams = new();
@@ -82,7 +84,17 @@ public sealed class InMemoryRequestBroker
         ILogger<InMemoryRequestBroker>? logger,
         TimeProvider? timeProvider = null
     )
+        : this(logger, timeProvider, messagingOptions: null) { }
+
+    /// <summary>Composes the transport with the messaging frame limit.</summary>
+    public InMemoryRequestBroker(
+        ILogger<InMemoryRequestBroker>? logger = null,
+        TimeProvider? timeProvider = null,
+        IOptions<HostLoomOptions>? messagingOptions = null
+    )
     {
+        _maxFrameBytes = messagingOptions?.Value.MaxFrameBytes ?? HostLoomOptions.DefaultMaxFrameBytes;
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_maxFrameBytes);
         _logger = logger ?? NullLogger<InMemoryRequestBroker>.Instance;
         _clock = timeProvider ?? TimeProvider.System;
     }
@@ -318,6 +330,7 @@ public sealed class InMemoryRequestBroker
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
+        ValidateFrameSize(frame.Length);
         var owned = frame.ToArray();
         var deliveries = _topics
             .Where(pair => pair.Key.Topic == topic)
@@ -367,6 +380,7 @@ public sealed class InMemoryRequestBroker
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
+        ValidateFrameSize(request.Length);
         var reply = new TaskCompletionSource<ReadOnlyMemory<byte>>(
             TaskCreationOptions.RunContinuationsAsynchronously
         );
@@ -408,7 +422,7 @@ public sealed class InMemoryRequestBroker
     /// requester keeps waiting for its own timeout, as it would for a broker whose consumer went
     /// away mid-request, instead of receiving a cancellation that belongs to the listener.
     /// </summary>
-    private static async Task DeliverRequestAsync(
+    private async Task DeliverRequestAsync(
         RequestSubscription subscription,
         byte[] request,
         TaskCompletionSource<ReadOnlyMemory<byte>> reply
@@ -420,6 +434,7 @@ public sealed class InMemoryRequestBroker
                     await subscription.Handler(request, subscription.Token).ConfigureAwait(false)
                 )
                 .ConfigureAwait(false);
+            ValidateFrameSize(response.Length);
             reply.TrySetResult(response);
         }
         catch (OperationCanceledException) { }
@@ -435,6 +450,12 @@ public sealed class InMemoryRequestBroker
         {
             subscription.Exit();
         }
+    }
+
+    private void ValidateFrameSize(int length)
+    {
+        if (length > _maxFrameBytes)
+            throw new MalformedEnvelopeException($"The broker frame exceeds HostLoomOptions.MaxFrameBytes ({_maxFrameBytes} bytes).");
     }
 
     /// <summary>

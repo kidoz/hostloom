@@ -56,6 +56,7 @@ public interface IRequestBroker : IAsyncDisposable
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
     /// <exception cref="ObjectDisposedException">The transport was disposed before or during the call.</exception>
     /// <exception cref="MessagingTransportException">Any other transport failure. Whether the request was delivered is unknown.</exception>
+    /// <exception cref="MalformedEnvelopeException">The received reply exceeds <see cref="HostLoomOptions.MaxFrameBytes"/>, or an in-memory request frame exceeds it.</exception>
     ValueTask<ReadOnlyMemory<byte>> RequestAsync(
         RequestAddress address,
         ReadOnlyMemory<byte> request,

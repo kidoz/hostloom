@@ -48,6 +48,7 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     internal static readonly TimeSpan ConnectionCloseBound = TimeSpan.FromSeconds(2);
 
     private readonly RabbitMqOptions _options;
+    private readonly int _maxFrameBytes;
     private readonly RabbitMqQueueNaming _queueNaming;
     private readonly Func<CancellationToken, ValueTask<IConnection>> _connectionFactory;
 #pragma warning disable CA2213
@@ -82,6 +83,14 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
     )
         : this(options, connectionFactory: null, logger) { }
 
+    /// <summary>Composes the transport with the messaging frame limit.</summary>
+    public RabbitMqRequestBroker(
+        IOptions<RabbitMqOptions> options,
+        ILogger<RabbitMqRequestBroker>? logger = null,
+        IOptions<HostLoomOptions>? messagingOptions = null
+    )
+        : this(options, connectionFactory: null, logger, messagingOptions: messagingOptions) { }
+
     /// <summary>
     /// Takes a connection factory so the request/reply correlation can be driven by fake
     /// <see cref="IConnection"/> and <see cref="IChannel"/> instances in tests, without a broker,
@@ -91,11 +100,14 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         IOptions<RabbitMqOptions> options,
         Func<CancellationToken, ValueTask<IConnection>>? connectionFactory,
         ILogger<RabbitMqRequestBroker>? logger = null,
-        TimeProvider? timeProvider = null
+        TimeProvider? timeProvider = null,
+        IOptions<HostLoomOptions>? messagingOptions = null
     )
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
+        _maxFrameBytes = messagingOptions?.Value.MaxFrameBytes ?? HostLoomOptions.DefaultMaxFrameBytes;
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_maxFrameBytes);
         ArgumentOutOfRangeException.ThrowIfLessThan(_options.MaxConcurrentPublishes, 1);
         if (
             _options.PublishTimeout <= TimeSpan.Zero
@@ -257,6 +269,7 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             {
                 try
                 {
+                    ValidateFrameSize(delivery.Body.Length);
                     // Checked before the handler runs: the property is caller-controlled and
                     // becomes a default-exchange routing key, so a request naming any other
                     // queue must not be executed and then answered into it.
@@ -627,6 +640,7 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             {
                 try
                 {
+                    ValidateFrameSize(delivery.Body.Length);
                     await handler(delivery.Body, linked.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (linked.IsCancellationRequested)
@@ -1191,7 +1205,16 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                         && _pending.TryGetValue(id, out var completion)
                     )
                     {
-                        completion.TrySetResult(delivery.Body.ToArray());
+                        try
+                        {
+                            ValidateFrameSize(delivery.Body.Length);
+                            completion.TrySetResult(delivery.Body.ToArray());
+                        }
+                        catch (MalformedEnvelopeException exception)
+                        {
+                            // Reply deliveries are auto-acked; fail only the correlated caller.
+                            completion.TrySetException(exception);
+                        }
                     }
 
                     return Task.CompletedTask;
@@ -1228,6 +1251,12 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         {
             _initializationGate.Release();
         }
+    }
+
+    private void ValidateFrameSize(int length)
+    {
+        if (length > _maxFrameBytes)
+            throw new MalformedEnvelopeException($"The broker frame exceeds HostLoomOptions.MaxFrameBytes ({_maxFrameBytes} bytes).");
     }
 
     /// <summary>

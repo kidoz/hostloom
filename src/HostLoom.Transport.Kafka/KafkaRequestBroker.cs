@@ -43,6 +43,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
     private const string CorrelationHeader = "hostloom-correlation-id";
     private const string ReplyToHeader = "hostloom-reply-to";
     private readonly KafkaOptions _options;
+    private readonly int _maxFrameBytes;
     private readonly IProducer<string, byte[]> _producer;
     private readonly ConcurrentDictionary<
         Guid,
@@ -64,11 +65,22 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
     private Task? _disposing;
     private readonly KeyValuePair<string, object?> _clientTag;
 
+    public KafkaRequestBroker(IOptions<KafkaOptions> options)
+        : this(options, logger: null) { }
+
     public KafkaRequestBroker(
         IOptions<KafkaOptions> options,
         ILogger<KafkaRequestBroker>? logger = null
     )
         : this(options, logger, producer: null, consumerFactory: null) { }
+
+    /// <summary>Composes the transport with the messaging frame limit.</summary>
+    public KafkaRequestBroker(
+        IOptions<KafkaOptions> options,
+        ILogger<KafkaRequestBroker>? logger = null,
+        IOptions<HostLoomOptions>? messagingOptions = null
+    )
+        : this(options, logger, producer: null, consumerFactory: null, messagingOptions: messagingOptions) { }
 
     /// <summary>
     /// Takes the producer and a consumer factory so topology and delivery can be driven by fakes in
@@ -79,12 +91,15 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
         ILogger<KafkaRequestBroker>? logger,
         IProducer<string, byte[]>? producer,
         KafkaConsumerFactory? consumerFactory,
-        TimeProvider? timeProvider = null
+        TimeProvider? timeProvider = null,
+        IOptions<HostLoomOptions>? messagingOptions = null
     )
     {
         ArgumentNullException.ThrowIfNull(options);
         _logger = logger ?? NullLogger<KafkaRequestBroker>.Instance;
         _options = options.Value;
+        _maxFrameBytes = messagingOptions?.Value.MaxFrameBytes ?? HostLoomOptions.DefaultMaxFrameBytes;
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_maxFrameBytes);
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.BootstrapServers);
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.ConsumerGroup);
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.ResponseTopic);
@@ -144,6 +159,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                 address.Value,
                 async (record, token) =>
                 {
+                    ValidateFrameSize(record.Message.Value?.Length ?? 0);
                     // Everything a caller controls is checked before the handler runs, so a bad
                     // request is skipped as malformed rather than executed and then found unanswerable.
                     var correlationId = GetRequiredHeader(
@@ -245,6 +261,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                 topic.Value,
                 async (record, token) =>
                 {
+                    ValidateFrameSize(record.Message.Value?.Length ?? 0);
                     await handler(record.Message.Value, token).ConfigureAwait(false);
                 },
                 _logger,
@@ -445,8 +462,23 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
             && _pending.TryGetValue(id, out var completion)
         )
         {
-            completion.TrySetResult(record.Message.Value);
+            try
+            {
+                ValidateFrameSize(record.Message.Value?.Length ?? 0);
+                completion.TrySetResult(record.Message.Value);
+            }
+            catch (MalformedEnvelopeException exception)
+            {
+                // A bad correlated reply ends only its caller; it must not poison the reply loop.
+                completion.TrySetException(exception);
+            }
         }
+    }
+
+    private void ValidateFrameSize(int length)
+    {
+        if (length > _maxFrameBytes)
+            throw new MalformedEnvelopeException($"The broker frame exceeds HostLoomOptions.MaxFrameBytes ({_maxFrameBytes} bytes).");
     }
 
     public ValueTask DisposeAsync()
