@@ -47,6 +47,24 @@ A custom transport registers with
 | `SslCaLocation` | `null` | CA bundle that signs the brokers' certificates |
 | `ConfigureClient` | `null` | `Action<ClientConfig>` run on every producer and consumer configuration after the options above, for client certificates, OAuth bearer, and tuning |
 
+## Oversized frames
+
+The built-in transports use `HostLoomOptions.MaxFrameBytes` (1 MiB by default). The limit is
+inclusive and checked before raw request/event handlers run and before correlated replies are
+returned or copied into an owned RabbitMQ reply buffer. An oversized frame is a
+`MalformedEnvelopeException`, with these outcomes:
+
+| Ingress | Outcome |
+| --- | --- |
+| In-memory request or publication | The call fails before copying the frame or invoking handlers |
+| Kafka request or event | The record is committed past as malformed, without invoking handlers or rewinding; the next record can proceed |
+| RabbitMQ request or event | The delivery is rejected without requeue, reaching `DeadLetterExchange` when configured |
+| Correlated reply on any built-in transport | The waiting caller fails with `MalformedEnvelopeException`; its pending entry is removed and the reply consumer remains usable |
+
+Uncorrelated replies are ignored. Broker/network buffers precede these checks; the framework limit
+does not replace broker or SDK receive-buffer limits. Encoded-size limits do not apply to typed
+in-process streams, which have no wire envelope.
+
 ## Topology mapping
 
 | Concept | In-memory | RabbitMQ | Kafka |

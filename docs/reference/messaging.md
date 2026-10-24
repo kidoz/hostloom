@@ -61,7 +61,16 @@ singletons defeats that isolation — the `HLM0003`
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `RequestTimeout` | 30 seconds | How long a client waits for a reply before failing; overridable per call via `GetResponseAsync`'s `timeout` parameter. For a stream it bounds only the wait for a listener to accept, not the gaps between items |
+| `MaxFrameBytes` | 1,048,576 (1 MiB) | Positive, inclusive limit on encoded request, event, response and fault frames, checked before envelope decoding. Also used by the built-in transports, including raw frame handlers and correlated replies. Typed in-process streams have no frame |
 | `IncludeFaultDetails` | `false` | Forward every handler exception's type name and message in the fault envelope. Off, a caller sees `HandlerFault` / "The request handler failed." for everything except a `RemoteFaultException`; the full exception is logged on the handling side either way |
+
+The limit counts the whole encoded frame, including JSON metadata and Base64 expansion. To accept
+larger frames, configure `MaxFrameBytes` on each receiver and requesting client. Manually constructed
+brokers accept an optional `messagingOptions: Options.Create(new HostLoomOptions { MaxFrameBytes = ... })`
+argument; their existing constructors use the default. Custom broker implementations still receive
+the kernel's checks before requests, events and replies are decoded. Broker SDK/network receive
+buffers are allocated before HostLoom sees the bytes; configure broker and SDK receive limits too
+when bounding those allocations. See [oversized-frame handling](transports.md#oversized-frames).
 
 ## Exceptions
 
