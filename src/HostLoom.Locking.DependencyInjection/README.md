@@ -22,6 +22,11 @@ and a backend package such as `HostLoom.Redis` adds its own `Use*` extension ove
 enabled lock with no provider fails startup validation; `Locking:Enabled = false` is single-instance
 mode and needs none.
 
+When several features share locking, select the provider once at the composition root. Repeated
+`AddHostLoomLocking()` calls are allowed; calling `UseRedis()`, `UseInMemory()`, or another provider
+selector again is rejected, even when selecting the same provider. A duplicate selection reports
+that locking was configured more than once so conflicting backend settings cannot be silently hidden.
+
 `AddHealthChecks()` registers a readiness check tagged `ready` that asks the provider's
 `ILockProviderHealthProbe` whether the backend is reachable. A provider without a probe, including
 the in-memory one, reports healthy with a description saying so. Liveness is never touched.
