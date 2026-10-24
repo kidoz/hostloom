@@ -40,10 +40,10 @@ internal sealed class PipelineRunner<TContext>(
             outcome = "canceled";
             throw;
         }
-        catch (Exception exception)
+        catch (Exception)
         {
             outcome = "failure";
-            activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
+            activity?.SetStatus(ActivityStatusCode.Error);
             throw;
         }
         finally

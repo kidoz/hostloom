@@ -407,7 +407,7 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
         }
         catch (LockProviderUnavailableException exception)
         {
-            activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
+            activity?.SetStatus(ActivityStatusCode.Error);
             if (!_providerDown)
             {
                 _providerDown = true;

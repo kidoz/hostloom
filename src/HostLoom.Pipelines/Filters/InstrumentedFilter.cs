@@ -87,10 +87,10 @@ public sealed class InstrumentedFilter<TContext> : IFilter<TContext>
             outcome = CanceledOutcome;
             throw;
         }
-        catch (Exception exception)
+        catch (Exception)
         {
             outcome = FailureOutcome;
-            activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
+            activity?.SetStatus(ActivityStatusCode.Error);
             PipelineDiagnostics.FilterFailures.Add(1, _tags);
             throw;
         }

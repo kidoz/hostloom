@@ -188,7 +188,7 @@ internal sealed class MessageDispatcher
         }
         catch (Exception exception)
         {
-            activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
+            activity?.SetStatus(ActivityStatusCode.Error);
             // The full exception stays here, in the log, whatever the caller is allowed to see.
             _logger.LogError(
                 exception,
@@ -273,7 +273,7 @@ internal sealed class MessageDispatcher
                     }
                     catch (Exception exception)
                     {
-                        activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
+                        activity?.SetStatus(ActivityStatusCode.Error);
                         _logger.LogError(
                             exception,
                             "Stream '{MessageType}' on endpoint '{Endpoint}' faulted.",

@@ -88,9 +88,9 @@ internal sealed class EventDispatcher(
             // The listener is stopping; like a cancelled request, that is not a fault.
             throw;
         }
-        catch (Exception exception)
+        catch (Exception)
         {
-            activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
+            activity?.SetStatus(ActivityStatusCode.Error);
             HostLoomDiagnostics.Faults.Add(1, tags);
 
             // No fault envelope exists for an event: there is nobody to answer. The failure goes
