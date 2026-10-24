@@ -844,8 +844,9 @@ transport topology.
   `KafkaOptions.ResponseTopic` and correlation travels in Kafka headers. The
   response topic must be provisioned with enough retention for the maximum
   request timeout. TLS and SASL are configured through the typed security
-  options or `ConfigureClient`; a handler service can restrict the reply topics
-  it will produce to with `AllowedReplyTopics`.
+  options or `ConfigureClient`; a handler service must list its callers' response topics
+  in `AllowedReplyTopics`. The default empty set denies every request. Trusted deployments
+  can explicitly opt into unrestricted routing with `AllowAnyReplyTopic`.
 
 The Kafka adapter gives every client instance a unique response consumer group
 that starts at the end of the response topic, so each instance sees new

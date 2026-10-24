@@ -39,7 +39,8 @@ A custom transport registers with
 | `ResponseTopic` | `hostloom.responses` | Topic on which this client receives replies; provision retention ≥ the maximum request timeout, one topic per calling service |
 | `ClientId` | `{machine}-{pid}-{random}` | Client identifier reported to the broker. Replicas may share one; the reply consumer group is named by a random per-instance id, not by this value |
 | `EnableIdempotence` | `true` | Idempotent producer |
-| `AllowedReplyTopics` | empty | Reply topics a request may name in `hostloom-reply-to`. Empty accepts any syntactically valid topic name; otherwise the header must match an entry exactly, or the request is rejected as malformed before the handler runs |
+| `AllowedReplyTopics` | empty | Reply topics a request may name in `hostloom-reply-to`. Empty denies every request; add each caller's response topic. A header outside the set is rejected as malformed before the handler runs |
+| `AllowAnyReplyTopic` | `false` | Explicitly bypass the allowlist for trusted request producers. Topic syntax is still validated. Enabling this permits the producer to direct replies using the handler service's credentials |
 | `MaxRequestAge` | `null` | When set, a request record whose Kafka timestamp is older than this is rejected as malformed (committed, never handled) |
 | `SecurityProtocol` | `null` | `Plaintext`, `Ssl`, `SaslPlaintext`, or `SaslSsl`; unset leaves the client library's plaintext default |
 | `SaslMechanism` | `null` | SASL mechanism; requires a SASL `SecurityProtocol` |

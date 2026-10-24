@@ -36,6 +36,7 @@ builder.Services
         options.BootstrapServers = "localhost:9092";
         options.ConsumerGroup = "greetings-service";
         options.ResponseTopic = "hostloom.responses";
+        options.AllowedReplyTopics.Add("hostloom.responses");
     })
     .AddHandler<GetGreeting, Greeting, GetGreetingHandler>("greetings");
 ```
@@ -61,6 +62,7 @@ builder.Services
         options.BootstrapServers = "broker-1:9093,broker-2:9093";
         options.ConsumerGroup = "greetings-service";
         options.ResponseTopic = "greetings-service.replies";
+        options.AllowedReplyTopics.Add("greetings-service.replies");
         options.SecurityProtocol = SecurityProtocol.SaslSsl;
         options.SaslMechanism = SaslMechanism.ScramSha512;
         options.SaslUsername = builder.Configuration["Kafka:Username"];
@@ -87,8 +89,8 @@ fail with `MessagingTransportException` without publishing; the failed consumer 
 and the next request retries initialization. Readiness reports the failed or pending initialization. The ACL model stays legible: a handler service needs `Write` on the
 response topics of the services that call it and `Read` on its request
 topics; a calling service needs `Write` on the request topics it calls
-and `Read` on its own response topic. A handler service can pin that
-down with `AllowedReplyTopics`, so a request naming any other topic in its
+and `Read` on its own response topic. A handler service must configure
+`AllowedReplyTopics`, so a request naming any other topic in its
 `hostloom-reply-to` header is rejected before the handler runs:
 
 ```csharp
@@ -96,8 +98,16 @@ options.AllowedReplyTopics.Add("orders-service.replies");
 options.AllowedReplyTopics.Add("billing-service.replies");
 ```
 
-Without the allow list the header is still checked against Kafka's
-topic-name rules. `MaxRequestAge` additionally rejects a request record
+The allowlist is empty by default and rejects every request. It does not implicitly include
+`ResponseTopic`, which is where this instance receives replies rather than a permission to answer
+other callers. Client-only and event-only services do not need a reply allowlist.
+
+When upgrading from the earlier unrestricted default, add every calling service's response topic
+to the handler service's allowlist before serving requests. Unmatched requests are committed past
+as malformed, so callers time out. Deployments that intentionally trust every request producer may
+set `options.AllowAnyReplyTopic = true` to retain unrestricted routing. This bypasses the allowlist
+and lets callers direct replies using the handler's produce credentials; topic syntax is still
+checked. `MaxRequestAge` additionally rejects a request record
 older than the given age, so a retained or replayed request stream cannot
 be pushed through the handlers again.
 
