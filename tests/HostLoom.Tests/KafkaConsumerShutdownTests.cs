@@ -43,7 +43,7 @@ public sealed class KafkaConsumerShutdownTests
         var completed = Signal();
         var producer = Substitute.For<IProducer<string, byte[]>>();
         await using var broker = new KafkaRequestBroker(
-            Options.Create(new KafkaOptions()),
+            Options.Create(new KafkaOptions { AllowedReplyTopics = { "orders.replies" } }),
             null,
             producer,
             (_, _) => consumer

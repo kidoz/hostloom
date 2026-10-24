@@ -10,11 +10,62 @@ namespace HostLoom.Tests;
 
 /// <summary>
 /// The reply topic a request names is caller-controlled. It is checked against Kafka's topic
-/// rules and the optional allow list before the handler runs, and a reply that cannot be produced
+/// rules and the allow list before the handler runs, and a reply that cannot be produced
 /// afterwards is logged and skipped rather than used as a reason to run the handler again.
 /// </summary>
 public sealed class KafkaReplyRoutingTests
 {
+    [Fact]
+    public void Reply_routing_is_denied_by_default_even_for_the_local_response_topic()
+    {
+        var options = new KafkaOptions();
+        Assert.False(options.AllowAnyReplyTopic);
+        Assert.Empty(options.AllowedReplyTopics);
+        var error = Assert.Throws<MalformedEnvelopeException>(() =>
+            KafkaReplyTopic.Require(options.ResponseTopic, options.AllowedReplyTopics)
+        );
+        Assert.DoesNotContain(options.ResponseTopic, error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task An_empty_allow_list_requires_explicit_unrestricted_routing(bool allowAny)
+    {
+        var kafka = new FakeKafka();
+        kafka.EnqueueRequest("orders", offset: 0, replyTo: "billing.replies");
+        await using var broker = Create(kafka, new KafkaOptions { AllowAnyReplyTopic = allowAny });
+        var handled = 0;
+        await using var listener = await broker.ListenAsync(
+            "orders",
+            (_, _) =>
+            {
+                handled++;
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>("reply"u8.ToArray());
+            },
+            TestContext.Current.CancellationToken
+        );
+        await WaitUntilAsync(() => kafka.Commits.Count == 1, "the record commits");
+        Assert.Equal(allowAny ? 1 : 0, handled);
+        Assert.Equal(allowAny ? 1 : 0, kafka.Produced.Count);
+        Assert.Empty(kafka.Seeks);
+    }
+
+    [Theory]
+    [InlineData("orders.replies", true)]
+    [InlineData("audit log", false)]
+    [InlineData("..", false)]
+    public void Unrestricted_routing_still_validates_topic_syntax(string topic, bool valid)
+    {
+        var allowed = new HashSet<string>(StringComparer.Ordinal) { "billing.replies" };
+        if (valid)
+            Assert.Equal(topic, KafkaReplyTopic.Require(topic, allowed, allowAnyReplyTopic: true));
+        else
+            Assert.Throws<MalformedEnvelopeException>(() =>
+                KafkaReplyTopic.Require(topic, allowed, allowAnyReplyTopic: true)
+            );
+    }
+
     [Theory]
     [InlineData("replies")]
     [InlineData("orders.replies-1_a")]
@@ -72,7 +123,10 @@ public sealed class KafkaReplyRoutingTests
     {
         var kafka = new FakeKafka();
         kafka.EnqueueRequest("orders", offset: 0, replyTo: replyTo);
-        await using var broker = Create(kafka, new KafkaOptions());
+        await using var broker = Create(
+            kafka,
+            new KafkaOptions { AllowedReplyTopics = { "billing.replies" } }
+        );
         var handled = 0;
 
         await using var listener = await broker.ListenAsync(
@@ -126,7 +180,10 @@ public sealed class KafkaReplyRoutingTests
             ProduceFailure = new KafkaException(ErrorCode.TopicAuthorizationFailed),
         };
         kafka.EnqueueRequest("orders", offset: 0, replyTo: "billing.replies");
-        await using var broker = Create(kafka, new KafkaOptions());
+        await using var broker = Create(
+            kafka,
+            new KafkaOptions { AllowedReplyTopics = { "billing.replies" } }
+        );
         var handled = 0;
 
         await using var listener = await broker.ListenAsync(
@@ -166,7 +223,11 @@ public sealed class KafkaReplyRoutingTests
         );
         await using var broker = Create(
             kafka,
-            new KafkaOptions { MaxRequestAge = TimeSpan.FromMinutes(1) },
+            new KafkaOptions
+            {
+                MaxRequestAge = TimeSpan.FromMinutes(1),
+                AllowedReplyTopics = { "billing.replies" },
+            },
             clock
         );
         var handled = new List<long>();

@@ -23,12 +23,18 @@ public sealed class KafkaOptions
     public bool EnableIdempotence { get; set; } = true;
 
     /// <summary>
-    /// Reply topics a request may name in its <c>hostloom-reply-to</c> header. Empty, the default,
-    /// accepts any syntactically valid Kafka topic name; non-empty, a request whose header is not
-    /// in the set is rejected as malformed before its handler runs, so a caller cannot make this
-    /// service produce to a topic of its choosing.
+    /// Reply topics a request may name in its <c>hostloom-reply-to</c> header. Empty by default,
+    /// which rejects every request before its handler runs. Add each caller's response topic.
+    /// A topic outside this set is malformed unless <see cref="AllowAnyReplyTopic"/> is enabled.
     /// </summary>
     public ISet<string> AllowedReplyTopics { get; } = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Explicitly permits requests to name any syntactically valid reply topic, bypassing
+    /// <see cref="AllowedReplyTopics"/>. Off by default. Enable only when every request producer
+    /// is trusted to direct publications using this service's credentials.
+    /// </summary>
+    public bool AllowAnyReplyTopic { get; set; }
 
     /// <summary>
     /// When set, a request record whose Kafka timestamp is older than this is rejected as

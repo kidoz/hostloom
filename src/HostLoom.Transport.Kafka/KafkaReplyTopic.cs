@@ -2,7 +2,7 @@ namespace HostLoom.Transport.Kafka;
 
 /// <summary>
 /// Validates the reply topic a request names. The header is written by the caller, so it is
-/// checked against Kafka's topic-name rules and, when configured, an explicit allow list before
+/// checked against Kafka's topic-name rules and an explicit allow list before
 /// the handler runs; a rejected request is a malformed envelope, committed and skipped.
 /// </summary>
 internal static class KafkaReplyTopic
@@ -37,7 +37,11 @@ internal static class KafkaReplyTopic
     /// <see cref="MalformedEnvelopeException"/>. The rejected value is deliberately not echoed:
     /// it is caller-controlled and would otherwise land in the log verbatim.
     /// </summary>
-    internal static string Require(string replyTo, ISet<string> allowed)
+    internal static string Require(
+        string replyTo,
+        ISet<string> allowed,
+        bool allowAnyReplyTopic = false
+    )
     {
         if (!IsValidTopicName(replyTo))
         {
@@ -46,7 +50,7 @@ internal static class KafkaReplyTopic
             );
         }
 
-        if (allowed.Count > 0 && !allowed.Contains(replyTo))
+        if (!allowAnyReplyTopic && !allowed.Contains(replyTo))
         {
             throw new MalformedEnvelopeException(
                 "Kafka request header 'hostloom-reply-to' names a topic outside KafkaOptions.AllowedReplyTopics."

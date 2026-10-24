@@ -168,7 +168,8 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                     );
                     var replyTo = KafkaReplyTopic.Require(
                         GetRequiredHeader(record.Message.Headers, ReplyToHeader),
-                        _options.AllowedReplyTopics
+                        _options.AllowedReplyTopics,
+                        _options.AllowAnyReplyTopic
                     );
                     RejectIfStale(
                         record.Message.Timestamp,

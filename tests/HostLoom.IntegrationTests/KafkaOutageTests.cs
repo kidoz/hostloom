@@ -262,6 +262,7 @@ public sealed class KafkaOutageTests
         options.ConsumerGroup = clientId;
         options.ClientId = clientId;
         options.ResponseTopic = responses;
+        options.AllowedReplyTopics.Add(responses);
         // A request abandoned during an outage must not linger for the default five minutes, but
         // its delivery must outlast the request, or a produce error would race the timeout.
         options.ConfigureClient = config =>

@@ -182,8 +182,9 @@ public sealed class KafkaTransportTests : IAsyncLifetime
         var address = await CreateTopicAsync("replicas");
         var responses = await CreateTopicAsync("responses");
         var group = Unique("group");
-        using var server = await StartAsync(hostLoom =>
-            hostLoom.AddHandler<Greet, Greeting, GreetHandler>(address)
+        using var server = await StartAsync(
+            hostLoom => hostLoom.AddHandler<Greet, Greeting, GreetHandler>(address),
+            allowedReplyTopics: [responses]
         );
         // Two instances of one calling service configured alike, as replicas of one deployment
         // are: the same group prefix, response topic, and client id.
@@ -585,7 +586,8 @@ public sealed class KafkaTransportTests : IAsyncLifetime
         Received? received = null,
         string? consumerGroup = null,
         string? clientId = null,
-        string? responseTopic = null
+        string? responseTopic = null,
+        string[]? allowedReplyTopics = null
     )
     {
         responseTopic ??= await CreateTopicAsync("responses");
@@ -599,6 +601,8 @@ public sealed class KafkaTransportTests : IAsyncLifetime
                     options.BootstrapServers = "localhost:9092";
                     options.ConsumerGroup = consumerGroup ?? Unique("group");
                     options.ResponseTopic = responseTopic;
+                    options.AllowedReplyTopics.Add(responseTopic);
+                    options.AllowedReplyTopics.UnionWith(allowedReplyTopics ?? []);
                     if (clientId is not null)
                     {
                         options.ClientId = clientId;

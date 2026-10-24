@@ -76,6 +76,7 @@ public sealed class KafkaTransportConformanceTests
                             BootstrapServers = BootstrapServers,
                             ConsumerGroup = group,
                             ResponseTopic = responses,
+                            AllowedReplyTopics = { responses },
                             ClientId = $"{group}-{Interlocked.Increment(ref clients)}",
                         }
                     )
@@ -90,6 +91,7 @@ public sealed class KafkaTransportConformanceTests
                     options.BootstrapServers = BootstrapServers;
                     options.ConsumerGroup = group;
                     options.ResponseTopic = responses;
+                    options.AllowedReplyTopics.Add(responses);
                     options.ClientId = $"{group}-host-{Interlocked.Increment(ref clients)}";
                 }),
             RequestTimeout = TimeSpan.FromSeconds(45),
