@@ -45,6 +45,7 @@ public interface IEventBroker
     /// <exception cref="ObjectDisposedException">The transport was disposed before or during the call.</exception>
     /// <exception cref="TimeoutException">The transport has a publication deadline and it elapsed.</exception>
     /// <exception cref="MessagingTransportException">Any other transport failure.</exception>
+    /// <exception cref="MalformedEnvelopeException">An in-memory frame exceeds <see cref="HostLoomOptions.MaxFrameBytes"/> before local delivery.</exception>
     ValueTask PublishAsync(
         RequestAddress topic,
         ReadOnlyMemory<byte> frame,
