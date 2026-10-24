@@ -187,6 +187,11 @@ public sealed class LeadershipRegistrationTests
             firstScheduler.GetState("catalog:rebuild").NextDue is not null
             && secondScheduler.GetState("catalog:rebuild").NextDue is not null
         );
+        // NextDue is published before Task.Delay registers its timer. Advancing in that gap
+        // would arm the delay relative to the later clock and strand this occurrence.
+        await SchedulingTests.WaitUntilAsync(() =>
+            clock.PendingTimersDueAt(clock.GetUtcNow().AddSeconds(1)) == 2
+        );
         clock.Advance(TimeSpan.FromSeconds(1));
 
         await SchedulingTests.WaitUntilAsync(() =>
@@ -202,11 +207,19 @@ public sealed class LeadershipRegistrationTests
             ScheduleRunOutcome.Skipped,
             secondScheduler.GetState("catalog:rebuild").LastOutcome
         );
+        await SchedulingTests.WaitUntilAsync(() =>
+            clock.PendingTimersDueAt(clock.GetUtcNow().AddSeconds(10)) == 2
+        );
 
         // The leader stops; the other instance leads and runs the next occurrence.
         await first.StopAsync(TestContext.Current.CancellationToken);
-        clock.Advance(TimeSpan.FromSeconds(2));
         var secondElector = second.Services.GetRequiredKeyedService<LeaderElector>("scheduler");
+        await SchedulingTests.WaitUntilAsync(() =>
+            secondElector.IsLeader
+            || clock.PendingTimersDueAt(clock.GetUtcNow().AddSeconds(1)) > 0
+            || clock.PendingTimersDueAt(clock.GetUtcNow().AddSeconds(2)) > 0
+        );
+        clock.Advance(TimeSpan.FromSeconds(2));
         await SchedulingTests.WaitUntilAsync(() => secondElector.IsLeader);
         clock.Advance(TimeSpan.FromSeconds(8));
         await SchedulingTests.WaitUntilAsync(() =>

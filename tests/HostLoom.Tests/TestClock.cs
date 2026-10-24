@@ -54,6 +54,15 @@ internal sealed class TestClock : TimeProvider
         }
     }
 
+    /// <summary>Timers armed for exactly this instant, for coordinating independent loops.</summary>
+    public int PendingTimersDueAt(DateTimeOffset due)
+    {
+        lock (_gate)
+        {
+            return _timers.Count(timer => timer.IsDueAt(due));
+        }
+    }
+
     public void Advance(TimeSpan delta)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(delta, TimeSpan.Zero);
@@ -117,6 +126,8 @@ internal sealed class TestClock : TimeProvider
         }
 
         public bool IsDue(DateTimeOffset now) => _due is { } due && now >= due;
+
+        public bool IsDueAt(DateTimeOffset due) => _due == due;
 
         public void Fire()
         {
