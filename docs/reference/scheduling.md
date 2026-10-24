@@ -142,7 +142,9 @@ precedence while the probe reported the chosen guard; register a double after
 the builder to replace the chosen guard deliberately, or register the guard
 type itself first and choose it with `UseGuard<TGuard>`. The hosted service starts the scheduler with
 the host and stops it with the host's shutdown token; a job that ignores its
-token is not waited for past that bound.
+token is not waited for past that bound, including during subsequent host disposal. Cancellation
+resources remain alive until the abandoned loops end. Direct scheduler disposal without an
+earlier abandoned stop waits for the loops to finish.
 
 ## Observability
 

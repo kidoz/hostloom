@@ -51,6 +51,11 @@ in the log events listed in `SchedulingEvents`. A guard that throws skips the ru
 `GuardFailed`: a job that must not run twice cannot run when nothing can say whether another
 instance already does.
 
+`StopAsync(token)` bounds the wait for running jobs and cancellation callbacks. When that bound
+expires, later `DisposeAsync()` preserves the abandonment and returns without waiting again.
+The jobs may still finish; cancellation resources are released after their loops end. Direct
+disposal without an earlier abandoned stop waits for the loops, so jobs should honor cancellation.
+
 `SchedulingOptions.Enabled = false` runs nothing and says so at startup, for a deployment that
 keeps its registrations but must not execute jobs. `SchedulingProbe.Describe(scheduler)` reports
 the composition and the current state of every schedule without running anything. Install
