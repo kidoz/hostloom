@@ -154,6 +154,15 @@ closing the connection in the background, which takes it about 25 seconds.
 | The producer cannot deliver a request | `MessagingTransportException` around `ProduceException` |
 | The producer cannot deliver an event | `MessagingTransportException` around `ProduceException`. Publication has no deadline of its own: a produce that cannot be delivered fails when the producer's `message.timeout.ms` (five minutes by default, set through `ConfigureClient`) runs out |
 | The transport is disposed while an event publication waits for its delivery report | `ObjectDisposedException` at once. Disposal still flushes the producer for up to five seconds, so the event may yet be delivered |
+| A listener or subscription stops while handling a record | Its token is cancelled. The loop stops waiting for an unfinished asynchronous handler and leaves the record uncommitted for redelivery. A handler that ignores cancellation can keep running |
+
+Each Kafka consumer disposal waits up to five seconds for cancellation, its loop, and native
+cleanup. Blocking synchronous handlers, cancellation callbacks, or native cleanup can outlive that
+bound; cleanup then continues in the background (`KafkaConsumerCleanupDeferred`, 1431), with the
+consumer kept alive until the loop ends. A throwing cancellation callback is logged
+(`KafkaConsumerCancellationFailed`, 1432) and does not bypass cleanup. Concurrent or repeated
+disposal calls share the same wait. Broker disposal also flushes the producer for up to five
+seconds; consumer bounds apply separately to each consumer.
 
 ## Behavioral differences worth knowing
 
@@ -186,7 +195,7 @@ closing the connection in the background, which takes it about 25 seconds.
   repeat for an answer that still had nowhere to go.
 
 Every log line a transport writes carries a stable event id: RabbitMQ and the in-memory
-transport use 1401 to 1413, and Kafka uses 1421 to 1430. The
+transport use 1401 to 1413, and Kafka uses 1421 to 1432. The
 [observability reference](observability.md#transport-log-events) lists them.
 - **RabbitMQ cancellation**: a delivery cancelled in flight (the listener
   is stopping, or the client library cancelled it) is nacked with requeue;

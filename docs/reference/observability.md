@@ -245,6 +245,8 @@ come from listeners, subscriptions, and the reply consumer alike and name the to
 | 1428 | `KafkaConsumerLoopFaulted` | Error | The consumer loop itself faulted, a defect, and had stopped consuming |
 | 1429 | `KafkaConsumerCloseFailed` | Error | Closing a stopped consumer failed, so its group may wait out the session timeout before rebalancing |
 | 1430 | `KafkaConsumerCleanupFailed` | Debug | Disposing a consumer whose subscription failed at startup failed too; the startup failure is the one reported |
+| 1431 | `KafkaConsumerCleanupDeferred` | Warning | Consumer shutdown exceeded five seconds; cleanup continues in the background |
+| 1432 | `KafkaConsumerCancellationFailed` | Error | A cancellation callback threw; consumer cleanup continues |
 
 ## Health checks
 
