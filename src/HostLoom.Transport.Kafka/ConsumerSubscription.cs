@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Confluent.Kafka;
 using Microsoft.Extensions.Logging;
 
@@ -24,6 +25,7 @@ namespace HostLoom.Transport.Kafka;
 internal sealed class ConsumerSubscription : IAsyncDisposable
 {
     internal static readonly TimeSpan DefaultConsumeFailureBackoff = TimeSpan.FromMilliseconds(500);
+    internal static readonly TimeSpan DefaultShutdownTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// How many times one record is rewound and re-consumed before it is skipped. A partition
@@ -38,11 +40,21 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
     private readonly string _topic;
     private readonly ILogger _logger;
     private readonly TimeSpan _backoff;
+
+    [SuppressMessage(
+        "Usage",
+        "CA2213:Disposable fields should be disposed",
+        Justification = "CleanupAsync disposes this source in a finally block on the background cleanup task, after the consumer loop ends."
+    )]
     private readonly CancellationTokenSource _stopping = new();
     private readonly Task _loop;
     private readonly bool _commitOnSuccess;
     private readonly bool _retryIndefinitely;
     private readonly KeyValuePair<string, object?> _destinationTag;
+    private readonly Lock _disposalGate = new();
+    private readonly TimeProvider _clock;
+    private readonly TimeSpan _shutdownTimeout;
+    private Task? _disposing;
 
     private ConsumerSubscription(
         IConsumer<string, byte[]> consumer,
@@ -51,7 +63,9 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
         ILogger logger,
         TimeSpan backoff,
         bool commitOnSuccess,
-        bool retryIndefinitely
+        bool retryIndefinitely,
+        TimeSpan shutdownTimeout,
+        TimeProvider clock
     )
     {
         _consumer = consumer;
@@ -60,6 +74,8 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
         _backoff = backoff;
         _commitOnSuccess = commitOnSuccess;
         _retryIndefinitely = retryIndefinitely;
+        _shutdownTimeout = shutdownTimeout;
+        _clock = clock;
         _destinationTag = new(KafkaDiagnostics.DestinationTag, topic);
         _loop = Task
             .Factory.StartNew(
@@ -78,7 +94,9 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
         ILogger logger,
         TimeSpan? backoff = null,
         bool commitOnSuccess = false,
-        bool retryIndefinitely = false
+        bool retryIndefinitely = false,
+        TimeSpan? shutdownTimeout = null,
+        TimeProvider? timeProvider = null
     ) =>
         new(
             consumer,
@@ -87,19 +105,62 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
             logger,
             backoff ?? DefaultConsumeFailureBackoff,
             commitOnSuccess,
-            retryIndefinitely
+            retryIndefinitely,
+            shutdownTimeout ?? DefaultShutdownTimeout,
+            timeProvider ?? TimeProvider.System
         );
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (_stopping.IsCancellationRequested)
+        lock (_disposalGate)
         {
-            return;
+            // Native close and synchronous handler/cancellation callbacks can block too. Keep
+            // them off the disposing caller and give every caller the same bounded wait.
+            return new ValueTask(_disposing ??= WaitForCleanupAsync(Task.Run(CleanupAsync)));
         }
+    }
 
-        await _stopping.CancelAsync().ConfigureAwait(false);
+    private async Task WaitForCleanupAsync(Task cleanup)
+    {
         try
         {
+            await cleanup.WaitAsync(_shutdownTimeout, _clock).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            if (cleanup.IsCompleted)
+            {
+                await cleanup.ConfigureAwait(false);
+                return;
+            }
+            _logger.LogWarning(
+                KafkaEvents.ConsumerCleanupDeferred,
+                "HostLoom Kafka consumer cleanup for '{Topic}' exceeded {Timeout}; cleanup continues in the background.",
+                _topic,
+                _shutdownTimeout
+            );
+            ObserveLateFailure(cleanup);
+        }
+    }
+
+    private async Task CleanupAsync()
+    {
+        try
+        {
+            try
+            {
+                await _stopping.CancelAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                RecordFault("cancel");
+                _logger.LogError(
+                    KafkaEvents.ConsumerCancellationFailed,
+                    exception,
+                    "HostLoom Kafka consumer cancellation for '{Topic}' failed; cleanup continues.",
+                    _topic
+                );
+            }
             await _loop.ConfigureAwait(false);
         }
         catch (OperationCanceledException) { }
@@ -132,10 +193,24 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                 );
             }
 
-            _consumer.Dispose();
-            _stopping.Dispose();
+            try
+            {
+                _consumer.Dispose();
+            }
+            finally
+            {
+                _stopping.Dispose();
+            }
         }
     }
+
+    private static void ObserveLateFailure(Task task) =>
+        _ = task.ContinueWith(
+            static failed => _ = failed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default
+        );
 
     private async Task RunAsync(
         Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler
@@ -181,7 +256,25 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
             KafkaDiagnostics.Consumed.Add(1, _destinationTag);
             try
             {
-                await handler(record, _stopping.Token).ConfigureAwait(false);
+                var handling = handler(record, _stopping.Token);
+                if (handling.IsCompletedSuccessfully)
+                    await handling.ConfigureAwait(false);
+                else
+                {
+                    Task task = handling.AsTask();
+                    try
+                    {
+                        await task.WaitAsync(_stopping.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
+                    {
+                        // The handler may ignore cancellation. It owns no consumer calls; once
+                        // detached it cannot commit, rewind, or consume against the closed client.
+                        ObserveLateFailure(task);
+                        break;
+                    }
+                }
+                _stopping.Token.ThrowIfCancellationRequested();
                 retries.Remove(record.TopicPartition);
                 // A failed commit must not enter the handler retry path. The record was handled;
                 // later commits can advance it, or Kafka can redeliver after reassignment.
@@ -190,6 +283,11 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
             }
             catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
             {
+                break;
+            }
+            catch (Exception) when (_stopping.IsCancellationRequested)
+            {
+                // Shutdown never commits or retries a delivery abandoned during handling.
                 break;
             }
             catch (MalformedEnvelopeException exception)

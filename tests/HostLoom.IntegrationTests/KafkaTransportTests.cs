@@ -42,6 +42,66 @@ public sealed class KafkaTransportTests : IAsyncLifetime
 
     public static bool Available => BrokerAvailability.Kafka;
 
+    [Fact(Timeout = 90_000, Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(Available))]
+    public async Task Disposal_abandons_an_unfinished_handler_and_the_record_is_redelivered()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var topic = await CreateTopicAsync("shutdown");
+        var options = new KafkaOptions { ConsumerGroup = Unique("shutdown-group") };
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var first = new KafkaRequestBroker(Options.Create(options));
+        await first.SubscribeAsync(
+            topic,
+            "audit",
+            async (_, token) =>
+            {
+                entered.TrySetResult();
+                await release.Task;
+                Assert.True(token.IsCancellationRequested);
+                finished.TrySetResult();
+            },
+            cancellationToken
+        );
+        try
+        {
+            await first.PublishAsync(topic, "order-1"u8.ToArray(), cancellationToken);
+            await entered.Task.WaitAsync(Bound, cancellationToken);
+
+            await first
+                .DisposeAsync()
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(15), cancellationToken);
+            Assert.False(finished.Task.IsCompleted);
+
+            // The new consumer uses the same group and must receive the abandoned offset.
+            await using var replacement = new KafkaRequestBroker(Options.Create(options));
+            var redelivered = new TaskCompletionSource<byte[]>(
+                TaskCreationOptions.RunContinuationsAsynchronously
+            );
+            await replacement.SubscribeAsync(
+                topic,
+                "audit",
+                (frame, _) =>
+                {
+                    redelivered.TrySetResult(frame.ToArray());
+                    return ValueTask.CompletedTask;
+                },
+                cancellationToken
+            );
+            Assert.Equal(
+                "order-1"u8.ToArray(),
+                await redelivered.Task.WaitAsync(Bound, cancellationToken)
+            );
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+        await finished.Task.WaitAsync(Bound, cancellationToken);
+    }
+
     [Fact(Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(Available))]
     public async Task Request_and_response_round_trip_over_a_real_broker()
     {

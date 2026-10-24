@@ -31,6 +31,8 @@ public sealed class KafkaLogEventTests
             (KafkaEvents.LoopFaulted, 1428, "KafkaConsumerLoopFaulted"),
             (KafkaEvents.ConsumerCloseFailed, 1429, "KafkaConsumerCloseFailed"),
             (KafkaEvents.ConsumerCleanupFailed, 1430, "KafkaConsumerCleanupFailed"),
+            (KafkaEvents.ConsumerCleanupDeferred, 1431, "KafkaConsumerCleanupDeferred"),
+            (KafkaEvents.ConsumerCancellationFailed, 1432, "KafkaConsumerCancellationFailed"),
         ];
 
         foreach (var (logged, id, name) in expected)

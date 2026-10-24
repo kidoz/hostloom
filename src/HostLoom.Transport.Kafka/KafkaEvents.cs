@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging;
 namespace HostLoom.Transport.Kafka;
 
 /// <summary>
-/// Stable event ids for every log line the Kafka transport writes, in the 1421 to 1430 block of
+/// Stable event ids for every log line the Kafka transport writes, in the 1421 to 1432 block of
 /// the transport range, so a logging pipeline can filter or alert on one condition without
 /// matching message text. Consumer-loop lines come from listeners, subscriptions, and the reply
 /// consumer alike, and name the topic the loop consumes.
@@ -57,4 +57,16 @@ internal static class KafkaEvents
     /// failure is the one reported.
     /// </summary>
     public static readonly EventId ConsumerCleanupFailed = new(1430, "KafkaConsumerCleanupFailed");
+
+    /// <summary>Warning: bounded shutdown returned; consumer cleanup continues in the background.</summary>
+    public static readonly EventId ConsumerCleanupDeferred = new(
+        1431,
+        "KafkaConsumerCleanupDeferred"
+    );
+
+    /// <summary>Error: a cancellation callback threw; consumer cleanup continues.</summary>
+    public static readonly EventId ConsumerCancellationFailed = new(
+        1432,
+        "KafkaConsumerCancellationFailed"
+    );
 }

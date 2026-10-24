@@ -161,6 +161,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                     );
 
                     var response = await handler(record.Message.Value, token).ConfigureAwait(false);
+                    token.ThrowIfCancellationRequested();
 
                     try
                     {
