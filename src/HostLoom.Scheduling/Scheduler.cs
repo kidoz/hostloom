@@ -16,6 +16,9 @@ public sealed class Scheduler : IAsyncDisposable
     private readonly CancellationTokenSource _stopping = new();
     private readonly Lock _gate = new();
     private Task? _loops;
+    private Task? _stopped;
+    private Task? _disposing;
+    private bool _stopAbandoned;
     private bool _started;
     private bool _disposed;
 
@@ -157,27 +160,28 @@ public sealed class Scheduler : IAsyncDisposable
     /// </summary>
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
-        Task? loops;
+        Task stopped;
         lock (_gate)
         {
-            loops = _loops;
-        }
-
-        await _stopping.CancelAsync().ConfigureAwait(false);
-        if (loops is null)
-        {
-            return;
+            stopped = _stopped ??= StopCoreAsync();
         }
 
         try
         {
-            await loops.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await stopped.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // The host gave up waiting; the loops observe the stop token on their own.
+            lock (_gate)
+            {
+                _stopAbandoned = true;
+            }
         }
     }
+
+    private Task StopCoreAsync() =>
+        Task.WhenAll(_stopping.CancelAsync(), _loops ?? Task.CompletedTask);
 
     /// <summary>The current state of the schedule named <paramref name="name"/>.</summary>
     /// <exception cref="ArgumentException">No schedule has that name.</exception>
@@ -207,21 +211,52 @@ public sealed class Scheduler : IAsyncDisposable
         return states;
     }
 
-    /// <summary>Stops the scheduler and waits for its loops without a bound.</summary>
-    public async ValueTask DisposeAsync()
+    /// <summary>
+    /// Stops the scheduler and waits for its loops. If a prior bounded stop abandoned the
+    /// wait, returns without waiting again; cancellation resources are released when the loops end.
+    /// </summary>
+    public ValueTask DisposeAsync()
     {
         lock (_gate)
         {
-            if (_disposed)
-            {
-                return;
-            }
-
             _disposed = true;
+            if (_disposing is null)
+            {
+                Task cleanup = DisposeAfterStopAsync(_stopped ??= StopCoreAsync());
+                if (_stopAbandoned)
+                {
+                    _ = ObserveAbandonedDisposalAsync(cleanup);
+                    _disposing = Task.CompletedTask;
+                }
+                else
+                    _disposing = cleanup;
+            }
+            return new ValueTask(_disposing);
         }
+    }
 
-        await StopAsync(CancellationToken.None).ConfigureAwait(false);
-        _stopping.Dispose();
+    private async Task DisposeAfterStopAsync(Task stopped)
+    {
+        try
+        {
+            await stopped.ConfigureAwait(false);
+        }
+        finally
+        {
+            _stopping.Dispose();
+        }
+    }
+
+    private static async Task ObserveAbandonedDisposalAsync(Task cleanup)
+    {
+        try
+        {
+            await cleanup.ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // The caller already abandoned shutdown. Observe late faults after releasing resources.
+        }
     }
 
     /// <summary>One schedule's loop and state. State is read under its gate by the probe.</summary>
