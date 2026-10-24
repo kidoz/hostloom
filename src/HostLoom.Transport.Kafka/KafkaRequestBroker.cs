@@ -80,7 +80,13 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
         ILogger<KafkaRequestBroker>? logger = null,
         IOptions<HostLoomOptions>? messagingOptions = null
     )
-        : this(options, logger, producer: null, consumerFactory: null, messagingOptions: messagingOptions) { }
+        : this(
+            options,
+            logger,
+            producer: null,
+            consumerFactory: null,
+            messagingOptions: messagingOptions
+        ) { }
 
     /// <summary>
     /// Takes the producer and a consumer factory so topology and delivery can be driven by fakes in
@@ -98,7 +104,8 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
         ArgumentNullException.ThrowIfNull(options);
         _logger = logger ?? NullLogger<KafkaRequestBroker>.Instance;
         _options = options.Value;
-        _maxFrameBytes = messagingOptions?.Value.MaxFrameBytes ?? HostLoomOptions.DefaultMaxFrameBytes;
+        _maxFrameBytes =
+            messagingOptions?.Value.MaxFrameBytes ?? HostLoomOptions.DefaultMaxFrameBytes;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_maxFrameBytes);
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.BootstrapServers);
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.ConsumerGroup);
@@ -479,7 +486,9 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
     private void ValidateFrameSize(int length)
     {
         if (length > _maxFrameBytes)
-            throw new MalformedEnvelopeException($"The broker frame exceeds HostLoomOptions.MaxFrameBytes ({_maxFrameBytes} bytes).");
+            throw new MalformedEnvelopeException(
+                $"The broker frame exceeds HostLoomOptions.MaxFrameBytes ({_maxFrameBytes} bytes)."
+            );
     }
 
     public ValueTask DisposeAsync()
