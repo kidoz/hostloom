@@ -36,6 +36,43 @@ public sealed class RabbitMqTransportTests : IAsyncLifetime
     public ValueTask DisposeAsync() => _scope.DisposeAsync();
 
     [Fact(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
+    public async Task Configured_frame_limit_rejects_oversized_events_before_raw_handlers_and_keeps_consuming()
+    {
+        var topic = Unique("frame-limit", "audit");
+        using var deliveries = new MeterCapture(
+            RabbitMqDiagnostics.MeterName,
+            "messaging.destination.name",
+            topic
+        );
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddHostLoom(options => options.MaxFrameBytes = 32).UseRabbitMq();
+        using var host = builder.Build();
+        await host.StartAsync(Token);
+        var broker = (RabbitMqRequestBroker)host.Services.GetRequiredService<IRequestBroker>();
+        var handled = 0;
+        var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var subscription = await broker.SubscribeAsync(
+            topic,
+            "audit",
+            (frame, _) =>
+            {
+                Assert.Equal(32, frame.Length);
+                Interlocked.Increment(ref handled);
+                received.TrySetResult();
+                return ValueTask.CompletedTask;
+            },
+            Token
+        );
+        await broker.PublishAsync(topic, new byte[33], Token);
+        await broker.PublishAsync(topic, new byte[32], Token);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        deadline.CancelAfter(Bound);
+        await deliveries.WaitForAsync("hostloom.rabbitmq.deliveries.rejected", 1, deadline.Token);
+        await received.Task.WaitAsync(deadline.Token);
+        Assert.Equal(1, Volatile.Read(ref handled));
+    }
+
+    [Fact(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
     public async Task Request_and_response_round_trip_over_a_real_broker()
     {
         var address = Unique("greeter");

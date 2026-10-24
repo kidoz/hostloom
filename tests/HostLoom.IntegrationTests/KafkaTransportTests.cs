@@ -42,6 +42,39 @@ public sealed class KafkaTransportTests : IAsyncLifetime
 
     public static bool Available => BrokerAvailability.Kafka;
 
+    [Fact(Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(Available))]
+    public async Task Configured_frame_limit_skips_oversized_events_before_raw_handlers_and_keeps_consuming()
+    {
+        var topic = await CreateTopicAsync("frame-limit");
+        using var loop = new MeterCapture(KafkaDiagnostics.MeterName, DestinationTag, topic);
+        var builder = Host.CreateApplicationBuilder();
+        builder
+            .Services.AddHostLoom(options => options.MaxFrameBytes = 32)
+            .UseKafka(options => options.ConsumerGroup = Unique("frame-group"));
+        using var host = builder.Build();
+        await host.StartAsync(Token);
+        var broker = (KafkaRequestBroker)host.Services.GetRequiredService<IRequestBroker>();
+        var handled = 0;
+        await using var subscription = await broker.SubscribeAsync(
+            topic,
+            "audit",
+            (frame, _) =>
+            {
+                Assert.Equal(32, frame.Length);
+                Interlocked.Increment(ref handled);
+                return ValueTask.CompletedTask;
+            },
+            Token
+        );
+        await broker.PublishAsync(topic, new byte[33], Token);
+        await broker.PublishAsync(topic, new byte[32], Token);
+        using var deadline = Deadline();
+        await loop.WaitForAsync(Committed, 2, deadline.Token);
+        Assert.Equal(1, Volatile.Read(ref handled));
+        Assert.Equal(1, loop.Sum(Skipped, (ReasonTag, "malformed")));
+        Assert.Equal(0, loop.Sum(Rewound));
+    }
+
     [Fact(Timeout = 90_000, Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(Available))]
     public async Task Disposal_abandons_an_unfinished_handler_and_the_record_is_redelivered()
     {
