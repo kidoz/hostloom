@@ -6,17 +6,24 @@ internal sealed partial class DeclarationCompiler
 {
     private void ValidateCaptures()
     {
+        List<Registration> registrations = EffectiveCaptureRegistrations();
         if (
-            !_registrations.Any(static registration =>
+            !registrations.Any(static registration =>
                 registration.Rule.Lifetime == "Singleton" && registration.Rule.Strategy != "Skip"
             )
         )
             return;
+        var services = new Dictionary<INamedTypeSymbol, List<Registration>>(
+            SymbolEqualityComparer.Default
+        );
         var openServices = new Dictionary<INamedTypeSymbol, List<Registration>>(
             SymbolEqualityComparer.Default
         );
-        foreach (Registration registration in _registrations)
+        foreach (Registration registration in registrations)
         {
+            if (!services.TryGetValue(registration.Service, out var exact))
+                services.Add(registration.Service, exact = []);
+            exact.Add(registration);
             if (!registration.Rule.OpenGeneric)
                 continue;
             INamedTypeSymbol service = registration.Service.OriginalDefinition;
@@ -24,7 +31,7 @@ internal sealed partial class DeclarationCompiler
                 openServices.Add(service, group = []);
             group.Add(registration);
         }
-        foreach (Registration root in _registrations)
+        foreach (Registration root in registrations)
         {
             _cancellation.ThrowIfCancellationRequested();
             if (root.Rule.Lifetime != "Singleton" || root.Rule.Strategy == "Skip")
@@ -51,7 +58,7 @@ internal sealed partial class DeclarationCompiler
                     );
                     return;
                 }
-                if (!visited.Add(implementation) || path.Count > _registrations.Count + 1)
+                if (!visited.Add(implementation) || path.Count > registrations.Count + 1)
                     return;
                 IMethodSymbol[] constructors = PublicConstructors(implementation);
                 // With multiple constructors, external registrations can change DI's choice.
@@ -74,7 +81,7 @@ internal sealed partial class DeclarationCompiler
                     bool enumerable =
                         dependency.OriginalDefinition.SpecialType
                             == SpecialType.System_Collections_Generic_IEnumerable_T
-                        && !_services.ContainsKey(dependency)
+                        && !services.ContainsKey(dependency)
                         && !openServices.ContainsKey(dependency.OriginalDefinition);
                     INamedTypeSymbol? requested = enumerable
                         ? dependency.TypeArguments[0] as INamedTypeSymbol
@@ -82,7 +89,12 @@ internal sealed partial class DeclarationCompiler
                     if (requested is null)
                         continue;
                     foreach (
-                        Registration target in CaptureTargets(requested, enumerable, openServices)
+                        Registration target in CaptureTargets(
+                            requested,
+                            enumerable,
+                            services,
+                            openServices
+                        )
                     )
                     {
                         if (target.Rule.Strategy == "Skip")
@@ -99,6 +111,47 @@ internal sealed partial class DeclarationCompiler
         }
     }
 
+    private List<Registration> EffectiveCaptureRegistrations()
+    {
+        var staged = new List<Registration>();
+        foreach (Registration incoming in _registrations)
+        {
+            _cancellation.ThrowIfCancellationRequested();
+            if (
+                incoming.Rule.Strategy == "Skip"
+                && staged.Any(existing =>
+                    existing.Rule != incoming.Rule
+                    && SymbolEqualityComparer.Default.Equals(existing.Service, incoming.Service)
+                )
+            )
+                continue;
+            if (incoming.Rule.Strategy == "Replace")
+            {
+                // Match runtime staging: a rule never replaces its own entries, and alias
+                // factories have no descriptor implementation type to compare.
+                staged.RemoveAll(existing =>
+                    existing.Rule != incoming.Rule
+                    && (
+                        incoming.Rule.Replacement is "ServiceType" or "All"
+                            && SymbolEqualityComparer.Default.Equals(
+                                existing.Service,
+                                incoming.Service
+                            )
+                        || incoming.Rule.Replacement is "ImplementationType" or "All"
+                            && !incoming.Alias
+                            && !existing.Alias
+                            && SymbolEqualityComparer.Default.Equals(
+                                existing.Implementation,
+                                incoming.Implementation
+                            )
+                    )
+                );
+            }
+            staged.Add(incoming);
+        }
+        return staged;
+    }
+
     private IMethodSymbol[] PublicConstructors(INamedTypeSymbol implementation)
     {
         if (!_constructors.TryGetValue(implementation, out var constructors))
@@ -113,14 +166,15 @@ internal sealed partial class DeclarationCompiler
         return constructors;
     }
 
-    private IEnumerable<Registration> CaptureTargets(
+    private static IEnumerable<Registration> CaptureTargets(
         INamedTypeSymbol requested,
         bool enumerable,
+        Dictionary<INamedTypeSymbol, List<Registration>> services,
         Dictionary<INamedTypeSymbol, List<Registration>> openServices
     )
     {
-        IReadOnlyList<Registration> exact = _services.TryGetValue(requested, out var group)
-            ? group.Registrations
+        IReadOnlyList<Registration> exact = services.TryGetValue(requested, out var group)
+            ? group
             : Array.Empty<Registration>();
         IReadOnlyList<Registration> open =
             requested.IsGenericType
