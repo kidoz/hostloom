@@ -318,6 +318,58 @@ public sealed class RedisRegistrationTests
         Assert.Equal(registrations, services);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Repeated_locking_UseRedis_explains_duplicate_selection_without_changing_options(
+        bool conflictingSettings
+    )
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomLocking()
+            .UseRedis(options =>
+            {
+                Quick(options);
+                options.DatabaseIndex = 1;
+            });
+        // Repeating the feature registration is valid; choosing the provider again is not.
+        var again = services.AddHostLoomLocking();
+        var before = services.ToArray();
+
+        var failure = Assert.Throws<InvalidOperationException>(() =>
+            again.UseRedis(options =>
+            {
+                Quick(options);
+                options.DatabaseIndex = conflictingSettings ? 2 : 1;
+            })
+        );
+
+        Assert.Contains(
+            "Redis locking was configured more than once",
+            failure.Message,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "Repeated AddHostLoomLocking() calls are allowed",
+            failure.Message,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "repeated provider selection is not",
+            failure.Message,
+            StringComparison.Ordinal
+        );
+        Assert.Equal(before, services);
+        await using var provider = services.BuildServiceProvider();
+        var options = provider
+            .GetRequiredService<Microsoft.Extensions.Options.IOptions<RedisOptions>>()
+            .Value;
+        Assert.Equal(1, options.DatabaseIndex);
+        Assert.Equal(Unreachable, options.Configuration);
+        Assert.Single(services, d => d.ServiceType == typeof(ILockProvider));
+    }
+
     [Fact]
     public void UseRedis_OnLockingAfterUseInMemory_DoesNotChangeRegistrations()
     {

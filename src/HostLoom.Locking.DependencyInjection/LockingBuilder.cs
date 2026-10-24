@@ -42,9 +42,13 @@ public sealed class LockingBuilder
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         if (_registration.ProviderName is { } existing)
         {
+            var conflict = string.Equals(existing, name, StringComparison.Ordinal)
+                ? $"{name} locking was configured more than once."
+                : $"HostLoom locking already uses the '{existing}' provider, so '{name}' cannot be chosen as well.";
             throw new InvalidOperationException(
-                $"HostLoom locking already uses the '{existing}' provider, so '{name}' cannot be "
-                    + "chosen as well. Configure exactly one lock provider per service collection."
+                conflict
+                    + " Repeated AddHostLoomLocking() calls are allowed, but repeated provider selection is not."
+                    + " Configure exactly one lock provider per IServiceCollection and share that registration between consumers."
             );
         }
 
