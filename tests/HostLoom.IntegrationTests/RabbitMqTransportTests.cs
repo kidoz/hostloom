@@ -41,11 +41,13 @@ public sealed class RabbitMqTransportTests : IAsyncLifetime
         var topic = Unique("frame-limit", "audit");
         using var deliveries = new MeterCapture(
             RabbitMqDiagnostics.MeterName,
-            "messaging.destination.name",
+            "hostloom.rabbitmq.client",
             topic
         );
         var builder = Host.CreateApplicationBuilder();
-        builder.Services.AddHostLoom(options => options.MaxFrameBytes = 32).UseRabbitMq();
+        builder
+            .Services.AddHostLoom(options => options.MaxFrameBytes = 32)
+            .UseRabbitMq(options => options.ClientProvidedName = topic);
         using var host = builder.Build();
         await host.StartAsync(Token);
         var broker = (RabbitMqRequestBroker)host.Services.GetRequiredService<IRequestBroker>();
@@ -67,9 +69,21 @@ public sealed class RabbitMqTransportTests : IAsyncLifetime
         await broker.PublishAsync(topic, new byte[32], Token);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Token);
         deadline.CancelAfter(Bound);
-        await deliveries.WaitForAsync("hostloom.rabbitmq.deliveries.rejected", 1, deadline.Token);
+        await deliveries.WaitForAsync(
+            "hostloom.rabbitmq.deliveries.rejected",
+            1,
+            deadline.Token,
+            ("hostloom.rabbitmq.reason", "malformed")
+        );
         await received.Task.WaitAsync(deadline.Token);
         Assert.Equal(1, Volatile.Read(ref handled));
+        Assert.Equal(
+            0,
+            deliveries.Sum(
+                "hostloom.rabbitmq.deliveries.rejected",
+                ("hostloom.rabbitmq.reason", "handler_failed")
+            )
+        );
     }
 
     [Fact(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
