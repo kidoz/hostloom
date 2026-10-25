@@ -11,6 +11,7 @@ public sealed class InMemoryLockProvider(TimeProvider? timeProvider = null) : IL
     private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
     private readonly Dictionary<string, Lease> _leases = new(StringComparer.Ordinal);
     private readonly Lock _gate = new();
+    private DateTimeOffset _nextCleanup;
 
     /// <summary>Leases currently held and unexpired.</summary>
     public int Count
@@ -19,17 +20,8 @@ public sealed class InMemoryLockProvider(TimeProvider? timeProvider = null) : IL
         {
             lock (_gate)
             {
-                var now = _clock.GetUtcNow();
-                var count = 0;
-                foreach (var lease in _leases.Values)
-                {
-                    if (lease.ExpiresAt > now)
-                    {
-                        count++;
-                    }
-                }
-
-                return count;
+                Maintain(_clock.GetUtcNow(), force: true);
+                return _leases.Count;
             }
         }
     }
@@ -50,6 +42,7 @@ public sealed class InMemoryLockProvider(TimeProvider? timeProvider = null) : IL
         lock (_gate)
         {
             var now = _clock.GetUtcNow();
+            Maintain(now);
             if (
                 !_leases.TryGetValue(key, out var current)
                 || current.ExpiresAt <= now
@@ -115,9 +108,24 @@ public sealed class InMemoryLockProvider(TimeProvider? timeProvider = null) : IL
     private bool IsHeldBy(string key, string owner, out DateTimeOffset now)
     {
         now = _clock.GetUtcNow();
+        Maintain(now);
         return _leases.TryGetValue(key, out var current)
             && current.ExpiresAt > now
             && string.Equals(current.Owner, owner, StringComparison.Ordinal);
+    }
+
+    private void Maintain(DateTimeOffset now, bool force = false)
+    {
+        if (!force && now < _nextCleanup)
+            return;
+        _nextCleanup = now.AddSeconds(1);
+        List<string>? expired = null;
+        foreach (var pair in _leases)
+            if (pair.Value.ExpiresAt <= now)
+                (expired ??= []).Add(pair.Key);
+        if (expired is not null)
+            foreach (var key in expired)
+                _leases.Remove(key);
     }
 
     private readonly record struct Lease(string Owner, DateTimeOffset ExpiresAt);

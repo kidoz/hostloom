@@ -69,7 +69,7 @@ public sealed class CacheEntryOptions
 
     internal bool CachesNull => NullExpiration is { } ttl && ttl > TimeSpan.Zero;
 
-    internal void Validate(string parameterName)
+    internal void Validate(string parameterName, int maxTagLength = int.MaxValue)
     {
         if (LocalExpiration is { } local && local > Expiration)
         {
@@ -83,7 +83,7 @@ public sealed class CacheEntryOptions
         {
             foreach (var tag in Tags)
             {
-                CacheKey.Validate(tag, int.MaxValue, nameof(Tags));
+                CacheKey.Validate(tag, maxTagLength, nameof(Tags));
             }
         }
     }

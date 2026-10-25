@@ -192,7 +192,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         ValidateKey(key);
         ArgumentNullException.ThrowIfNull(factory);
         ArgumentNullException.ThrowIfNull(options);
-        options.Validate(nameof(options));
+        options.Validate(nameof(options), _options.MaxKeyLength);
         ThrowIfDisposed();
 
         var start = Stopwatch.GetTimestamp();
@@ -250,7 +250,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         ValidateKey(key);
         ArgumentNullException.ThrowIfNull(value);
         ArgumentNullException.ThrowIfNull(options);
-        options.Validate(nameof(options));
+        options.Validate(nameof(options), _options.MaxKeyLength);
         ThrowIfDisposed();
         if (options.Expiration <= TimeSpan.Zero)
         {
@@ -291,7 +291,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         ValidateKey(key);
         ArgumentNullException.ThrowIfNull(value);
         ArgumentNullException.ThrowIfNull(options);
-        options.Validate(nameof(options));
+        options.Validate(nameof(options), _options.MaxKeyLength);
         ThrowIfDisposed();
         if (options.Expiration <= TimeSpan.Zero)
         {
@@ -937,7 +937,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                     generation,
                     key,
                     tags,
-                    LocalTimeToLive(entry, options),
+                    LocalTimeToLive(entry, options, readStart),
                     options?.EffectiveStaleGrace,
                     readStart
                 );
@@ -948,7 +948,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                     key,
                     tags,
                     value,
-                    LocalTimeToLive(entry, options),
+                    LocalTimeToLive(entry, options, readStart),
                     entry.Payload.Length,
                     options?.EffectiveStaleGrace,
                     readStart
@@ -976,9 +976,15 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     }
 
     /// <summary>The in-process life of a distributed hit: its remaining time, bounded by the call's local expiration.</summary>
-    private TimeSpan LocalTimeToLive(CacheStoreEntry entry, CacheEntryOptions? options)
+    private TimeSpan LocalTimeToLive(
+        CacheStoreEntry entry,
+        CacheEntryOptions? options,
+        long readStart
+    )
     {
-        var remaining = entry.RemainingTimeToLive ?? _options.L1.MaxEntryAge;
+        var remaining =
+            (entry.RemainingTimeToLive ?? _options.L1.MaxEntryAge)
+            - _time.GetElapsedTime(readStart);
         return options?.LocalExpiration is { } explicitLocal && explicitLocal < remaining
             ? explicitLocal
             : remaining;

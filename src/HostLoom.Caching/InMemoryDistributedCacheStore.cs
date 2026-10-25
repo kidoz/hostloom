@@ -22,6 +22,8 @@ public sealed class InMemoryDistributedCacheStore
     );
     private readonly ConcurrentDictionary<Subscription, byte> _subscriptions = new();
     private readonly TimeProvider _time;
+    private readonly Lock _gate = new();
+    private long _nextCleanupTicks;
 
     /// <summary>Creates the store on <paramref name="timeProvider"/> or the system clock.</summary>
     public InMemoryDistributedCacheStore(TimeProvider? timeProvider = null) =>
@@ -31,8 +33,30 @@ public sealed class InMemoryDistributedCacheStore
     public CacheStoreCapabilities Capabilities =>
         CacheStoreCapabilities.Tags | CacheStoreCapabilities.InvalidationChannel;
 
-    /// <summary>Entries currently held, including expired ones not yet reclaimed.</summary>
-    public int Count => _entries.Count;
+    /// <summary>Entries currently held after reclaiming expired values and unused tag memberships.</summary>
+    public int Count
+    {
+        get
+        {
+            lock (_gate)
+            {
+                Maintain(force: true);
+                return _entries.Count;
+            }
+        }
+    }
+
+    internal int TagCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                Maintain(force: true);
+                return _tags.Count;
+            }
+        }
+    }
 
     /// <inheritdoc />
     public ValueTask<CacheStoreEntry?> GetAsync(
@@ -40,8 +64,12 @@ public sealed class InMemoryDistributedCacheStore
         CancellationToken cancellationToken = default
     )
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        return ValueTask.FromResult(TryRead(key));
+        lock (_gate)
+        {
+            Maintain();
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(TryRead(key));
+        }
     }
 
     /// <inheritdoc />
@@ -53,10 +81,14 @@ public sealed class InMemoryDistributedCacheStore
         CancellationToken cancellationToken = default
     )
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        Write(key, payload, timeToLive);
-        Index(key, tagKeys);
-        return ValueTask.CompletedTask;
+        lock (_gate)
+        {
+            Maintain();
+            cancellationToken.ThrowIfCancellationRequested();
+            Write(key, payload, timeToLive);
+            Index(key, tagKeys);
+            return ValueTask.CompletedTask;
+        }
     }
 
     /// <inheritdoc />
@@ -68,28 +100,32 @@ public sealed class InMemoryDistributedCacheStore
         CancellationToken cancellationToken = default
     )
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        var now = _time.GetUtcNow().UtcTicks;
-        var entry = new Entry(payload.ToArray(), now + timeToLive.Ticks);
-        while (true)
+        lock (_gate)
         {
-            if (_entries.TryAdd(key, entry))
+            Maintain();
+            cancellationToken.ThrowIfCancellationRequested();
+            var now = _time.GetUtcNow().UtcTicks;
+            var entry = new Entry(payload.ToArray(), now + timeToLive.Ticks);
+            while (true)
             {
-                Index(key, tagKeys);
-                return ValueTask.FromResult(true);
-            }
-
-            if (_entries.TryGetValue(key, out var existing))
-            {
-                if (existing.ExpiresAt > now)
-                {
-                    return ValueTask.FromResult(false);
-                }
-
-                if (_entries.TryUpdate(key, entry, existing))
+                if (_entries.TryAdd(key, entry))
                 {
                     Index(key, tagKeys);
                     return ValueTask.FromResult(true);
+                }
+
+                if (_entries.TryGetValue(key, out var existing))
+                {
+                    if (existing.ExpiresAt > now)
+                    {
+                        return ValueTask.FromResult(false);
+                    }
+
+                    if (_entries.TryUpdate(key, entry, existing))
+                    {
+                        Index(key, tagKeys);
+                        return ValueTask.FromResult(true);
+                    }
                 }
             }
         }
@@ -101,13 +137,17 @@ public sealed class InMemoryDistributedCacheStore
         CancellationToken cancellationToken = default
     )
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        foreach (var key in keys)
+        lock (_gate)
         {
-            _entries.TryRemove(key, out _);
-        }
+            Maintain();
+            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var key in keys)
+            {
+                _entries.TryRemove(key, out _);
+            }
 
-        return ValueTask.CompletedTask;
+            return ValueTask.CompletedTask;
+        }
     }
 
     /// <inheritdoc />
@@ -116,17 +156,21 @@ public sealed class InMemoryDistributedCacheStore
         CancellationToken cancellationToken = default
     )
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        var found = new Dictionary<string, CacheStoreEntry>(StringComparer.Ordinal);
-        foreach (var key in keys)
+        lock (_gate)
         {
-            if (TryRead(key) is { } entry)
+            Maintain();
+            cancellationToken.ThrowIfCancellationRequested();
+            var found = new Dictionary<string, CacheStoreEntry>(StringComparer.Ordinal);
+            foreach (var key in keys)
             {
-                found[key] = entry;
+                if (TryRead(key) is { } entry)
+                {
+                    found[key] = entry;
+                }
             }
-        }
 
-        return ValueTask.FromResult<IReadOnlyDictionary<string, CacheStoreEntry>>(found);
+            return ValueTask.FromResult<IReadOnlyDictionary<string, CacheStoreEntry>>(found);
+        }
     }
 
     /// <inheritdoc />
@@ -136,28 +180,36 @@ public sealed class InMemoryDistributedCacheStore
         CancellationToken cancellationToken = default
     )
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        foreach (var (key, payload) in entries)
+        lock (_gate)
         {
-            Write(key, payload, timeToLive);
-        }
+            Maintain();
+            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var (key, payload) in entries)
+            {
+                Write(key, payload, timeToLive);
+            }
 
-        return ValueTask.CompletedTask;
+            return ValueTask.CompletedTask;
+        }
     }
 
     /// <inheritdoc />
     public ValueTask RemoveByTagAsync(string tagKey, CancellationToken cancellationToken = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        if (_tags.TryRemove(tagKey, out var members))
+        lock (_gate)
         {
-            foreach (var key in members.Keys)
+            Maintain();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_tags.TryRemove(tagKey, out var members))
             {
-                _entries.TryRemove(key, out _);
+                foreach (var key in members.Keys)
+                {
+                    _entries.TryRemove(key, out _);
+                }
             }
-        }
 
-        return ValueTask.CompletedTask;
+            return ValueTask.CompletedTask;
+        }
     }
 
     /// <inheritdoc />
@@ -187,6 +239,25 @@ public sealed class InMemoryDistributedCacheStore
 
     /// <inheritdoc />
     public override string ToString() => nameof(InMemoryDistributedCacheStore) + " (in-process)";
+
+    private void Maintain(bool force = false)
+    {
+        var now = _time.GetUtcNow().UtcTicks;
+        if (!force && now < _nextCleanupTicks)
+            return;
+        _nextCleanupTicks = now + TimeSpan.TicksPerSecond;
+        foreach (var pair in _entries)
+            if (pair.Value.ExpiresAt <= now)
+                _entries.TryRemove(pair.Key, out _);
+        foreach (var pair in _tags)
+        {
+            foreach (var key in pair.Value.Keys)
+                if (!_entries.ContainsKey(key))
+                    pair.Value.TryRemove(key, out _);
+            if (pair.Value.IsEmpty)
+                _tags.TryRemove(pair.Key, out _);
+        }
+    }
 
     private CacheStoreEntry? TryRead(string key)
     {

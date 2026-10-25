@@ -286,3 +286,11 @@ enough to cache in process.
   `Caching:Invalidation:FlushLocalOnReconnect` is set, which is the default.
 - The `IDistributedCache` adapter has no touch operation, so `RefreshAsync`
   is a no-op and sliding windows become absolute.
+
+Distributed-read promotion subtracts elapsed read and deserialization time from the returned
+remaining TTL before storing a value or cached null in L1, including bulk reads. Tags use
+the same `MaxKeyLength` validation as tag invalidation and are checked before writes or factories.
+The in-memory distributed store and lock provider reclaim expired historical entries on
+activity, sweeping at most once per second. Inspecting their counts forces reclamation.
+Tag indexes accumulate memberships across live rewrites; cleanup prunes memberships only
+when the referenced entry no longer exists.
