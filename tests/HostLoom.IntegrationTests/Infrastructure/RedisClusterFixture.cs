@@ -82,8 +82,42 @@ internal sealed class RedisClusterFixture
     {
         var port = OwnedPort(replica.EndPoint);
         await VerifyOwnershipAsync(token);
+        // INFO can report an attached replica before the new primary's cluster view has
+        // processed the role change. A reverse failover requested in that window is ignored
+        // by the primary and times out even though CLUSTER FAILOVER returned OK.
+        await PollAsync(
+            async () =>
+            {
+                var view = ParseNodes(await CliAsync(port, ["CLUSTER", "NODES"], token));
+                var self = view.Single(node => node[0] == replica.NodeId);
+                if (!self[2].Split(',').Contains("slave", StringComparer.Ordinal))
+                    return false;
+                var primary = view.Single(node => node[0] == self[3]);
+                var endpoint = primary[1].Split('@')[0];
+                var primaryPort = int.Parse(
+                    endpoint[(endpoint.LastIndexOf(':') + 1)..],
+                    System.Globalization.CultureInfo.InvariantCulture
+                );
+                if (!_ports.Contains(primaryPort))
+                    throw new InvalidOperationException(
+                        "Replica primary is outside the owned fixture."
+                    );
+                var primaryView = ParseNodes(
+                    await CliAsync(primaryPort, ["CLUSTER", "NODES"], token)
+                );
+                var observed = primaryView.Single(node => node[0] == replica.NodeId);
+                return observed[2].Split(',').Contains("slave", StringComparer.Ordinal)
+                    && observed[3] == primary[0];
+            },
+            token
+        );
         Assert.Equal("OK", (await CliAsync(port, ["CLUSTER", "FAILOVER"], token)).Trim());
         await WaitForPromotionAsync(replica, token);
+
+        static string[][] ParseNodes(string text) =>
+            text.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                .ToArray();
     }
 
     public async Task RestartGatewayAsync(CancellationToken token)
@@ -269,7 +303,19 @@ internal sealed class RedisClusterFixture
     {
         await PollAsync(
             async () =>
-                await db.StringGetAsync(key, CommandFlags.DemandReplica).WaitAsync(token) == value,
+            {
+                try
+                {
+                    return await db.StringGetAsync(key, CommandFlags.DemandReplica).WaitAsync(token)
+                        == value;
+                }
+                catch (RedisConnectionException)
+                {
+                    // Topology discovery can expose a replica before its connection is ready.
+                    // Keep the replication precondition bounded by the same polling deadline.
+                    return false;
+                }
+            },
             token
         );
     }
