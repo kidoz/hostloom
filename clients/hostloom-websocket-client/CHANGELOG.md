@@ -5,6 +5,12 @@ independent [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Bound close teardown with `closeTimeoutMilliseconds` (5,000 ms by default), detaching silent
+  sockets, settling pending operations, and resuming queued manual connects after the deadline.
+- Reject server frames whose kind conflicts with a known request or subscription stream before
+  orphan subscription cleanup.
+- Enforce the frame decoder's Base64 syntax in `decodeJsonPayload`, rejecting missing padding
+  and whitespace.
 - Ignore callbacks captured from an obsolete WebSocket after its replacement takes ownership.
 - Bound each open/welcome attempt with `welcomeTimeoutMilliseconds` (10,000 ms by default),
   including silent initial sockets and replacement attempts during recovery.
