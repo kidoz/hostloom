@@ -98,6 +98,13 @@ public sealed class HostLoomBuilder
         where THandler : class, IEventHandler<TEvent>
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(subscription);
+        var previous = Services.LastOrDefault(static descriptor =>
+            descriptor.ServiceType == typeof(THandler) && !descriptor.IsKeyedService
+        );
+        if (previous?.Lifetime == ServiceLifetime.Singleton)
+            throw new InvalidOperationException(
+                $"Event handler '{typeof(THandler)}' was registered as a singleton. Register it as scoped or transient before AddSubscriber so each delivery has its own handler instance."
+            );
         Configuration.AddSubscriber(
             new SubscriberRegistration(
                 MessageTypeName.For<TEvent>(),
