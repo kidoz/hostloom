@@ -338,11 +338,13 @@ public sealed class NodeLeasingTests
         await first.Elector.StartAsync(TestContext.Current.CancellationToken);
         await second.Elector.StartAsync(TestContext.Current.CancellationToken);
         await SchedulingTests.WaitUntilAsync(() => cluster.Faults >= 2);
+        await WaitForRetriesAsync();
 
         Assert.Null(first.Elector.NodeId);
         Assert.Null(second.Elector.NodeId);
         cluster.Clock.Advance(Retry);
         await SchedulingTests.WaitUntilAsync(() => cluster.Faults >= 4);
+        await WaitForRetriesAsync();
         Assert.Null(first.Elector.NodeId);
         Assert.Null(second.Elector.NodeId);
 
@@ -352,6 +354,11 @@ public sealed class NodeLeasingTests
         );
         Assert.NotEqual(first.Elector.NodeId, second.Elector.NodeId);
         Assert.Equal(2, cluster.Backend.Count);
+
+        Task WaitForRetriesAsync() =>
+            SchedulingTests.WaitUntilAsync(() =>
+                cluster.Clock.PendingTimersDueAt(cluster.Clock.GetUtcNow() + Retry) == 2
+            );
     }
 
     [Fact]
