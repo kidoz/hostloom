@@ -825,7 +825,11 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             if (published)
                 _publishers.Return(channel);
             else
+            {
+                if (isEvent)
+                    _declaredTopics.TryRemove(address, out _);
                 _publishers.Discard(channel);
+            }
         }
     }
 

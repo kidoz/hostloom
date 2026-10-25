@@ -35,6 +35,28 @@ public sealed class RabbitMqTransportTests : IAsyncLifetime
 
     public ValueTask DisposeAsync() => _scope.DisposeAsync();
 
+    [Fact(Timeout = 60_000, Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
+    public async Task A_publisher_only_broker_redeclares_an_exchange_after_deletion_and_failed_publication()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var topic = Unique("exchange-recovery", "audit");
+        await using var broker = new RabbitMqRequestBroker(
+            Options.Create(new RabbitMqOptions { Uri = Broker })
+        );
+        await broker.PublishAsync(topic, "before"u8.ToArray(), token);
+        await using var admin = await new ConnectionFactory { Uri = Broker }.CreateConnectionAsync(
+            Token
+        );
+        await using var channel = await admin.CreateChannelAsync(cancellationToken: Token);
+        await channel.ExchangeDeleteAsync(topic, cancellationToken: Token);
+
+        await Assert.ThrowsAsync<MessagingTransportException>(() =>
+            broker.PublishAsync(topic, "uncertain"u8.ToArray(), Token).AsTask()
+        );
+        await broker.PublishAsync(topic, "after"u8.ToArray(), Token);
+        await channel.ExchangeDeclarePassiveAsync(topic, Token);
+    }
+
     [Fact(Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(Available))]
     public async Task Configured_frame_limit_rejects_oversized_events_before_raw_handlers_and_keeps_consuming()
     {

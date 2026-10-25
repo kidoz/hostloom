@@ -15,6 +15,38 @@ namespace HostLoom.Tests;
 /// </summary>
 public sealed partial class RabbitMqBrokerTests
 {
+    [Fact(Timeout = 30_000)]
+    public async Task A_failed_event_publish_invalidates_the_cached_exchange_declaration()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var rabbit = new FakeRabbit();
+        await using var broker = Create(rabbit);
+        await broker.PublishAsync("catalog", new byte[] { 1 }, token);
+        var first = rabbit.Channels[0];
+        first
+            .Channel.BasicPublishAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<BasicProperties>(),
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<CancellationToken>()
+            )
+            .Returns(_ => ValueTask.FromException(new IOException("exchange was deleted")));
+        await Assert.ThrowsAsync<MessagingTransportException>(() =>
+            broker.PublishAsync("catalog", new byte[] { 2 }, token).AsTask()
+        );
+
+        await broker.PublishAsync("catalog", new byte[] { 3 }, token);
+        Assert.Equal(
+            2,
+            rabbit
+                .Channels.SelectMany(channel => channel.Exchanges)
+                .Count(exchange => exchange.Name == "catalog")
+        );
+        Assert.Single(rabbit.Channels[1].Publishes);
+    }
+
     [Theory(Timeout = 30_000)]
     [InlineData("publish", "nack")]
     [InlineData("publish", "closed")]
