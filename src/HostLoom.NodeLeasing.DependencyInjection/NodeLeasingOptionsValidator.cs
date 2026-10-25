@@ -16,12 +16,24 @@ internal sealed class NodeLeasingOptionsValidator(IServiceProvider services)
     public ValidateOptionsResult Validate(string? name, NodeLeasingOptions options)
     {
         List<string> problems = [.. options.Validate()];
-        if (MaxLease() is { } maxLease && options.Lease > maxLease)
+        var limits = Limits();
+        if (limits is { } lockLimits && options.Lease > lockLimits.MaxLease)
         {
             problems.Add(
-                $"NodeLeasing:Lease ({options.Lease}) must be at most Locking:MaxLease ({maxLease}); "
+                $"NodeLeasing:Lease ({options.Lease}) must be at most Locking:MaxLease ({lockLimits.MaxLease}); "
                     + "the lock would cap the lease, and the elector would hold its ID on a shorter lease "
                     + "than it was configured with."
+            );
+        }
+        if (
+            limits is { } keyLimits
+            && name is not null
+            && $"nodeid:{name}:{(Math.Max(1, options.PoolSize) - 1).ToString(System.Globalization.CultureInfo.InvariantCulture)}".Length
+                > keyLimits.MaxKeyLength
+        )
+        {
+            problems.Add(
+                $"The generated node-ID key exceeds Locking:MaxKeyLength ({keyLimits.MaxKeyLength})."
             );
         }
 
@@ -40,7 +52,7 @@ internal sealed class NodeLeasingOptionsValidator(IServiceProvider services)
     /// single-instance mode, which takes no lease, and when no lock is registered, which the
     /// elector reports itself.
     /// </summary>
-    private TimeSpan? MaxLease()
+    private (TimeSpan MaxLease, int MaxKeyLength)? Limits()
     {
         IDistributedLock? locks;
         try
@@ -54,7 +66,7 @@ internal sealed class NodeLeasingOptionsValidator(IServiceProvider services)
         }
 
         return locks is DistributedLock { Enabled: true } composed
-            ? composed.Describe().MaxLease
+            ? (composed.Describe().MaxLease, composed.MaxKeyLength)
             : null;
     }
 }

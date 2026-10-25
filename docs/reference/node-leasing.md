@@ -180,3 +180,7 @@ duplicate and foreign registrations, the lease check against
 the default `None`, every instance holds node zero under `AssignZero`, the
 warning is written once per pool, and the probe reports the posture.
 Integration tests against a real Redis or Valkey are a planned follow-up.
+
+Generated `nodeid:{pool}:{id}` keys must fit the composed lock’s `MaxKeyLength`, including
+the largest ID in the pool. Both direct construction and named-options validation reject
+an oversized key before election starts.

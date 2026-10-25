@@ -13,6 +13,26 @@ namespace HostLoom.Tests;
 
 public sealed class NodeLeasingRegistrationTests
 {
+    [Fact]
+    public async Task Generated_keys_must_fit_the_composed_locks_limit_at_registration()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomLocking(options =>
+            {
+                options.Namespace = "orders";
+                options.MaxKeyLength = 20;
+            })
+            .UseInMemory();
+        services.AddHostLoomNodeLeasing().AddPool("orders-workers");
+        await using var provider = services.BuildServiceProvider();
+        var failure = Assert.Throws<OptionsValidationException>(() =>
+            provider.GetRequiredService<IOptionsMonitor<NodeLeasingOptions>>().Get("orders-workers")
+        );
+        Assert.Contains("Pool 'orders-workers'", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("Locking:MaxKeyLength (20)", failure.Message, StringComparison.Ordinal);
+    }
+
     private static readonly TimeSpan Renew = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan Retry = TimeSpan.FromSeconds(2);
 

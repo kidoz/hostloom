@@ -74,6 +74,13 @@ public sealed class NodeIdElector : INodeLeasing, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(locks);
         ArgumentNullException.ThrowIfNull(options);
         var problems = options.Validate();
+        var longestKey =
+            NodeLeasingPool.KeyPrefix
+            + pool
+            + ":"
+            + (Math.Max(1, options.PoolSize) - 1).ToString(CultureInfo.InvariantCulture);
+        if (locks is DistributedLock composed && longestKey.Length > composed.MaxKeyLength)
+            problems = [.. problems, "The generated node-ID key exceeds Locking:MaxKeyLength."];
         if (problems.Count > 0)
         {
             throw new ArgumentException(
