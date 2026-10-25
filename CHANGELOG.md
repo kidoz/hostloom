@@ -8,12 +8,22 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- Redis and Valkey node-ID leasing integration tests cover distinct assignments, pool exhaustion,
+  renewal, graceful handover, connection outages and recovery on the same elector. Valkey outage
+  experiments are explicitly enabled with `HOSTLOOM_VALKEY_CHAOS=1`.
+- Dedicated chaos-recovery CI jobs exercise broker outages, Redis Cluster primary crashes,
+  HAProxy gateway recovery and Valkey TLS/ACL deployment recovery, retaining diagnostic artifacts
+  even when a test fails.
+
 ### Changed
 
 - Kafka reply routing now denies requests unless their response topic is in `AllowedReplyTopics`
-  or `AllowAnyReplyTopic` is explicitly enabled. Consumer groups default to role-qualified Version2
-  identities; set `ConsumerGroupNaming = KafkaConsumerGroupNaming.Legacy` to retain existing offsets
-  while planning an offset migration. Switching group identities can replay retained records.
+  or `AllowAnyReplyTopic` is explicitly enabled. Consumer group names use the
+  `hostloom.{version}.{role}.{digest}` scheme with version `v1` and role-qualified hashes over
+  length-prefixed components to prevent dotted-name collisions. Existing deployments must migrate
+  committed offsets from earlier group names to avoid replaying retained records.
 - Encoded messaging frames are limited to 1 MiB by default through `HostLoomOptions.MaxFrameBytes`.
   Framework trace error statuses omit exception text.
 - JSON-v1 WebSocket decoding enforces the published schema, including exact casing, required fields,
@@ -25,9 +35,17 @@ are derived from release tags at publish time.
 - Leadership and node-ID assignment waits cancel on stop; calls after disposal throw
   `ObjectDisposedException`. Coupon validation rejects raw input above 1,024 characters before
   normalization. Retry policies reject non-finite factors and jitter ratios.
+- The Redis Cluster chaos runner accepts bare xUnit method filters, rejects empty or skipped
+  test selections and inconsistent result summaries, and preserves commands, test output and
+  failure-time fixture diagnostics in a dedicated evidence directory.
 
 ### Fixed
 
+- Leadership and node-ID electors emit their uncoordinated-mode warning once per instance when
+  startup races the acquisition loop.
+- Lock cleanup and node-leasing outage tests wait for asynchronous release and armed retry timers.
+  Redis scheduling tests distinguish outages before a claim from lease loss during an active job,
+  and gateway tests verify the physical HAProxy route independently of SDK cluster discovery.
 - Composition singleton-capture checks now follow effective replacement and skip semantics.
   Mapping completeness no longer trusts ordinary constructor parameter names, recognizes explicit
   positional record arguments and `SetsRequiredMembers`, and reports unverifiable constructors.
