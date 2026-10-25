@@ -185,7 +185,9 @@ must keep them distinct from automatically allocated request and subscription st
 its terminal `complete` or `fault`, so its server frames remain caller-owned and visible through
 `onFrame`. A `subscribed` or `event` frame owned by neither API is treated as an orphan: the client
 sends exactly one `unsubscribe` for that stream so a desynchronized gateway subscription cannot
-leak for the session lifetime.
+leak for the session lifetime. A subscription frame targeting a known request stream, or a response
+targeting a known subscription stream, is a protocol failure. Ping/pong remains independent of
+request and subscription ownership.
 
 Tests can supply `webSocketFactory` in the constructor options. The returned object implements the
 small exported `HostLoomWebSocket` interface, so lifecycle behavior is testable without a browser

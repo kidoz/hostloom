@@ -141,6 +141,36 @@ function event(
     };
 }
 
+test.each([false, true])(
+    "a response on a subscription stream is invalid (active: %s)",
+    async (active) => {
+        const { connection, socket } = createHarness();
+        await connectHarness(connection, socket);
+        const subscribing = connection.subscribe("inventory.changed", { credit: 4 });
+        const rejected = active ? undefined : assert.rejects(subscribing, HostLoomProtocolError);
+        if (active) {
+            socket.message({
+                kind: "subscribed",
+                streamId: stream(1),
+                topic: "inventory.changed",
+                credit: 4,
+            });
+        }
+        const subscription = active ? await subscribing : undefined;
+        const closes: HostLoomSubscriptionClose[] = [];
+        subscription?.onClose((close) => closes.push(close));
+        socket.message({ kind: "response", streamId: stream(1), payload: "e30=" });
+
+        assert.equal(connection.state, "closing");
+        await rejected;
+        if (subscription !== undefined) {
+            assert.equal(subscription.state, "closed");
+            assert.ok(closes[0]?.error instanceof HostLoomProtocolError);
+        }
+        socket.closed(1006, "", false);
+    },
+);
+
 test("subscribe shares request stream allocation and waits for confirmation", async () => {
     const { connection, socket } = createHarness();
     await connectHarness(connection, socket);

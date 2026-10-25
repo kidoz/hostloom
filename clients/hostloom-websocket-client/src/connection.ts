@@ -697,11 +697,32 @@ export class HostLoomConnection {
             return;
         }
 
+        const ownsRequest = this.#pendingRequests.has(frame.streamId);
+        const subscription = this.#subscriptions.get(frame.streamId);
+        const ownsSubscription =
+            subscription !== undefined ||
+            this.#manualSubscriptions.has(frame.streamId) ||
+            this.#orphanedSubscriptions.has(frame.streamId);
+        // Ping/pong has no stream ownership and may echo an identifier already in use.
+        if (
+            (ownsRequest &&
+                frame.kind !== "response" &&
+                frame.kind !== "fault" &&
+                frame.kind !== "pong") ||
+            (ownsSubscription && frame.kind === "response")
+        ) {
+            this.#failProtocol(
+                new HostLoomProtocolError(
+                    `The server frame kind '${frame.kind}' is invalid for its ${ownsRequest ? "request" : "subscription"} stream.`,
+                ),
+            );
+            return;
+        }
+
         if (frame.kind === "response" || frame.kind === "fault") {
             this.#settleRequest(frame);
         }
 
-        const subscription = this.#subscriptions.get(frame.streamId);
         if (subscription !== undefined) {
             if (frame.kind === "subscribed") {
                 subscription.acceptSubscribed(frame);
@@ -712,7 +733,7 @@ export class HostLoomConnection {
             } else if (frame.kind === "fault") {
                 subscription.fail(new HostLoomRemoteFaultError(frame));
             }
-        } else {
+        } else if (!ownsRequest) {
             this.#handleUnroutedSubscriptionFrame(frame);
         }
 

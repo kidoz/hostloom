@@ -698,3 +698,72 @@ test("factory and caller misuse failures are deterministic", async () => {
     assert.throws(() => connection.close(2000), RangeError);
     assert.throws(() => connection.close(3000, "☕".repeat(62)), RangeError);
 });
+
+test.each(["subscribed", "event", "complete"])(
+    "%s on a request stream fails the protocol before orphan cleanup",
+    async (kind) => {
+        const { connection, socket } = createHarness();
+        await connectHarness(connection, socket);
+        const frames: PostWelcomeFrame[] = [];
+        connection.onFrame((frame) => frames.push(frame));
+        const request = connection.request("inventory.get", "e30=");
+        const rejected = assert.rejects(request, HostLoomProtocolError);
+        socket.message(
+            JSON.stringify({
+                kind,
+                streamId: sentStream(socket, 0),
+                topic: "inventory.changed",
+                credit: 4,
+                sequence: 1,
+                eventId: "11111111111111111111111111111111",
+                payload: "e30=",
+            }),
+        );
+
+        await rejected;
+        assert.equal(connection.state, "closing");
+        assert.equal(socket.sent.length, 1, "no orphan unsubscribe may target the request");
+        assert.deepEqual(frames, [], "invalid stream frames must not reach observers");
+        socket.closed(1006, "", false);
+    },
+);
+
+test("a response on a low-level subscription stream fails the protocol", async () => {
+    const { connection, socket } = createHarness();
+    await connectHarness(connection, socket);
+    connection.send({
+        kind: "subscribe",
+        streamId: CALLER_STREAM,
+        topic: "inventory.changed",
+        credit: 4,
+    });
+    socket.message(`{"kind":"response","streamId":"${CALLER_STREAM}","payload":"e30="}`);
+    assert.equal(connection.state, "closing");
+    socket.closed(1006, "", false);
+});
+
+test("a canceled request retains ownership until a terminal frame arrives", async () => {
+    const { connection, socket } = createHarness();
+    await connectHarness(connection, socket);
+    const abort = new AbortController();
+    const request = connection.request("inventory.get", "e30=", { signal: abort.signal });
+    const rejected = assert.rejects(request, HostLoomRequestCanceledError);
+    abort.abort();
+    await rejected;
+    socket.message(JSON.stringify({ kind: "complete", streamId: sentStream(socket, 0) }));
+    assert.equal(connection.state, "closing");
+    assert.equal(socket.sent.length, 2, "only the request and cancel may be sent");
+    socket.closed(1006, "", false);
+});
+
+test("pong can echo a ping on an owned request stream without settling the request", async () => {
+    const { connection, socket } = createHarness();
+    await connectHarness(connection, socket);
+    const request = connection.request("inventory.get", "e30=");
+    const streamId = sentStream(socket, 0);
+    connection.send({ kind: "ping", streamId });
+    socket.message(JSON.stringify({ kind: "pong", streamId }));
+    assert.equal(connection.state, "connected");
+    socket.message(JSON.stringify({ kind: "response", streamId, payload: "e30=" }));
+    assert.equal(await request, "e30=");
+});
