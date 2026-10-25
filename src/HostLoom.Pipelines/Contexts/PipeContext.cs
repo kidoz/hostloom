@@ -100,14 +100,28 @@ public class PipeContext(CancellationToken cancellationToken = default) : IPipeC
                 return contextPayload;
             }
 
-            var payload = FindPayload(typeof(TPayload)) is TPayload existing
-                ? updateFactory(existing)
-                : addFactory();
+            var previous = FindPayload(typeof(TPayload));
+            var payload = previous is TPayload existing ? updateFactory(existing) : addFactory();
             if (payload is null)
             {
                 throw new InvalidOperationException("A payload factory cannot return null.");
             }
 
+            if (previous is not null && _payloads is not null)
+            {
+                foreach (
+                    var key in _payloads
+                        .Where(pair => ReferenceEquals(pair.Value, previous))
+                        .Select(pair => pair.Key)
+                        .ToArray()
+                )
+                {
+                    if (key.IsInstanceOfType(payload))
+                        _payloads[key] = payload;
+                    else
+                        _payloads.Remove(key);
+                }
+            }
             (_payloads ??= [])[typeof(TPayload)] = payload;
             return payload;
         }
