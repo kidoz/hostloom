@@ -5,6 +5,13 @@ independent [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Ignore callbacks captured from an obsolete WebSocket after its replacement takes ownership.
+- Bound each open/welcome attempt with `welcomeTimeoutMilliseconds` (10,000 ms by default),
+  including silent initial sockets and replacement attempts during recovery.
+- Pace automatic resubscription through the control-frame budget and discard canceled queued restarts.
+- Share malformed JSON-v1 fixtures with the server and update development dependencies to clear
+  the dependency audit.
+
 ## [0.3.0] - 2026-09-25
 
 ### Added

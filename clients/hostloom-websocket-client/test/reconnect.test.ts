@@ -92,6 +92,17 @@ class FakeWebSocket implements HostLoomWebSocket {
         this.#emit("close", { code, reason, wasClean } as CloseEvent);
     }
 
+    public capture<TKey extends keyof HostLoomWebSocketEventMap>(
+        type: TKey,
+    ): (event: HostLoomWebSocketEventMap[TKey]) => void {
+        const listeners = [...(this.#listeners.get(type) ?? [])];
+        return (event) => {
+            for (const listener of listeners) {
+                (listener as (event: HostLoomWebSocketEventMap[TKey]) => void)(event);
+            }
+        };
+    }
+
     #emit<TKey extends keyof HostLoomWebSocketEventMap>(
         type: TKey,
         event: HostLoomWebSocketEventMap[TKey],
@@ -691,4 +702,97 @@ test("reconnect option validation rejects unsafe timing policies", () => {
         () => create({ refreshCredentials: true } as unknown as HostLoomReconnectOptions),
         TypeError,
     );
+});
+
+test("already captured callbacks from an obsolete socket cannot mutate its replacement", async () => {
+    vi.useFakeTimers();
+    const { connection, sockets } = createHarness();
+    const first = await connect(connection, sockets);
+    const late = {
+        open: first.capture("open"),
+        message: first.capture("message"),
+        error: first.capture("error"),
+        close: first.capture("close"),
+    };
+    first.closed(1006);
+    await vi.advanceTimersByTimeAsync(1000);
+    const replacement = await connect(connection, sockets);
+    const request = connection.request("inventory.get", "e30=");
+    late.open({} as Event);
+    late.message({ data: "invalid" } as MessageEvent<unknown>);
+    late.error({} as Event);
+    late.close({ code: 1006, reason: "obsolete", wasClean: false } as CloseEvent);
+    assert.equal(connection.state, "connected");
+    assert.deepEqual(replacement.closeCalls, []);
+    replacement.message({ kind: "response", streamId: stream(1), payload: "e30=" });
+    assert.equal(await request, "e30=");
+});
+
+test("the welcome deadline rejects a silent initial socket and allows a fresh attempt", async () => {
+    vi.useFakeTimers();
+    const { connection, sockets } = createHarness();
+    const pending = connection.connect();
+    const rejected = assert.rejects(pending, /welcome_timeout/);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await rejected;
+    assert.equal(connection.state, "disconnected");
+    assert.equal(socketAt(sockets, 0).closeCalls.length, 1);
+    await connect(connection, sockets);
+    await vi.advanceTimersByTimeAsync(20_000);
+    assert.equal(connection.state, "connected");
+});
+
+test("silent replacement sockets time out and retry while subscriptions remain recoverable", async () => {
+    vi.useFakeTimers();
+    const { connection, sockets } = createHarness();
+    const first = await connect(connection, sockets);
+    first.closed(1006);
+    const recovered = connection.connect();
+    await vi.advanceTimersByTimeAsync(11_000);
+    assert.equal(connection.state, "reconnecting");
+    await vi.advanceTimersByTimeAsync(2_000);
+    const replacement = await connect(connection, sockets);
+    assert.equal(sockets.length, 3);
+    assert.deepEqual(await recovered, welcome);
+    assert.equal(replacement.closeCalls.length, 0);
+});
+
+test("resubscription is paced across control budget windows and canceled work is discarded", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const { connection, sockets } = createHarness();
+    const first = await connect(connection, sockets);
+    const subscriptions = [];
+    for (let i = 1; i <= 60; i++) {
+        const ready = connection.subscribe("inventory.changed", { credit: 1 });
+        first.message({
+            kind: "subscribed",
+            streamId: stream(i),
+            topic: "inventory.changed",
+            credit: 1,
+        });
+        subscriptions.push(await ready);
+    }
+    first.closed(1006);
+    await vi.advanceTimersByTimeAsync(1000);
+    const replacement = await connect(connection, sockets);
+    assert.equal(replacement.sent.length, 5);
+    await subscriptions.at(-1)?.unsubscribe();
+    await vi.advanceTimersByTimeAsync(1000);
+    assert.ok(replacement.sent.length <= 25);
+    await vi.advanceTimersByTimeAsync(3000);
+    assert.equal(replacement.sent.length, 59);
+    assert.ok(sentFrames(replacement).every((frame) => frame.kind === "subscribe"));
+    connection.close();
+});
+
+test("welcome timeout configuration rejects unsafe timer values", () => {
+    for (const welcomeTimeoutMilliseconds of [0, -1, NaN, Infinity, 2_147_483_648, 1.5]) {
+        assert.throws(
+            () =>
+                new HostLoomConnection("wss://inventory.example.com", {
+                    welcomeTimeoutMilliseconds,
+                }),
+            RangeError,
+        );
+    }
 });

@@ -83,7 +83,9 @@ await subscription.unsubscribe();
 ```
 
 `connect()` is idempotent while an attempt is in progress and reports `connected` only after the
-server selects `hostloom.json.v1` and sends a valid `welcome`. Without the `reconnect` option, a
+server selects `hostloom.json.v1` and sends a valid `welcome`. Each attempt must finish within
+`welcomeTimeoutMilliseconds` (10,000 by default, configurable from 1 to 2,147,483,647). A silent
+socket is detached and closed when the deadline expires, even if it never emits a close event. Without the `reconnect` option, a
 close returns the connection to `disconnected`; call `connect()` again when the application chooses
 to retry. When `connect()` is called while a caller-requested close is still in progress, repeated
 calls share one promise: the client waits for the close event before opening exactly one replacement
@@ -136,6 +138,10 @@ credit on a busy topic, or with many subscriptions on one connection, so the cli
   that budget is spent. With the default gateway limit they use at most 25 frames in any
   one-second interval: a burst of 5, then 20 per second. Subscriptions waiting for the budget are
   served in turn.
+
+Automatic resubscription uses the same budget as credit and acknowledgements, so large
+subscription sets recover over multiple windows. Unsubscribing while a restart is queued
+removes it before any new subscribe frame is sent.
 
 Set `maximumControlFramesPerSecond` in the connection options when the gateway is configured with a
 different limit; the pacing is half of it, and never less than one frame per second.

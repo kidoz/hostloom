@@ -30,6 +30,15 @@ const STREAM = "2222222222222222222222222222abcd";
 const SESSION = "11111111111111111111111111111111";
 const EVENT = "55555555555555555555555555555555";
 
+test("rejects every shared malformed JSON-v1 fixture", async () => {
+    const cases = JSON.parse(
+        await readFile(resolve(protocolDirectory, "fixtures/invalid-json-v1.json"), "utf8"),
+    ) as unknown[];
+    for (const frame of cases) {
+        assert.throws(() => decodeServerFrame(JSON.stringify(frame)), HostLoomProtocolError);
+    }
+});
+
 interface NumericSchema {
     readonly minimum: number;
     readonly maximum: number;

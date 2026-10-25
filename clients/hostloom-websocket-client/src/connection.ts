@@ -83,6 +83,8 @@ export interface HostLoomReconnectOptions {
 
 export interface HostLoomConnectionOptions {
     readonly webSocketFactory?: HostLoomWebSocketFactory;
+    /** Maximum time to open the socket and receive its welcome. Defaults to 10,000 ms. */
+    readonly welcomeTimeoutMilliseconds?: number;
     /**
      * Allocates the identifier for each request and subscription stream. It defaults to a random
      * one; supply it to derive a stream from an application trace identifier instead. Every value
@@ -218,6 +220,14 @@ export class HostLoomConnection {
     readonly #manualSubscriptions = new Set<string>();
     readonly #orphanedSubscriptions = new Set<string>();
     readonly #pendingControl = new Set<SubscriptionController>();
+    readonly #pendingRestarts = new Set<SubscriptionController>();
+    readonly #socketListeners = new WeakMap<
+        HostLoomWebSocket,
+        {
+            [K in keyof HostLoomWebSocketEventMap]: (event: HostLoomWebSocketEventMap[K]) => void;
+        }
+    >();
+    readonly #welcomeTimeoutMilliseconds: number;
     readonly #controlBudget: ControlFrameBudget;
 
     #state: HostLoomConnectionState = "disconnected";
@@ -239,12 +249,23 @@ export class HostLoomConnection {
     #reconnectClose: HostLoomCloseInfo | undefined;
     #controlFlushQueued = false;
     #controlTimer: number | undefined;
+    #welcomeTimer: number | undefined;
 
     public constructor(url: string | URL, options: HostLoomConnectionOptions = {}) {
         this.#url = url;
         this.#webSocketFactory = options.webSocketFactory ?? createBrowserWebSocket;
         this.#streamIdFactory = options.streamIdFactory ?? newStreamId;
         this.#reconnect = resolveReconnectOptions(options.reconnect);
+        this.#welcomeTimeoutMilliseconds = options.welcomeTimeoutMilliseconds ?? 10_000;
+        if (
+            !Number.isSafeInteger(this.#welcomeTimeoutMilliseconds) ||
+            this.#welcomeTimeoutMilliseconds <= 0 ||
+            this.#welcomeTimeoutMilliseconds > 2_147_483_647
+        ) {
+            throw new RangeError(
+                "The welcome timeout must be an integer from 1 to 2147483647 milliseconds.",
+            );
+        }
         this.#controlBudget = new ControlFrameBudget(
             resolveControlFramesPerSecond(options.maximumControlFramesPerSecond),
         );
@@ -320,6 +341,22 @@ export class HostLoomConnection {
         });
         this.#connectPromise = connectPromise;
         this.#attach(socket);
+        this.#welcomeTimer = globalThis.setTimeout(() => {
+            if (this.#socket !== socket || this.#state !== "connecting") {
+                return;
+            }
+            // Complete the lifecycle locally even if the native socket never reports a close.
+            this.#handleClose({
+                code: 1006,
+                reason: "welcome_timeout",
+                wasClean: false,
+            } as CloseEvent);
+            try {
+                socket.close();
+            } catch {
+                // The obsolete native socket may already be terminal.
+            }
+        }, this.#welcomeTimeoutMilliseconds);
         this.#transition("connecting");
         return connectPromise;
     }
@@ -727,10 +764,25 @@ export class HostLoomConnection {
     };
 
     #attach(socket: HostLoomWebSocket): void {
-        socket.addEventListener("open", this.#handleOpen);
-        socket.addEventListener("message", this.#handleMessage);
-        socket.addEventListener("error", this.#handleError);
-        socket.addEventListener("close", this.#handleClose);
+        const listeners = {
+            open: (event: Event) => {
+                if (this.#socket === socket) this.#handleOpen(event);
+            },
+            message: (event: MessageEvent<unknown>) => {
+                if (this.#socket === socket) this.#handleMessage(event);
+            },
+            error: (event: Event) => {
+                if (this.#socket === socket) this.#handleError(event);
+            },
+            close: (event: CloseEvent) => {
+                if (this.#socket === socket) this.#handleClose(event);
+            },
+        };
+        this.#socketListeners.set(socket, listeners);
+        socket.addEventListener("open", listeners.open);
+        socket.addEventListener("message", listeners.message);
+        socket.addEventListener("error", listeners.error);
+        socket.addEventListener("close", listeners.close);
     }
 
     #ownsClosingSocket(socket: HostLoomWebSocket | undefined): socket is HostLoomWebSocket {
@@ -742,10 +794,13 @@ export class HostLoomConnection {
     }
 
     #detach(socket: HostLoomWebSocket): void {
-        socket.removeEventListener("open", this.#handleOpen);
-        socket.removeEventListener("message", this.#handleMessage);
-        socket.removeEventListener("error", this.#handleError);
-        socket.removeEventListener("close", this.#handleClose);
+        const listeners = this.#socketListeners.get(socket);
+        if (listeners === undefined) return;
+        socket.removeEventListener("open", listeners.open);
+        socket.removeEventListener("message", listeners.message);
+        socket.removeEventListener("error", listeners.error);
+        socket.removeEventListener("close", listeners.close);
+        this.#socketListeners.delete(socket);
     }
 
     #failProtocol(error: Error): void {
@@ -773,6 +828,10 @@ export class HostLoomConnection {
     }
 
     #clearConnectPromise(): void {
+        if (this.#welcomeTimer !== undefined) {
+            globalThis.clearTimeout(this.#welcomeTimer);
+            this.#welcomeTimer = undefined;
+        }
         this.#connectPromise = undefined;
         this.#resolveConnect = undefined;
         this.#rejectConnect = undefined;
@@ -1045,7 +1104,7 @@ export class HostLoomConnection {
 
     #scheduleControlFlush(): void {
         if (
-            this.#pendingControl.size === 0 ||
+            (this.#pendingControl.size === 0 && this.#pendingRestarts.size === 0) ||
             this.#controlFlushQueued ||
             this.#controlTimer !== undefined
         ) {
@@ -1071,6 +1130,24 @@ export class HostLoomConnection {
 
     /** Flushes waiting subscriptions in request order while the budget allows. */
     #flushControl(): void {
+        for (const subscription of this.#pendingRestarts) {
+            if (this.#state !== "connected") {
+                this.#discardControl();
+                return;
+            }
+            if (this.#controlBudget.delay() > 0) break;
+            this.#pendingRestarts.delete(subscription);
+            if (!subscription.canRestart) continue;
+            let streamId: string;
+            try {
+                streamId = this.#allocateStreamId();
+            } catch (error) {
+                subscription.fail(asError(error));
+                continue;
+            }
+            this.#subscriptions.set(streamId, subscription);
+            if (!subscription.restart(streamId)) this.#subscriptions.delete(streamId);
+        }
         for (const subscription of this.#pendingControl) {
             if (this.#state !== "connected") {
                 this.#discardControl();
@@ -1090,6 +1167,7 @@ export class HostLoomConnection {
 
     /** A replacement session resubscribes with fresh credit, so nothing pending carries over. */
     #discardControl(): void {
+        this.#pendingRestarts.clear();
         this.#pendingControl.clear();
         if (this.#controlTimer !== undefined) {
             globalThis.clearTimeout(this.#controlTimer);
@@ -1163,19 +1241,9 @@ export class HostLoomConnection {
                 continue;
             }
 
-            let streamId: string;
-            try {
-                streamId = this.#allocateStreamId();
-            } catch (error) {
-                subscription.fail(asError(error));
-                continue;
-            }
-
-            this.#subscriptions.set(streamId, subscription);
-            if (!subscription.restart(streamId)) {
-                this.#subscriptions.delete(streamId);
-            }
+            this.#pendingRestarts.add(subscription);
         }
+        this.#flushControl();
     }
 
     #removeSubscription(subscription: SubscriptionController): void {
@@ -1184,6 +1252,7 @@ export class HostLoomConnection {
         }
         this.#logicalSubscriptions.delete(subscription);
         this.#pendingControl.delete(subscription);
+        this.#pendingRestarts.delete(subscription);
     }
 
     #takeRequest(streamId: string): PendingRequest | undefined {
