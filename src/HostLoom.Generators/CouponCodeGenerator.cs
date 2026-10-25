@@ -19,6 +19,9 @@ namespace HostLoom.Generators;
 /// </summary>
 public sealed class CouponCodeGenerator
 {
+    /// <summary>Maximum raw validation input, including surrounding whitespace, in UTF-16 characters.</summary>
+    public const int MaxValidationInputLength = 1024;
+
     private readonly IRandomSource _random;
 
     /// <summary>
@@ -104,12 +107,15 @@ public sealed class CouponCodeGenerator
         ArgumentNullException.ThrowIfNull(profile);
 
         normalized = null;
-        if (string.IsNullOrEmpty(code))
+        if (string.IsNullOrEmpty(code) || code.Length > MaxValidationInputLength)
         {
             return false;
         }
 
-        var candidate = Normalize(code);
+        var trimmed = code.AsSpan().Trim();
+        if (trimmed.Length != profile.PartCount * profile.PartLength + profile.PartCount - 1)
+            return false;
+        var candidate = trimmed.ToString().ToUpperInvariant();
         var parts = candidate.Split(profile.Separator);
         if (parts.Length != profile.PartCount)
         {

@@ -144,7 +144,9 @@ length.
 Check digits are position-aware — the same characters moved to a different
 part position fail validation — and detect transcription typos before a
 code is submitted. They are not authentication and add no entropy.
-`TryValidate` normalizes the input, splits on the separator, and verifies
+`TryValidate` rejects raw input longer than `CouponCodeGenerator.MaxValidationInputLength`
+(1,024 characters) before allocation, checks the trimmed length against the profile, then
+normalizes the input, splits on the separator, and verifies
 the part count, the exact length of every part, alphabet membership of
 every character, and every check digit when the profile enables them; on
 success `normalized` receives the normalized code. `Normalize` is
