@@ -346,6 +346,13 @@ test("round-trips Unicode application JSON through Base64", () => {
     assert.deepEqual(decodeJsonPayload<typeof payload>(encoded), payload);
 });
 
+test.each(["e30", "e3 0=", "e30=\n", "e30=\r", " e30=", "e30=\t"])(
+    "the JSON payload helper rejects malformed Base64 %j",
+    (payload) => {
+        assert.throws(() => decodeJsonPayload(payload), HostLoomProtocolError);
+    },
+);
+
 test("rejects malformed or server-invalid frames", () => {
     const welcomeBody = `"sessionId":"${SESSION}","credit":1,"maximumMessageSize":64,"maximumConcurrentRequests":1`;
     const invalidFrames = [

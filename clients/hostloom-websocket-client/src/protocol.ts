@@ -246,7 +246,7 @@ export function encodeJsonPayload(value: unknown): string {
 
 /** Decodes a Base64 JSON-v1 application payload. The caller supplies its application type. */
 export function decodeJsonPayload<T = unknown>(payload: string): T {
-    if (typeof payload !== "string") {
+    if (typeof payload !== "string" || !isBase64(payload)) {
         throw new HostLoomProtocolError("The application payload must be a Base64 string.");
     }
 
@@ -350,6 +350,10 @@ function validateFrame(value: unknown, direction: "client" | "server"): JsonObje
     return frame;
 }
 
+function isBase64(payload: string): boolean {
+    return payload.length % 4 === 0 && BASE64_PATTERN.test(payload);
+}
+
 function validateProvidedProperties(frame: JsonObject): void {
     for (const property of STRING_PROPERTIES) {
         if (Object.hasOwn(frame, property) && typeof frame[property] !== "string") {
@@ -361,7 +365,7 @@ function validateProvidedProperties(frame: JsonObject): void {
 
     if (Object.hasOwn(frame, "payload")) {
         const payload = frame.payload as string;
-        if (payload.length % 4 !== 0 || !BASE64_PATTERN.test(payload)) {
+        if (!isBase64(payload)) {
             throw new HostLoomProtocolError(
                 "The WebSocket frame property 'payload' must be a Base64 string.",
             );

@@ -196,7 +196,8 @@ deterministic in a test and lets an application derive a stream from its own tra
 
 The payload helper assumes the application's HostLoom serializer produces UTF-8 JSON. Do not use it
 when the application serializer produces another byte representation; frame encode/decode still
-works with an opaque Base64 payload.
+works with an opaque Base64 payload. The helper enforces the same Base64 syntax as the frame
+decoder, including required padding and rejection of whitespace.
 
 `streamId`, `sessionId`, and `eventId` are identifiers, not numbers: each is a string of 32
 lowercase hexadecimal digits, and the decoder rejects any other spelling, including the dashed and
