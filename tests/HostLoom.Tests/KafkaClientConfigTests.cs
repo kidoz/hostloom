@@ -170,7 +170,7 @@ public sealed class KafkaClientConfigTests
         Assert.All(
             groups,
             config =>
-                Assert.StartsWith("hostloom.v2.reply.", config.GroupId, StringComparison.Ordinal)
+                Assert.StartsWith("hostloom.v1.reply.", config.GroupId, StringComparison.Ordinal)
         );
         Assert.All(groups, config => Assert.Equal("orders-api-replies", config.ClientId));
         Assert.All(groups, config => Assert.False(config.EnableAutoCommit));

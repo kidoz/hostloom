@@ -109,11 +109,6 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_maxFrameBytes);
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.BootstrapServers);
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.ConsumerGroup);
-        if (!Enum.IsDefined(_options.ConsumerGroupNaming))
-            throw new ArgumentOutOfRangeException(
-                nameof(options),
-                "Unknown Kafka consumer-group naming scheme."
-            );
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.ResponseTopic);
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.ClientId);
         ValidateSecurity(_options);
@@ -158,11 +153,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                 CreateConsumerConfig(
                     _options,
                     clientId: $"{_options.ClientId}-{address.Value}",
-                    groupId: KafkaConsumerGroupNames.Request(
-                        _options.ConsumerGroup,
-                        address.Value,
-                        _options.ConsumerGroupNaming
-                    ),
+                    groupId: KafkaConsumerGroupNames.Request(_options.ConsumerGroup, address.Value),
                     enableAutoCommit: false,
                     autoOffsetReset: AutoOffsetReset.Earliest
                 ),
@@ -268,8 +259,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                     groupId: KafkaConsumerGroupNames.Subscription(
                         _options.ConsumerGroup,
                         topic.Value,
-                        subscription,
-                        _options.ConsumerGroupNaming
+                        subscription
                     ),
                     enableAutoCommit: false,
                     autoOffsetReset: AutoOffsetReset.Earliest

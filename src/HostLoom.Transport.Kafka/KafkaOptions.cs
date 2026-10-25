@@ -10,13 +10,6 @@ public sealed class KafkaOptions
     public string ConsumerGroup { get; set; } = "hostloom";
 
     /// <summary>
-    /// Physical group identities. Version2 avoids dotted-name collisions. Use Legacy while
-    /// migrating existing committed offsets; changing this setting can replay retained records.
-    /// </summary>
-    public KafkaConsumerGroupNaming ConsumerGroupNaming { get; set; } =
-        KafkaConsumerGroupNaming.Version2;
-
-    /// <summary>
     /// Topic on which this client service receives replies. Provision it with enough retention for
     /// the maximum request timeout. Each client instance uses a unique consumer group, starts at
     /// the end of the topic, and filters by correlation id. Give every calling service its own
