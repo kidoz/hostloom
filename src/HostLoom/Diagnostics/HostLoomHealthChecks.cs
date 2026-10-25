@@ -40,7 +40,10 @@ internal sealed class HostLoomReadinessCheck(
         // Subscriptions count too: the hosted service starts endpoints and subscriptions together
         // and reports one combined state, so counting endpoints alone reports a subscription-only
         // service as a healthy client that happens to listen to nothing.
-        var expected = configuration.Endpoints.Count + configuration.Subscriptions.Count;
+        var expected =
+            configuration.Endpoints.Count
+            + configuration.StreamEndpoints.Count
+            + configuration.Subscriptions.Count;
         if (expected > 0 && !state.Listening)
         {
             return HealthCheckResult.Unhealthy(
