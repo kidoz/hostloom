@@ -53,7 +53,7 @@ public sealed class NodeIdElector : INodeLeasing, IAsyncDisposable
     private bool _disposed;
     private bool _stopRequested;
     private volatile bool _uncoordinated;
-    private volatile bool _uncoordinatedWarned;
+    private int _uncoordinatedWarned;
 
     /// <summary>Composes the elector.</summary>
     /// <param name="pool">The pool; see <see cref="NodeLeasingPool.Validate"/>.</param>
@@ -512,12 +512,11 @@ public sealed class NodeIdElector : INodeLeasing, IAsyncDisposable
 
     private void WarnUncoordinated()
     {
-        if (_uncoordinatedWarned)
+        if (Interlocked.Exchange(ref _uncoordinatedWarned, 1) != 0)
         {
             return;
         }
 
-        _uncoordinatedWarned = true;
         if (Options.WhenUncoordinated == UncoordinatedNodeAssignment.AssignZero)
         {
             _logger.LogWarning(

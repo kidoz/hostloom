@@ -48,7 +48,7 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
     private bool _disposed;
     private bool _stopRequested;
     private volatile bool _uncoordinated;
-    private volatile bool _uncoordinatedWarned;
+    private int _uncoordinatedWarned;
 
     /// <summary>Composes the elector.</summary>
     /// <param name="role">The role; see <see cref="LeadershipRole.Validate"/>.</param>
@@ -441,12 +441,11 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
 
     private void WarnUncoordinated()
     {
-        if (_uncoordinatedWarned)
+        if (Interlocked.Exchange(ref _uncoordinatedWarned, 1) != 0)
         {
             return;
         }
 
-        _uncoordinatedWarned = true;
         if (Options.WhenUncoordinated == UncoordinatedLeadership.Lead)
         {
             _logger.LogWarning(
