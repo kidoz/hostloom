@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using HostLoom.Analyzers.Infrastructure;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Operations;
 
@@ -158,6 +159,12 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
             foreach (IObjectCreationOperation creation in created.Cast<IObjectCreationOperation>())
             {
                 CollectFromCreation(creation, required, assigned);
+                if (HasUnverifiedConstructor(creation, required, assigned))
+                {
+                    return MapBody.NotVerifiable(
+                        "its constructor does not expose provable member assignments"
+                    );
+                }
             }
 
             return MapBody.Verified(assigned.ToImmutable());
@@ -254,7 +261,9 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
             }
         }
 
-        return MapBody.Verified(assigned.ToImmutable());
+        return HasUnverifiedConstructor(creation, required, assigned)
+            ? MapBody.NotVerifiable("its constructor does not expose provable member assignments")
+            : MapBody.Verified(assigned.ToImmutable());
     }
 
     /// <summary>Enumerates this function's operations without entering another execution body.</summary>
@@ -328,26 +337,61 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
         ImmutableHashSet<ISymbol>.Builder assigned
     )
     {
-        // A constructor argument is an assignment: it is how a record's positional members, and
-        // any contract with a real constructor, receive their values.
-        if (creation.Constructor is not null)
+        // Only synthesized positional record members prove the parameter becomes a member.
+        // An ordinary constructor may ignore its arguments, even if their names match.
+        if (IsPositionalRecordConstructor(creation.Constructor))
         {
-            foreach (IParameterSymbol parameter in creation.Constructor.Parameters)
+            foreach (
+                var argument in creation.Arguments.Where(argument =>
+                    argument.ArgumentKind == ArgumentKind.Explicit
+                )
+            )
             {
-                foreach (ISymbol member in required)
+                var parameter = argument.Parameter!;
+                foreach (
+                    ISymbol member in DestinationTypes(creation.Constructor!.ContainingType)
+                        .SelectMany(type => type.GetMembers())
+                )
                 {
                     if (
-                        string.Equals(
+                        member is IPropertySymbol property
+                        && property.DeclaringSyntaxReferences.Any(reference =>
+                            reference.GetSyntax() is ParameterSyntax
+                        )
+                        && string.Equals(
                             member.Name,
                             parameter.Name,
                             StringComparison.OrdinalIgnoreCase
                         )
                     )
                     {
-                        assigned.Add(member);
+                        RecordAssignment(
+                            member,
+                            creation.Type as INamedTypeSymbol,
+                            required,
+                            assigned
+                        );
                     }
                 }
             }
+        }
+
+        if (
+            creation
+                .Constructor?.GetAttributes()
+                .Any(attribute =>
+                    attribute.AttributeClass?.ToDisplayString()
+                    == "System.Diagnostics.CodeAnalysis.SetsRequiredMembersAttribute"
+                ) == true
+        )
+        {
+            assigned.UnionWith(
+                required.Where(member =>
+                    member
+                        is IPropertySymbol { IsRequired: true }
+                            or IFieldSymbol { IsRequired: true }
+                )
+            );
         }
 
         if (creation.Initializer is null)
@@ -385,6 +429,21 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
             }
         }
     }
+
+    private static bool IsPositionalRecordConstructor(IMethodSymbol? constructor) =>
+        constructor?.ContainingType.IsRecord == true
+        && constructor.DeclaringSyntaxReferences.Any(reference =>
+            reference.GetSyntax() is RecordDeclarationSyntax
+        );
+
+    private static bool HasUnverifiedConstructor(
+        IObjectCreationOperation creation,
+        ImmutableHashSet<ISymbol> required,
+        ImmutableHashSet<ISymbol>.Builder assigned
+    ) =>
+        creation.Constructor is { Parameters.Length: > 0 } constructor
+        && !IsPositionalRecordConstructor(constructor)
+        && required.Any(member => !assigned.Contains(member));
 
     private static void RecordAssignment(
         ISymbol member,

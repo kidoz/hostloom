@@ -41,7 +41,9 @@ public sealed partial class MappingCompletenessAnalyzerTests
     [Theory]
     [InlineData("public string Name;")]
     [InlineData("public string Name { get; set; }")]
-    public async Task Derived_class_constructor_arguments_assign_inherited_state(string member)
+    public async Task Derived_class_constructor_arguments_do_not_prove_inherited_assignments(
+        string member
+    )
     {
         Diagnostic[] diagnostics = await AnalyzeAsync(
             $$"""
@@ -58,7 +60,7 @@ public sealed partial class MappingCompletenessAnalyzerTests
             """
         );
 
-        Assert.Empty(diagnostics);
+        Assert.Equal("HLM0005", Assert.Single(diagnostics).Id);
     }
 
     [Theory]

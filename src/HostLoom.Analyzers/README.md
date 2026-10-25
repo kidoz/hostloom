@@ -50,8 +50,11 @@ apply the correct scoped lifetime.
 Assign every settable member of a mapped destination. An explicit map makes a forgotten member a
 silent data loss rather than a compile error — nothing requires the member to be written — which is
 the one axis on which explicit mapping is less safe than the convention mapping it replaces. A
-member supplied through the destination's constructor counts as assigned, so positional records and
-contracts with real constructors need nothing extra.
+member supplied through an explicit argument to a synthesized positional record constructor counts
+as assigned. Omitted optional arguments do not count. Ordinary parameter names prove no assignment:
+a parameterized constructor whose remaining members cannot be proved produces HLM0005. A
+`[SetsRequiredMembers]` constructor satisfies language `required` members only; other writable
+members still need assignments or an explicit exemption.
 Inherited members are included, and an overridden property is counted once. Interface destinations
 include members inherited from other interfaces; assignments to concrete implementation properties
 satisfy the corresponding interface members.

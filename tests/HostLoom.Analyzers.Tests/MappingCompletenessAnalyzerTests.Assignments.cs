@@ -500,7 +500,7 @@ public sealed partial class MappingCompletenessAnalyzerTests
     }
 
     [Fact]
-    public async Task A_constructor_parameter_matches_its_member_case_insensitively()
+    public async Task An_ordinary_constructor_is_unverifiable_despite_matching_parameter_names()
     {
         Diagnostic[] diagnostics = await AnalyzeAsync(
             """
@@ -520,10 +520,66 @@ public sealed partial class MappingCompletenessAnalyzerTests
         );
 
         Diagnostic diagnostic = Assert.Single(diagnostics);
-        string message = diagnostic.GetMessage(CultureInfo.InvariantCulture);
-        Assert.Contains("Mask", message, StringComparison.Ordinal);
-        Assert.DoesNotContain("Name", message, StringComparison.Ordinal);
-        Assert.DoesNotContain("City", message, StringComparison.Ordinal);
+        Assert.Equal("HLM0005", diagnostic.Id);
+    }
+
+    [Theory]
+    [InlineData("new Built(source.Name)")]
+    [InlineData("new Built()")]
+    public async Task Ignored_or_omitted_constructor_arguments_never_prove_completeness(
+        string creation
+    )
+    {
+        var diagnostics = await AnalyzeAsync(
+            $$"""
+            public sealed class Built
+            {
+                public Built(string name = "") { }
+                public string Name { get; set; } = "";
+            }
+            public sealed class Mapper : IMapper<Source, Built>
+            {
+                public Built Map(Source source) => {{creation}};
+            }
+            """
+        );
+        Assert.Equal("HLM0005", Assert.Single(diagnostics).Id);
+    }
+
+    [Fact]
+    public async Task Omitted_positional_record_arguments_do_not_count_as_mapped_members()
+    {
+        var diagnostics = await AnalyzeAsync(
+            """
+            public sealed record Built(string Name = "");
+            public sealed class Mapper : IMapper<Source, Built>
+            {
+                public Built Map(Source source) => new Built();
+            }
+            """
+        );
+        AssertMissingMembers(diagnostics, "Name");
+    }
+
+    [Fact]
+    public async Task SetsRequiredMembers_satisfies_only_language_required_members()
+    {
+        var diagnostics = await AnalyzeAsync(
+            """
+            public sealed class Built
+            {
+                [System.Diagnostics.CodeAnalysis.SetsRequiredMembers]
+                public Built() { Name = "default"; }
+                public required string Name { get; set; }
+                public string City { get; set; } = "";
+            }
+            public sealed class Mapper : IMapper<Source, Built>
+            {
+                public Built Map(Source source) => new Built();
+            }
+            """
+        );
+        AssertMissingMembers(diagnostics, "City");
     }
 
     // -- Opt-out and map discovery ----------------------------------------------------------------
