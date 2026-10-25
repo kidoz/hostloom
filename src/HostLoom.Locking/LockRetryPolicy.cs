@@ -114,6 +114,11 @@ public sealed class LockRetryPolicy
         ArgumentOutOfRangeException.ThrowIfNegative(retryLimit);
         ArgumentOutOfRangeException.ThrowIfLessThan(minInterval, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxInterval, minInterval);
+        if (!double.IsFinite(factor))
+            throw new ArgumentOutOfRangeException(
+                nameof(factor),
+                "The retry factor must be finite."
+            );
         ArgumentOutOfRangeException.ThrowIfLessThan(factor, 1);
         return new LockRetryPolicy(
             Shape.Exponential,

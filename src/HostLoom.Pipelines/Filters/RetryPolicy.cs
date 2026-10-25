@@ -60,6 +60,11 @@ public sealed class RetryPolicy
         ArgumentOutOfRangeException.ThrowIfNegative(retryLimit);
         ArgumentOutOfRangeException.ThrowIfLessThan(minInterval, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxInterval, minInterval);
+        if (!double.IsFinite(factor))
+            throw new ArgumentOutOfRangeException(
+                nameof(factor),
+                "The retry factor must be finite."
+            );
         ArgumentOutOfRangeException.ThrowIfLessThan(factor, 1);
         return new RetryPolicy("exponential", retryLimit, minInterval, maxInterval, factor, 0);
     }
@@ -70,6 +75,11 @@ public sealed class RetryPolicy
     /// </summary>
     public RetryPolicy WithJitter(double ratio)
     {
+        if (!double.IsFinite(ratio))
+            throw new ArgumentOutOfRangeException(
+                nameof(ratio),
+                "The jitter ratio must be finite."
+            );
         ArgumentOutOfRangeException.ThrowIfNegative(ratio);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(ratio, 1);
         return new RetryPolicy(Description, RetryLimit, _minInterval, _maxInterval, _factor, ratio);
