@@ -37,6 +37,33 @@ public sealed partial class WebSocketGatewayTests
     private static readonly Guid FixtureLiveEvent = new("55555555555555555555555555555555");
     private static readonly Guid FixtureSnapshotEvent = new("66666666666666666666666666666666");
 
+    [Fact]
+    public void Json_protocol_rejects_every_shared_malformed_fixture()
+    {
+        using var fixtures = JsonDocument.Parse(
+            File.ReadAllBytes(ProtocolFile("fixtures", "invalid-json-v1.json"))
+        );
+        var protocol = new JsonWebSocketHubProtocol();
+        foreach (var frame in fixtures.RootElement.EnumerateArray())
+        {
+            Assert.Throws<InvalidDataException>(() =>
+                protocol.Decode(Encoding.UTF8.GetBytes(frame.GetRawText()))
+            );
+        }
+    }
+
+    [Theory]
+    [InlineData("1.0")]
+    [InlineData("1e0")]
+    public void Json_protocol_accepts_equivalent_integer_number_spellings(string number)
+    {
+        var json =
+            "{\"kind\":\"credit\",\"streamId\":\"2222222222222222222222222222abcd\",\"credit\":"
+            + number
+            + "}";
+        Assert.Equal(1, new JsonWebSocketHubProtocol().Decode(Encoding.UTF8.GetBytes(json)).Credit);
+    }
+
     /// <summary>The published JSON-v1 schema, read once so bound assertions cannot drift from it.</summary>
     private static readonly JsonDocument JsonV1SchemaDocument = JsonDocument.Parse(
         File.ReadAllBytes(ProtocolFile(JsonV1Schema))
@@ -291,13 +318,13 @@ public sealed partial class WebSocketGatewayTests
     }
 
     [Fact]
-    public void Json_protocol_reads_legacy_kind_casing_case_insensitively()
+    public void Json_protocol_rejects_legacy_kind_casing_outside_the_published_contract()
     {
-        var frame = new JsonWebSocketHubProtocol().Decode(
-            "{\"kind\":\"Welcome\",\"streamId\":\"00000000000000000000000000000000\"}"u8
+        Assert.Throws<InvalidDataException>(() =>
+            new JsonWebSocketHubProtocol().Decode(
+                "{\"kind\":\"Welcome\",\"streamId\":\"00000000000000000000000000000000\"}"u8
+            )
         );
-
-        Assert.Equal(HubFrameKind.Welcome, frame.Kind);
     }
 
     [Fact]
@@ -1304,7 +1331,14 @@ public sealed partial class WebSocketGatewayTests
         registry.Publish(topic, key: null, new byte[] { 7, 6 });
 
         socket.Enqueue(
-            protocol.Encode(new HubFrame { Kind = HubFrameKind.Response, StreamId = Stream(52) }),
+            protocol.Encode(
+                new HubFrame
+                {
+                    Kind = HubFrameKind.Response,
+                    StreamId = Stream(52),
+                    Payload = ReadOnlyMemory<byte>.Empty,
+                }
+            ),
             protocol.MessageType
         );
         _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
@@ -2043,10 +2077,10 @@ public sealed partial class WebSocketGatewayTests
         await run;
     }
 
-    [Theory]
+    [Theory(Timeout = 10_000)]
     [InlineData(HubFrameKind.Ping, 0)]
     [InlineData(HubFrameKind.Pong, 9)]
-    public async Task Invalid_ping_or_client_sent_pong_returns_an_invalid_frame_fault(
+    public async Task Malformed_ping_closes_the_session_and_client_sent_pong_faults(
         HubFrameKind kind,
         int stream
     )
@@ -2070,6 +2104,12 @@ public sealed partial class WebSocketGatewayTests
         var run = session.RunAsync(TestContext.Current.CancellationToken);
 
         _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+        if (stream == 0)
+        {
+            await run.WaitAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(WebSocketCloseStatus.InvalidPayloadData, socket.CloseStatus);
+            return;
+        }
         var fault = protocol.Decode(
             (await socket.ReadSentAsync(TestContext.Current.CancellationToken)).Span
         );

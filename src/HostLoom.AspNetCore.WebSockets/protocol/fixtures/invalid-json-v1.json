@@ -1,0 +1,85 @@
+[
+  {
+    "kind": "response",
+    "streamId": "2222222222222222222222222222abcd",
+    "payload": "e30=",
+    "extra": true
+  },
+  {
+    "kind": "Response",
+    "streamId": "2222222222222222222222222222abcd",
+    "payload": "e30="
+  },
+  {
+    "kind": "response",
+    "streamId": "2222222222222222222222222222ABCD",
+    "payload": "e30="
+  },
+  {
+    "kind": "response",
+    "streamId": "00000000000000000000000000000000",
+    "payload": "e30="
+  },
+  {
+    "kind": "response",
+    "streamId": "2222222222222222222222222222abcd",
+    "payload": null
+  },
+  {
+    "kind": "response",
+    "streamId": "2222222222222222222222222222abcd",
+    "payload": "e3 0="
+  },
+  {
+    "kind": "response",
+    "streamId": "2222222222222222222222222222abcd",
+    "payload": "A==="
+  },
+  {
+    "kind": "response",
+    "streamId": "2222222222222222222222222222abcd",
+    "payload": "e30=",
+    "credit": -1
+  },
+  {
+    "kind": "response",
+    "streamId": "2222222222222222222222222222abcd",
+    "payload": "e30=",
+    "sequence": 9007199254740992
+  },
+  {
+    "kind": "response",
+    "streamId": "2222222222222222222222222222abcd",
+    "payload": "e30=",
+    "timeoutMilliseconds": 0
+  },
+  {
+    "kind": "response",
+    "payload": "e30="
+  },
+  {
+    "kind": "response",
+    "streamId": "2222222222222222222222222222abcd"
+  },
+  {
+    "kind": "welcome",
+    "streamId": "00000000000000000000000000000000"
+  },
+  {
+    "kind": "event",
+    "streamId": "2222222222222222222222222222abcd",
+    "sequence": 0,
+    "payload": "e30="
+  },
+  {
+    "kind": "fault",
+    "streamId": "2222222222222222222222222222abcd",
+    "code": "failed"
+  },
+  {
+    "kind": "response",
+    "streamId": "2222222222222222222222222222abcd",
+    "payload": "e30=",
+    "Payload": "e30="
+  }
+]

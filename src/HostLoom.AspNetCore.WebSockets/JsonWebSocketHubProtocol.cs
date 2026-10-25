@@ -25,10 +25,8 @@ public sealed class JsonWebSocketHubProtocol : IWebSocketHubProtocol
     {
         try
         {
-            var frame =
-                JsonSerializer.Deserialize<JsonHubFrame>(payload, SerializerOptions)
-                ?? throw new InvalidDataException("The JSON frame was null.");
-            return frame.ToHubFrame();
+            using var document = JsonDocument.Parse(payload.ToArray(), new() { MaxDepth = 32 });
+            return JsonHubFrame.Parse(document.RootElement);
         }
         catch (JsonException exception)
         {

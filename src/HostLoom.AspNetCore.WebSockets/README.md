@@ -296,17 +296,19 @@ represent it as binary. This keeps the WebSocket framing protocol independent fr
 contract serialization. The cross-language Protocol Buffers schema is shipped as
 `protocol/hostloom-websocket-v1.proto` in the NuGet package.
 
-JSON accepts kind names case-insensitively and rejects numeric, `None`, and unknown kinds. Its JSON
+JSON validates exact camelCase property and kind names, lowercase identifiers, required fields,
+Base64 payloads, numeric bounds and reserved stream IDs. Unknown properties and explicit null
+optional fields are rejected. Earlier permissive kind casing is no longer accepted. Its JSON
 Schema and exact `welcome`, `subscribed`, `event`, `fault`, `ping`, and `pong` fixtures are shipped
 under the package's `protocol/` directory.
 
 `streamId`, `sessionId`, and `eventId` are `Guid` identifiers. JSON spells each as 32 lowercase
 hexadecimal digits with no separators, and the binary codecs carry the 16 big-endian bytes of
 RFC 4122, so all three subprotocols name the same identifier. The all-zero identifier addresses the
-session rather than a stream; it is valid only on `welcome`.
+session rather than a stream; it is valid on `welcome` and session-level `fault` frames.
 
 The schema is the interoperability contract, so it never admits a frame one conformant
-implementation could not read. `welcome` is pinned to the all-zero stream; every other kind must use
+implementation could not read. `welcome` is pinned to the all-zero stream; kinds other than `welcome` and `fault` must use
 a different identifier; `sequence` stops at 9007199254740991, the largest integer JSON carries
 without loss; `credit`, `timeoutMilliseconds`, `maximumMessageSize`, and
 `maximumConcurrentRequests` stop at 2147483647. `payload` is constrained by a Base64 pattern,
