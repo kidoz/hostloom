@@ -8,6 +8,42 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Changed
+
+- Kafka reply routing now denies requests unless their response topic is in `AllowedReplyTopics`
+  or `AllowAnyReplyTopic` is explicitly enabled. Consumer groups default to role-qualified Version2
+  identities; set `ConsumerGroupNaming = KafkaConsumerGroupNaming.Legacy` to retain existing offsets
+  while planning an offset migration. Switching group identities can replay retained records.
+- Encoded messaging frames are limited to 1 MiB by default through `HostLoomOptions.MaxFrameBytes`.
+  Framework trace error statuses omit exception text.
+- JSON-v1 WebSocket decoding enforces the published schema, including exact casing, required fields,
+  unknown-field rejection, lowercase identifiers, Base64 payloads and numeric bounds. Schema-invalid
+  frames close with invalid-payload status. Optional properties must be omitted instead of null.
+- Log sinks permit one provider owner for their lifetime. Multiple containers must use a factory
+  returning a fresh sink. CLEF renderings have count and aggregate byte limits, bounded alignment
+  and numeric precision, and are skipped by the JSON formatter.
+- Leadership and node-ID assignment waits cancel on stop; calls after disposal throw
+  `ObjectDisposedException`. Coupon validation rejects raw input above 1,024 characters before
+  normalization. Retry policies reject non-finite factors and jitter ratios.
+
+### Fixed
+
+- Composition singleton-capture checks now follow effective replacement and skip semantics.
+  Mapping completeness no longer trusts ordinary constructor parameter names, recognizes explicit
+  positional record arguments and `SetsRequiredMembers`, and reports unverifiable constructors.
+  Singleton mapping dispatchers configured in the same composition block are accepted by HLM0006.
+- Scheduler and Kafka consumer disposal preserve bounded shutdown for non-cooperative work.
+- L2-to-L1 cache promotion accounts for read/deserialization time, including bulk and cached-null
+  reads. Tag validation matches invalidation key limits. In-memory cache/tag and lock state reclaim
+  expired historical keys during activity while preserving tag memberships on live rewrites.
+- Subscriber registration rejects an earlier singleton handler, stream-only applications participate
+  in readiness, and pipeline payload replacement updates compatible aliases together.
+- RabbitMQ publishers invalidate cached exchange declarations after failed event publication.
+  Generated node-ID keys are validated against the composed lock-key limit before election.
+- Outbox poll tests synchronize with record marking. Benchmark baseline updates check the measured
+  branch revision before committing and use a normal fast-forward push.
+- Disposable Valkey TLS fixtures include certificate key identifiers for strict verification.
+
 ## [0.16.1] - 2026-10-22
 
 The eighteenth release of **HostLoom**. It adds in-process stream requests to the messaging
