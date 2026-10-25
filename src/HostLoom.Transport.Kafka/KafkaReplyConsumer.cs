@@ -211,7 +211,11 @@ internal sealed class KafkaReplyConsumer : IAsyncDisposable
                 KafkaRequestBroker.CreateConsumerConfig(
                     _options,
                     clientId: $"{_options.ClientId}-replies",
-                    groupId: $"{_options.ConsumerGroup}.replies.{_groupInstance}",
+                    groupId: KafkaConsumerGroupNames.Reply(
+                        _options.ConsumerGroup,
+                        _groupInstance,
+                        _options.ConsumerGroupNaming
+                    ),
                     // The group is unique to this consumer, so there is never a committed offset
                     // to resume from, and committing one would only leave a group behind on the
                     // broker after every restart. Earliest would replay every retained reply on

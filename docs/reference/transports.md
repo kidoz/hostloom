@@ -36,6 +36,7 @@ A custom transport registers with
 | --- | --- | --- |
 | `BootstrapServers` | `localhost:9092` | Broker bootstrap list |
 | `ConsumerGroup` | `hostloom` | Stable group prefix shared by instances of the same logical service |
+| `ConsumerGroupNaming` | `Version2` | Role-qualified SHA-256 identities over length-prefixed group/address/subscription components; `Legacy` preserves earlier dotted group names and offsets |
 | `ResponseTopic` | `hostloom.responses` | Topic on which this client receives replies; provision retention ≥ the maximum request timeout, one topic per calling service |
 | `ClientId` | `{machine}-{pid}-{random}` | Client identifier reported to the broker. Replicas may share one; the reply consumer group is named by a random per-instance id, not by this value |
 | `EnableIdempotence` | `true` | Idempotent producer |

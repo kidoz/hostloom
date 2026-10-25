@@ -109,6 +109,11 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_maxFrameBytes);
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.BootstrapServers);
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.ConsumerGroup);
+        if (!Enum.IsDefined(_options.ConsumerGroupNaming))
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                "Unknown Kafka consumer-group naming scheme."
+            );
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.ResponseTopic);
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.ClientId);
         ValidateSecurity(_options);
@@ -153,7 +158,11 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                 CreateConsumerConfig(
                     _options,
                     clientId: $"{_options.ClientId}-{address.Value}",
-                    groupId: $"{_options.ConsumerGroup}.{address.Value}",
+                    groupId: KafkaConsumerGroupNames.Request(
+                        _options.ConsumerGroup,
+                        address.Value,
+                        _options.ConsumerGroupNaming
+                    ),
                     enableAutoCommit: false,
                     autoOffsetReset: AutoOffsetReset.Earliest
                 ),
@@ -256,7 +265,12 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                 CreateConsumerConfig(
                     _options,
                     clientId: $"{_options.ClientId}-{topic.Value}-{subscription}",
-                    groupId: SubscriptionGroup(_options.ConsumerGroup, topic, subscription),
+                    groupId: KafkaConsumerGroupNames.Subscription(
+                        _options.ConsumerGroup,
+                        topic.Value,
+                        subscription,
+                        _options.ConsumerGroupNaming
+                    ),
                     enableAutoCommit: false,
                     autoOffsetReset: AutoOffsetReset.Earliest
                 ),
@@ -349,7 +363,7 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
         string prefix,
         RequestAddress topic,
         string subscription
-    ) => $"{prefix}.{topic.Value}.{subscription}";
+    ) => KafkaConsumerGroupNames.Subscription(prefix, topic.Value, subscription);
 
     public async ValueTask<ReadOnlyMemory<byte>> RequestAsync(
         RequestAddress address,

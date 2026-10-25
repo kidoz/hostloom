@@ -28,7 +28,10 @@ public sealed class KafkaPublishSubscribeTests
         );
 
         var config = Assert.Single(kafka.ConsumerConfigs);
-        Assert.Equal("hostloom.orders.audit", config.GroupId);
+        Assert.Equal(
+            KafkaConsumerGroupNames.Subscription("hostloom", "orders", "audit"),
+            config.GroupId
+        );
         Assert.False(config.EnableAutoCommit);
         Assert.Equal(["orders"], kafka.SubscribedTopics);
     }
@@ -55,7 +58,11 @@ public sealed class KafkaPublishSubscribeTests
         // Distinct groups are the fan-out. One shared group would make them competing consumers,
         // so each event would reach only one of the two.
         Assert.Equal(
-            ["hostloom.orders.audit", "hostloom.orders.shipping"],
+            new[]
+            {
+                KafkaConsumerGroupNames.Subscription("hostloom", "orders", "audit"),
+                KafkaConsumerGroupNames.Subscription("hostloom", "orders", "shipping"),
+            }.Order(StringComparer.Ordinal),
             kafka.ConsumerConfigs.Select(config => config.GroupId).Order(StringComparer.Ordinal)
         );
     }

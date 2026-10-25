@@ -193,3 +193,20 @@ Successful handling and offset commit are separate failure boundaries: a commit 
 reassignment, so handlers must tolerate duplicates. Event application failures retry until
 shutdown; the adapter does not discard them after five attempts. A failing event can hold its
 partition behind that offset. Malformed records remain logged and skipped.
+
+## Migrate consumer group identities
+
+New consumers default to `KafkaConsumerGroupNaming.Version2`. Group names include the role
+and a SHA-256 digest of length-prefixed components, so dots in a group prefix, topic, or
+subscription cannot alias another logical consumer. `KafkaConsumerGroupNames.Request` and
+`KafkaConsumerGroupNames.Subscription` return the exact physical names for administration.
+All replicas of a logical consumer must use the same naming mode.
+
+An existing deployment can set `options.ConsumerGroupNaming = KafkaConsumerGroupNaming.Legacy`
+to retain its committed offsets during an upgrade. Changing to Version2 creates new groups;
+without migrated offsets the request and event consumers start from their configured earliest
+position and can replay retained records. Stop the old consumers, record their offsets, migrate
+them to the helper-generated new group identities using your Kafka administration process,
+and then start every replica in Version2. Keep handlers idempotent during the transition.
+Legacy mode retains the dotted-name collision risk and should be temporary. Reply groups are
+unique per process in both modes and continue to initialize from the end of the response topic.
