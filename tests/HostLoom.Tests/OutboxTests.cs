@@ -149,6 +149,7 @@ public sealed class OutboxTests
         await store.AppendAsync(Message("orders", clock), TestContext.Current.CancellationToken);
         relay.Wake();
         await broker.WaitForAsync(1);
+        await SchedulingTests.WaitUntilAsync(() => store.Pending.Count == 0);
         Assert.Empty(store.Pending);
 
         await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 1);
@@ -182,6 +183,7 @@ public sealed class OutboxTests
         await store.AppendAsync(Message("orders", clock), TestContext.Current.CancellationToken);
         relay.Wake();
         await broker.WaitForAsync(1);
+        await SchedulingTests.WaitUntilAsync(() => store.Pending.Count == 0);
         Assert.Empty(store.Pending);
 
         // The clamped timer fires just under 49.7 days out, not the configured sixty.
