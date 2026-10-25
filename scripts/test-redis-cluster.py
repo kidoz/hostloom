@@ -4,9 +4,11 @@
 import argparse
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -84,7 +86,29 @@ def wait_gateway(container: str, port: int) -> None:
     raise TimeoutError("HAProxy did not reach a healthy Redis primary.")
 
 
-def run_tests(environment: dict[str, str], method: str) -> None:
+def normalize_method_filter(method: str) -> str:
+    # xUnit matches fully qualified type + method names, including with --filter-class.
+    return method if "." in method or method.startswith("*") else "*" + method
+
+
+def validate_test_result(exit_code: int, output: str) -> None:
+    counts = {}
+    for name in ["total", "failed", "succeeded", "skipped"]:
+        values = re.findall(rf"^\s+{name}:\s+(\d+)\s*$", output, re.MULTILINE)
+        if not values:
+            raise RuntimeError(f"Missing test evidence: {name}.")
+        counts[name] = int(values[-1])
+    if (
+        exit_code
+        or counts["total"] == 0
+        or counts["failed"]
+        or counts["skipped"]
+        or counts["succeeded"] != counts["total"]
+    ):
+        raise RuntimeError("Redis fixture tests failed, selected zero tests, or skipped evidence.")
+
+
+def run_tests(environment: dict[str, str], method: str, artifacts: Path) -> None:
     arguments = [
         "dotnet",
         "test",
@@ -100,24 +124,51 @@ def run_tests(environment: dict[str, str], method: str) -> None:
         if environment.get("HOSTLOOM_REDIS_GATEWAY")
         else "*RedisClusterFailoverTests",
         "--filter-method",
-        method,
+        normalize_method_filter(method),
     ]
-    with subprocess.Popen(arguments, cwd=ROOT, env=environment, start_new_session=True) as process:
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "command.json").write_text(json.dumps(arguments, indent=2) + "\n")
+    print(f"Test evidence: {artifacts}", flush=True)
+    log = artifacts / "tests.log"
+    with (
+        log.open("w") as output,
+        subprocess.Popen(
+            arguments,
+            cwd=ROOT,
+            env=environment,
+            start_new_session=True,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+        ) as process,
+    ):
         try:
-            if process.wait(timeout=600):
-                raise RuntimeError("Redis Cluster tests failed; see the assertions above.")
+            exit_code = process.wait(timeout=600)
         finally:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             process.wait(timeout=10)
+            (artifacts / "result.json").write_text(
+                json.dumps({"exit_code": process.returncode}, indent=2) + "\n"
+            )
+            sys.stdout.write(log.read_text(errors="replace"))
+    validate_test_result(exit_code, log.read_text(errors="replace"))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-build", action="store_true", help="Use already built Release tests.")
-    parser.add_argument("--filter-method", default="*", help="Optional xUnit method filter.")
+    parser.add_argument(
+        "--filter-method",
+        default="*",
+        help="xUnit fully qualified method pattern; bare method names get a leading '*'.",
+    )
+    parser.add_argument(
+        "--artifacts",
+        type=Path,
+        help="Evidence directory (default: artifacts/chaos/redis-<fixture owner>).",
+    )
     parser.add_argument(
         "--haproxy", action="store_true", help="Test HAProxy bootstrap, demotion and reconnect."
     )
@@ -142,6 +193,7 @@ def main() -> None:
     ):
         run(["docker", "pull", "haproxy:3.2-alpine"], timeout=180)
     owner = uuid.uuid4().hex
+    artifacts = (args.artifacts or ROOT / "artifacts" / "chaos" / ("redis-" + owner)).resolve()
     container = ""
     gateway = ""
     ports: list[int] = []
@@ -294,10 +346,52 @@ def main() -> None:
                     "cannot route unreachable cluster shards, even after connection recreation.",
                     flush=True,
                 )
-            run_tests(environment, args.filter_method)
+            run_tests(environment, args.filter_method, artifacts)
             wait_ready(container, ports)
             if gateway_port is not None:
                 wait_gateway(container, gateway_port)
+        except Exception:
+            # Preserve the failed attempt before finally removes the only useful diagnostics.
+            artifacts.mkdir(parents=True, exist_ok=True)
+            commands = {}
+            if container:
+                inspect_owned(container, owner, published)
+                commands["redis.log"] = [
+                    "docker",
+                    "exec",
+                    container,
+                    "sh",
+                    "-c",
+                    "tail -n 100 /data/node-*/redis.log",
+                ]
+                for port in ports:
+                    commands[f"node-{port}.txt"] = [
+                        "docker",
+                        "exec",
+                        container,
+                        "redis-cli",
+                        "-p",
+                        str(port),
+                        "CLUSTER",
+                        "NODES",
+                    ]
+            if gateway:
+                inspect_gateway(gateway, owner, container)
+                commands["gateway.log"] = ["docker", "logs", "--tail", "100", gateway]
+                commands["gateway-state.txt"] = [
+                    "docker",
+                    "exec",
+                    gateway,
+                    "sh",
+                    "-c",
+                    "printf 'show servers state\\nshow stat\\n' | nc -w 1 127.0.0.1 20010",
+                ]
+            for name, command in commands.items():
+                try:
+                    (artifacts / name).write_text(run(command, timeout=5) + "\n")
+                except Exception as diagnostic_error:
+                    (artifacts / name).write_text(f"Diagnostics unavailable: {diagnostic_error}\n")
+            raise
         finally:
             if gateway:
                 inspect_gateway(gateway, owner, container)
