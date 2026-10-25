@@ -53,6 +53,8 @@ def certificates(directory: Path) -> None:
             "basicConstraints=critical,CA:TRUE",
             "-addext",
             "keyUsage=critical,keyCertSign,cRLSign",
+            "-addext",
+            "subjectKeyIdentifier=hash",
         ]
     )
     run(
@@ -76,6 +78,7 @@ def certificates(directory: Path) -> None:
     extensions.write_text(
         "subjectAltName=DNS:localhost\nbasicConstraints=critical,CA:FALSE\n"
         "keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n"
+        "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n"
     )
     run(
         [
