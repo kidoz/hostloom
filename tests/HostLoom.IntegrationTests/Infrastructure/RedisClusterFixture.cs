@@ -138,11 +138,69 @@ internal sealed class RedisClusterFixture
         }
         await GatewayCommandAsync($"set server primaries/node{target} health up", token);
         await GatewayCommandAsync($"set server primaries/node{target} state ready", token);
+        await WaitForGatewayRoleAsync(replica.NodeId, "slave", token);
+    }
+
+    /// <summary>Probes the physical gateway independently of the SDK's discovered cluster routes.</summary>
+    public async Task WaitForGatewayRoleAsync(string? nodeId, string role, CancellationToken token)
+    {
+        await VerifyGatewayAsync(token);
+        var observed = "No response.";
+        try
+        {
+            await PollAsync(
+                async () =>
+                {
+                    var id = (
+                        await CliAsync(GatewayPort!.Value, ["CLUSTER", "MYID"], token)
+                    ).Trim();
+                    var info = await CliAsync(GatewayPort.Value, ["INFO", "replication"], token);
+                    observed = $"id={id}; {info}";
+                    return (nodeId is null || id == nodeId)
+                        && info.Split('\n').Any(line => line.Trim() == "role:" + role);
+                },
+                token
+            );
+        }
+        catch (TimeoutException exception)
+        {
+            using var diagnostics = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var state = await DescribeGatewayAsync(diagnostics.Token);
+            throw new TimeoutException(
+                $"Physical gateway did not reach node={nodeId ?? "any"}, role={role}. Last probe: {observed}\n{state}",
+                exception
+            );
+        }
+    }
+
+    public async Task<string> GatewayExecuteAsync(string[] arguments, CancellationToken token)
+    {
+        await VerifyGatewayAsync(token);
+        return await CliAsync(GatewayPort!.Value, arguments, token);
+    }
+
+    public async Task<string> DescribeGatewayAsync(CancellationToken token)
+    {
+        await VerifyGatewayAsync(token);
+        return "HAProxy servers:\n"
+            + await GatewayQueryAsync("show servers state", token)
+            + "\nHAProxy sessions:\n"
+            + await GatewayQueryAsync("show sess", token)
+            + "\nHAProxy statistics:\n"
+            + await GatewayQueryAsync("show stat", token);
     }
 
     private async Task GatewayCommandAsync(string command, CancellationToken token)
     {
-        var result = await DockerAsync(
+        var result = await GatewayQueryAsync(command, token);
+        Assert.True(
+            string.IsNullOrWhiteSpace(result),
+            "HAProxy rejected the fixture command: " + result
+        );
+    }
+
+    private Task<string> GatewayQueryAsync(string command, CancellationToken token) =>
+        DockerAsync(
             [
                 "exec",
                 _gatewayContainer!,
@@ -154,11 +212,6 @@ internal sealed class RedisClusterFixture
             ],
             token
         );
-        Assert.True(
-            string.IsNullOrWhiteSpace(result),
-            "HAProxy rejected the fixture command: " + result
-        );
-    }
 
     private async Task VerifyGatewayAsync(CancellationToken token)
     {

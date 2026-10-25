@@ -59,38 +59,19 @@ public sealed class RedisGatewayTests
             // Deliberately override the owned proxy's primary health check and close its
             // sessions, representing a misrouted write endpoint. Restart restores the config.
             await fixture.RouteGatewayToReplicaAsync(replica, token);
-            await RedisClusterFixture.PollAsync(
-                async () =>
-                {
-                    try
-                    {
-                        var id = (string?)
-                            await gateway.ExecuteAsync("CLUSTER", "MYID").WaitAsync(token);
-                        var info = (string?)
-                            await gateway.ExecuteAsync("INFO", "replication").WaitAsync(token);
-                        return id == replica.NodeId
-                            && info?.Contains("role:slave", StringComparison.Ordinal) == true;
-                    }
-                    catch (RedisException)
-                    {
-                        return false;
-                    }
-                },
+            // The physical endpoint probe must not use a cluster-aware SDK server object:
+            // that object also tracks discovered routes that this test deliberately blocks.
+            var key = "{" + ns + "}:cache:data:gateway-readonly";
+            var rejection = await fixture.GatewayExecuteAsync(
+                ["EVAL", "return redis.call('SET', ARGV[1], 'rejected')", "0", key],
                 token
             );
-            var rejection = await Assert.ThrowsAsync<RedisServerException>(async () =>
-                await gateway
-                    .ExecuteAsync(
-                        "EVAL",
-                        "return redis.call('SET', ARGV[1], 'rejected')",
-                        "0",
-                        "{" + ns + "}:cache:data:gateway-readonly"
-                    )
-                    .WaitAsync(token)
+            Assert.StartsWith("READONLY", rejection.Trim(), StringComparison.Ordinal);
+            Assert.False(
+                await (await control.GetDatabaseAsync(token)).KeyExistsAsync(key).WaitAsync(token)
             );
-            Assert.Contains("READONLY", rejection.Message, StringComparison.Ordinal);
             TestContext.Current.TestOutputHelper!.WriteLine(
-                "Write through HAProxy to the forced replica: " + rejection.Message
+                "Forced replica rejected the physical gateway write: " + rejection
             );
             await AssertShardUnavailableAsync(connection);
 
@@ -98,28 +79,29 @@ public sealed class RedisGatewayTests
             Assert.NotSame(mux, await recreated.GetMultiplexerAsync(token));
             await AssertShardUnavailableAsync(recreated);
         }
+        catch
+        {
+            TestContext.Current.TestOutputHelper!.WriteLine("SDK state: " + mux.GetStatus());
+            using var diagnostic = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                TestContext.Current.TestOutputHelper!.WriteLine(
+                    await fixture.DescribeGatewayAsync(diagnostic.Token)
+                );
+            }
+            catch (Exception exception)
+            {
+                TestContext.Current.TestOutputHelper!.WriteLine(
+                    "Gateway diagnostics failed: " + exception
+                );
+            }
+            throw;
+        }
         finally
         {
             using var recovery = new CancellationTokenSource(TimeSpan.FromSeconds(40));
             await fixture.RestartGatewayAsync(recovery.Token);
-            await RedisClusterFixture.PollAsync(
-                async () =>
-                {
-                    try
-                    {
-                        var info = (string?)
-                            await gateway
-                                .ExecuteAsync("INFO", "replication")
-                                .WaitAsync(recovery.Token);
-                        return info?.Contains("role:master", StringComparison.Ordinal) == true;
-                    }
-                    catch (RedisException)
-                    {
-                        return false;
-                    }
-                },
-                recovery.Token
-            );
+            await fixture.WaitForGatewayRoleAsync(null, "master", recovery.Token);
         }
 
         await using var freshAfterRecovery = new RedisConnection(options);
