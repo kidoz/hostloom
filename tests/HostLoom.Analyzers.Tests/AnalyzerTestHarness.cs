@@ -62,6 +62,7 @@ internal static class AnalyzerTestHarness
             typeof(HostLoomBuilder).Assembly.Location,
             typeof(PipeContext).Assembly.Location,
             typeof(IMapper<,>).Assembly.Location,
+            typeof(HostLoom.Mapping.DependencyInjection.MappingBuilder).Assembly.Location,
             typeof(IServiceCollection).Assembly.Location,
             typeof(ServiceCollectionServiceExtensions).Assembly.Location,
         ];

@@ -17,6 +17,7 @@
     <ProjectReference Include="../../src/HostLoom.Composition.Generators/HostLoom.Composition.Generators.csproj" />
     <ProjectReference Include="../../src/HostLoom.Analyzers/HostLoom.Analyzers.csproj" />
     <ProjectReference Include="../../src/HostLoom.Mapping/HostLoom.Mapping.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Mapping.DependencyInjection/HostLoom.Mapping.DependencyInjection.csproj" />
     <ProjectReference Include="../../src/HostLoom.Pipelines/HostLoom.Pipelines.csproj" />
     <ProjectReference Include="../../src/HostLoom/HostLoom.csproj" />
   </ItemGroup>

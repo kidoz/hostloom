@@ -9,6 +9,7 @@ public sealed class SingletonMapperInjectionAnalyzerTests
 {
     private const string Contracts = """
         using HostLoom.Mapping;
+        using HostLoom.Mapping.DependencyInjection;
         using Microsoft.Extensions.DependencyInjection;
         using Microsoft.Extensions.Hosting;
         using System.Threading;
@@ -143,4 +144,35 @@ public sealed class SingletonMapperInjectionAnalyzerTests
             """,
             new SingletonMapperInjectionAnalyzer()
         );
+
+    [Theory]
+    [InlineData("services.AddHostLoomMapping(ServiceLifetime.Singleton);", false)]
+    [InlineData(
+        "services.AddHostLoomMapping(_ => {}, dispatcherLifetime: ServiceLifetime.Singleton);",
+        false
+    )]
+    [InlineData("services.AddHostLoomMapping();", true)]
+    [InlineData(
+        "services.AddHostLoomMapping(); services.AddHostLoomMapping(ServiceLifetime.Singleton);",
+        true
+    )]
+    [InlineData(
+        "services.AddHostLoomMapping(ServiceLifetime.Singleton); services.AddHostLoomMapping();",
+        false
+    )]
+    [InlineData("new ServiceCollection().AddHostLoomMapping(ServiceLifetime.Singleton);", true)]
+    [InlineData(
+        "if (services.Count > 0) services.AddHostLoomMapping(ServiceLifetime.Singleton);",
+        true
+    )]
+    public async Task Explicit_dispatcher_lifetime_is_respected_on_the_same_collection(
+        string configure,
+        bool reported
+    )
+    {
+        var diagnostics = await AnalyzeAsync(
+            configure + " services.AddSingleton<CapturesDispatcher>();"
+        );
+        Assert.Equal(reported ? 1 : 0, diagnostics.Length);
+    }
 }

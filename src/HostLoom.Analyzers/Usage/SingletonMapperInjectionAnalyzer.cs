@@ -51,6 +51,11 @@ public sealed class SingletonMapperInjectionAnalyzer : DiagnosticAnalyzer
             return;
         }
 
+        if (HasSingletonDispatcher(invocation))
+        {
+            return;
+        }
+
         foreach (ITypeSymbol type in AnalyzerSymbolHelpers.RegistrationTypes(invocation))
         {
             if (!TakesDispatcher(type))
@@ -67,6 +72,71 @@ public sealed class SingletonMapperInjectionAnalyzer : DiagnosticAnalyzer
             );
             return;
         }
+    }
+
+    // Prove only unconditional calls on the same collection in the same block. Configuration
+    // hidden in helpers or branches still requires provider validation and remains diagnostic.
+    private static bool HasSingletonDispatcher(IInvocationOperation registration)
+    {
+        var receiver = CollectionSymbol(registration);
+        if (receiver is null)
+            return false;
+        IOperation? statement = registration;
+        while (statement.Parent is not null && statement.Parent is not IBlockOperation)
+            statement = statement.Parent;
+        if (statement.Parent is not IBlockOperation block)
+            return false;
+
+        bool? singleton = null;
+        foreach (var operation in block.Operations)
+        {
+            if (
+                operation
+                    is not IExpressionStatementOperation { Operation: IInvocationOperation call }
+                || !SymbolEqualityComparer.Default.Equals(receiver, CollectionSymbol(call))
+            )
+                continue;
+            if (
+                call.TargetMethod.Name == "AddHostLoomMapping"
+                && call.TargetMethod.ContainingType.ToDisplayString()
+                    == "HostLoom.Mapping.DependencyInjection.ServiceCollectionExtensions"
+            )
+            {
+                var lifetime = call.Arguments.FirstOrDefault(argument =>
+                    argument.Parameter?.Name == "dispatcherLifetime"
+                );
+                if (singleton is null)
+                    singleton = lifetime?.Value.ConstantValue is { HasValue: true, Value: 0 };
+            }
+            else if (
+                call.TargetMethod.TypeArguments.FirstOrDefault() is { } service
+                && IsDispatcher(service)
+            )
+            {
+                if (call.TargetMethod.Name == "AddSingleton")
+                    singleton = true;
+                else if (call.TargetMethod.Name is "AddScoped" or "AddTransient")
+                    singleton = false;
+                else if (call.TargetMethod.Name == "TryAddSingleton")
+                    singleton ??= true;
+                else if (call.TargetMethod.Name is "TryAddScoped" or "TryAddTransient")
+                    singleton ??= false;
+            }
+        }
+        return singleton == true;
+    }
+
+    private static ISymbol? CollectionSymbol(IInvocationOperation invocation)
+    {
+        IOperation? value = invocation.Instance ?? invocation.Arguments.FirstOrDefault()?.Value;
+        while (value is IConversionOperation conversion)
+            value = conversion.Operand;
+        return value switch
+        {
+            IParameterReferenceOperation parameter => parameter.Parameter,
+            ILocalReferenceOperation local => local.Local,
+            _ => null,
+        };
     }
 
     private static bool TakesDispatcher(ITypeSymbol type)
