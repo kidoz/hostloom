@@ -123,35 +123,58 @@ public sealed class LockingChaosTests
         var token = TestContext.Current.CancellationToken;
         var clock = new TestClock();
         var backend = new InMemoryLockProvider(clock);
-        var faulting = new FaultingLockProvider(
-            backend,
-            LockOperation.Acquire,
-            LockFailureKind.Timeout,
-            count: 1
-        );
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var faulting = new ApplyThenFailLockProvider(backend, release.Task)
+        {
+            FailWith = LockFailureKind.Timeout,
+        };
+        var recording = new RecordingLockProvider(faulting);
         await using var locks = new DistributedLock(
             new LockingOptions
             {
                 Namespace = "inventory",
                 Retry = LockRetryPolicy.Interval(10, TimeSpan.FromSeconds(1)),
             },
-            faulting,
+            recording,
             clock
         );
 
         // The retry policy is for a key someone else holds. A provider that failed is a different
         // answer: the caller learns at once instead of waiting out ten retries for a backend that
         // may be down for minutes.
-        var failure = await Assert.ThrowsAsync<LockProviderUnavailableException>(async () =>
-            await locks.TryAcquireAsync(
-                "catalog:refresh",
-                new LockOptions { MaxWait = Bounded },
-                token
-            )
+        (string Key, string Owner) acquire;
+        try
+        {
+            var failure = await Assert.ThrowsAsync<LockProviderUnavailableException>(async () =>
+                await locks
+                    .TryAcquireAsync(
+                        "catalog:refresh",
+                        new LockOptions { MaxWait = Bounded },
+                        token
+                    )
+                    .AsTask()
+                    .WaitAsync(Bounded, token)
+            );
+            acquire = Assert.Single(recording.Acquires);
+            Assert.Equal(LockFailureKind.Timeout, failure.Kind);
+            // The caller has already received its failure although cleanup cannot yet complete.
+            Assert.False(release.Task.IsCompleted);
+            Assert.Empty(recording.Releases);
+            Assert.Equal(1, backend.Count);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+        await SchedulingTests.WaitUntilAsync(() =>
+            recording.Releases.Count == 1 && clock.PendingTimers == 0
         );
-        Assert.Equal(LockFailureKind.Timeout, failure.Kind);
-        Assert.Equal(1, faulting.Faulted);
-        Assert.Equal(0, clock.PendingTimers);
+        var cleaned = Assert.Single(recording.Releases);
+        Assert.Equal(acquire.Key, cleaned.Key);
+        Assert.Equal(acquire.Owner, cleaned.Owner);
+        Assert.True(cleaned.Released);
+        Assert.Equal(0, backend.Count);
+        faulting.FailWith = null;
 
         // Recovery is the caller's to decide: the very next attempt succeeds.
         await using var handle = await locks.TryAcquireAsync(
