@@ -15,7 +15,8 @@ namespace HostLoom.Logging;
 internal sealed class EventCapture(
     HostLoomLoggerOptions options,
     Destructurer destructurer,
-    LoggingMetrics? metrics
+    LoggingMetrics? metrics,
+    bool captureTemplateRenderings = true
 )
 {
     /// <summary>
@@ -128,7 +129,8 @@ internal sealed class EventCapture(
     private void CaptureRenderings(LogEntry entry, IEnumerable<KeyValuePair<string, object?>> pairs)
     {
         if (
-            entry.Template is not { } template
+            !captureTemplateRenderings
+            || entry.Template is not { } template
             || !entry.CanKeepTemplate(template)
             || !template.Contains(':', StringComparison.Ordinal)
         )
@@ -137,8 +139,12 @@ internal sealed class EventCapture(
         }
 
         var text = template.AsSpan();
+        var remainingBytes = options.MaxMessageLength;
+        var count = 0;
         while (!text.IsEmpty)
         {
+            if (count >= options.MaxFieldsPerRecord || remainingBytes <= 0)
+                return;
             var open = text.IndexOf('{');
             if (open < 0)
             {
@@ -200,7 +206,12 @@ internal sealed class EventCapture(
                     !TryFindValue(pairs, name, out var value) ? string.Concat("{", token, "}")
                     : name[0] == '@' || value is IEnumerable and not string
                         ? CapturedText(entry, name)
-                    : RenderToken(value, format, alignment);
+                    : RenderToken(
+                        value,
+                        format,
+                        alignment,
+                        Math.Min(options.MaxTextFieldLength, remainingBytes)
+                    );
             }
             catch (Exception)
             {
@@ -209,7 +220,14 @@ internal sealed class EventCapture(
                 rendering = string.Concat("{", token, "}");
             }
 
-            entry.EnsureTemplateRenderings().Add(CapText(rendering, options.MaxTextFieldLength));
+            rendering = CapText(
+                rendering,
+                Math.Min(options.MaxTextFieldLength, remainingBytes),
+                includeMarkerInBudget: true
+            );
+            entry.EnsureTemplateRenderings().Add(rendering);
+            remainingBytes -= Encoding.UTF8.GetByteCount(rendering);
+            count++;
         }
     }
 
@@ -276,22 +294,53 @@ internal sealed class EventCapture(
     /// <summary>Serilog's scalar rendering: <c>null</c>, a string quoted unless the format is
     /// <c>l</c>, a formattable value through its format, anything else through
     /// <c>ToString()</c>; then padded to the alignment.</summary>
-    internal static string RenderToken(object? value, string format, int? alignment)
+    internal static string RenderToken(
+        object? value,
+        string format,
+        int? alignment,
+        int maxBytes = HostLoomLoggerOptions.DefaultMaxTextFieldLength
+    )
     {
+        // Standard numeric precision and alignment are caller-controlled template input.
+        // Clamp before formatting/padding so truncation never follows an enormous allocation.
+        if (
+            value is IFormattable
+            && format.Length > 1
+            && char.IsAsciiLetter(format[0])
+            && int.TryParse(
+                format.AsSpan(1),
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var precision
+            )
+            && precision > maxBytes
+        )
+            format = string.Concat(
+                format.AsSpan(0, 1),
+                maxBytes.ToString(CultureInfo.InvariantCulture)
+            );
         var text = value switch
         {
             null => "null",
-            string s => format == "l" ? s : Quoted(s),
+            string s => format == "l"
+                ? CapText(s, maxBytes, includeMarkerInBudget: true)
+                : Quoted(CapText(s, maxBytes, includeMarkerInBudget: true)),
             IFormattable formattable => formattable.ToString(format, CultureInfo.InvariantCulture),
             _ => value.ToString() ?? string.Empty,
         };
 
-        return alignment switch
-        {
-            > 0 => text.PadLeft(alignment.Value),
-            < 0 => text.PadRight(-alignment.Value),
-            _ => text,
-        };
+        text = CapText(text, maxBytes, includeMarkerInBudget: true);
+        var width = (int)Math.Clamp((long)(alignment ?? 0), -maxBytes, maxBytes);
+        return CapText(
+            width switch
+            {
+                > 0 => text.PadLeft(width),
+                < 0 => text.PadRight(-width),
+                _ => text,
+            },
+            maxBytes,
+            includeMarkerInBudget: true
+        );
     }
 
     /// <summary>A quoted rendering is a JSON string literal, so the reverse solidus and control
@@ -556,7 +605,7 @@ internal sealed class EventCapture(
     /// Bounds a producer-built text at <paramref name="maxBytes"/> of UTF-8 on a character
     /// boundary, closing it with "…" — the same sentinel the entry buffers use.
     /// </summary>
-    internal static string CapText(string text, int maxBytes)
+    internal static string CapText(string text, int maxBytes, bool includeMarkerInBudget = false)
     {
         // A UTF-16 unit never encodes to more than three bytes, so short text needs no count.
         if (text.Length <= maxBytes / 3 || Encoding.UTF8.GetByteCount(text) <= maxBytes)
@@ -566,9 +615,12 @@ internal sealed class EventCapture(
 
         var bytes = 0;
         var cut = 0;
+        if (includeMarkerInBudget && maxBytes < 3)
+            return string.Empty;
+        var budget = includeMarkerInBudget ? maxBytes - 3 : maxBytes;
         foreach (var rune in text.EnumerateRunes())
         {
-            if (bytes + rune.Utf8SequenceLength > maxBytes)
+            if (bytes + rune.Utf8SequenceLength > budget)
             {
                 break;
             }

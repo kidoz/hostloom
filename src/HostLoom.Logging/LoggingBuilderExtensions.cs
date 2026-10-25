@@ -25,6 +25,8 @@ public static class LoggingBuilderExtensions
     /// <paramref name="formatter"/> passed here takes precedence over
     /// <see cref="HostLoomLoggerOptions.Formatter"/>. Registering the provider a second time
     /// throws; call <c>ClearProviders()</c> first to replace the registration.
+    /// The sink can belong to only one provider for its lifetime. Use a factory that creates a
+    /// fresh sink per container when building more than one container.
     /// </summary>
     public static ILoggingBuilder AddHostLoomLogging(
         this ILoggingBuilder builder,
@@ -45,7 +47,7 @@ public static class LoggingBuilderExtensions
     /// Registers the provider with a sink that <paramref name="sink"/> creates when a container
     /// first resolves logging, so each container built from the service collection writes to,
     /// and at disposal releases, a sink of its own. The overload taking an
-    /// <see cref="ILogSink"/> hands that one instance to every such container.
+    /// <see cref="ILogSink"/> permits one provider to own that instance; further owners are rejected.
     /// </summary>
     public static ILoggingBuilder AddHostLoomLogging(
         this ILoggingBuilder builder,

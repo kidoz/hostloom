@@ -113,7 +113,12 @@ internal sealed class LogPipeline : IAsyncDisposable
             StateName
         );
         Destructurer = new Destructurer(options.Destructuring, _metrics);
-        Capture = new EventCapture(options, Destructurer, _metrics);
+        Capture = new EventCapture(
+            options,
+            Destructurer,
+            _metrics,
+            formatter is not JsonLogFormatter
+        );
         StaticFields = BuildStaticFields(options);
 
         // A real dedicated thread, not a long-running task: an async method leaves its

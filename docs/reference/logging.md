@@ -30,10 +30,10 @@ ILoggingBuilder AddHostLoomLogging(Func<IServiceProvider, ILogSink> sink,
 
 The provider registers as a singleton with alias `HostLoom`. A container creates it when it
 first resolves logging and disposes it, and the sink with it, when the container is disposed.
-A sink instance passed at registration is shared by every container built from the service
-collection, each running its own background writer against it. The factory overloads call the
-factory once per container instead, so each gets a sink of its own, and CA2000 has no
-undisposed sink to report at the call site. A factory that returns null fails when logging is
+A sink instance can belong to one provider for its lifetime. Resolving a second provider with
+the same instance throws before another writer starts; disposing the first provider does not
+make its disposed sink reusable. Use a factory when building multiple containers, so each gets
+a fresh sink and owns its disposal. A factory that returns null fails when logging is
 resolved. The overload taking only configuration writes to standard output, opening a
 `StreamLogSink.Console()` per container.
 
@@ -204,6 +204,13 @@ construction, and the configuration overload rejects them at host startup.
 for complete primitive tokens. A value or rendering that cannot fit becomes `…`; numeric
 fields retain their complete canonical tokens. These bounds apply to HostLoom's buffers;
 caller formatting methods can still allocate or block internally.
+
+CLEF formatted-token renderings are capped at `MaxFieldsPerRecord` entries and
+`MaxMessageLength` aggregate UTF-8 bytes, with `MaxTextFieldLength` per entry. These rendering
+budgets include the truncation marker; a rendering truncated below three bytes becomes empty. Alignment and
+standard numeric precision are clamped before formatting or padding. The JSON formatter
+skips CLEF rendering capture entirely. Custom formatting methods remain application code
+and can allocate independently of these framework bounds.
 
 ## Sinks and formatters
 

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
 
 namespace HostLoom.Logging;
@@ -9,6 +10,8 @@ public sealed class HostLoomLoggerProvider
         ISupportExternalScope,
         IAsyncDisposable
 {
+    private static readonly ConditionalWeakTable<ILogSink, object> OwnedSinks = new();
+    private static readonly Lock SinkGate = new();
     private readonly ConcurrentDictionary<string, HostLoomLogger> _loggers = new(
         StringComparer.Ordinal
     );
@@ -28,6 +31,14 @@ public sealed class HostLoomLoggerProvider
         ArgumentNullException.ThrowIfNull(formatter);
         ArgumentNullException.ThrowIfNull(sink);
         ArgumentNullException.ThrowIfNull(options);
+        LogPipeline.Validate(options);
+        lock (SinkGate)
+        {
+            if (!OwnedSinks.TryAdd(sink, new object()))
+                throw new InvalidOperationException(
+                    "This log sink already belongs to a provider. Use a sink factory that creates a separate instance for each container."
+                );
+        }
         _options = options;
         _pipeline = new LogPipeline(formatter, sink, options);
     }
