@@ -85,12 +85,17 @@ await subscription.unsubscribe();
 `connect()` is idempotent while an attempt is in progress and reports `connected` only after the
 server selects `hostloom.json.v1` and sends a valid `welcome`. Each attempt must finish within
 `welcomeTimeoutMilliseconds` (10,000 by default, configurable from 1 to 2,147,483,647). A silent
-socket is detached and closed when the deadline expires, even if it never emits a close event. Without the `reconnect` option, a
-close returns the connection to `disconnected`; call `connect()` again when the application chooses
-to retry. When `connect()` is called while a caller-requested close is still in progress, repeated
-calls share one promise: the client waits for the close event before opening exactly one replacement
-socket. A close caused by a protocol failure remains terminal and rejects `connect()` until teardown
-finishes.
+socket is detached and closed when the deadline expires, even if it never emits a close event.
+Close teardown has its own `closeTimeoutMilliseconds` (5,000 by default, configurable from 1 to
+2,147,483,647). If a close event never arrives, the client detaches the socket and settles pending
+operations locally, reporting code `1006`, reason `close_timeout`, and `wasClean: false`. This
+deadline also covers closing after a connection error or protocol failure.
+
+Without the `reconnect` option, a close returns the connection to `disconnected`; call `connect()`
+again when the application chooses to retry. When `connect()` is called while a caller-requested
+close is still in progress, repeated calls share one promise: the client waits for the close event
+or local teardown deadline before opening exactly one replacement socket. A close caused by a
+protocol failure remains terminal and rejects `connect()` until teardown finishes.
 
 Providing `reconnect` enables automatic retry after an established session is lost, meaning the
 socket had received its `welcome`. A first `connect()` that never reaches a welcome rejects and

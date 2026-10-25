@@ -85,6 +85,8 @@ export interface HostLoomConnectionOptions {
     readonly webSocketFactory?: HostLoomWebSocketFactory;
     /** Maximum time to open the socket and receive its welcome. Defaults to 10,000 ms. */
     readonly welcomeTimeoutMilliseconds?: number;
+    /** Maximum time to wait for a close event before local teardown. Defaults to 5,000 ms. */
+    readonly closeTimeoutMilliseconds?: number;
     /**
      * Allocates the identifier for each request and subscription stream. It defaults to a random
      * one; supply it to derive a stream from an application trace identifier instead. Every value
@@ -228,6 +230,7 @@ export class HostLoomConnection {
         }
     >();
     readonly #welcomeTimeoutMilliseconds: number;
+    readonly #closeTimeoutMilliseconds: number;
     readonly #controlBudget: ControlFrameBudget;
 
     #state: HostLoomConnectionState = "disconnected";
@@ -250,6 +253,7 @@ export class HostLoomConnection {
     #controlFlushQueued = false;
     #controlTimer: number | undefined;
     #welcomeTimer: number | undefined;
+    #closeTimer: number | undefined;
 
     public constructor(url: string | URL, options: HostLoomConnectionOptions = {}) {
         this.#url = url;
@@ -264,6 +268,16 @@ export class HostLoomConnection {
         ) {
             throw new RangeError(
                 "The welcome timeout must be an integer from 1 to 2147483647 milliseconds.",
+            );
+        }
+        this.#closeTimeoutMilliseconds = options.closeTimeoutMilliseconds ?? 5_000;
+        if (
+            !Number.isSafeInteger(this.#closeTimeoutMilliseconds) ||
+            this.#closeTimeoutMilliseconds <= 0 ||
+            this.#closeTimeoutMilliseconds > 2_147_483_647
+        ) {
+            throw new RangeError(
+                "The close timeout must be an integer from 1 to 2147483647 milliseconds.",
             );
         }
         this.#controlBudget = new ControlFrameBudget(
@@ -346,11 +360,11 @@ export class HostLoomConnection {
                 return;
             }
             // Complete the lifecycle locally even if the native socket never reports a close.
-            this.#handleClose({
+            this.#finishClose(socket, {
                 code: 1006,
                 reason: "welcome_timeout",
                 wasClean: false,
-            } as CloseEvent);
+            });
             try {
                 socket.close();
             } catch {
@@ -533,7 +547,7 @@ export class HostLoomConnection {
         return controller.ready;
     }
 
-    /** Starts a caller-requested close. A later close event transitions to `disconnected`. */
+    /** Starts a caller-requested close, bounded by the configured local teardown deadline. */
     public close(code = 1000, reason = ""): void {
         validateClose(code, reason);
 
@@ -574,6 +588,7 @@ export class HostLoomConnection {
             return;
         }
 
+        this.#startCloseTimer(socket);
         try {
             socket.close(code, reason);
         } catch (error) {
@@ -583,9 +598,12 @@ export class HostLoomConnection {
                     cause: error,
                 },
             );
-            this.#closeDisposition = undefined;
-            this.#rejectQueuedConnect(connectionError);
-            this.#transition(previousState, { error: connectionError });
+            if (this.#ownsClosingSocket(socket)) {
+                this.#cancelCloseTimer();
+                this.#closeDisposition = undefined;
+                this.#rejectQueuedConnect(connectionError);
+                this.#transition(previousState, { error: connectionError });
+            }
             throw connectionError;
         }
     }
@@ -714,6 +732,7 @@ export class HostLoomConnection {
         }
 
         const error = new HostLoomConnectionError("The WebSocket reported a connection error.");
+        const socket = this.#socket;
         this.#rejectPendingConnect(error);
         this.#rejectAllRequests(error);
         if (this.#shouldPreserveSubscriptions()) {
@@ -722,7 +741,7 @@ export class HostLoomConnection {
             this.#rejectAllSubscriptions(error);
         }
         this.#transition("closing", { error });
-        this.#closeAfterFailure();
+        this.#closeAfterFailure(socket);
     };
 
     readonly #handleClose = (event: CloseEvent): void => {
@@ -731,12 +750,17 @@ export class HostLoomConnection {
             return;
         }
 
-        const close: HostLoomCloseInfo = {
+        this.#finishClose(socket, {
             code: event.code,
             reason: event.reason,
             wasClean: event.wasClean,
-        };
+        });
+    };
 
+    #finishClose(socket: HostLoomWebSocket, close: HostLoomCloseInfo): void {
+        if (this.#socket !== socket) return;
+
+        this.#cancelCloseTimer();
         this.#detach(socket);
         const closeError = new HostLoomConnectionClosedError(close);
         const disposition = this.#closeDisposition;
@@ -761,7 +785,7 @@ export class HostLoomConnection {
             this.#transition("disconnected", { close });
             this.#resumeQueuedConnect();
         }
-    };
+    }
 
     #attach(socket: HostLoomWebSocket): void {
         const listeners = {
@@ -804,20 +828,38 @@ export class HostLoomConnection {
     }
 
     #failProtocol(error: Error): void {
+        const socket = this.#socket;
         this.#closeDisposition = "protocol";
         this.#rejectPendingConnect(error);
         this.#rejectReconnectPromise(error);
         this.#rejectAllRequests(error);
         this.#rejectAllSubscriptions(error);
         this.#transition("closing", { error });
-        this.#closeAfterFailure();
+        this.#closeAfterFailure(socket);
     }
 
-    #closeAfterFailure(): void {
+    #closeAfterFailure(socket: HostLoomWebSocket | undefined): void {
+        if (!this.#ownsClosingSocket(socket)) return;
+        this.#startCloseTimer(socket);
         try {
-            this.#socket?.close();
+            socket.close();
         } catch {
             // A browser may already have moved the native socket to a terminal state.
+        }
+    }
+
+    #startCloseTimer(socket: HostLoomWebSocket): void {
+        if (this.#closeTimer !== undefined) return;
+        this.#closeTimer = globalThis.setTimeout(() => {
+            if (!this.#ownsClosingSocket(socket)) return;
+            this.#finishClose(socket, { code: 1006, reason: "close_timeout", wasClean: false });
+        }, this.#closeTimeoutMilliseconds);
+    }
+
+    #cancelCloseTimer(): void {
+        if (this.#closeTimer !== undefined) {
+            globalThis.clearTimeout(this.#closeTimer);
+            this.#closeTimer = undefined;
         }
     }
 

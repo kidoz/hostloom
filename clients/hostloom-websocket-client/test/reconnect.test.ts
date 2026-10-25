@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import { afterEach, test, vi } from "vitest";
 
 import {
@@ -50,6 +51,13 @@ class FakeWebSocket implements HostLoomWebSocket {
     public readonly sent: string[] = [];
     public readonly closeCalls: CloseCall[] = [];
     readonly #listeners = new Map<keyof HostLoomWebSocketEventMap, Set<EventListener>>();
+
+    public get listenerCount(): number {
+        return [...this.#listeners.values()].reduce(
+            (count, listeners) => count + listeners.size,
+            0,
+        );
+    }
 
     public send(data: string): void {
         this.sent.push(data);
@@ -113,10 +121,14 @@ class FakeWebSocket implements HostLoomWebSocket {
     }
 }
 
-function createHarness(reconnect: HostLoomReconnectOptions = { jitterRatio: 0 }) {
+function createHarness(
+    reconnect: HostLoomReconnectOptions = { jitterRatio: 0 },
+    closeTimeoutMilliseconds = 5_000,
+) {
     const sockets: FakeWebSocket[] = [];
     const connection = new HostLoomConnection("wss://inventory.example.com/realtime", {
         reconnect,
+        closeTimeoutMilliseconds,
         streamIdFactory: sequentialStreamIds(),
         webSocketFactory: () => {
             const socket = new FakeWebSocket();
@@ -794,5 +806,173 @@ test("welcome timeout configuration rejects unsafe timer values", () => {
                 }),
             RangeError,
         );
+    }
+});
+
+test.each([false, true])(
+    "silent manual close finishes locally (established: %s)",
+    async (established) => {
+        vi.useFakeTimers();
+        const { connection, sockets } = createHarness({ jitterRatio: 0 }, 100);
+        if (established) await connect(connection, sockets);
+        const pending = established
+            ? connection.request("inventory.get", "e30=")
+            : connection.connect();
+        const rejected = assert.rejects(pending, /close_timeout/);
+        const first = socketAt(sockets, 0);
+        const closes: HostLoomCloseInfo[] = [];
+        connection.onStateChange(({ close }) => {
+            if (close !== undefined) closes.push(close);
+        });
+        const lateClose = first.capture("close");
+        connection.close();
+        const queued = connection.connect();
+        assert.equal(connection.connect(), queued);
+        await vi.advanceTimersByTimeAsync(99);
+        assert.equal(connection.state, "closing");
+        assert.equal(sockets.length, 1);
+        await vi.advanceTimersByTimeAsync(1);
+        await rejected;
+        assert.equal(first.listenerCount, 0);
+        assert.deepEqual(closes, [{ code: 1006, reason: "close_timeout", wasClean: false }]);
+        assert.equal(connection.state, "connecting");
+        assert.equal(sockets.length, 2);
+        const replacement = socketAt(sockets, 1);
+        replacement.open();
+        replacement.message(welcome);
+        await queued;
+        lateClose({ code: 1000, reason: "late", wasClean: true } as CloseEvent);
+        await vi.advanceTimersByTimeAsync(20_000);
+        assert.equal(connection.state, "connected");
+        assert.equal(sockets.length, 2);
+    },
+);
+
+test("silent close rejects pending subscriptions and a later close cancels the queued connect", async () => {
+    vi.useFakeTimers();
+    const { connection, sockets } = createHarness({ jitterRatio: 0 }, 100);
+    const first = await connect(connection, sockets);
+    const rejected = assert.rejects(
+        connection.subscribe("inventory.changed", { credit: 4 }),
+        /close_timeout/,
+    );
+    connection.close();
+    const queuedRejected = assert.rejects(connection.connect(), HostLoomConnectionClosedError);
+    await vi.advanceTimersByTimeAsync(50);
+    connection.close();
+    await vi.advanceTimersByTimeAsync(50);
+    await Promise.all([rejected, queuedRejected]);
+    assert.equal(connection.state, "disconnected");
+    assert.equal(first.listenerCount, 0);
+    assert.equal(sockets.length, 1);
+    assert.equal(vi.getTimerCount(), 0);
+});
+
+test("silent close settles requests and unsubscribe waiters and removes abort listeners", async () => {
+    vi.useFakeTimers();
+    const { connection, sockets } = createHarness({ jitterRatio: 0 }, 100);
+    const first = await connect(connection, sockets);
+    const requestAbort = new AbortController();
+    const subscriptionAbort = new AbortController();
+    const requestRejected = assert.rejects(
+        connection.request("inventory.get", "e30=", { signal: requestAbort.signal }),
+        /close_timeout/,
+    );
+    const subscribing = connection.subscribe("inventory.changed", {
+        credit: 4,
+        signal: subscriptionAbort.signal,
+    });
+    first.message({
+        kind: "subscribed",
+        streamId: stream(2),
+        topic: "inventory.changed",
+        credit: 4,
+    });
+    const subscription = await subscribing;
+    assert.equal(getEventListeners(requestAbort.signal, "abort").length, 1);
+    assert.equal(getEventListeners(subscriptionAbort.signal, "abort").length, 1);
+    const unsubscribeRejected = assert.rejects(subscription.unsubscribe(), /close_timeout/);
+    connection.close();
+    await vi.advanceTimersByTimeAsync(100);
+    await Promise.all([requestRejected, unsubscribeRejected]);
+    assert.equal(subscription.state, "closed");
+    assert.equal(getEventListeners(requestAbort.signal, "abort").length, 0);
+    assert.equal(getEventListeners(subscriptionAbort.signal, "abort").length, 0);
+    assert.equal(connection.state, "disconnected");
+    assert.equal(first.listenerCount, 0);
+    assert.equal(vi.getTimerCount(), 0);
+});
+
+test.each([
+    { failure: "protocol", established: false },
+    { failure: "protocol", established: true },
+    { failure: "error", established: false },
+    { failure: "error", established: true },
+])(
+    "silent $failure close completes teardown (established: $established)",
+    async ({ failure, established }) => {
+        vi.useFakeTimers();
+        const { connection, sockets } = createHarness({ jitterRatio: 0 }, 100);
+        if (established) await connect(connection, sockets);
+        const rejected = established ? undefined : assert.rejects(connection.connect());
+        const first = socketAt(sockets, 0);
+        // Even a throwing native close must leave failure teardown bounded.
+        vi.spyOn(first, "close").mockImplementation(() => {
+            throw new Error("already terminal");
+        });
+        if (failure === "protocol") {
+            if (!established) first.open();
+            first.message({ kind: "pong", streamId: stream(1) });
+            if (established) first.message(welcome);
+        } else first.error();
+        await rejected;
+        assert.equal(connection.state, "closing");
+        await vi.advanceTimersByTimeAsync(100);
+        assert.equal(first.listenerCount, 0);
+        assert.equal(
+            connection.state,
+            failure === "error" && established ? "reconnecting" : "disconnected",
+        );
+        if (failure === "error" && established) {
+            await vi.advanceTimersByTimeAsync(1000);
+            await connect(connection, sockets);
+            assert.equal(connection.state, "connected");
+        }
+    },
+);
+
+test("a failed manual close cancels its deadline and preserves the established connection", async () => {
+    vi.useFakeTimers();
+    const { connection, sockets } = createHarness({ jitterRatio: 0 }, 100);
+    const first = await connect(connection, sockets);
+    vi.spyOn(first, "close").mockImplementationOnce(() => {
+        throw new Error("close failed");
+    });
+    assert.throws(() => connection.close(), HostLoomConnectionError);
+    assert.equal(vi.getTimerCount(), 0);
+    await vi.advanceTimersByTimeAsync(100);
+    assert.equal(connection.state, "connected");
+    assert.equal(first.listenerCount, 4);
+    const request = connection.request("inventory.get", "e30=");
+    first.message({ kind: "response", streamId: stream(1), payload: "e30=" });
+    assert.equal(await request, "e30=");
+});
+
+test("a normal close event cancels the local deadline before a replacement opens", async () => {
+    vi.useFakeTimers();
+    const { connection, sockets } = createHarness({ jitterRatio: 0 }, 100);
+    const first = await connect(connection, sockets);
+    connection.close();
+    first.closed(1000, "done", true);
+    assert.equal(vi.getTimerCount(), 0);
+    await connect(connection, sockets);
+    await vi.advanceTimersByTimeAsync(100);
+    assert.equal(connection.state, "connected");
+    assert.equal(first.listenerCount, 0);
+});
+
+test("close timeout configuration rejects unsafe timer values", () => {
+    for (const closeTimeoutMilliseconds of [0, -1, NaN, Infinity, 2_147_483_648, 1.5]) {
+        assert.throws(() => createHarness(undefined, closeTimeoutMilliseconds), RangeError);
     }
 });
