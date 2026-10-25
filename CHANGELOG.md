@@ -8,14 +8,93 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-25
+
+The nineteenth release of **HostLoom**. It hardens the boundaries an application shares with
+other systems: the Kafka consumer identities that own committed offsets, the JSON-v1 frames the
+WebSocket gateway accepts, the byte and rendering budgets of messaging and logging, and the cache
+and lease state that outlives a request. Nothing in it changes a signature an application compiles
+against.
+
+`HostLoom.Transport.Kafka` changes which consumer groups own committed offsets. Request, event,
+and reply consumers are named `hostloom.v1.{role}.{digest}`, where the digest is SHA-256 over
+length-prefixed UTF-8 components — the group prefix, the normalized address or topic, and the
+subscription where one applies. Dots inside a component can no longer make two logical consumers
+share one group, and `KafkaConsumerGroupNames.Request` and `Subscription` return the exact
+physical names for administration. An existing deployment must migrate its committed offsets to
+the new identities before it upgrades, or the new groups start from their configured earliest
+position and replay retained records. Reply routing is now default-deny as well: a request is
+refused unless its response topic appears in `AllowedReplyTopics` or `AllowAnyReplyTopic` is
+explicitly enabled. Reply groups are unique per process and still initialize from the end of the
+response topic, so they have no offsets to migrate.
+
+`HostLoom.AspNetCore.WebSockets` now decodes JSON-v1 against the published schema instead of
+accepting what the serializer tolerated. Kind and property names must match exact camelCase, the
+three identifiers must be exactly 32 lowercase hexadecimal digits, `payload` must be padded Base64
+without whitespace, and numeric fields must be integers inside their published ranges. Required
+properties must be present, unknown properties are rejected, and an optional property must be
+omitted rather than set to null. A frame that violates the schema closes the session with
+invalid-payload status; a malformed ping now ends the session the same way. The malformed fixtures
+under `protocol/fixtures` are shared with the TypeScript client's tests, so both implementations
+are checked against one list.
+
+Encoded messaging frames are bounded by `HostLoomOptions.MaxFrameBytes`, one mebibyte by default.
+Both broker transports reject an oversized frame before publication, and the limit is documented
+on event publication as well as requests. Framework trace error statuses now omit exception text,
+so a span status no longer carries message content. Shutdown stays bounded when work does not
+cooperate: an abandoned scheduler stop survives disposal, and Kafka consumer disposal completes
+within its bound while deferring slow cleanup.
+
+`HostLoom.Logging` binds a sink instance to one provider for its lifetime. A second container that
+registers the same sink throws before another writer starts, and the first provider's disposal
+does not make the sink reusable; a sink factory remains the way to give each container its own
+instance. CLEF template renderings are capped by `MaxFieldsPerRecord`, `MaxMessageLength`, and
+`MaxTextFieldLength`, with the truncation marker inside the budget, alignment and standard numeric
+precision clamped before formatting or padding, and the JSON formatter skipping CLEF capture
+entirely.
+
+`HostLoom.Caching` promotion from L2 to L1 subtracts the time spent reading and deserializing from
+the remaining life, including bulk reads and cached nulls, so a distributed hit cannot outlive its
+source entry in the local tier. Tag keys are validated against the same `MaxKeyLength` as tag
+invalidation before a write or factory runs. The in-memory distributed store and lock provider
+reclaim expired historical entries during activity, sweeping at most once per second, and
+inspecting their counts forces reclamation. Tag indexes accumulate memberships across live
+rewrites and prune a membership only when its entry no longer exists.
+
+`HostLoom.Leadership` and `HostLoom.NodeLeasing` end pending and future waits when an elector
+stops, and a wait after disposal throws `ObjectDisposedException`; the uncoordinated-mode warning
+is written once per elector even when startup races the acquisition loop. A generated
+`nodeid:{pool}:{id}` key is checked against the composed lock's `MaxKeyLength`, including the
+largest ID in the pool, before election starts. The new integration tests exercise allocation,
+pool exhaustion, renewal, handover, and connection outages on Redis and Valkey, with the Valkey
+outage experiments enabled explicitly through `HOSTLOOM_VALKEY_CHAOS=1`.
+
+`HostLoom.Analyzers` tightens mapping completeness. Only an explicit argument to a synthesized
+positional record constructor proves that a member is assigned; an ordinary constructor's
+parameter names prove nothing, omitted positional arguments do not count,
+`[SetsRequiredMembers]` covers language `required` members only, and a constructor whose remaining
+members cannot be proved produces HLM0005. HLM0006 accepts an explicit singleton dispatcher
+configured by an unconditional `AddHostLoomMapping` call on the same collection in the same block.
+Subscriber registration rejects a handler already registered as a singleton, readiness counts
+stream endpoints, replacing a pipeline payload updates compatible aliases, coupon validation
+rejects raw input above 1,024 characters before normalizing, and retry policies reject non-finite
+factors and jitter ratios.
+
+Upgrading from 0.16.1 compiles unchanged, but several operational defaults move. Kafka consumer
+groups no longer carry the old dotted names: migrate committed offsets to the `hostloom.v1`
+identities or plan for replay, and configure `AllowedReplyTopics` wherever a client expects
+replies. JSON-v1 peers must send the published casing and exact field shape, log sinks must not be
+shared between containers, and an encoded frame above one mebibyte is rejected unless
+`MaxFrameBytes` is raised. No package is published for the first time; the whole set publishes at
+0.17.0. `@hostloom/websocket-client` is not part of this NuGet set and is versioned separately;
+its stale-callback, welcome-timeout, and resubscription changes remain unreleased in its own
+changelog.
+
 ### Added
 
 - Redis and Valkey node-ID leasing integration tests cover distinct assignments, pool exhaustion,
   renewal, graceful handover, connection outages and recovery on the same elector. Valkey outage
   experiments are explicitly enabled with `HOSTLOOM_VALKEY_CHAOS=1`.
-- Dedicated chaos-recovery CI jobs exercise broker outages, Redis Cluster primary crashes,
-  HAProxy gateway recovery and Valkey TLS/ACL deployment recovery, retaining diagnostic artifacts
-  even when a test fails.
 
 ### Changed
 
@@ -58,8 +137,7 @@ are derived from release tags at publish time.
   in readiness, and pipeline payload replacement updates compatible aliases together.
 - RabbitMQ publishers invalidate cached exchange declarations after failed event publication.
   Generated node-ID keys are validated against the composed lock-key limit before election.
-- Outbox poll tests synchronize with record marking. Benchmark baseline updates check the measured
-  branch revision before committing and use a normal fast-forward push.
+- Outbox poll tests synchronize with record marking.
 - Disposable Valkey TLS fixtures include certificate key identifiers for strict verification.
 
 ## [0.16.1] - 2026-10-22
@@ -2149,7 +2227,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.16.1...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/kidoz/hostloom/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/kidoz/hostloom/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/kidoz/hostloom/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/kidoz/hostloom/compare/v0.15.0...v0.15.1
