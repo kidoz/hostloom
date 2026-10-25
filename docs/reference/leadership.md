@@ -39,7 +39,7 @@ the Kubernetes Lease election and is not consensus.
 | `IsCoordinated` | `false` when the lock does not coordinate (`Locking:Enabled = false`); `IsLeader` then follows `Leadership:WhenUncoordinated` on every instance alike, and nothing excludes another instance from leading |
 | `Term` | rises on every acquisition by this instance; not a fencing token |
 | `LeadershipToken` | cancelled when leadership is lost, resigned, or stopped; already cancelled while not leading |
-| `WaitForLeadershipAsync(ct)` | completes when this instance becomes leader, at once when it already is |
+| `WaitForLeadershipAsync(ct)` | completes when this instance becomes leader, at once when it already is; pending and future waits cancel on stop, and calls after disposal throw `ObjectDisposedException` |
 | `OnChange(listener)` | observes every `LeadershipChange` (`Acquired`, `Lost`, `Resigned`, `Stopped`) |
 
 A leader-only loop is `await leadership.WaitForLeadershipAsync(ct)` followed by

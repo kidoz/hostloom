@@ -44,6 +44,7 @@ public interface INodeLeasing
     /// Completes with the assigned ID when this instance acquires one, at once when it already
     /// holds one.
     /// </summary>
+    /// <remarks>Pending and future waits are canceled after stop. Calls after disposal throw <see cref="ObjectDisposedException"/>.</remarks>
     ValueTask<int> WaitForAssignmentAsync(CancellationToken cancellationToken = default);
 
     /// <summary>Observes every change; the returned disposable unsubscribes.</summary>

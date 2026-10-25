@@ -37,6 +37,7 @@ public interface ILeadership
     CancellationToken LeadershipToken { get; }
 
     /// <summary>Completes when this instance becomes leader, at once when it already is.</summary>
+    /// <remarks>Pending and future waits are canceled after stop. Calls after disposal throw <see cref="ObjectDisposedException"/>.</remarks>
     ValueTask WaitForLeadershipAsync(CancellationToken cancellationToken = default);
 
     /// <summary>Observes every change; the returned disposable unsubscribes.</summary>

@@ -38,7 +38,7 @@ correctness — the same tier as the Kubernetes Lease election, not consensus.
 | `IsCoordinated` | `false` when the lock does not coordinate (`Locking:Enabled = false`); `NodeId` then follows `NodeLeasing:WhenUncoordinated` on every instance alike, and nothing excludes another instance from holding the same ID |
 | `Term` | rises on every acquisition by this instance; not a fencing token |
 | `AssignmentToken` | cancelled when the assignment is lost, released, or stopped; already cancelled while unassigned |
-| `WaitForAssignmentAsync(ct)` | completes with the ID when this instance acquires one, at once when it already holds one |
+| `WaitForAssignmentAsync(ct)` | completes with the ID when this instance acquires one, at once when it already holds one; pending and future waits cancel on stop, and calls after disposal throw `ObjectDisposedException` |
 | `OnChange(listener)` | observes every `NodeLeaseChange` (`Acquired`, `Lost`, `Released`, `Stopped`) |
 
 A consumer that needs an ID is `var nodeId = await leasing.WaitForAssignmentAsync(ct)` followed

@@ -51,6 +51,7 @@ public sealed class NodeIdElector : INodeLeasing, IAsyncDisposable
     private long _term;
     private bool _providerDown;
     private bool _disposed;
+    private bool _stopRequested;
     private volatile bool _uncoordinated;
     private volatile bool _uncoordinatedWarned;
 
@@ -157,6 +158,9 @@ public sealed class NodeIdElector : INodeLeasing, IAsyncDisposable
         Task<int> signal;
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_stopRequested)
+                return ValueTask.FromCanceled<int>(Unassigned);
             if (_nodeId is { } id)
             {
                 return new ValueTask<int>(id);
@@ -225,6 +229,7 @@ public sealed class NodeIdElector : INodeLeasing, IAsyncDisposable
     /// </summary>
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
+        EndWaiters();
         Task? loop;
         lock (_gate)
         {
@@ -312,6 +317,15 @@ public sealed class NodeIdElector : INodeLeasing, IAsyncDisposable
     private static TaskCompletionSource NewReleaseSignal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    private void EndWaiters()
+    {
+        lock (_gate)
+        {
+            _stopRequested = true;
+            _becameAssigned.TrySetCanceled(Unassigned);
+        }
+    }
+
     private async Task RunAsync(CancellationToken stopping)
     {
         try
@@ -367,6 +381,7 @@ public sealed class NodeIdElector : INodeLeasing, IAsyncDisposable
         }
         finally
         {
+            EndWaiters();
             Status = NodeLeasingStatus.Stopped;
         }
     }
