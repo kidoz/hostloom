@@ -5,18 +5,33 @@ independent [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-- Bound close teardown with `closeTimeoutMilliseconds` (5,000 ms by default), detaching silent
-  sockets, settling pending operations, and resuming queued manual connects after the deadline.
-- Reject server frames whose kind conflicts with a known request or subscription stream before
-  orphan subscription cleanup.
-- Enforce the frame decoder's Base64 syntax in `decodeJsonPayload`, rejecting missing padding
-  and whitespace.
-- Ignore callbacks captured from an obsolete WebSocket after its replacement takes ownership.
-- Bound each open/welcome attempt with `welcomeTimeoutMilliseconds` (10,000 ms by default),
-  including silent initial sockets and replacement attempts during recovery.
-- Pace automatic resubscription through the control-frame budget and discard canceled queued restarts.
-- Share malformed JSON-v1 fixtures with the server and update development dependencies to clear
-  the dependency audit.
+## [0.3.1] - 2026-10-26
+
+### Added
+
+- The `welcomeTimeoutMilliseconds` connection option, 10,000 ms by default, bounds each attempt to
+  open the socket and receive its `welcome`, including a silent initial socket and replacement
+  attempts during recovery. An attempt that misses the deadline closes the connection with code
+  `1006` and reason `welcome_timeout`.
+- The `closeTimeoutMilliseconds` connection option, 5,000 ms by default, bounds close teardown. A
+  socket that never reports a close is detached, pending operations settle locally with code `1006`
+  and reason `close_timeout`, and a queued manual connect resumes.
+
+### Changed
+
+- Automatic resubscription draws on the control-frame budget, so a large subscription set recovers
+  over multiple budget windows, and unsubscribing while a restart is queued discards it before a
+  subscribe frame is sent.
+- Malformed JSON-v1 fixtures are shared with the server tests, and development dependencies are
+  updated to clear the dependency audit.
+
+### Fixed
+
+- Server frames whose kind conflicts with the ownership of a known request or subscription stream
+  are rejected as protocol failures before orphan subscription cleanup.
+- `decodeJsonPayload` enforces the frame decoder's Base64 syntax, rejecting missing padding and
+  whitespace.
+- Callbacks captured from a replaced WebSocket are ignored once the replacement takes ownership.
 
 ## [0.3.0] - 2026-09-25
 
