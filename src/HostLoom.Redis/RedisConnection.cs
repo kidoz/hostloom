@@ -24,6 +24,7 @@ public sealed class RedisConnection : IAsyncDisposable
     private Task<IConnectionMultiplexer>? _connecting;
     private Task? _disposing;
     private long _reconnects;
+    private bool _topologyValidated;
     private int _disposed;
 
     /// <summary>Creates a connection that will be established from <paramref name="options"/> on first use.</summary>
@@ -90,7 +91,7 @@ public sealed class RedisConnection : IAsyncDisposable
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
             if (_multiplexer is { } existing)
             {
-                ValidateTopology(existing);
+                ValidateTopologyOnce(existing);
                 return existing;
             }
 
@@ -108,9 +109,17 @@ public sealed class RedisConnection : IAsyncDisposable
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
-            ValidateTopology(multiplexer);
+            ValidateTopologyOnce(multiplexer);
             return multiplexer;
         }
+    }
+
+    private void ValidateTopologyOnce(IConnectionMultiplexer multiplexer)
+    {
+        if (_topologyValidated)
+            return;
+        ValidateTopology(multiplexer);
+        _topologyValidated = true;
     }
 
     private void ValidateTopology(IConnectionMultiplexer multiplexer)
@@ -271,6 +280,7 @@ public sealed class RedisConnection : IAsyncDisposable
         multiplexer.ConnectionFailed += OnConnectionFailed;
         multiplexer.ConnectionRestored += OnConnectionRestored;
         multiplexer.ConfigurationChanged += OnConfigurationChanged;
+        _topologyValidated = false;
         _multiplexer = multiplexer;
     }
 
@@ -282,8 +292,14 @@ public sealed class RedisConnection : IAsyncDisposable
             args.FailureType
         );
 
-    private void OnConfigurationChanged(object? sender, EndPointEventArgs args) =>
+    private void OnConfigurationChanged(object? sender, EndPointEventArgs args)
+    {
+        lock (_gate)
+        {
+            _topologyValidated = false;
+        }
         TopologyChanged?.Invoke(this, EventArgs.Empty);
+    }
 
     private void OnConnectionRestored(object? sender, ConnectionFailedEventArgs args)
     {

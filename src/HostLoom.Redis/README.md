@@ -208,7 +208,9 @@ unencrypted production connection is a configuration choice to review rather tha
 
 Use `UseHashTags = true` and `DatabaseIndex = 0` for cluster deployments so Lua and tag operations
 stay within one slot. HostLoom rejects incompatible settings when Cluster topology is known,
-including during hosted startup even when `FailFast` is false. Every advertised node address must be reachable from the application.
+including during hosted startup even when `FailFast` is false. Compatibility is validated when a
+multiplexer is first handed out and again after its configuration changes, not on every command.
+Every advertised node address must be reachable from the application.
 Connections created by HostLoom check topology at most five seconds apart, preserving a supplied
 faster `configCheckSeconds` setting. This discovers replica promotions even when an existing
 socket stays connected. For an externally owned multiplexer, configure `configCheckSeconds=5`

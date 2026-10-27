@@ -1,3 +1,4 @@
+using System.Net;
 using HostLoom.Redis;
 using NSubstitute;
 using StackExchange.Redis;
@@ -115,6 +116,22 @@ public sealed class RedisConnectionTests
         Assert.Equal(2, attempts);
         await connection.DisposeAsync();
         await mux.DidNotReceive().DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Topology_is_revalidated_only_after_a_configuration_change()
+    {
+        var mux = Substitute.For<IConnectionMultiplexer>();
+        var endpoint = new IPEndPoint(IPAddress.Loopback, 6379);
+        await using var connection = new RedisConnection(mux);
+
+        await connection.GetMultiplexerAsync(TestContext.Current.CancellationToken);
+        await connection.GetMultiplexerAsync(TestContext.Current.CancellationToken);
+        mux.Received(1).GetEndPoints(Arg.Any<bool>());
+
+        mux.ConfigurationChanged += Raise.EventWith(new EndPointEventArgs(mux, endpoint));
+        await connection.GetMultiplexerAsync(TestContext.Current.CancellationToken);
+        mux.Received(2).GetEndPoints(Arg.Any<bool>());
     }
 
     [Fact]
