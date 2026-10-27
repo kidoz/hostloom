@@ -26,6 +26,12 @@ public sealed class HostLoomWebSocketOptions
 
     public int MaximumConcurrentRequestsPerConnection { get; set; } = 8;
 
+    /// <summary>
+    /// Gets or sets the maximum number of simultaneous gateway sessions. Null leaves the count
+    /// unbounded. A session above the limit closes with 1008 <c>session_limit</c>.
+    /// </summary>
+    public int? MaximumConcurrentSessions { get; set; }
+
     public int MaximumSubscriptionsPerConnection { get; set; } = 32;
 
     public int MaximumCreditPerSubscription { get; set; } = 1024;
@@ -87,6 +93,8 @@ public sealed class HostLoomWebSocketOptions
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumQueuedBytesPerConnection);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumQueuedFramesPerConnection);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumConcurrentRequestsPerConnection);
+        if (MaximumConcurrentSessions is { } maximumSessions)
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSessions);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumSubscriptionsPerConnection);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumCreditPerSubscription);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumControlFramesPerSecond);

@@ -29,7 +29,7 @@ internal interface IWebSocketSessionHandle : IWebSocketEventSink
     void RequestDisconnect(WebSocketCloseStatus status, string reason);
 }
 
-internal sealed class WebSocketSessionRegistry
+internal sealed class WebSocketSessionRegistry(GatewayConfiguration? configuration = null)
     : IWebSocketSessionDirectory,
         IWebSocketSessionControl
 {
@@ -105,6 +105,11 @@ internal sealed class WebSocketSessionRegistry
     {
         lock (_sessionsGate)
         {
+            if (
+                configuration?.Options.MaximumConcurrentSessions is { } maximum
+                && _sessions.Count >= maximum
+            )
+                return (WebSocketCloseStatus.PolicyViolation, "session_limit");
             if (!_sessions.TryAdd(session.Id, session))
             {
                 throw new InvalidOperationException(

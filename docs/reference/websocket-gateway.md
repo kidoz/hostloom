@@ -169,6 +169,7 @@ headers must be configured earlier in the middleware pipeline.
 | `MaximumQueuedBytesPerConnection` | 256 KiB |
 | `MaximumQueuedFramesPerConnection` | 512 |
 | `MaximumConcurrentRequestsPerConnection` | 8 |
+| `MaximumConcurrentSessions` | unset (unbounded) |
 | `MaximumSubscriptionsPerConnection` | 32 |
 | `MaximumCreditPerSubscription` | 1024 |
 | `MaximumControlFramesPerSecond` | 50 |
@@ -185,8 +186,10 @@ headers must be configured earlier in the middleware pipeline.
 
 All limits are validated at registration; the byte and frame bounds plus
 per-subscription credit are what keep a slow client from creating
-unbounded per-connection memory or work. `MaximumSessionLifetime` accepts any positive value;
-lifetimes beyond a single timer's range (about 49.7 days) are waited in chunks.
+unbounded per-connection memory or work. A positive `MaximumConcurrentSessions` also bounds the
+whole gateway; a session above it closes with 1008 `session_limit` without entering the directory.
+`MaximumSessionLifetime` accepts any positive value; lifetimes beyond a single timer's range (about
+49.7 days) are waited in chunks.
 
 Exceeding the outbound byte or frame budget is the only size-related reason a session is
 aborted. An outbound frame above `MaximumMessageSize` never disconnects the session: a live

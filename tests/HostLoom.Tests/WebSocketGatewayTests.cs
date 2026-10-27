@@ -934,6 +934,37 @@ public sealed partial class WebSocketGatewayTests
     }
 
     [Fact]
+    public void Registry_enforces_the_optional_session_cap_and_allows_readmission()
+    {
+        var registry = new WebSocketSessionRegistry(
+            new GatewayConfiguration(new HostLoomWebSocketOptions { MaximumConcurrentSessions = 1 })
+        );
+        var first = new SessionHandle(Guid.NewGuid());
+        var second = new SessionHandle(Guid.NewGuid());
+
+        Assert.Null(registry.Register(first));
+        var close = registry.Register(second);
+        Assert.NotNull(close);
+        Assert.Equal(WebSocketCloseStatus.PolicyViolation, close.Value.Status);
+        Assert.Equal("session_limit", close.Value.Reason);
+        Assert.Equal(1, registry.Count);
+
+        registry.Unregister(first);
+        Assert.Null(registry.Register(second));
+        Assert.Equal(1, registry.Count);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Session_cap_must_be_positive_when_configured(int maximum)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new HostLoomWebSocketOptions { MaximumConcurrentSessions = maximum }.Validate()
+        );
+    }
+
+    [Fact]
     public void Registry_routes_keyed_events_to_wildcard_and_matching_subscribers()
     {
         var registry = new WebSocketSessionRegistry();
@@ -2716,6 +2747,29 @@ public sealed partial class WebSocketGatewayTests
             Greet request,
             CancellationToken cancellationToken
         ) => ValueTask.FromResult(new Greeting($"Hello, {request.Name}!"));
+    }
+
+    private sealed class SessionHandle(Guid id) : IWebSocketSessionHandle
+    {
+        public Guid Id { get; } = id;
+
+        public Task Completion => Task.CompletedTask;
+
+        public WebSocketSessionInfo GetInfo() =>
+            new(Id, null, "hostloom.json.v1", DateTimeOffset.UnixEpoch, DateTimeOffset.MaxValue, 0);
+
+        public void RequestDisconnect(WebSocketCloseStatus status, string reason) { }
+
+        public bool TryQueueEvent(
+            string topic,
+            string? subscriptionKey,
+            string? eventKey,
+            ReadOnlyMemory<byte> payload,
+            Guid eventId,
+            long sequence
+        ) => true;
+
+        public void Abort() { }
     }
 
     private sealed class RecordingSink(Guid id) : IWebSocketEventSink

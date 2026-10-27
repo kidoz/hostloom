@@ -424,10 +424,12 @@ For a broker-free topology where every replica produces events for its own conne
 
 Important limits are `MaximumMessageSize`, `MaximumQueuedBytesPerConnection`,
 `MaximumQueuedFramesPerConnection`, `MaximumConcurrentRequestsPerConnection`,
-`MaximumSubscriptionsPerConnection`, `MaximumCreditPerSubscription`,
+`MaximumConcurrentSessions`, `MaximumSubscriptionsPerConnection`, `MaximumCreditPerSubscription`,
 `MaximumControlFramesPerSecond`, `MaximumRequestsPerSecond`, `SnapshotInitializationTimeout`,
-`MaximumSessionLifetime`, `CloseTimeout`, and `MaximumRequestTimeout`. Defaults are conservative
-and should be load-tested with the actual event size distribution and client population.
+`MaximumSessionLifetime`, `CloseTimeout`, and `MaximumRequestTimeout`. `MaximumConcurrentSessions`
+is unset by default, preserving an unbounded session count; set a positive value to close sessions
+above the cap with 1008 `session_limit`. Defaults are conservative and should be load-tested with
+the actual event size distribution and client population.
 
 ## Composition probe
 
