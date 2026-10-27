@@ -115,9 +115,12 @@ public sealed class PipelineStageBuilder<TContext>
     /// Appends a filter resolved from the container per attempt. The default diagnostic name is the
     /// filter type's name; use <see cref="PipelineFilterBuilder.WithName"/> for a domain name.
     /// </summary>
-    public PipelineStageBuilder<TContext> AddFilter<TFilter>(
-        Action<PipelineFilterBuilder>? configure = null
-    )
+    public PipelineStageBuilder<TContext> AddFilter<
+        [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(
+            System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicConstructors
+        )]
+            TFilter
+    >(Action<PipelineFilterBuilder>? configure = null)
         where TFilter : class, IFilter<TContext>
     {
         var builder = new PipelineFilterBuilder(typeof(TFilter).Name);
@@ -158,6 +161,10 @@ public sealed class PipelineFilterBuilder
         return this;
     }
 
-    internal PipelineFilterDefinition Build(Type filterType) =>
-        new(filterType, _name, _enabledWhen, new object());
+    internal PipelineFilterDefinition Build(
+        [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(
+            System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicConstructors
+        )]
+            Type filterType
+    ) => new(filterType, _name, _enabledWhen, new object());
 }

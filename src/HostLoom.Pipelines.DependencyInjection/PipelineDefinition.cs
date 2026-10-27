@@ -1,7 +1,11 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace HostLoom.Pipelines.DependencyInjection;
 
 internal sealed record PipelineFilterDefinition(
-    Type FilterType,
+    [property: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
+    [param: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
+        Type FilterType,
     string Name,
     Func<IServiceProvider, bool>? EnabledWhen,
     object ServiceKey
