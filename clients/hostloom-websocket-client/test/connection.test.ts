@@ -316,6 +316,34 @@ test("request enforces the welcome concurrency limit and releases capacity on co
     await second;
 });
 
+test("a hostile welcome cannot raise the local request concurrency bound", async () => {
+    const socket = new FakeWebSocket();
+    const connection = new HostLoomConnection("wss://inventory.example.com/realtime", {
+        webSocketFactory: () => socket,
+        maximumConcurrentRequests: 1,
+    });
+    await connectHarness(connection, socket, welcomeWithRequestLimit(2_147_483_647));
+
+    void connection.request("inventory.get", "e30=");
+    await assert.rejects(
+        connection.request("inventory.get", "e30="),
+        (error) => error instanceof HostLoomRequestCapacityError && error.limit === 1,
+    );
+    assert.equal(socket.sent.length, 1);
+});
+
+test.each([
+    { maximumConcurrentRequests: 0 },
+    { maximumConcurrentRequests: 1.5 },
+    { maximumCreditPerSubscription: 0 },
+    { maximumCreditPerSubscription: 2_147_483_648 },
+])("connection rejects invalid local memory bounds", (options) => {
+    assert.throws(
+        () => new HostLoomConnection("wss://inventory.example.com/realtime", options),
+        RangeError,
+    );
+});
+
 test("AbortSignal sends cancel once and a late response cannot complete a newer request", async () => {
     const { connection, socket } = createHarness();
     await connectHarness(connection, socket);

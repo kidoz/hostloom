@@ -102,11 +102,12 @@ function stream(index: number): string {
     return index.toString(16).padStart(32, "0");
 }
 
-function createHarness() {
+function createHarness(maximumCreditPerSubscription?: number) {
     const socket = new FakeWebSocket();
     const connection = new HostLoomConnection("wss://inventory.example.com/realtime", {
         webSocketFactory: () => socket,
         streamIdFactory: sequentialStreamIds(),
+        ...(maximumCreditPerSubscription === undefined ? {} : { maximumCreditPerSubscription }),
     });
     return { connection, socket };
 }
@@ -170,6 +171,29 @@ test.each([false, true])(
         socket.closed(1006, "", false);
     },
 );
+
+test("a hostile welcome cannot raise the local subscription credit bound", async () => {
+    const { connection, socket } = createHarness(2);
+    await connectHarness(connection, socket, 2_147_483_647);
+
+    await assert.rejects(connection.subscribe("inventory.changed", { credit: 3 }), RangeError);
+    const pending = connection.subscribe("inventory.changed", { credit: 2 });
+    assert.deepEqual(sentFrames(socket), [
+        {
+            kind: "subscribe",
+            streamId: stream(1),
+            topic: "inventory.changed",
+            credit: 2,
+        },
+    ]);
+    socket.message({
+        kind: "subscribed",
+        streamId: stream(1),
+        topic: "inventory.changed",
+        credit: 2,
+    });
+    await pending;
+});
 
 test("subscribe shares request stream allocation and waits for confirmation", async () => {
     const { connection, socket } = createHarness();

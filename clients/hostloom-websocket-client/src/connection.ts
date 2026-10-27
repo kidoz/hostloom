@@ -100,6 +100,15 @@ export interface HostLoomConnectionOptions {
      */
     readonly reconnect?: HostLoomReconnectOptions;
     /**
+     * Local bound on active requests, 8 by default. The welcome can lower it but cannot raise it.
+     */
+    readonly maximumConcurrentRequests?: number;
+    /**
+     * Local bound on credit per subscription, 1,024 by default. The welcome can lower it but
+     * cannot raise it.
+     */
+    readonly maximumCreditPerSubscription?: number;
+    /**
      * The gateway's `MaximumControlFramesPerSecond`, 50 by default. The gateway closes a session
      * with 1008 `rate_limited` when more `subscribe`, `credit`, `ack`, `unsubscribe`, `cancel`, and
      * `ping` frames than this arrive in one second. Every such frame the connection sends draws
@@ -231,6 +240,8 @@ export class HostLoomConnection {
     >();
     readonly #welcomeTimeoutMilliseconds: number;
     readonly #closeTimeoutMilliseconds: number;
+    readonly #maximumConcurrentRequests: number;
+    readonly #maximumCreditPerSubscription: number;
     readonly #controlBudget: ControlFrameBudget;
 
     #state: HostLoomConnectionState = "disconnected";
@@ -280,6 +291,16 @@ export class HostLoomConnection {
                 "The close timeout must be an integer from 1 to 2147483647 milliseconds.",
             );
         }
+        this.#maximumConcurrentRequests = resolveClientLimit(
+            options.maximumConcurrentRequests,
+            8,
+            "maximum concurrent requests",
+        );
+        this.#maximumCreditPerSubscription = resolveClientLimit(
+            options.maximumCreditPerSubscription,
+            1_024,
+            "maximum credit per subscription",
+        );
         this.#controlBudget = new ControlFrameBudget(
             resolveControlFramesPerSecond(options.maximumControlFramesPerSecond),
         );
@@ -407,7 +428,10 @@ export class HostLoomConnection {
             return Promise.reject(canceledBy(options.signal));
         }
 
-        const limit = this.#welcome.maximumConcurrentRequests;
+        const limit = Math.min(
+            this.#maximumConcurrentRequests,
+            this.#welcome.maximumConcurrentRequests,
+        );
         if (this.#pendingRequests.size >= limit) {
             return Promise.reject(new HostLoomRequestCapacityError(limit));
         }
@@ -483,15 +507,16 @@ export class HostLoomConnection {
             return Promise.reject(subscriptionCanceledBy(options.signal));
         }
 
+        const creditLimit = Math.min(this.#maximumCreditPerSubscription, this.#welcome.credit);
         if (
             !Number.isSafeInteger(options.credit) ||
             options.credit <= 0 ||
-            options.credit > this.#welcome.credit
+            options.credit > creditLimit
         ) {
             return Promise.reject(
                 new RangeError(
                     "The subscription credit must be a positive safe integer no greater than " +
-                        `${this.#welcome.credit}.`,
+                        `${creditLimit}.`,
                 ),
             );
         }
@@ -1294,11 +1319,12 @@ export class HostLoomConnection {
     }
 
     #resubscribeAll(welcome: WelcomeFrame, subscriptions: readonly SubscriptionController[]): void {
+        const creditLimit = Math.min(this.#maximumCreditPerSubscription, welcome.credit);
         for (const subscription of subscriptions) {
-            if (subscription.credit > welcome.credit) {
+            if (subscription.credit > creditLimit) {
                 subscription.fail(
                     new HostLoomConnectionError(
-                        `The reconnected gateway permits at most ${welcome.credit} subscription credit.`,
+                        `The reconnected connection permits at most ${creditLimit} subscription credit.`,
                     ),
                 );
                 continue;
@@ -1421,6 +1447,19 @@ function resolveReconnectOptions(
         jitterRatio,
         refreshCredentials: options.refreshCredentials,
     };
+}
+
+function resolveClientLimit(
+    value: number | undefined,
+    defaultValue: number,
+    displayName: string,
+): number {
+    const limit = value ?? defaultValue;
+    if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 2_147_483_647) {
+        throw new RangeError(`The ${displayName} must be an integer from 1 to 2147483647.`);
+    }
+
+    return limit;
 }
 
 function resolveControlFramesPerSecond(value: number | undefined): number {

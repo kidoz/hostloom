@@ -113,17 +113,21 @@ expose the HTTP response details.
 
 `request()` allocates a new stream identifier for each request and resolves with the opaque Base64
 response payload. It rejects with `HostLoomRemoteFaultError` when the gateway sends a fault, and
-with `HostLoomRequestCapacityError` before sending when the welcome-advertised concurrency limit is
-already occupied. Every client frame is measured as encoded UTF-8 before it reaches the socket;
-`HostLoomMessageSizeError` reports the actual and advertised maximum sizes when it is too large.
-Pass an `AbortSignal` to send one `cancel` frame and reject locally with
-`HostLoomRequestCanceledError`; the slot remains reserved until the gateway sends the terminal
-response or fault because the request is still active on the server until then.
+with `HostLoomRequestCapacityError` before sending when the effective concurrency limit is already
+occupied. `maximumConcurrentRequests` sets a local bound (8 by default); the welcome can lower it
+but cannot raise it, even if a hostile server advertises a larger value. Every client frame is
+measured as encoded UTF-8 before it reaches the socket; `HostLoomMessageSizeError` reports the
+actual and advertised maximum sizes when it is too large. Pass an `AbortSignal` to send one
+`cancel` frame and reject locally with `HostLoomRequestCanceledError`; the slot remains reserved
+until the gateway sends the terminal response or fault because the request is still active on the
+server until then.
 
 `subscribe()` shares stream allocation with `request()` and resolves only
 after the matching `subscribed` frame. Events received before the first `onEvent` listener are
-buffered within the initial credit; credit does not replenish until a listener exists. After that,
-the client restores the requested credit whenever the remaining amount reaches `lowWatermark`
+buffered within the initial credit; credit does not replenish until a listener exists.
+`maximumCreditPerSubscription` sets the local bound (1,024 by default), and the effective limit is
+the smaller of that value and the welcome credit on both initial subscription and reconnect. After
+that, the client restores the requested credit whenever the remaining amount reaches `lowWatermark`
 (half the initial credit by default). `unsubscribe()` sends one frame and resolves after the
 gateway replies `complete`. An `AbortSignal` follows the same wire shutdown; aborting before
 confirmation rejects the pending call with `HostLoomSubscriptionCanceledError`.
