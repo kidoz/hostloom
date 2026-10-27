@@ -180,6 +180,7 @@ public sealed class KafkaConsumerShutdownTests
 
     [Theory(Timeout = 30_000)]
     [InlineData("handler")]
+    [InlineData("handler_and_cancel")]
     [InlineData("cancel")]
     [InlineData("close")]
     public async Task Shutdown_bounds_blocking_code_and_defers_cleanup_without_racing_the_consumer(
@@ -189,6 +190,7 @@ public sealed class KafkaConsumerShutdownTests
         var clock = new TestClock();
         var logger = new RecordingLogger<KafkaRequestBroker>();
         var entered = Signal();
+        var cancellationObserved = Signal();
         var blocked = Signal();
         var disposed = Signal();
         var releaseHandler = Signal();
@@ -217,11 +219,12 @@ public sealed class KafkaConsumerShutdownTests
             {
                 using var registration = token.Register(() =>
                 {
-                    if (blockAt == "cancel")
+                    cancellationObserved.TrySetResult();
+                    if (blockAt is "cancel" or "handler_and_cancel")
                         Block();
                 });
                 entered.TrySetResult();
-                if (blockAt == "handler")
+                if (blockAt is "handler" or "handler_and_cancel")
                     Block();
                 await releaseHandler.Task;
             },
@@ -233,6 +236,9 @@ public sealed class KafkaConsumerShutdownTests
         {
             await entered.Task.WaitAsync(Bound, TestContext.Current.CancellationToken);
             var disposing = subscription.DisposeAsync().AsTask();
+            // The timeout is armed when cleanup is queued, before its worker necessarily starts.
+            // Observe cancellation before advancing time and eventually releasing the handler.
+            await cancellationObserved.Task.WaitAsync(Bound, TestContext.Current.CancellationToken);
             await blocked.Task.WaitAsync(Bound, TestContext.Current.CancellationToken);
             await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers == 1);
             clock.Advance(ConsumerSubscription.DefaultShutdownTimeout);
