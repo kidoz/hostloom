@@ -14,6 +14,7 @@
     <Project Path="examples/HostLoom.Examples.CompositionAot/HostLoom.Examples.CompositionAot.csproj" />
     <Project Path="examples/HostLoom.Examples.LoggingAot/HostLoom.Examples.LoggingAot.csproj" />
     <Project Path="examples/HostLoom.Examples.MappingAot/HostLoom.Examples.MappingAot.csproj" />
+    <Project Path="examples/HostLoom.Examples.Messaging/HostLoom.Examples.Messaging.csproj" />
     <Project Path="examples/HostLoom.Examples.Pipelines/HostLoom.Examples.Pipelines.csproj" />
   </Folder>
   <Folder Name="/src/">
