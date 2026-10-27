@@ -278,6 +278,8 @@ def main() -> None:
             wait_ready(container, ports)
             if gateway_port is not None:
                 config = runtime / "haproxy.cfg"
+                # Deliberately retain sessions on demotion. Client recovery must not depend
+                # on HAProxy closing a socket that still answers PING on a read-only replica.
                 config.write_text(
                     "global\n  maxconn 128\n"
                     "  stats socket ipv4@127.0.0.1:20010 level admin\n"
@@ -289,8 +291,7 @@ def main() -> None:
                     "  tcp-check send info\\ replication\\r\\n\n"
                     "  tcp-check expect string role:master\n"
                     + "".join(
-                        f"  server node{port} 127.0.0.1:{port} check inter 200ms fall 1 rise 1 "
-                        "on-marked-down shutdown-sessions\n"
+                        f"  server node{port} 127.0.0.1:{port} check inter 200ms fall 1 rise 1\n"
                         for port in ports
                     )
                 )
