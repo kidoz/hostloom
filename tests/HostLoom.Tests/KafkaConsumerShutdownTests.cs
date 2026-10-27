@@ -94,6 +94,90 @@ public sealed class KafkaConsumerShutdownTests
         consumer.DidNotReceive().Commit(Arg.Any<ConsumeResult<string, byte[]>>());
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task Broker_disposal_bounds_all_subscriptions_as_one_aggregate_wave()
+    {
+        var clock = new TestClock();
+        var entered = Signal();
+        var enteredCount = 0;
+        var closedCount = 0;
+        using var release = new ManualResetEventSlim();
+        var consumers = Enumerable
+            .Range(0, 2)
+            .Select(_ =>
+            {
+                var consumer = Substitute.For<IConsumer<string, byte[]>>();
+                consumer
+                    .Consume(Arg.Any<CancellationToken>())
+                    .Returns(
+                        new ConsumeResult<string, byte[]>
+                        {
+                            Topic = "orders",
+                            Partition = 0,
+                            Offset = 0,
+                            Message = new Message<string, byte[]> { Value = [] },
+                        }
+                    );
+                consumer
+                    .When(c => c.Close())
+                    .Do(_ =>
+                    {
+                        Assert.True(release.Wait(TimeSpan.FromSeconds(15)));
+                        Interlocked.Increment(ref closedCount);
+                    });
+                return consumer;
+            })
+            .ToArray();
+        var consumerIndex = 0;
+        var producer = Substitute.For<IProducer<string, byte[]>>();
+        await using var broker = new KafkaRequestBroker(
+            Options.Create(new KafkaOptions()),
+            null,
+            producer,
+            (_, _) => consumers[consumerIndex++],
+            clock
+        );
+        ValueTask HandleAsync()
+        {
+            if (Interlocked.Increment(ref enteredCount) == consumers.Length)
+                entered.TrySetResult();
+            return ValueTask.CompletedTask;
+        }
+        var subscriptions = new[]
+        {
+            await broker.SubscribeAsync(
+                "orders",
+                "audit",
+                (_, _) => HandleAsync(),
+                TestContext.Current.CancellationToken
+            ),
+            await broker.SubscribeAsync(
+                "inventory",
+                "audit",
+                (_, _) => HandleAsync(),
+                TestContext.Current.CancellationToken
+            ),
+        };
+        try
+        {
+            await entered.Task.WaitAsync(Bound, TestContext.Current.CancellationToken);
+            var disposing = broker.DisposeAsync().AsTask();
+            await SchedulingTests.WaitUntilAsync(() => clock.PendingTimers >= consumers.Length);
+            clock.Advance(ConsumerSubscription.DefaultShutdownTimeout);
+            await disposing.WaitAsync(Bound, TestContext.Current.CancellationToken);
+            Assert.Equal(0, closedCount);
+        }
+        finally
+        {
+            release.Set();
+            foreach (var subscription in subscriptions)
+                await subscription
+                    .DisposeAsync()
+                    .AsTask()
+                    .WaitAsync(Bound, TestContext.Current.CancellationToken);
+        }
+    }
+
     [Theory(Timeout = 30_000)]
     [InlineData("handler")]
     [InlineData("cancel")]

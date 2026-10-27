@@ -221,7 +221,8 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                     }
                 },
                 _logger,
-                commitOnSuccess: true
+                commitOnSuccess: true,
+                timeProvider: _clock
             );
             _subscriptions.Add(subscription);
             return subscription;
@@ -278,7 +279,8 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
                 },
                 _logger,
                 commitOnSuccess: true,
-                retryIndefinitely: true
+                retryIndefinitely: true,
+                timeProvider: _clock
             );
             _subscriptions.Add(handled);
             return handled;
@@ -526,15 +528,23 @@ public sealed class KafkaRequestBroker : IRequestBroker, IEventBroker, IBrokerHe
             {
                 completion.TrySetException(new ObjectDisposedException(nameof(KafkaRequestBroker)));
             }
+            List<Task> disposals = [];
             while (_subscriptions.TryTake(out var subscription))
             {
-                try
+                disposals.Add(subscription.DisposeAsync().AsTask());
+            }
+            try
+            {
+                await Task.WhenAll(disposals).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                foreach (var disposal in disposals)
                 {
-                    await subscription.DisposeAsync().ConfigureAwait(false);
-                }
-                catch (Exception exception)
-                {
-                    failures.Add(exception);
+                    if (disposal.IsFaulted)
+                        failures.AddRange(disposal.Exception!.InnerExceptions);
+                    else if (disposal.IsCanceled)
+                        failures.Add(new TaskCanceledException(disposal));
                 }
             }
             try
