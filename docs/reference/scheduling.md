@@ -77,6 +77,7 @@ running anything.
 | --- | --- | --- |
 | `Scheduling:Enabled` | `true` | `false` runs nothing: a startup warning and the probe reporting `(disabled)` |
 | `Scheduling:DefaultLease` | 5 minutes | claim lease for exclusive schedules that give none |
+| `Scheduling:ShutdownTimeout` | 5 seconds | positive direct-disposal wait, at most 4,294,967,294 milliseconds (about 49.7 days), for running jobs and cancellation callbacks; cleanup continues after an abandoned loop actually ends |
 
 `Validate()` returns every violation naming the option key, and the scheduler's
 constructor throws with the same text, so a container-free composition fails as
@@ -144,7 +145,8 @@ type itself first and choose it with `UseGuard<TGuard>`. The hosted service star
 the host and stops it with the host's shutdown token; a job that ignores its
 token is not waited for past that bound, including during subsequent host disposal. Cancellation
 resources remain alive until the abandoned loops end. Direct scheduler disposal without an
-earlier abandoned stop waits for the loops to finish.
+earlier abandoned stop waits up to `Scheduling:ShutdownTimeout`; a non-cooperative job can keep
+running after disposal returns, with cleanup resources released only when its loop ends.
 
 ## Observability
 

@@ -212,8 +212,9 @@ public sealed class Scheduler : IAsyncDisposable
     }
 
     /// <summary>
-    /// Stops the scheduler and waits for its loops. If a prior bounded stop abandoned the
-    /// wait, returns without waiting again; cancellation resources are released when the loops end.
+    /// Stops the scheduler and waits up to <see cref="SchedulingOptions.ShutdownTimeout"/> for its
+    /// loops. If a prior bounded stop abandoned the wait, returns without waiting again;
+    /// cancellation resources are released when the loops end.
     /// </summary>
     public ValueTask DisposeAsync()
     {
@@ -229,9 +230,26 @@ public sealed class Scheduler : IAsyncDisposable
                     _disposing = Task.CompletedTask;
                 }
                 else
-                    _disposing = cleanup;
+                    _disposing = WaitForDirectDisposalAsync(cleanup);
             }
             return new ValueTask(_disposing);
+        }
+    }
+
+    private async Task WaitForDirectDisposalAsync(Task cleanup)
+    {
+        try
+        {
+            await cleanup.WaitAsync(Options.ShutdownTimeout, Clock).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            if (cleanup.IsCompleted)
+            {
+                await cleanup.ConfigureAwait(false);
+                return;
+            }
+            _ = ObserveAbandonedDisposalAsync(cleanup);
         }
     }
 

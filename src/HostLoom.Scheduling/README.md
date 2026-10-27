@@ -54,7 +54,11 @@ instance already does.
 `StopAsync(token)` bounds the wait for running jobs and cancellation callbacks. When that bound
 expires, later `DisposeAsync()` preserves the abandonment and returns without waiting again.
 The jobs may still finish; cancellation resources are released after their loops end. Direct
-disposal without an earlier abandoned stop waits for the loops, so jobs should honor cancellation.
+disposal without an earlier abandoned stop waits up to `Scheduling:ShutdownTimeout` (five seconds
+by default). A job that ignores cancellation can outlast that wait; cleanup resources are still
+released only after its loop ends, so jobs should honor cancellation.
+`ShutdownTimeout` must be positive and at most 4,294,967,294 milliseconds (about 49.7 days);
+unsupported values fail validation before jobs start.
 
 `SchedulingOptions.Enabled = false` runs nothing and says so at startup, for a deployment that
 keeps its registrations but must not execute jobs. `SchedulingProbe.Describe(scheduler)` reports
