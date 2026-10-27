@@ -150,6 +150,7 @@ public sealed partial class WebSocketGatewayTests
     [InlineData(
         """{"kind":"response","streamId":"33333333333333333333333333333333","payload":"not base64"}"""
     )]
+    [InlineData("""{"kind":"ping","kind":"pong","streamId":"33333333333333333333333333333333"}""")]
     public void Json_protocol_rejects_frames_the_published_schema_excludes(string json)
     {
         _ = Assert.Throws<InvalidDataException>(() =>

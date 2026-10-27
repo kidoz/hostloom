@@ -278,9 +278,10 @@ is aborted rather than served.
 Custom protocols implement `IWebSocketHubProtocol`
 (`SubProtocol`, `MessageType`, `Decode`, `Encode`).
 
-JSON decoding rejects unknown or incorrectly cased fields, uppercase identifiers, missing required
-fields, invalid Base64, out-of-range numbers, and invalid session/stream IDs. Optional fields must
-be omitted instead of set to null. Earlier permissive kind casing is no longer accepted.
+JSON decoding rejects unknown, duplicate, or incorrectly cased fields, uppercase identifiers,
+missing required fields, invalid Base64, out-of-range numbers, and invalid session/stream IDs.
+Optional fields must be omitted instead of set to null. Earlier permissive kind casing is no longer
+accepted.
 
 JSON uses camelCase kind values, omits null optional fields, and keeps application payloads as
 Base64 bytes. `StreamId`, `SessionId`, and `EventId` are `Guid` values: JSON spells each as 32

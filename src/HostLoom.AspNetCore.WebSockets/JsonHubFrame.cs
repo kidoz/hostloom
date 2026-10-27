@@ -11,8 +11,13 @@ internal sealed class JsonHubFrame
             throw new InvalidDataException("The JSON frame must be an object.");
         }
 
+        var propertyNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (var property in json.EnumerateObject())
         {
+            if (!propertyNames.Add(property.Name))
+            {
+                throw new InvalidDataException($"Duplicate JSON frame property '{property.Name}'.");
+            }
             switch (property.Name)
             {
                 case "kind":

@@ -299,8 +299,9 @@ contract serialization. The cross-language Protocol Buffers schema is shipped as
 `protocol/hostloom-websocket-v1.proto` in the NuGet package.
 
 JSON validates exact camelCase property and kind names, lowercase identifiers, required fields,
-Base64 payloads, numeric bounds and reserved stream IDs. Unknown properties and explicit null
-optional fields are rejected. Earlier permissive kind casing is no longer accepted. Its JSON
+Base64 payloads, numeric bounds and reserved stream IDs. Unknown properties, duplicate properties,
+and explicit null optional fields are rejected. Earlier permissive kind casing is no longer
+accepted. Its JSON
 Schema and exact `welcome`, `subscribed`, `event`, `fault`, `ping`, and `pong` fixtures are shipped
 under the package's `protocol/` directory.
 
