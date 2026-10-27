@@ -145,13 +145,17 @@ your request. Swapping `UseInMemory()` for `UseRabbitMq(...)` or
 underneath it.
 
 Two failure shapes are worth knowing from day one: a handler exception
-surfaces on the caller's side as a `RemoteRequestException` whose
-`ErrorType` names the remote exception type (no stack trace crosses the
-wire), and a request sent to an address nobody listens on fails with a
-`RequestTimeoutException` when `RequestTimeout` elapses.
+surfaces on the caller's side as a `RemoteRequestException`. By default its
+`ErrorType` is `HandlerFault`; the remote exception type is included only for
+a `RemoteFaultException` or when `IncludeFaultDetails` is enabled. No stack
+trace crosses the wire. A request sent to an address nobody listens on fails
+with a `RequestTimeoutException` when `RequestTimeout` elapses.
 
 ## Where next
 
+- Run the checked-in
+  [messaging example](https://github.com/kidoz/hostloom/tree/main/examples/HostLoom.Examples.Messaging),
+  which combines requests, events, and streams with result checks.
 - Fan events out to multiple subscribers in
   [Publish and subscribe](publish-subscribe.md).
 - Move this exact application onto a broker with
