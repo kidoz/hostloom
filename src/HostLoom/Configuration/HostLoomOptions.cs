@@ -7,7 +7,8 @@ public sealed class HostLoomOptions
 
     /// <summary>
     /// Maximum encoded request, event, response or fault frame size in bytes, inclusive.
-    /// Must be positive. Checked before decoding JSON or Base64 payloads; broker SDK receive
+    /// Must be positive. Checked before decoding JSON or Base64 payloads and before the built-in
+    /// request, event, and outbox send paths perform broker or store I/O; broker SDK receive
     /// buffers are outside this limit. In-process typed streams have no encoded frame.
     /// </summary>
     public int MaxFrameBytes { get; set; } = DefaultMaxFrameBytes;

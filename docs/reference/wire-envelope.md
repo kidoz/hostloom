@@ -4,9 +4,11 @@ Every message HostLoom puts on a transport travels inside an explicit
 envelope. The envelope type itself is internal — this page documents the
 format, which is the actual compatibility contract between services.
 
-Receivers enforce `HostLoomOptions.MaxFrameBytes` before JSON/Base64 decoding. The default is
-1,048,576 bytes (1 MiB), inclusive, for the entire encoded envelope. Configure a larger positive
-limit on receivers and requesting clients when needed; this does not alter the envelope format.
+Receivers enforce `HostLoomOptions.MaxFrameBytes` before JSON/Base64 decoding. Built-in request,
+event, and outbox senders enforce the same limit after encoding and before broker or store I/O, so
+an oversized send fails locally with `MalformedEnvelopeException`. The default is 1,048,576 bytes
+(1 MiB), inclusive, for the entire encoded envelope. Configure a larger positive limit on receivers
+and requesting clients when needed; this does not alter the envelope format.
 See [transport handling of oversized frames](transports.md#oversized-frames).
 
 ## Fields

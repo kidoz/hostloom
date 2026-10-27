@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Options;
+
 namespace HostLoom;
 
 /// <summary>
@@ -10,7 +12,8 @@ internal sealed class OutboxPublishEndpoint(
     IMessageSerializer serializer,
     IOutboxStore store,
     OutboxRelay relay,
-    TimeProvider clock
+    TimeProvider clock,
+    IOptions<HostLoomOptions> options
 ) : IPublishEndpoint
 {
     public async ValueTask PublishAsync<TEvent>(
@@ -49,7 +52,7 @@ internal sealed class OutboxPublishEndpoint(
                     MessageId = envelope.MessageId,
                     Topic = topic.Value,
                     MessageType = messageType,
-                    Frame = WireEnvelopeCodec.Encode(envelope),
+                    Frame = WireEnvelopeCodec.Encode(envelope, options.Value.MaxFrameBytes),
                     EnqueuedAt = now,
                 },
                 cancellationToken

@@ -86,6 +86,54 @@ public sealed class MessagingFrameLimitTests
     }
 
     [Fact]
+    public async Task An_oversized_request_is_refused_before_reaching_the_broker()
+    {
+        await using var broker = new SendBroker();
+        var services = new ServiceCollection();
+        services.AddSingleton<IRequestBroker>(broker);
+        services
+            .AddHostLoom(options => options.MaxFrameBytes = 64)
+            .AddRequestClient<LargeEcho, string>();
+        await using var provider = services.BuildServiceProvider();
+
+        var error = await Assert.ThrowsAsync<MalformedEnvelopeException>(async () =>
+            await provider
+                .GetRequiredService<IRequestClient<LargeEcho, string>>()
+                .GetResponseAsync(
+                    "catalog",
+                    new LargeEcho(new string('x', 128)),
+                    cancellationToken: TestContext.Current.CancellationToken
+                )
+        );
+        Assert.Contains("MaxFrameBytes", error.Message, StringComparison.Ordinal);
+        Assert.Equal(0, broker.Requests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task An_oversized_event_is_refused_before_broker_or_outbox_IO(bool outbox)
+    {
+        await using var broker = new SendBroker();
+        var services = new ServiceCollection();
+        services.AddSingleton<IRequestBroker>(broker);
+        var builder = services.AddHostLoom(options => options.MaxFrameBytes = 64);
+        if (outbox)
+            builder.UseInMemoryOutbox();
+        await using var provider = services.BuildServiceProvider();
+
+        var error = await Assert.ThrowsAsync<MalformedEnvelopeException>(async () =>
+            await provider
+                .GetRequiredService<IPublishEndpoint>()
+                .PublishAsync("orders", new Placed(), TestContext.Current.CancellationToken)
+        );
+        Assert.Contains("MaxFrameBytes", error.Message, StringComparison.Ordinal);
+        Assert.Equal(0, broker.Publications);
+        if (outbox)
+            Assert.Empty(provider.GetRequiredService<InMemoryOutboxStore>().Pending);
+    }
+
+    [Fact]
     public async Task An_oversized_invalid_frame_is_refused_before_JSON_decoding()
     {
         await using var frames = new WireEnvelopeValidationTests.FrameBroker();
@@ -231,6 +279,52 @@ public sealed class MessagingFrameLimitTests
     public sealed record Echo : IRequest<string>;
 
     public sealed record Placed : IEvent;
+
+    public sealed record LargeEcho(string Text) : IRequest<string>;
+
+    private sealed class SendBroker : IRequestBroker, IEventBroker
+    {
+        public int Requests { get; private set; }
+
+        public int Publications { get; private set; }
+
+        public ValueTask<IAsyncDisposable> ListenAsync(
+            RequestAddress address,
+            RequestFrameHandler handler,
+            CancellationToken cancellationToken
+        ) => throw new NotSupportedException();
+
+        public ValueTask<ReadOnlyMemory<byte>> RequestAsync(
+            RequestAddress address,
+            ReadOnlyMemory<byte> request,
+            Guid requestId,
+            TimeSpan timeout,
+            CancellationToken cancellationToken
+        )
+        {
+            Requests++;
+            return ValueTask.FromResult(ReadOnlyMemory<byte>.Empty);
+        }
+
+        public ValueTask<IAsyncDisposable> SubscribeAsync(
+            RequestAddress topic,
+            string subscription,
+            EventFrameHandler handler,
+            CancellationToken cancellationToken
+        ) => throw new NotSupportedException();
+
+        public ValueTask PublishAsync(
+            RequestAddress topic,
+            ReadOnlyMemory<byte> frame,
+            CancellationToken cancellationToken
+        )
+        {
+            Publications++;
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
 
     public sealed class Ledger
     {

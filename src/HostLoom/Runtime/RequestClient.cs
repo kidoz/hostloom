@@ -45,7 +45,7 @@ internal sealed class RequestClient<TRequest, TResponse>(
         var responseFrame = await broker
             .RequestAsync(
                 destination,
-                WireEnvelopeCodec.Encode(envelope),
+                WireEnvelopeCodec.Encode(envelope, options.Value.MaxFrameBytes),
                 requestId,
                 effectiveTimeout,
                 cancellationToken

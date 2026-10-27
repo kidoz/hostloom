@@ -1,7 +1,12 @@
+using Microsoft.Extensions.Options;
+
 namespace HostLoom;
 
-internal sealed class PublishEndpoint(IRequestBroker broker, IMessageSerializer serializer)
-    : IPublishEndpoint
+internal sealed class PublishEndpoint(
+    IRequestBroker broker,
+    IMessageSerializer serializer,
+    IOptions<HostLoomOptions> options
+) : IPublishEndpoint
 {
     public ValueTask PublishAsync<TEvent>(
         RequestAddress topic,
@@ -32,6 +37,10 @@ internal sealed class PublishEndpoint(IRequestBroker broker, IMessageSerializer 
             Body = serializer.Serialize(@event, eventType),
         };
 
-        return events.PublishAsync(topic, WireEnvelopeCodec.Encode(envelope), cancellationToken);
+        return events.PublishAsync(
+            topic,
+            WireEnvelopeCodec.Encode(envelope, options.Value.MaxFrameBytes),
+            cancellationToken
+        );
     }
 }
