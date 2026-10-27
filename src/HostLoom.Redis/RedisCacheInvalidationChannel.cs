@@ -51,6 +51,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     private readonly RedisKeyLayout _layout;
     private readonly RedisChannel _channel;
     private readonly ILogger _logger;
+    private readonly TimeProvider _clock;
     private readonly Lock _gate = new();
     private readonly List<Action<CacheInvalidation>> _handlers = [];
     private readonly CancellationTokenSource _disposal = new();
@@ -82,6 +83,15 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         CachingOptions options,
         ILogger<RedisCacheInvalidationChannel>? logger = null
     )
+        : this(connection, options, logger, TimeProvider.System) { }
+
+    /// <summary>Creates the channel with a clock for subscription stability and retry delays.</summary>
+    public RedisCacheInvalidationChannel(
+        RedisConnection connection,
+        CachingOptions options,
+        ILogger<RedisCacheInvalidationChannel>? logger,
+        TimeProvider? timeProvider
+    )
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(options);
@@ -95,6 +105,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         );
         _channel = RedisChannel.Literal(options.Namespace + ":cache:invalidate");
         _logger = logger ?? NullLogger<RedisCacheInvalidationChannel>.Instance;
+        _clock = timeProvider ?? TimeProvider.System;
         _received = Channel.CreateBounded<ReceivedMessage>(
             new BoundedChannelOptions(options.Invalidation.MaxPending)
             {
@@ -336,6 +347,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     private async Task SubscribeWithRetryAsync(CancellationToken cancellationToken)
     {
         var delay = _connection.Options.InitialRetryDelay;
+        long? subscribedAt = null;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
@@ -351,6 +363,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
                     )
                     .ConfigureAwait(false);
                 IsSubscribed = true;
+                subscribedAt = _clock.GetTimestamp();
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
                     _logger.LogInformation(
@@ -377,6 +390,13 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             }
             catch (Exception exception)
             {
+                // An acknowledgement alone is not recovery: flapping sockets retain their backoff.
+                if (
+                    subscribedAt is { } since
+                    && _clock.GetElapsedTime(since) >= TimeSpan.FromSeconds(30)
+                )
+                    delay = _connection.Options.InitialRetryDelay;
+                subscribedAt = null;
                 _logger.LogWarning(
                     new EventId(1312, "RedisInvalidationSubscribeFailed"),
                     exception,
@@ -384,7 +404,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
                     ChannelName,
                     delay
                 );
-                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(delay, _clock, cancellationToken).ConfigureAwait(false);
                 delay = delay * 2 > MaxRetryDelay ? MaxRetryDelay : delay * 2;
             }
         }

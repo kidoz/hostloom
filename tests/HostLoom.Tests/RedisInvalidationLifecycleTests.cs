@@ -3,6 +3,7 @@ using HostLoom.Caching;
 using HostLoom.Conformance;
 using HostLoom.Redis;
 using HostLoom.Redis.Internal;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using StackExchange.Redis;
 using Xunit;
@@ -11,6 +12,23 @@ namespace HostLoom.Tests;
 
 public sealed class RedisInvalidationLifecycleTests
 {
+    [Fact]
+    public async Task Original_constructor_remains_available_to_compiled_callers()
+    {
+        var constructor = typeof(RedisCacheInvalidationChannel).GetConstructor([
+            typeof(RedisConnection),
+            typeof(CachingOptions),
+            typeof(ILogger<RedisCacheInvalidationChannel>),
+        ]);
+        Assert.NotNull(constructor);
+        Assert.True(constructor.GetParameters()[2].IsOptional);
+        await using var connection = new RedisConnection(Substitute.For<IConnectionMultiplexer>());
+        await using var channel = (RedisCacheInvalidationChannel)
+            constructor.Invoke([connection, new CachingOptions { Namespace = "catalog" }, null]);
+
+        Assert.Equal("catalog:cache:invalidate", channel.ChannelName);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -207,6 +225,86 @@ public sealed class RedisInvalidationLifecycleTests
         Assert.Equal(2, sdk.Attempts(Rates));
         Assert.Equal(1, sdk.Attached(Catalog));
         Assert.Equal(1, sdk.Attached(Rates));
+    }
+
+    [Fact]
+    public async Task Backoff_resets_only_after_a_subscription_remains_stable()
+    {
+        const string Explicit = "catalog:cache:invalidate";
+        var sdk = new SdkSubscriptions((channel, attempt) => channel == Explicit && attempt <= 3);
+        var clock = new TestClock();
+        var logger = new RecoveryLogger();
+        await using var connection = sdk.Connection();
+        await using var channel = new RedisCacheInvalidationChannel(
+            connection,
+            new CachingOptions
+            {
+                Namespace = "catalog",
+                Invalidation = { Mode = CacheInvalidationMode.Broadcast },
+            },
+            logger,
+            clock
+        );
+        using var observer = channel.Subscribe(_ => { });
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            await CacheConformance.WaitUntilAsync(() => Task.FromResult(clock.PendingTimers == 1));
+            clock.Advance(connection.Options.InitialRetryDelay * (1 << attempt));
+        }
+        await CacheConformance.WaitUntilAsync(() =>
+            Task.FromResult(channel.Transport == RedisInvalidationTransport.Broadcast)
+        );
+        Assert.Equal(4, sdk.Attempts(Explicit));
+
+        clock.Advance(TimeSpan.FromSeconds(30));
+        logger.FailTransportLog = true;
+        var failures = logger.Inner.Entries.Count(entry => entry.Event.Id == 1312);
+        sdk.Multiplexer.ConfigurationChanged += Raise.EventWith(
+            new EndPointEventArgs(sdk.Multiplexer, new IPEndPoint(IPAddress.Loopback, 6379))
+        );
+        await CacheConformance.WaitUntilAsync(() =>
+            Task.FromResult(logger.Inner.Entries.Count(entry => entry.Event.Id == 1312) > failures)
+        );
+        Assert.Contains(
+            "00:00:00.0010000",
+            logger.Inner.Entries.Last(entry => entry.Event.Id == 1312).Message,
+            StringComparison.Ordinal
+        );
+        await CacheConformance.WaitUntilAsync(() => Task.FromResult(clock.PendingTimers == 1));
+
+        logger.FailTransportLog = false;
+        var subscriptions = logger.Inner.Entries.Count(entry => entry.Event.Id == 1311);
+        clock.Advance(connection.Options.InitialRetryDelay);
+        await CacheConformance.WaitUntilAsync(() =>
+            Task.FromResult(
+                logger.Inner.Entries.Count(entry => entry.Event.Id == 1311) > subscriptions
+            )
+        );
+    }
+
+    private sealed class RecoveryLogger : ILogger<RedisCacheInvalidationChannel>
+    {
+        public RecordingLogger<RedisCacheInvalidationChannel> Inner { get; } = new();
+
+        public bool FailTransportLog { get; set; }
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => Inner.BeginScope(state);
+
+        public bool IsEnabled(LogLevel logLevel) => Inner.IsEnabled(logLevel);
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
+        {
+            Inner.Log(logLevel, eventId, state, exception, formatter);
+            if (FailTransportLog && eventId.Id == 1314)
+                throw new InvalidOperationException("transport initialization failed");
+        }
     }
 
     /// <summary>

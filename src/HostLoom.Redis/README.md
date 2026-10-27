@@ -114,7 +114,8 @@ Subscription recovery is counted on
 tracked, or broadcast during the outage was received; the cache clears its in-process tier and
 counts it as `flushed`. An interactive-connection blip loses no invalidation and does not flush.
 An instance that starts while Redis is down keeps
-trying to subscribe with exponential backoff; a mode that cannot be enabled after
+trying to subscribe with exponential backoff. The delay resets after a subscription remains stable
+for 30 seconds, not after every brief or flapping success. A mode that cannot be enabled after
 `Redis:MaxClientCommandRetries` attempts leaves the explicit channel as the only fan-out, logged
 and retried on the next reconnect or topology refresh. `CachingProbe.Describe` reports the
 transport in effect. Registration runs serially across channels sharing a connection and checks
