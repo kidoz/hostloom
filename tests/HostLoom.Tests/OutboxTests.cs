@@ -369,6 +369,55 @@ public sealed class OutboxTests
         Assert.Equal(capacity, unbounded.Published.Count);
     }
 
+    [Fact]
+    public async Task The_in_memory_store_keeps_only_the_most_recent_dead_letters()
+    {
+        var clock = new TestClock();
+        var bounded = new InMemoryOutboxStore(clock) { DeadLetteredCapacity = 2 };
+        var none = new InMemoryOutboxStore(clock) { DeadLetteredCapacity = 0 };
+        var unbounded = new InMemoryOutboxStore(clock);
+        List<Guid> ids = [];
+        for (var i = 0; i < 3; i++)
+        {
+            var message = Message("orders", clock, payload: (byte)i);
+            ids.Add(message.MessageId);
+            foreach (var store in new[] { bounded, none })
+            {
+                await store.AppendAsync(message, TestContext.Current.CancellationToken);
+                await store.MarkDeadLetteredAsync(
+                    message.MessageId,
+                    "System.IO.IOException",
+                    TestContext.Current.CancellationToken
+                );
+            }
+        }
+
+        Assert.Equal(ids[1..], bounded.DeadLettered.Select(m => m.MessageId));
+        Assert.Empty(none.DeadLettered);
+        Assert.False(bounded.Requeue(ids[0]));
+        Assert.True(bounded.Requeue(ids[1]));
+        Assert.Equal(ids[1], Assert.Single(bounded.Pending).MessageId);
+        Assert.Equal(ids[2], Assert.Single(bounded.DeadLettered).MessageId);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new InMemoryOutboxStore { DeadLetteredCapacity = -1 }
+        );
+
+        var capacity = unbounded.DeadLetteredCapacity;
+        Assert.InRange(capacity, 1, 100_000);
+        for (var i = 0; i <= capacity; i++)
+        {
+            var message = Message("orders", clock);
+            await unbounded.AppendAsync(message, TestContext.Current.CancellationToken);
+            await unbounded.MarkDeadLetteredAsync(
+                message.MessageId,
+                "System.IO.IOException",
+                TestContext.Current.CancellationToken
+            );
+        }
+
+        Assert.Equal(capacity, unbounded.DeadLettered.Count);
+    }
+
     private static OutboxMessage Message(string topic, TimeProvider clock, byte payload = 0) =>
         new()
         {

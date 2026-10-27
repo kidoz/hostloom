@@ -5,8 +5,9 @@ namespace HostLoom;
 /// <see cref="TimeProvider"/>, so tests and single-process deployments exercise the relay's state
 /// machine without a database. It joins no transaction: an append is stored at once, whether or
 /// not the caller's own write later commits, which is the guarantee a database-backed store adds.
-/// It keeps only the most recent <see cref="PublishedCapacity"/> published messages, so a
-/// long-running process does not hold every frame it ever relayed.
+/// It keeps only the most recent <see cref="PublishedCapacity"/> published and
+/// <see cref="DeadLetteredCapacity"/> dead-lettered messages, so a long-running process does not
+/// hold every frame it ever relayed.
 /// </summary>
 public sealed class InMemoryOutboxStore(TimeProvider? timeProvider = null) : IOutboxStore
 {
@@ -25,6 +26,22 @@ public sealed class InMemoryOutboxStore(TimeProvider? timeProvider = null) : IOu
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">The value is negative.</exception>
     public int PublishedCapacity
+    {
+        get;
+        init
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            field = value;
+        }
+    } = 1_000;
+
+    /// <summary>
+    /// How many dead-lettered messages <see cref="DeadLettered"/> keeps: marking one more forgets
+    /// the oldest. Defaults to 1,000; zero keeps none. To change it for <c>UseInMemoryOutbox</c>,
+    /// register a configured store as a singleton before calling it.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The value is negative.</exception>
+    public int DeadLetteredCapacity
     {
         get;
         init
@@ -196,13 +213,20 @@ public sealed class InMemoryOutboxStore(TimeProvider? timeProvider = null) : IOu
         {
             if (_entries.Remove(messageId, out var entry))
             {
-                _deadLettered.Add(
-                    entry.Message with
+                if (DeadLetteredCapacity > 0)
+                {
+                    if (_deadLettered.Count == DeadLetteredCapacity)
                     {
-                        Attempts = entry.Message.Attempts + 1,
-                        NextAttemptAt = null,
+                        _deadLettered.RemoveAt(0);
                     }
-                );
+                    _deadLettered.Add(
+                        entry.Message with
+                        {
+                            Attempts = entry.Message.Attempts + 1,
+                            NextAttemptAt = null,
+                        }
+                    );
+                }
                 LastError = error;
             }
         }

@@ -176,11 +176,11 @@ Register the store scoped (the default)
 when it writes through the same unit of work as the handlers, which is what
 makes the outbox transactional; the relay resolves it from a scope of its own
 per call. `UseInMemoryOutbox()` supplies a per-process store that joins no
-transaction, for tests and single-process deployments. Its `Published` list
-keeps only the most recent `PublishedCapacity` messages (1,000 by default; zero
-keeps none), so a long-running process does not hold every frame it relayed; to
-change it, register a configured `InMemoryOutboxStore` as a singleton before
-calling `UseInMemoryOutbox()`. An application has one outbox: a second
+transaction, for tests and single-process deployments. Its `Published` and `DeadLettered` lists
+keep only the most recent `PublishedCapacity` and `DeadLetteredCapacity` messages respectively
+(1,000 each by default; zero keeps none), so a long-running process holds neither every frame it
+relayed nor every dead letter. To change either capacity, register a configured
+`InMemoryOutboxStore` as a singleton before calling `UseInMemoryOutbox()`. An application has one outbox: a second
 `UseOutbox` or `UseInMemoryOutbox` call throws `InvalidOperationException`
 rather than ignoring its store, so put every option in one configure delegate.
 
