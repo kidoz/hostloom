@@ -8,31 +8,34 @@
        below 15.1.1 carries GHSA-rvv3-g6hj-g44x, so there is no unaffected MIT version left. -->
     <PackageVersion Include="AutoMapper" Version="16.2.0" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
-    <!-- 2.16.0 cannot reliably run Kafka topic administration: every integration run fails
-       topic create and delete with "Failed while waiting for controller" or "Broker handle
-       destroyed without termination". Hold at 2.15.1 until that is understood upstream. -->
+    <!-- 2.16.0 bundles librdkafka 2.16.0, whose re-bootstrap decommissions bootstrap and
+       learned brokers with requests in flight. Every integration run fails topic create and
+       delete against the Kafka 3.9 fixture with "Failed while waiting for controller" or
+       "Broker handle destroyed without termination"; 2.15.1 does not. Upstream reports the
+       same signature and mechanism in confluentinc/librdkafka#5647, still open, and no newer
+       release exists. Hold until a fixed version ships. -->
     <PackageVersion Include="Confluent.Kafka" Version="2.15.1" />
     <PackageVersion Include="DistributedLock.Redis" Version="1.1.1" />
-    <PackageVersion Include="MessagePack" Version="3.1.11" />
-    <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="10.0.12" />
+    <PackageVersion Include="MessagePack" Version="3.1.12" />
+    <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="10.0.14" />
     <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="5.9.0" />
     <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
-    <PackageVersion Include="Microsoft.Extensions.Caching.Abstractions" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Caching.Abstractions" Version="10.0.14" />
     <!-- HybridCache follows the independent dotnet/extensions version train. -->
-    <PackageVersion Include="Microsoft.Extensions.Caching.Hybrid" Version="10.10.0" />
-    <PackageVersion Include="Microsoft.Extensions.Caching.Memory" Version="10.0.12" />
-    <PackageVersion Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.12" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.12" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
-    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Caching.Hybrid" Version="10.11.0" />
+    <PackageVersion Include="Microsoft.Extensions.Caching.Memory" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="10.0.14" />
     <PackageVersion
       Include="Microsoft.Extensions.DependencyInjection.Abstractions"
-      Version="10.0.12"
+      Version="10.0.14"
     />
-    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.12" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
-    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.14" />
     <PackageVersion Include="NSubstitute" Version="6.2.0" />
     <PackageVersion Include="NSubstitute.Analyzers.CSharp" Version="1.0.17" />
     <PackageVersion Include="RabbitMQ.Client" Version="7.2.2" />
@@ -45,13 +48,13 @@
     <PackageVersion Include="Serilog.Formatting.Compact" Version="3.0.0" />
     <PackageVersion Include="Serilog.Sinks.Async" Version="2.1.0" />
     <PackageVersion Include="ValkeyDotNet" Version="1.1.0" />
-    <PackageVersion Include="StackExchange.Redis" Version="3.4.0" />
+    <PackageVersion Include="StackExchange.Redis" Version="3.4.20" />
     <PackageVersion Include="ZiggyCreatures.FusionCache" Version="2.9.0" />
     <PackageVersion
       Include="ZiggyCreatures.FusionCache.Serialization.SystemTextJson"
       Version="2.9.0"
     />
-    <PackageVersion Include="protobuf-net" Version="3.4.30" />
+    <PackageVersion Include="protobuf-net" Version="3.4.40" />
     <PackageVersion Include="xunit.v3" Version="4.0.2" />
     <PackageVersion Include="xunit.v3.assert" Version="4.0.2" />
   </ItemGroup>
