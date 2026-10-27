@@ -56,7 +56,9 @@ to one public topic — a second mapping throws.
 
 On a keyed topic a `subscribe` without a key is denied with `forbidden` unless the registration
 sets `allowTopicWideSubscription: true`, because a keyless subscriber would receive every key's
-events. The check runs before the topic policy. A policy that ignores `WebSocketTopicResource.Key`
+events. The check runs before the topic policy. On an unkeyed topic, a `subscribe` carrying a key
+is rejected with `invalid_frame` instead of creating a subscription that can never match an event.
+A policy that ignores `WebSocketTopicResource.Key`
 is unsafe for a multi-tenant keyed topic; use `TopicKeyPolicy.SubjectOnly` or a key-aware policy
 whenever the key identifies a caller-private partition, and reserve the opt-in for topics whose
 keys every authorized caller may observe. Every policy name is resolved through

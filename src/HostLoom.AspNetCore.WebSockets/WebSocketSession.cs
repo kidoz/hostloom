@@ -728,6 +728,18 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
             return;
         }
 
+        if (!topic.Keyed && !string.IsNullOrEmpty(frame.Key))
+        {
+            DenySubscription(
+                frame.StreamId,
+                topic.Name,
+                "key_not_allowed",
+                HubFaultCodes.InvalidFrame,
+                "This topic does not accept subscription keys."
+            );
+            return;
+        }
+
         if (topic.Keyed && !topic.AllowTopicWideSubscription && string.IsNullOrEmpty(frame.Key))
         {
             // A keyless subscriber to a keyed topic would receive every key's events, so unless

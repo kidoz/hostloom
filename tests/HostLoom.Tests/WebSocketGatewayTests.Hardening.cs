@@ -84,6 +84,58 @@ public sealed partial class WebSocketGatewayTests
     }
 
     [Fact]
+    public async Task Unkeyed_topic_rejects_a_keyed_subscription_without_creating_membership()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var services = new ServiceCollection();
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway(options => options.RequireAuthenticatedUser = false)
+            .AddTopic<CatalogChanged>("catalog.changed", "catalog");
+        await using var provider = services.BuildServiceProvider();
+        var protocol = new JsonWebSocketHubProtocol();
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, protocol, new ClaimsPrincipal());
+
+        Send(
+            socket,
+            protocol,
+            new HubFrame
+            {
+                Kind = HubFrameKind.Subscribe,
+                StreamId = Stream(74),
+                Topic = "catalog.changed",
+                Key = "customer-1",
+                Credit = 1,
+            }
+        );
+        var run = session.RunAsync(cancellationToken);
+        _ = await socket.ReadSentAsync(cancellationToken);
+        var fault = await ReadFrameAsync(socket, protocol, cancellationToken);
+
+        Assert.Equal(HubFrameKind.Fault, fault.Kind);
+        Assert.Equal(HubFaultCodes.InvalidFrame, fault.Code);
+        Assert.Equal(
+            0,
+            Assert
+                .Single(provider.GetRequiredService<IWebSocketSessionDirectory>().GetSessions())
+                .SubscriptionCount
+        );
+        provider
+            .GetRequiredService<WebSocketSessionRegistry>()
+            .Publish("catalog.changed", "customer-1", new byte[] { 1 });
+        Send(socket, protocol, new HubFrame { Kind = HubFrameKind.Ping, StreamId = Stream(75) });
+        var pong = await ReadFrameAsync(socket, protocol, cancellationToken);
+        Assert.Equal(HubFrameKind.Pong, pong.Kind);
+
+        socket.EnqueueClose();
+        await run;
+    }
+
+    [Fact]
     public async Task Keyed_topic_allows_a_keyless_subscription_when_the_registration_opts_in()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

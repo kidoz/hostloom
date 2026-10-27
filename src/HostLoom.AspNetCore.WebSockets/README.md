@@ -146,8 +146,10 @@ values are not caller-private can opt in:
 
 With the opt-in, a keyless subscriber receives events for every key, and the policy sees a null
 `Key`; make sure it authorizes the whole topic in that case. Topics registered without a key
-selector are always topic-wide. `Probe()` and `WebSocketGatewayProbe.Describe()` report the
-setting as `AllowTopicWideSubscription` and in the `WebSockets:Topic:<name>` decision reason.
+selector are always topic-wide. Supplying a key for one of these unkeyed topics is rejected with
+`invalid_frame` (denial reason `key_not_allowed`) before authorization or fan-out membership.
+`Probe()` and `WebSocketGatewayProbe.Describe()` report the setting as
+`AllowTopicWideSubscription` and in the `WebSockets:Topic:<name>` decision reason.
 
 Events whose key selector returns `null` are delivered only to topic-wide subscribers, so on a
 keyed topic without the opt-in they reach nobody.
@@ -552,7 +554,8 @@ use cached `LoggerMessage` delegates.
 
 Session close reasons use the same normalized vocabulary as
 `hostloom.websocket.session.duration`. Subscription-denial reasons are `topic_not_found`,
-`key_too_long`, `key_required`, `invalid_credit`, `capacity`, `forbidden`, and `duplicate_stream`.
+`key_too_long`, `key_required`, `key_not_allowed`, `invalid_credit`, `capacity`, `forbidden`, and
+`duplicate_stream`.
 Only a registered topic is logged; an unknown client-supplied topic is represented as null, and
 `Operation` on a response-size warning is always a registered operation name. Subscription keys,
 payloads, credentials, handshake headers, caller-supplied close text, and remote fault messages are
