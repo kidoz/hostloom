@@ -4,6 +4,18 @@ Install `HostLoom.Valkey` to use the standalone ValkeyDotNet backend with HostLo
 `ICache` and `IDistributedLock` contracts. It shares one command connection owner between caching
 and locking, with a dedicated socket for explicit invalidation.
 
+## Before you begin
+
+Install the package in your application. For local work, start the repository's standalone
+Valkey fixture on localhost port 16379:
+
+```text
+dotnet add package HostLoom.Valkey
+docker compose up -d --wait valkey
+```
+
+## Register the cache and lock
+
 ```csharp
 using System.Text.Json;
 using HostLoom.Caching.DependencyInjection;
@@ -15,7 +27,7 @@ builder.Services.AddHostLoomCaching(options => options.Namespace = "catalog-work
     .UseValkey(options => options.Connection = new ValkeyClientOptions
     {
         Host = "localhost",
-        Port = 6379,
+        Port = 16379,
     })
     .UseSystemTextJson(new JsonSerializerOptions
     {
