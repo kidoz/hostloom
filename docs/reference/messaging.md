@@ -146,6 +146,10 @@ await foreach (
 }
 ```
 
+The runnable
+[messaging example](https://github.com/kidoz/hostloom/tree/main/examples/HostLoom.Examples.Messaging)
+includes a complete stream handler with `[EnumeratorCancellation]` and checks the yielded sequence.
+
 ## Receive context
 
 Filters registered with `ConfigureReceivePipeline` observe:

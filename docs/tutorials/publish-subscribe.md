@@ -143,6 +143,9 @@ these mappings are deliberately not identical.
 
 ## Where next
 
+- Run the checked-in
+  [messaging example](https://github.com/kidoz/hostloom/tree/main/examples/HostLoom.Examples.Messaging)
+  to see requests, independent subscriptions, and streams checked in one program.
 - Wrap event delivery with retry and circuit breaking in
   [Harden the receive pipeline](../how-to/harden-receive-pipeline.md).
 - Run this over a real broker: [RabbitMQ](../how-to/use-rabbitmq.md) or

@@ -69,8 +69,8 @@ uv run mkdocs build   # strict build into site/
   they elide ("inside the `Pipe.Create` callback").
 - Keep code lines under roughly 100 characters so they read without
   horizontal scrolling.
-- Aspiration, not yet reality: extract tutorial samples into checked-in
-  projects compiled in CI, so drift fails a build instead of a reader.
+- Keep tutorial code aligned with the checked-in example projects compiled
+  by the solution build, so drift fails a build instead of a reader.
 
 ## Voice and language
 
