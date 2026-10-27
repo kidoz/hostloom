@@ -8,6 +8,59 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-27
+
+HostLoom 0.18.0 adds configurable bounds for gateway sessions, scheduler disposal, and retained
+outbox dead letters. It also marks the pipeline packages Native AOT compatible and tightens
+messaging validation before transport or store I/O. No package is published for the first time;
+the NuGet packages publish together at 0.18.0. The browser client is versioned independently,
+and its new local request and subscription-credit limits remain unreleased.
+
+### Added
+
+- `HostLoomWebSocketOptions.MaximumConcurrentSessions` optionally limits admitted gateway
+  sessions. Excess sessions close with status 1008 and reason `session_limit`; the default
+  remains unbounded.
+- `SchedulingOptions.ShutdownTimeout` bounds direct scheduler disposal, defaulting to five
+  seconds. Non-cooperative work can continue after disposal returns, with cleanup deferred
+  until its loop ends. Invalid timeout values fail direct and hosted options validation.
+- `InMemoryOutboxStore.DeadLetteredCapacity` limits retained dead letters to the most recent
+  1,000 by default; zero retains none. Messages removed by this bound cannot be requeued.
+- A clock-aware `RedisCacheInvalidationChannel` constructor supports deterministic recovery
+  tests while retaining the original three-parameter constructor for compiled consumers.
+
+### Changed
+
+- The pipeline kernel, dependency-injection adapter, and testing package declare Native AOT
+  compatibility. Filter registrations preserve their public constructors for trimming.
+- Host startup checks the final effective request, stream, and event handler registrations and
+  refuses singleton handlers, including late overrides. Open-behavior constraint checks are
+  cached per request/response contract.
+- Update `MessagePack` from 3.1.11 to 3.1.12, `StackExchange.Redis` from 3.4.0 to 3.4.20,
+  `protobuf-net` from 3.4.30 to 3.4.40, `Microsoft.Extensions.*` from 10.0.12 to 10.0.14, and
+  `Microsoft.Extensions.Caching.Hybrid` from 10.10.0 to 10.11.0. `Confluent.Kafka` remains at
+  2.15.1 for the topic-administration failure noted in 0.15.1.
+
+### Fixed
+
+- Built-in request, event, and outbox senders enforce `MaxFrameBytes` before broker or store I/O,
+  including when the application supplies its own broker.
+- Kafka disposes request and event consumers concurrently so each consumer's shutdown timeout
+  does not add another sequential wait.
+- Pipeline payload factories can compose other payloads on the same context.
+- Redis topology compatibility is checked when a multiplexer is first handed out and after
+  configuration changes. Invalidation retry backoff resets after a stable 30-second subscription.
+- WebSocket subscriptions carrying a key for an unkeyed topic are rejected before authorization
+  or fan-out membership. JSON-v1 frames with duplicate properties are rejected during decoding.
+
+### Compatibility
+
+- Replace singleton handler registrations with scoped or transient registrations before upgrading.
+  Configure `DeadLetteredCapacity` when more than 1,000 failed messages must remain available for
+  requeue, and honor cancellation in scheduled jobs that must finish before disposal returns.
+- The existing Redis invalidation constructor remains binary compatible. This release does not
+  change Kafka group identities or the wire envelope format.
+
 ## [0.17.0] - 2026-10-25
 
 The nineteenth release of **HostLoom**. It hardens the boundaries an application shares with
@@ -2227,7 +2280,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/kidoz/hostloom/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/kidoz/hostloom/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/kidoz/hostloom/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/kidoz/hostloom/compare/v0.15.1...v0.16.0
