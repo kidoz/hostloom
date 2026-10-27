@@ -21,7 +21,7 @@ public static class ServiceCollectionExtensions
 
         if (configuration is null)
         {
-            configuration = new HostLoomConfiguration();
+            configuration = new HostLoomConfiguration(services);
             services.AddSingleton(configuration);
             services.AddSingleton<EndpointRuntimeState>();
             services

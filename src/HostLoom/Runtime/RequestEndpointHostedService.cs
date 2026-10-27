@@ -20,6 +20,7 @@ internal sealed class RequestEndpointHostedService(
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        configuration.ValidateHandlerLifetimes();
         if (
             configuration.Endpoints.Count == 0
             && configuration.StreamEndpoints.Count == 0

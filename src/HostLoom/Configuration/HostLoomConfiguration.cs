@@ -1,10 +1,16 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using HostLoom.Pipelines;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace HostLoom;
 
-internal sealed class HostLoomConfiguration
+internal sealed class HostLoomConfiguration(IServiceCollection services)
 {
+    private readonly ConcurrentDictionary<
+        (Type RequestType, Type ResponseType),
+        Lazy<bool>
+    > _openBehaviorValidations = new();
     private readonly Dictionary<
         RequestAddress,
         Dictionary<string, HandlerRegistration>
@@ -31,12 +37,51 @@ internal sealed class HostLoomConfiguration
 
     public void ValidateOpenBehaviorConstraints(Type requestType, Type responseType)
     {
-        // DI skips incompatible open generics when resolving an IEnumerable. Validate before
-        // resolution so a request cannot reach its handler with a behavior silently omitted.
-        foreach (var behaviorType in _openBehaviorTypes)
+        // DI skips incompatible open generics when resolving an IEnumerable. Validate once per
+        // contract so a request cannot reach its handler with a behavior silently omitted.
+        _ = _openBehaviorValidations
+            .GetOrAdd(
+                (requestType, responseType),
+                key => new Lazy<bool>(() =>
+                {
+                    foreach (var behaviorType in _openBehaviorTypes)
+                    {
+                        _ = behaviorType.MakeGenericType(requestType, responseType);
+                    }
+                    return true;
+                })
+            )
+            .Value;
+    }
+
+    public void ValidateHandlerLifetimes()
+    {
+        foreach (var (serviceType, implementationType) in HandlerTypes())
         {
-            _ = behaviorType.MakeGenericType(requestType, responseType);
+            var effective = services.LastOrDefault(descriptor =>
+                descriptor.ServiceType == serviceType && !descriptor.IsKeyedService
+            );
+            if (effective?.Lifetime == ServiceLifetime.Singleton)
+            {
+                throw new InvalidOperationException(
+                    $"Handler '{implementationType}' was registered as a singleton. Register it as scoped or transient so each delivery has its own handler instance."
+                );
+            }
         }
+    }
+
+    private IEnumerable<(Type ServiceType, Type ImplementationType)> HandlerTypes()
+    {
+        foreach (var registration in _endpoints.Values.SelectMany(handlers => handlers.Values))
+            yield return (registration.HandlerServiceType, registration.HandlerImplementationType);
+        foreach (var registration in _streams.Values.SelectMany(handlers => handlers.Values))
+            yield return (registration.HandlerServiceType, registration.HandlerImplementationType);
+        foreach (
+            var handlerType in _subscriptions
+                .Values.SelectMany(handlers => handlers.Values)
+                .SelectMany(registration => registration.HandlerTypes)
+        )
+            yield return (handlerType, handlerType);
     }
 
     /// <summary>
@@ -211,14 +256,18 @@ internal sealed record HandlerRegistration(
     string MessageType,
     Type RequestType,
     Type ResponseType,
-    Type ExecutorType
+    Type ExecutorType,
+    Type HandlerServiceType,
+    Type HandlerImplementationType
 );
 
 internal sealed record StreamHandlerRegistration(
     string MessageType,
     Type RequestType,
     Type ItemType,
-    Type ExecutorType
+    Type ExecutorType,
+    Type HandlerServiceType,
+    Type HandlerImplementationType
 );
 
 internal sealed record SubscriberRegistration(string MessageType, Type EventType, Type ExecutorType)

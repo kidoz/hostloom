@@ -52,7 +52,10 @@ returns a `HostLoomBuilder`:
 Handlers, subscribers, and behaviors are scoped on purpose: every delivery
 attempt runs in its own dependency-injection scope. Registering them as
 singletons defeats that isolation — the `HLM0003`
-[analyzer rule](analyzer-rules.md) reports it.
+[analyzer rule](analyzer-rules.md) reports it. Host startup also validates the
+final effective registration for every request, stream, and event handler,
+including registrations added after the builder call, and refuses singleton
+handlers before opening any transport listener or subscription.
 
 ## Options
 

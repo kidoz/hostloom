@@ -97,6 +97,59 @@ public sealed class ReviewCorrectnessTests
         builder.AddSubscriber<Placed, Subscriber>("orders", "audit");
     }
 
+    [Theory]
+    [InlineData("request")]
+    [InlineData("stream")]
+    [InlineData("event")]
+    public async Task A_late_singleton_handler_override_fails_before_transport_startup(string kind)
+    {
+        var builder = Host.CreateApplicationBuilder();
+        var hostLoom = builder.Services.AddHostLoom().UseInMemory();
+        switch (kind)
+        {
+            case "request":
+                hostLoom.AddHandler<Lookup, int, RequestHandler>("catalog");
+                builder.Services.AddSingleton<IRequestHandler<Lookup, int>, RequestHandler>();
+                break;
+            case "stream":
+                hostLoom.AddStreamHandler<ListCatalog, int, Listing>("catalog");
+                builder.Services.AddSingleton<IStreamRequestHandler<ListCatalog, int>, Listing>();
+                break;
+            default:
+                hostLoom.AddSubscriber<Placed, Subscriber>("orders", "audit");
+                builder.Services.AddSingleton<Subscriber>();
+                break;
+        }
+        using var host = builder.Build();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            host.StartAsync(TestContext.Current.CancellationToken)
+        );
+        Assert.Contains("singleton", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("request")]
+    [InlineData("stream")]
+    public async Task A_scoped_handler_registration_after_a_singleton_is_the_effective_one(
+        string kind
+    )
+    {
+        var builder = Host.CreateApplicationBuilder();
+        if (kind == "request")
+            builder.Services.AddSingleton<IRequestHandler<Lookup, int>, RequestHandler>();
+        else
+            builder.Services.AddSingleton<IStreamRequestHandler<ListCatalog, int>, Listing>();
+        var hostLoom = builder.Services.AddHostLoom().UseInMemory();
+        if (kind == "request")
+            hostLoom.AddHandler<Lookup, int, RequestHandler>("catalog");
+        else
+            hostLoom.AddStreamHandler<ListCatalog, int, Listing>("catalog");
+        using var host = builder.Build();
+
+        await host.StartAsync(TestContext.Current.CancellationToken);
+    }
+
     [Fact]
     public async Task A_stream_only_host_is_not_ready_until_its_listener_starts()
     {
@@ -217,6 +270,14 @@ public sealed class ReviewCorrectnessTests
     private sealed record Stamp(int Count) : IStamp;
 
     private sealed record OtherStamp(int Count) : IStamp;
+
+    public sealed record Lookup : IRequest<int>;
+
+    public sealed class RequestHandler : IRequestHandler<Lookup, int>
+    {
+        public ValueTask<int> HandleAsync(Lookup request, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(1);
+    }
 
     public sealed record Placed : IEvent;
 

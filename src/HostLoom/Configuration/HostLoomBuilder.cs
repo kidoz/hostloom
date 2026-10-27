@@ -26,7 +26,9 @@ public sealed class HostLoomBuilder
                 MessageTypeName.For<TRequest>(),
                 typeof(TRequest),
                 typeof(TResponse),
-                typeof(RequestExecutor<TRequest, TResponse>)
+                typeof(RequestExecutor<TRequest, TResponse>),
+                typeof(IRequestHandler<TRequest, TResponse>),
+                typeof(THandler)
             ),
             endpoint
         );
@@ -69,7 +71,9 @@ public sealed class HostLoomBuilder
                 MessageTypeName.For<TRequest>(),
                 typeof(TRequest),
                 typeof(TItem),
-                typeof(StreamExecutor<TRequest, TItem>)
+                typeof(StreamExecutor<TRequest, TItem>),
+                typeof(IStreamRequestHandler<TRequest, TItem>),
+                typeof(THandler)
             ),
             endpoint
         );
