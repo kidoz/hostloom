@@ -64,7 +64,7 @@ Start the host and look for one `Information` line under the
 
 ```text
 info: HostLoom.Diagnostics.Composition
-      HostLoom composition: OrderPublisher=Kafka | Outbox=(skipped) | Scheduler=Quartz
+      HostLoom composition: OrderPublisher=Kafka | Outbox=(skipped)
 ```
 
 Raise the category to `Debug` for one line per decision with its reason
