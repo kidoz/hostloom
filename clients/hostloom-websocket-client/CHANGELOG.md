@@ -5,6 +5,26 @@ independent [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-27
+
+### Added
+
+- The `maximumConcurrentRequests` connection option, 8 by default, bounds active requests locally.
+  A welcome can lower the effective limit but cannot raise it above this value.
+- The `maximumCreditPerSubscription` connection option, 1,024 by default, bounds each
+  subscription's credit locally. It applies to the initial subscription and to resubscription
+  after a reconnect; a welcome can lower the effective limit but cannot raise it.
+
+### Changed
+
+- Request concurrency is the smaller of the local option and the welcome's advertised limit, and
+  subscription credit is the smaller of the local option and the welcome's advertised credit.
+  Applications that relied on a gateway advertising more than 8 concurrent requests or more than
+  1,024 credit must raise the corresponding option; otherwise `request()` rejects with
+  `HostLoomRequestCapacityError` and `subscribe()` rejects with `RangeError`.
+- Both options must be integers from 1 to 2147483647; any other value throws `RangeError` when the
+  connection is constructed.
+
 ## [0.3.1] - 2026-10-26
 
 ### Added
