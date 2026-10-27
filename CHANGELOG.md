@@ -13,8 +13,8 @@ are derived from release tags at publish time.
 HostLoom 0.18.0 adds configurable bounds for gateway sessions, scheduler disposal, and retained
 outbox dead letters. It also marks the pipeline packages Native AOT compatible and tightens
 messaging validation before transport or store I/O. No package is published for the first time;
-the NuGet packages publish together at 0.18.0. The browser client is versioned independently,
-and its new local request and subscription-credit limits remain unreleased.
+the NuGet packages publish together at 0.18.0. The browser client is versioned independently; its
+local request and subscription-credit limits shipped as `@hostloom/websocket-client` 0.4.0.
 
 ### Added
 
