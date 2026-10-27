@@ -3,7 +3,7 @@ namespace HostLoom.Pipelines;
 /// <summary>Default pipeline context with a thread-safe payload collection.</summary>
 public class PipeContext(CancellationToken cancellationToken = default) : IPipeContext
 {
-    private readonly Lock _payloadLock = new();
+    private readonly object _payloadLock = new();
     private Dictionary<Type, object>? _payloads;
     private CancellationToken _cancellationToken = cancellationToken;
 

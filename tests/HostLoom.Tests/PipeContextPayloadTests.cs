@@ -90,6 +90,30 @@ public sealed class PipeContextPayloadTests
         Assert.Equal(1, fetched!.Count);
     }
 
+    [Fact]
+    public void Payload_factories_can_compose_other_payloads_on_the_same_context()
+    {
+        var context = new PipeContext();
+        var first = context.GetOrAddPayload<Stamp>(() =>
+        {
+            context.GetOrAddPayload<OtherStamp>(() => new OtherStamp());
+            return new Stamp { Count = 1 };
+        });
+        var updated = context.AddOrUpdatePayload<Stamp>(
+            () => throw new InvalidOperationException("A payload already exists."),
+            existing =>
+            {
+                context.GetOrAddPayload<OtherStamp>(() => new OtherStamp());
+                existing.Count++;
+                return existing;
+            }
+        );
+
+        Assert.Same(first, updated);
+        Assert.Equal(2, updated.Count);
+        Assert.NotNull(context.GetOrAddPayload<OtherStamp>(() => new OtherStamp()));
+    }
+
     private interface IStamp
     {
         int Count { get; set; }
@@ -99,6 +123,8 @@ public sealed class PipeContextPayloadTests
     {
         public int Count { get; set; }
     }
+
+    private sealed class OtherStamp;
 
     private sealed class StampedContext : PipeContext, IStamp
     {
