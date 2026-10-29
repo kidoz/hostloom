@@ -38,6 +38,7 @@ public sealed class RedisLegacyLockConformanceTests
     )
     {
         await using var connection = Connection();
+        await ClearLegacyLocksAsync(connection);
         await using var provider = new RedisLockProvider(connection);
         var legacy = new LegacyLockIdentityProvider(provider);
         var faults = new FaultingLockProvider(legacy);
@@ -61,8 +62,25 @@ public sealed class RedisLegacyLockConformanceTests
         }
         finally
         {
+            await ClearLegacyLocksAsync(connection);
             foreach (var container in containers)
                 await container.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Removes locks a scenario deliberately left behind, such as a failed release whose key
+    /// outlives the scenario by its lease. Every scenario row runs both compositions against the
+    /// same legacy identities, so residue would otherwise make the sibling composition miss its
+    /// first acquisition.
+    /// </summary>
+    private static async Task ClearLegacyLocksAsync(RedisConnection connection)
+    {
+        var token = TestContext.Current.CancellationToken;
+        var database = await connection.GetDatabaseAsync(token);
+        if ((RedisKey[]?)await database.ExecuteAsync("KEYS", "lock:*") is { Length: > 0 } keys)
+        {
+            await database.KeyDeleteAsync(keys);
         }
     }
 
