@@ -8,6 +8,67 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+Cache and lock registrations can now compose independent named profiles, and the Microsoft
+distributed-cache adapter can opt into sliding expiration. Leadership, node-ID pools, and
+exclusive schedules can select the exact lock profile they use.
+
+### Added
+
+- Named `AddHostLoomCaching` and `AddHostLoomLocking` overloads register keyed services with
+  independent options, stores or providers, serializers, warmups, and readiness checks. Default
+  health-check names gain a profile suffix; serializer replacement affects only the selected
+  profile.
+- The `lockProfile` argument on leadership `AddRole`, node-leasing `AddPool`, and scheduling
+  `UseDistributedLock` binds construction and startup validation to the selected lock's lease,
+  key-length, and coordinated or disabled behavior. Missing profiles identify their consumer.
+- `AddDistributedCacheAdapter(enableSlidingExpiration: true)` enables sliding reads and explicit
+  refreshes on the in-memory, Redis, and Valkey stores. The optional
+  `ISlidingExpirationCacheStore` interface and `CacheStoreCapabilities.SlidingExpiration` flag
+  add generation-checked, expire-only renewal without changing the required store interface.
+  Renewal cannot resurrect deleted entries or extend replacements, and the store's clock
+  enforces an absolute expiration cap. A failed renewal returns the completed-read value
+  fail-open unless the store reports expiration; caller cancellation propagates.
+- `ValkeyOptions.ConnectionOwner` borrows a caller-owned connection owner. Invalidation resolves
+  its actual endpoint and database; provider teardown leaves the external owner usable.
+- Profile-resolution and adapter-operation benchmarks, shared sliding-expiration conformance
+  scenarios, legacy lock-identity conformance coverage, and named-profile/sliding coverage in
+  the caching and Valkey Native AOT samples.
+
+### Changed
+
+- Redis and Valkey share one connection within a profile and backend, while different profiles
+  isolate owned connections. Repeated connection configuration must match or fail with the
+  conflicting registrations and option keys named. Standalone Redis profiles can share an
+  externally owned multiplexer across databases; at most one cache profile on it uses tracking
+  or broadcast, with others falling back to explicit invalidation.
+- Named Microsoft cache adapters register keyed `IDistributedCache` and `IBufferDistributedCache`
+  only. The default cache registration retains the unkeyed adapters consumed by `HybridCache`.
+- Warmup readiness distinguishes not started, running, succeeded, failed, and cancelled, retaining
+  partial success and failure counts. Cancellation is neither success nor failure.
+  `Caching:Warmup:BlocksReadiness` blocks only while a run is in progress; terminal failure and
+  cancellation remain healthy fail-open outcomes.
+
+### Fixed
+
+- Named warmup registration deduplicates the same implementation type. Operation-specific faults
+  in `FaultingCacheStore` retain their operation filter until the requested count is exhausted.
+- Enveloped adapter writes retire the legacy representation before publishing a replacement.
+  Failed retirement leaves the replacement unpublished, preventing a newer value from expiring
+  back to an older legacy value.
+
+### Compatibility
+
+- `ICache`, `TieredCache`, and `CacheEntryOptions` remain absolute-only. Supplying
+  `SlidingExpiration` to the Microsoft adapter without opting in now throws
+  `NotSupportedException` instead of approximating an absolute TTL.
+- Opted-in adapter writes use a 40-byte binary envelope under
+  `{namespace}:cache:external-v2:{key}`, separate from legacy raw entries under
+  `{namespace}:cache:external:{key}`. `MaxPayloadBytes` includes the envelope. Legacy entries
+  remain readable without sliding renewal, and removal deletes both forms. Old readers miss
+  new entries; drain old writers or use application-owned dual writes during migration.
+- Profile resources live until service-provider teardown; profiles have no independent disposal
+  operation. Borrowed Valkey owners used for invalidation require ACL permission for `CLIENT INFO`.
+
 ## [0.18.0] - 2026-10-27
 
 HostLoom 0.18.0 adds configurable bounds for gateway sessions, scheduler disposal, and retained
