@@ -3,9 +3,10 @@ using StackExchange.Redis;
 namespace HostLoom.Redis;
 
 /// <summary>
-/// How the process reaches Redis. One connection serves both the cache store and the lock
-/// provider. Every duration is a <see cref="TimeSpan"/>; credentials come from
-/// <see cref="Configuration"/> or <see cref="ConfigurationOptions"/> and are never logged.
+/// How one default or named profile reaches Redis. The same profile shares its connection between
+/// cache and lock; different profiles isolate connections. Every duration is a
+/// <see cref="TimeSpan"/>; credentials come from <see cref="Configuration"/> or
+/// <see cref="ConfigurationOptions"/> and are never logged.
 /// </summary>
 public sealed class RedisOptions
 {

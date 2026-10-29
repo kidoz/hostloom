@@ -142,6 +142,7 @@ public sealed class RedisRegistrationTests
         Assert.Same(store, probe);
         var redisChannel = Assert.IsType<RedisCacheInvalidationChannel>(channel);
         Assert.Equal("svc:cache:invalidate", redisChannel.ChannelName);
+        Assert.True(redisChannel.EnforceSingleProfileTransport);
         Assert.False(connection.IsConnected);
     }
 
@@ -499,6 +500,198 @@ public sealed class RedisRegistrationTests
         Assert.Equal(["a"], flush.Keys);
         Assert.Null(RedisCacheInvalidationChannel.Decode("v9\nkx"));
         Assert.Null(RedisCacheInvalidationChannel.Decode(null));
+    }
+
+    [Fact]
+    public async Task Named_profiles_isolate_connections_and_select_their_own_databases()
+    {
+        var multiplexerA = Substitute.For<IConnectionMultiplexer>();
+        var multiplexerB = Substitute.For<IConnectionMultiplexer>();
+        var multiplexerC = Substitute.For<IConnectionMultiplexer>();
+        var databaseA = Database(multiplexerA);
+        var databaseB = Database(multiplexerB);
+        var databaseC = Database(multiplexerC);
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomCaching("catalog-a", caching => caching.Namespace = "catalog-a")
+            .UseRedis(options => External(options, multiplexerA, 0))
+            .UseSystemTextJson(Json());
+        services.AddHostLoomLocking("catalog-a").UseRedis();
+        services
+            .AddHostLoomCaching("catalog-b", caching => caching.Namespace = "catalog-b")
+            .UseRedis(options => External(options, multiplexerB, 2))
+            .UseSystemTextJson(Json());
+        services
+            .AddHostLoomLocking("catalog-c", locking => locking.Namespace = "catalog-c")
+            .UseRedis(options => External(options, multiplexerC, 1));
+        await using var provider = services.BuildServiceProvider();
+
+        var connectionA = provider.GetRequiredKeyedService<RedisConnection>("catalog-a");
+        var storeA = provider.GetRequiredKeyedService<RedisCacheStore>("catalog-a");
+        var storeB = provider.GetRequiredKeyedService<RedisCacheStore>("catalog-b");
+        var lockA = provider.GetRequiredKeyedService<RedisLockProvider>("catalog-a");
+        var lockC = provider.GetRequiredKeyedService<RedisLockProvider>("catalog-c");
+        Assert.NotSame(connectionA, provider.GetRequiredKeyedService<RedisConnection>("catalog-b"));
+        Assert.NotSame(connectionA, provider.GetRequiredKeyedService<RedisConnection>("catalog-c"));
+        Assert.Equal(
+            3,
+            provider.GetServices<IHostedService>().OfType<RedisConnectionStarter>().Count()
+        );
+
+        await storeA.RemoveAsync(
+            ["catalog-a:cache:data:one"],
+            TestContext.Current.CancellationToken
+        );
+        await storeB.RemoveAsync(
+            ["catalog-b:cache:data:one"],
+            TestContext.Current.CancellationToken
+        );
+        Assert.True(
+            await lockA.ReleaseAsync(
+                "catalog-a:lock:job",
+                "owner",
+                TestContext.Current.CancellationToken
+            )
+        );
+        Assert.True(
+            await lockC.ReleaseAsync(
+                "catalog-c:lock:job",
+                "owner",
+                TestContext.Current.CancellationToken
+            )
+        );
+
+        multiplexerA.Received(2).GetDatabase(0, Arg.Any<object>());
+        multiplexerB.Received(1).GetDatabase(2, Arg.Any<object>());
+        multiplexerC.Received(1).GetDatabase(1, Arg.Any<object>());
+        Assert.Same(
+            databaseA,
+            await connectionA.GetDatabaseAsync(TestContext.Current.CancellationToken)
+        );
+        Assert.Same(
+            databaseB,
+            await provider
+                .GetRequiredKeyedService<RedisConnection>("catalog-b")
+                .GetDatabaseAsync(TestContext.Current.CancellationToken)
+        );
+        Assert.Same(
+            databaseC,
+            await provider
+                .GetRequiredKeyedService<RedisConnection>("catalog-c")
+                .GetDatabaseAsync(TestContext.Current.CancellationToken)
+        );
+        await provider.DisposeAsync();
+        multiplexerA.DidNotReceive().Dispose();
+        multiplexerB.DidNotReceive().Dispose();
+        multiplexerC.DidNotReceive().Dispose();
+    }
+
+    [Fact]
+    public async Task Same_profile_attaches_with_identical_settings_and_rejects_conflicts_safely()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomCaching("catalog")
+            .UseRedis(options =>
+            {
+                options.Configuration = Unreachable;
+                options.DatabaseIndex = 2;
+            });
+        services
+            .AddHostLoomLocking("catalog")
+            .UseRedis(options =>
+            {
+                options.Configuration = Unreachable;
+                options.DatabaseIndex = 2;
+            });
+        await using var provider = services.BuildServiceProvider();
+        var connection = provider.GetRequiredKeyedService<RedisConnection>("catalog");
+        Assert.Equal(2, connection.Options.DatabaseIndex);
+        Assert.Single(
+            services,
+            descriptor =>
+                descriptor.IsKeyedService
+                && descriptor.ServiceType == typeof(RedisConnection)
+                && Equals(descriptor.ServiceKey, "catalog")
+        );
+
+        var conflicting = new ServiceCollection();
+        conflicting
+            .AddHostLoomCaching("catalog")
+            .UseRedis(options =>
+            {
+                options.Configuration = "localhost:6379,password=secret";
+                options.DatabaseIndex = 0;
+            });
+        var failure = Assert.Throws<InvalidOperationException>(() =>
+            conflicting
+                .AddHostLoomLocking("catalog")
+                .UseRedis(options =>
+                {
+                    options.Configuration = "localhost:6379,password=secret";
+                    options.DatabaseIndex = 2;
+                })
+        );
+        Assert.Contains("caching profile 'catalog'", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("locking profile 'catalog'", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("Redis:DatabaseIndex", failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret", failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("localhost", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Tracking_transport_is_exclusive_per_multiplexer()
+    {
+        var multiplexer = Substitute.For<IConnectionMultiplexer>();
+        await using var firstConnection = new RedisConnection(multiplexer);
+        await using var secondConnection = new RedisConnection(
+            multiplexer,
+            new RedisOptions { Configuration = "external", DatabaseIndex = 2 }
+        );
+        await using var first = new RedisCacheInvalidationChannel(
+            firstConnection,
+            new CachingOptions { Namespace = "catalog-a" }
+        );
+        await using var second = new RedisCacheInvalidationChannel(
+            secondConnection,
+            new CachingOptions { Namespace = "catalog-b" }
+        );
+
+        Assert.True(RedisMultiplexerRegistry.TryClaimTransport(multiplexer, first));
+        Assert.False(RedisMultiplexerRegistry.TryClaimTransport(multiplexer, second));
+        Assert.Same(
+            RedisMultiplexerRegistry.TrackingGate(multiplexer),
+            RedisMultiplexerRegistry.TrackingGate(multiplexer)
+        );
+        RedisMultiplexerRegistry.ReleaseTransport(multiplexer, first);
+        Assert.True(RedisMultiplexerRegistry.TryClaimTransport(multiplexer, second));
+        RedisMultiplexerRegistry.ReleaseTransport(multiplexer, second);
+    }
+
+    private static IDatabase Database(IConnectionMultiplexer multiplexer)
+    {
+        var database = Substitute.For<IDatabase>();
+        multiplexer.GetDatabase(Arg.Any<int>(), Arg.Any<object>()).Returns(database);
+        database.KeyDeleteAsync(Arg.Any<RedisKey[]>(), Arg.Any<CommandFlags>()).Returns(1L);
+        database
+            .ScriptEvaluateAsync(
+                Arg.Any<string>(),
+                Arg.Any<RedisKey[]>(),
+                Arg.Any<RedisValue[]>(),
+                Arg.Any<CommandFlags>()
+            )
+            .Returns(RedisResult.Create(1L));
+        return database;
+    }
+
+    private static void External(
+        RedisOptions options,
+        IConnectionMultiplexer multiplexer,
+        int database
+    )
+    {
+        options.ConnectionFactory = _ => Task.FromResult(multiplexer);
+        options.DatabaseIndex = database;
     }
 
     [Fact]

@@ -76,6 +76,11 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
     private long _malformed;
     private long _dropped;
     private int _disposed;
+    private IConnectionMultiplexer? _transportMultiplexer;
+
+    internal string? Profile { get; init; }
+
+    internal bool EnforceSingleProfileTransport { get; init; }
 
     /// <summary>Creates the channel for the namespace in <paramref name="options"/> over the shared connection.</summary>
     public RedisCacheInvalidationChannel(
@@ -225,6 +230,12 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
             {
                 // Expected while a retry delay was pending.
             }
+        }
+
+        if (_transportMultiplexer is { } multiplexer)
+        {
+            RedisMultiplexerRegistry.ReleaseTransport(multiplexer, this);
+            _transportMultiplexer = null;
         }
 
         // Handlers belong to this channel even while the externally owned multiplexer is
@@ -435,6 +446,32 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
         }
 
         var transport = RedisInvalidationDecoder.Resolve(_options.Invalidation.Mode, version);
+        if (
+            EnforceSingleProfileTransport
+            && transport
+                is RedisInvalidationTransport.Tracking
+                    or RedisInvalidationTransport.Broadcast
+            && !RedisMultiplexerRegistry.TryClaimTransport(multiplexer, this)
+        )
+        {
+            _logger.LogWarning(
+                new EventId(1322, "RedisInvalidationTransportShared"),
+                "Cache profile {Profile} cannot use {Transport} on a multiplexer already used by another cache profile; the explicit invalidation channel is the only fan-out.",
+                Profile ?? "(default)",
+                transport
+            );
+            transport = RedisInvalidationTransport.ExplicitOnly;
+        }
+        else if (
+            EnforceSingleProfileTransport
+            && transport
+                is RedisInvalidationTransport.Tracking
+                    or RedisInvalidationTransport.Broadcast
+        )
+        {
+            _transportMultiplexer ??= multiplexer;
+        }
+
         var enabled = transport switch
         {
             RedisInvalidationTransport.Tracking => await EnableTrackingAsync(
@@ -504,9 +541,8 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
                     throw new InvalidOperationException("No connected Redis servers for tracking.");
                 }
 
-                await _connection
-                    .TrackingRegistrationGate.WaitAsync(cancellationToken)
-                    .ConfigureAwait(false);
+                var trackingGate = RedisMultiplexerRegistry.TrackingGate(multiplexer);
+                await trackingGate.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
                     await Task.WhenAll(
@@ -552,7 +588,7 @@ public sealed class RedisCacheInvalidationChannel : ICacheInvalidationChannel, I
                 }
                 finally
                 {
-                    _connection.TrackingRegistrationGate.Release();
+                    trackingGate.Release();
                 }
                 Interlocked.Increment(ref _trackingInitialisations);
                 return true;

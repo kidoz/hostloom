@@ -12,8 +12,8 @@ public static class CachingBuilderRedisExtensions
 {
     /// <summary>
     /// Composes <see cref="RedisCacheStore"/> as the distributed tier and
-    /// <see cref="RedisCacheInvalidationChannel"/> as the invalidation fan-out, over the one
-    /// connection this process holds. Calling it on the locking builder as well shares that
+    /// <see cref="RedisCacheInvalidationChannel"/> as the invalidation fan-out, over this cache
+    /// profile's connection. Calling it on the locking builder with the same profile shares that
     /// connection. A serializer is still required; see <c>UseSystemTextJson</c>.
     /// The store uses that connection even when an <c>IConnectionMultiplexer</c> is also registered.
     /// </summary>
@@ -24,27 +24,74 @@ public static class CachingBuilderRedisExtensions
     )
     {
         ArgumentNullException.ThrowIfNull(builder);
-        var existingStore = builder.Services.FirstOrDefault(static descriptor =>
-            !descriptor.IsKeyedService && descriptor.ServiceType == typeof(RedisCacheStore)
+        var profile = builder.Profile;
+        var existingStore = builder.Services.FirstOrDefault(descriptor =>
+            descriptor.ServiceType == typeof(RedisCacheStore)
+            && (
+                profile is null
+                    ? !descriptor.IsKeyedService
+                    : descriptor.IsKeyedService && Equals(descriptor.ServiceKey, profile)
+            )
         );
         builder.UseStore<RedisCacheStore>("Redis");
         if (existingStore is null)
         {
             // Both public constructors can be resolvable when the application registers a multiplexer.
-            builder.Services.Replace(
-                ServiceDescriptor.Singleton(static provider => new RedisCacheStore(
-                    provider.GetRequiredService<RedisConnection>()
-                ))
+            if (profile is null)
+            {
+                builder.Services.Replace(
+                    ServiceDescriptor.Singleton(static provider => new RedisCacheStore(
+                        provider.GetRequiredService<RedisConnection>()
+                    ))
+                );
+            }
+            else
+            {
+                builder.Services.Replace(
+                    ServiceDescriptor.KeyedSingleton<RedisCacheStore>(
+                        profile,
+                        static (provider, key) =>
+                            new RedisCacheStore(
+                                provider.GetRequiredKeyedService<RedisConnection>(key)
+                            )
+                    )
+                );
+            }
+        }
+        RedisRegistration.AddConnection(builder.Services, profile, "caching", configure);
+        if (profile is null)
+        {
+            builder.Services.TryAddSingleton<ICacheInvalidationChannel>(
+                static provider => new RedisCacheInvalidationChannel(
+                    provider.GetRequiredService<RedisConnection>(),
+                    provider.GetRequiredService<IOptions<CachingOptions>>().Value,
+                    provider
+                        .GetService<ILoggerFactory>()
+                        ?.CreateLogger<RedisCacheInvalidationChannel>()
+                )
+                {
+                    EnforceSingleProfileTransport = true,
+                }
             );
         }
-        RedisRegistration.AddConnection(builder.Services, configure);
-        builder.Services.TryAddSingleton<ICacheInvalidationChannel>(
-            static provider => new RedisCacheInvalidationChannel(
-                provider.GetRequiredService<RedisConnection>(),
-                provider.GetRequiredService<IOptions<CachingOptions>>().Value,
-                provider.GetService<ILoggerFactory>()?.CreateLogger<RedisCacheInvalidationChannel>()
-            )
-        );
+        else
+        {
+            builder.Services.TryAddKeyedSingleton<ICacheInvalidationChannel>(
+                profile,
+                (provider, key) =>
+                    new RedisCacheInvalidationChannel(
+                        provider.GetRequiredKeyedService<RedisConnection>(key),
+                        provider.GetRequiredService<IOptionsMonitor<CachingOptions>>().Get(profile),
+                        provider
+                            .GetService<ILoggerFactory>()
+                            ?.CreateLogger<RedisCacheInvalidationChannel>()
+                    )
+                    {
+                        Profile = profile,
+                        EnforceSingleProfileTransport = true,
+                    }
+            );
+        }
         return builder;
     }
 }

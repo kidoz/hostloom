@@ -8,6 +8,12 @@ public sealed class ValkeyOptions
     /// <summary>Immutable SDK connection settings, including TLS, ACL credentials and database.</summary>
     public ValkeyClientOptions Connection { get; set; } = new();
 
+    /// <summary>
+    /// A caller-owned command owner shared with this connection. When supplied, it takes precedence
+    /// over <see cref="Connection"/> and is not disposed with the HostLoom connection or container.
+    /// </summary>
+    public ValkeyConnectionOwner? ConnectionOwner { get; set; }
+
     /// <summary>Deadline for each command, script or pipeline, including connection acquisition.</summary>
     public TimeSpan CommandTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
@@ -50,6 +56,7 @@ public sealed class ValkeyOptions
         return new ValkeyOptions
         {
             Connection = Connection,
+            ConnectionOwner = ConnectionOwner,
             CommandTimeout = CommandTimeout,
             HealthTimeout = HealthTimeout,
             FailFast = FailFast,

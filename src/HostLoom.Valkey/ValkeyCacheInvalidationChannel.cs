@@ -87,7 +87,7 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
         ChannelName =
             options.Namespace
             + ":cache:invalidate:db:"
-            + connection.Settings.Connection.Database.ToString(CultureInfo.InvariantCulture);
+            + connection.SubscriberConnection.Database.ToString(CultureInfo.InvariantCulture);
         _probeChannelName = ChannelName + ":probe:" + Guid.NewGuid().ToString("N");
         _logger = logger ?? NullLogger<ValkeyCacheInvalidationChannel>.Instance;
     }
@@ -173,7 +173,7 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
                     .ConnectAsync(
                         new ValkeySubscriberOptions
                         {
-                            Connection = _connection.Settings.Connection,
+                            Connection = _connection.SubscriberConnection,
                             QueueCapacity = _connection.Settings.InvalidationQueueCapacity,
                             MaxSubscriptions = 2,
                             OperationTimeout = _connection.Settings.CommandTimeout,

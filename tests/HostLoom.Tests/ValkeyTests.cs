@@ -5,10 +5,14 @@ using HostLoom.Caching;
 using HostLoom.Caching.DependencyInjection;
 using HostLoom.Locking;
 using HostLoom.Locking.DependencyInjection;
+using HostLoom.Redis;
 using HostLoom.Valkey;
 using HostLoom.Valkey.Internal;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using NSubstitute;
+using StackExchange.Redis;
 using ValkeyDotNet;
 using Xunit;
 
@@ -95,6 +99,126 @@ public sealed class ValkeyTests
         options.CommandTimeout = TimeSpan.Zero;
         Assert.Equal(TimeSpan.FromSeconds(5), connection.Settings.CommandTimeout);
         Assert.Equal(TimeSpan.FromSeconds(30), connection.Settings.InvalidationProbeInterval);
+    }
+
+    [Fact]
+    public async Task Named_profiles_isolate_connections_and_attach_identical_settings()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomCaching("catalog-a")
+            .UseValkey(options => options.Connection = new ValkeyClientOptions { Database = 0 });
+        services
+            .AddHostLoomLocking("catalog-a")
+            .UseValkey(options => options.Connection = new ValkeyClientOptions { Database = 0 });
+        services
+            .AddHostLoomCaching("catalog-b")
+            .UseValkey(options => options.Connection = new ValkeyClientOptions { Database = 2 });
+        services
+            .AddHostLoomLocking("catalog-c")
+            .UseValkey(options => options.Connection = new ValkeyClientOptions { Database = 1 });
+        await using var provider = services.BuildServiceProvider();
+
+        var connectionA = provider.GetRequiredKeyedService<ValkeyConnection>("catalog-a");
+        var connectionB = provider.GetRequiredKeyedService<ValkeyConnection>("catalog-b");
+        var connectionC = provider.GetRequiredKeyedService<ValkeyConnection>("catalog-c");
+        Assert.NotSame(connectionA, connectionB);
+        Assert.NotSame(connectionA, connectionC);
+        Assert.Equal(0, connectionA.Settings.Connection.Database);
+        Assert.Equal(2, connectionB.Settings.Connection.Database);
+        Assert.Equal(1, connectionC.Settings.Connection.Database);
+        Assert.IsType<ValkeyCacheStore>(
+            provider.GetRequiredKeyedService<IDistributedCacheStore>("catalog-a")
+        );
+        Assert.IsType<ValkeyLockProvider>(
+            provider.GetRequiredKeyedService<ILockProvider>("catalog-a")
+        );
+        Assert.Equal(
+            3,
+            provider.GetServices<IHostedService>().OfType<ValkeyConnectionStarter>().Count()
+        );
+    }
+
+    [Fact]
+    public void Same_profile_rejects_conflicting_settings_without_exposing_credentials()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomCaching("catalog")
+            .UseValkey(options =>
+                options.Connection = new ValkeyClientOptions { Database = 0, Password = "secret" }
+            );
+        var failure = Assert.Throws<InvalidOperationException>(() =>
+            services
+                .AddHostLoomLocking("catalog")
+                .UseValkey(options =>
+                    options.Connection = new ValkeyClientOptions
+                    {
+                        Database = 2,
+                        Password = "secret",
+                    }
+                )
+        );
+
+        Assert.Contains("caching profile 'catalog'", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("locking profile 'catalog'", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("Valkey:Connection", failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Caller_owned_connection_owner_survives_provider_teardown()
+    {
+        var owner = new ValkeyConnectionOwner(
+            new ValkeyConnectionOwnerOptions { Connection = new ValkeyClientOptions() }
+        );
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomCaching("catalog-a")
+            .UseValkey(options => options.ConnectionOwner = owner);
+        services.AddHostLoomLocking("catalog-a").UseValkey();
+        services
+            .AddHostLoomCaching("catalog-b")
+            .UseValkey(options => options.ConnectionOwner = owner);
+        var provider = services.BuildServiceProvider();
+        var first = provider.GetRequiredKeyedService<ValkeyConnection>("catalog-a");
+        var second = provider.GetRequiredKeyedService<ValkeyConnection>("catalog-b");
+        Assert.NotSame(first, second);
+
+        await provider.DisposeAsync();
+
+        Assert.NotEqual(ValkeyConnectionState.Disposed, owner.State);
+        await owner.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Redis_and_Valkey_backends_remain_independent_under_one_profile_name()
+    {
+        var multiplexer = Substitute.For<IConnectionMultiplexer>();
+        var services = new ServiceCollection();
+#pragma warning disable CA2025
+        services
+            .AddHostLoomCaching("catalog")
+            .UseRedis(options => options.ConnectionFactory = _ => Task.FromResult(multiplexer));
+#pragma warning restore CA2025
+        services
+            .AddHostLoomLocking("catalog")
+            .UseValkey(options => options.Connection = new ValkeyClientOptions { Database = 1 });
+        await using var provider = services.BuildServiceProvider();
+
+        Assert.NotNull(provider.GetRequiredKeyedService<RedisConnection>("catalog"));
+        Assert.Equal(
+            1,
+            provider
+                .GetRequiredKeyedService<ValkeyConnection>("catalog")
+                .Settings.Connection.Database
+        );
+        Assert.IsType<RedisCacheStore>(
+            provider.GetRequiredKeyedService<IDistributedCacheStore>("catalog")
+        );
+        Assert.IsType<ValkeyLockProvider>(
+            provider.GetRequiredKeyedService<ILockProvider>("catalog")
+        );
     }
 
     [Fact]

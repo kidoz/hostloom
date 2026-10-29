@@ -12,8 +12,8 @@ public static class CachingBuilderValkeyExtensions
 {
     /// <summary>
     /// Composes <see cref="ValkeyCacheStore"/> as the distributed tier and
-    /// <see cref="ValkeyCacheInvalidationChannel"/> as the invalidation fan-out, over the one
-    /// connection this process holds. Calling it on the locking builder as well shares that
+    /// <see cref="ValkeyCacheInvalidationChannel"/> as the invalidation fan-out, over this cache
+    /// profile's connection. Calling it on the locking builder with the same profile shares that
     /// connection. A serializer is still required; see <c>UseSystemTextJson</c>.
     /// </summary>
     /// <exception cref="InvalidOperationException">A store was already chosen.</exception>
@@ -23,24 +23,54 @@ public static class CachingBuilderValkeyExtensions
     )
     {
         ArgumentNullException.ThrowIfNull(builder);
+        var profile = builder.Profile;
         builder.UseStore<ValkeyCacheStore>("Valkey");
-        ValkeyRegistration.AddConnection(builder.Services, configure);
+        if (profile is not null)
+        {
+            builder.Services.Replace(
+                ServiceDescriptor.KeyedSingleton<ValkeyCacheStore>(
+                    profile,
+                    static (provider, key) =>
+                        new ValkeyCacheStore(
+                            provider.GetRequiredKeyedService<ValkeyConnection>(key)
+                        )
+                )
+            );
+        }
+        ValkeyRegistration.AddConnection(builder.Services, profile, "caching", configure);
         builder
-            .Services.AddOptions<CachingOptions>()
+            .Services.AddOptions<CachingOptions>(profile ?? Options.DefaultName)
             .Validate(
                 static options => options.Invalidation.Mode == CacheInvalidationMode.Auto,
                 "HostLoom.Valkey supports Auto with explicit-channel invalidation only."
             )
             .ValidateOnStart();
-        builder.Services.TryAddSingleton<ICacheInvalidationChannel>(
-            static provider => new ValkeyCacheInvalidationChannel(
-                provider.GetRequiredService<ValkeyConnection>(),
-                provider.GetRequiredService<IOptions<CachingOptions>>().Value,
-                provider
-                    .GetService<ILoggerFactory>()
-                    ?.CreateLogger<ValkeyCacheInvalidationChannel>()
-            )
-        );
+        if (profile is null)
+        {
+            builder.Services.TryAddSingleton<ICacheInvalidationChannel>(
+                static provider => new ValkeyCacheInvalidationChannel(
+                    provider.GetRequiredService<ValkeyConnection>(),
+                    provider.GetRequiredService<IOptions<CachingOptions>>().Value,
+                    provider
+                        .GetService<ILoggerFactory>()
+                        ?.CreateLogger<ValkeyCacheInvalidationChannel>()
+                )
+            );
+        }
+        else
+        {
+            builder.Services.TryAddKeyedSingleton<ICacheInvalidationChannel>(
+                profile,
+                (provider, key) =>
+                    new ValkeyCacheInvalidationChannel(
+                        provider.GetRequiredKeyedService<ValkeyConnection>(key),
+                        provider.GetRequiredService<IOptionsMonitor<CachingOptions>>().Get(profile),
+                        provider
+                            .GetService<ILoggerFactory>()
+                            ?.CreateLogger<ValkeyCacheInvalidationChannel>()
+                    )
+            );
+        }
         return builder;
     }
 }

@@ -5,10 +5,9 @@ using StackExchange.Redis;
 namespace HostLoom.Redis;
 
 /// <summary>
-/// The one Redis connection a process holds. Created lazily on first use from
-/// <see cref="RedisOptions"/>, or wrapped around an externally owned multiplexer, shared by the
-/// cache store, the invalidation channel, and the lock provider, and disposed with the host when
-/// the package created it.
+/// A Redis connection wrapper. The default composition shares one per process; named profiles
+/// isolate owned connections or wrap an external multiplexer with independent options. Created
+/// lazily on first use from <see cref="RedisOptions"/> and disposed with the host when owned.
 /// </summary>
 public sealed class RedisConnection : IAsyncDisposable
 {
@@ -219,10 +218,6 @@ public sealed class RedisConnection : IAsyncDisposable
     internal event EventHandler? SubscriptionRestored;
 
     internal event EventHandler? TopologyChanged;
-
-    // Shared by all invalidation channels: CLIENT TRACKING state belongs to this
-    // multiplexer, so channels must not race while inspecting and updating it.
-    internal SemaphoreSlim TrackingRegistrationGate { get; } = new(1, 1);
 
     /// <inheritdoc />
     public ValueTask DisposeAsync()

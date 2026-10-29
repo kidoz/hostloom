@@ -6,6 +6,7 @@ using HostLoom.Conformance;
 using HostLoom.Locking;
 using HostLoom.Locking.DependencyInjection;
 using HostLoom.Redis;
+using HostLoom.Redis.Internal;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
@@ -77,6 +78,90 @@ public sealed class RedisBackendTests
         Assert.Equal(2, readiness.Entries.Count);
         Assert.Equal(nameof(RedisCacheStore), description.Store);
         Assert.StartsWith("channel", description.Invalidation, StringComparison.Ordinal);
+    }
+
+    [Fact(Skip = RedisAvailability.Skip, SkipUnless = nameof(Available))]
+    public async Task NamedProfiles_ShareExternalMultiplexerAcrossStandaloneDatabases()
+    {
+        var namespaceA = Namespace();
+        var namespaceB = Namespace();
+        var namespaceC = Namespace();
+        await using var shared = await ConnectionMultiplexer.ConnectAsync(
+            RedisAvailability.Configuration + ",allowAdmin=true"
+        );
+        var services = new ServiceCollection();
+#pragma warning disable CA2025
+        services
+            .AddHostLoomCaching("catalog-a", caching => caching.Namespace = namespaceA)
+            .UseRedis(options =>
+            {
+                options.ConnectionFactory = _ => Task.FromResult<IConnectionMultiplexer>(shared);
+                options.DatabaseIndex = 0;
+            })
+            .UseSystemTextJson(Json());
+        services
+            .AddHostLoomLocking("catalog-a", locking => locking.Namespace = namespaceA)
+            .UseRedis();
+        services
+            .AddHostLoomCaching("catalog-b", caching => caching.Namespace = namespaceB)
+            .UseRedis(options =>
+            {
+                options.ConnectionFactory = _ => Task.FromResult<IConnectionMultiplexer>(shared);
+                options.DatabaseIndex = 2;
+            })
+            .UseSystemTextJson(Json());
+        services
+            .AddHostLoomLocking("catalog-c", locking => locking.Namespace = namespaceC)
+            .UseRedis(options =>
+            {
+                options.ConnectionFactory = _ => Task.FromResult<IConnectionMultiplexer>(shared);
+                options.DatabaseIndex = 1;
+            });
+#pragma warning restore CA2025
+        var provider = services.BuildServiceProvider();
+        var cacheA = provider.GetRequiredKeyedService<ICache>("catalog-a");
+        var cacheB = provider.GetRequiredKeyedService<ICache>("catalog-b");
+        var lockA = provider.GetRequiredKeyedService<IDistributedLock>("catalog-a");
+        var lockC = provider.GetRequiredKeyedService<IDistributedLock>("catalog-c");
+
+        await cacheA.SetAsync("k", "a", new CacheEntryOptions(TimeSpan.FromMinutes(1)), Token);
+        await cacheB.SetAsync("k", "b", new CacheEntryOptions(TimeSpan.FromMinutes(1)), Token);
+        await using var handleA = await lockA.TryAcquireAsync(
+            "job",
+            new LockOptions { Lease = TimeSpan.FromSeconds(30), MaxWait = TimeSpan.Zero },
+            Token
+        );
+        await using var handleC = await lockC.TryAcquireAsync(
+            "job",
+            new LockOptions { Lease = TimeSpan.FromSeconds(30), MaxWait = TimeSpan.Zero },
+            Token
+        );
+        Assert.NotNull(handleA);
+        Assert.NotNull(handleC);
+        Assert.True(await shared.GetDatabase(0).KeyExistsAsync($"{namespaceA}:cache:data:k"));
+        Assert.True(await shared.GetDatabase(2).KeyExistsAsync($"{namespaceB}:cache:data:k"));
+        Assert.True(await shared.GetDatabase(0).KeyExistsAsync($"{namespaceA}:lock:job"));
+        Assert.True(await shared.GetDatabase(1).KeyExistsAsync($"{namespaceC}:lock:job"));
+
+        var channelA = provider.GetRequiredKeyedService<ICacheInvalidationChannel>("catalog-a");
+        var channelB = provider.GetRequiredKeyedService<ICacheInvalidationChannel>("catalog-b");
+        await CacheConformance.WaitUntilAsync(() =>
+        {
+            var first = (RedisCacheInvalidationChannel)channelA;
+            var second = (RedisCacheInvalidationChannel)channelB;
+            return Task.FromResult(
+                first.Transport == RedisInvalidationTransport.Tracking
+                    && second.Transport == RedisInvalidationTransport.ExplicitOnly
+                    || first.Transport == RedisInvalidationTransport.ExplicitOnly
+                        && second.Transport == RedisInvalidationTransport.Tracking
+            );
+        });
+        await handleA.DisposeAsync();
+        await handleC.DisposeAsync();
+        await provider.DisposeAsync();
+
+        Assert.True(shared.IsConnected);
+        await shared.GetDatabase(0).PingAsync();
     }
 
     [Fact(Skip = RedisAvailability.Skip, SkipUnless = nameof(Available))]

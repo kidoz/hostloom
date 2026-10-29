@@ -238,6 +238,55 @@ public sealed class ValkeyBackendTests
     }
 
     [Fact(Skip = ValkeyAvailability.Skip, SkipUnless = nameof(Available))]
+    public async Task BorrowedOwner_InvalidationUsesItsActualEndpoint()
+    {
+        var actual = ValkeyAvailability.Options().Connection;
+        await using var owner = new ValkeyConnectionOwner(
+            new ValkeyConnectionOwnerOptions
+            {
+                Connection = new ValkeyClientOptions
+                {
+                    Host = actual.Host,
+                    Port = actual.Port,
+                    Protocol = actual.Protocol,
+                    Database = 2,
+                    ClientName = actual.ClientName,
+                },
+            }
+        );
+        await using var connection = new ValkeyConnection(
+            new ValkeyOptions
+            {
+                ConnectionOwner = owner,
+                Connection = new ValkeyClientOptions
+                {
+                    Host = "localhost",
+                    Port = 6379,
+                    Database = 0,
+                },
+            }
+        );
+        await using var channel = new ValkeyCacheInvalidationChannel(
+            connection,
+            new CachingOptions { Namespace = "valkey-borrowed-" + Guid.NewGuid().ToString("N") }
+        );
+        var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var subscription = channel.Subscribe(message =>
+        {
+            if (message.Keys.Contains("catalog"))
+                received.TrySetResult();
+        });
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        await channel.StartAsync(timeout.Token);
+
+        await channel.PublishAsync(new CacheInvalidation(["catalog"], []), timeout.Token);
+
+        await received.Task.WaitAsync(timeout.Token);
+        Assert.True(channel.IsSubscribed);
+    }
+
+    [Fact(Skip = ValkeyAvailability.Skip, SkipUnless = nameof(Available))]
     public async Task Invalidation_FlushesWhenTheFirstSubscriptionFollowsAFailedAttempt()
     {
         await using var proxy = new TcpFaultProxy("localhost", ValkeyAvailability.Port);
