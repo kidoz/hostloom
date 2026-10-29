@@ -26,15 +26,26 @@ public sealed class NodeLeasingBuilder
     /// <c>Locking:MaxLease</c>. When exactly one pool is registered, the unkeyed
     /// <see cref="INodeLeasing"/> resolves it as well.
     /// </summary>
+    /// <param name="pool">The unique node-ID pool.</param>
+    /// <param name="configure">Configures this pool's leasing options.</param>
+    /// <param name="lockProfile">The keyed lock profile, or null for the default unkeyed lock.</param>
     /// <exception cref="InvalidOperationException">
     /// The pool was already registered, or <see cref="INodeLeasing"/> keyed by the pool was
     /// already registered by something else, such as a test double; the message names it. A
     /// double for a pool that is not added here needs no elector: register it keyed by the pool
     /// and skip <c>AddPool</c>.
     /// </exception>
-    public NodeLeasingBuilder AddPool(string pool, Action<NodeLeasingOptions>? configure = null)
+    public NodeLeasingBuilder AddPool(
+        string pool,
+        Action<NodeLeasingOptions>? configure = null,
+        string? lockProfile = null
+    )
     {
         NodeLeasingPool.Validate(pool);
+        if (lockProfile is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(lockProfile);
+        }
         if (_registration.Pools.Contains(pool, StringComparer.Ordinal))
         {
             throw new InvalidOperationException(
@@ -60,6 +71,7 @@ public sealed class NodeLeasingBuilder
         }
 
         _registration.Pools.Add(pool);
+        _registration.LockProfiles.Add(pool, lockProfile);
         var options = Services.AddOptions<NodeLeasingOptions>(pool);
         if (configure is not null)
         {
@@ -69,12 +81,18 @@ public sealed class NodeLeasingBuilder
         options.ValidateOnStart();
         Services.AddKeyedSingleton(
             pool,
-            static (provider, key) =>
+            (provider, key) =>
             {
                 var pool = (string)key!;
+                var locks = lockProfile is null
+                    ? provider.GetRequiredService<Locking.IDistributedLock>()
+                    : provider.GetKeyedService<Locking.IDistributedLock>(lockProfile)
+                        ?? throw new InvalidOperationException(
+                            $"Node-leasing pool '{pool}' requires lock profile '{lockProfile}', but that profile is not registered."
+                        );
                 return new NodeIdElector(
                     pool,
-                    provider.GetRequiredService<Locking.IDistributedLock>(),
+                    locks,
                     provider.GetRequiredService<IOptionsMonitor<NodeLeasingOptions>>().Get(pool),
                     provider.GetRequiredService<TimeProvider>(),
                     provider.GetService<ILogger<NodeIdElector>>()

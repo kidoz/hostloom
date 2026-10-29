@@ -5,4 +5,7 @@ internal sealed class NodeLeasingRegistration
 {
     /// <summary>Pools registered, in order, so the hosted service starts each elector and a repeat is refused.</summary>
     public List<string> Pools { get; } = [];
+
+    /// <summary>The exact lock profile selected for each pool, or null for the default lock.</summary>
+    public Dictionary<string, string?> LockProfiles { get; } = new(StringComparer.Ordinal);
 }

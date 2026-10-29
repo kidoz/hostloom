@@ -182,6 +182,84 @@ public sealed class NodeLeasingRegistrationTests
     }
 
     [Fact]
+    public async Task AddPool_uses_its_exact_lock_profile_for_limits_and_uncoordinated_policy()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomLocking(locking => locking.MaxLease = TimeSpan.FromSeconds(30))
+            .UseInMemory();
+        services
+            .AddHostLoomLocking(
+                "catalog-nodes",
+                locking =>
+                {
+                    locking.Namespace = "catalog-nodes";
+                    locking.Enabled = false;
+                    locking.MaxLease = TimeSpan.FromSeconds(30);
+                }
+            )
+            .UseInMemory();
+        services
+            .AddHostLoomNodeLeasing()
+            .AddPool(
+                "orders-workers",
+                leasing =>
+                {
+                    leasing.Lease = TimeSpan.FromMinutes(1);
+                    leasing.RenewInterval = TimeSpan.FromSeconds(5);
+                    leasing.WhenUncoordinated = UncoordinatedNodeAssignment.AssignZero;
+                },
+                lockProfile: "catalog-nodes"
+            );
+        await using var provider = services.BuildServiceProvider();
+
+        var options = provider
+            .GetRequiredService<IOptionsMonitor<NodeLeasingOptions>>()
+            .Get("orders-workers");
+        var elector = provider.GetRequiredKeyedService<NodeIdElector>("orders-workers");
+        Assert.Equal(TimeSpan.FromMinutes(1), options.Lease);
+        Assert.False(elector.IsCoordinated);
+
+        await elector.StartAsync(TestContext.Current.CancellationToken);
+        await SchedulingTests.WaitUntilAsync(() => elector.NodeId == 0);
+        await elector.StopAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task AddPool_validation_uses_the_bound_key_limit_and_names_a_missing_profile()
+    {
+        var services = new ServiceCollection();
+        services.AddHostLoomLocking().UseInMemory();
+        services
+            .AddHostLoomLocking(
+                "catalog-nodes",
+                locking =>
+                {
+                    locking.Namespace = "catalog-nodes";
+                    locking.MaxKeyLength = 10;
+                }
+            )
+            .UseInMemory();
+        services
+            .AddHostLoomNodeLeasing()
+            .AddPool("orders-workers", lockProfile: "catalog-nodes")
+            .AddPool("inventory-workers", lockProfile: "missing");
+        await using var provider = services.BuildServiceProvider();
+        var monitor = provider.GetRequiredService<IOptionsMonitor<NodeLeasingOptions>>();
+
+        var keyFailure = Assert.Throws<OptionsValidationException>(() =>
+            monitor.Get("orders-workers")
+        );
+        Assert.Contains("Locking:MaxKeyLength (10)", keyFailure.Message, StringComparison.Ordinal);
+        var missing = Assert.Throws<OptionsValidationException>(() =>
+            monitor.Get("inventory-workers")
+        );
+        Assert.Contains("inventory-workers", missing.Message, StringComparison.Ordinal);
+        Assert.Contains("missing", missing.Message, StringComparison.Ordinal);
+        Assert.Contains("not registered", missing.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task The_hosted_service_starts_electors_with_the_host_and_releases_on_stop()
     {
         var clock = new TestClock();

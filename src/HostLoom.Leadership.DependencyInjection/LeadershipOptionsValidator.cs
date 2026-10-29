@@ -6,24 +6,32 @@ namespace HostLoom.Leadership.DependencyInjection;
 
 /// <summary>
 /// Runs <see cref="LeadershipOptions.Validate(string, int)"/> for every role's named options when the host
-/// starts, checking resolved keys against <c>Locking:MaxKeyLength</c>. The role's lease must fit within
-/// <c>Locking:MaxLease</c> of the lock the electors run over, which would otherwise cap it silently.
+/// starts, checking resolved keys and lease limits against that role's exact lock profile.
 /// </summary>
-internal sealed class LeadershipOptionsValidator(IServiceProvider services)
-    : IValidateOptions<LeadershipOptions>
+internal sealed class LeadershipOptionsValidator(
+    IServiceProvider services,
+    LeadershipRegistration registration
+) : IValidateOptions<LeadershipOptions>
 {
     public ValidateOptionsResult Validate(string? name, LeadershipOptions options)
     {
-        var locks = ComposedLock();
+        var locks = ComposedLock(name, out var missingProfile);
         List<string> problems =
         [
             .. name is null or ""
                 ? options.Validate()
-                : options.Validate(name, locks?.MaxKeyLength ?? int.MaxValue),
+                : options.Validate(name, (locks as DistributedLock)?.MaxKeyLength ?? int.MaxValue),
         ];
+        if (missingProfile is not null)
+        {
+            problems.Add(
+                $"Leadership role '{name}' requires lock profile '{missingProfile}', but that profile is not registered."
+            );
+        }
+
         if (
-            locks is { Enabled: true }
-            && locks.Describe().MaxLease is var maxLease
+            locks is DistributedLock { Enabled: true } composed
+            && composed.Describe().MaxLease is var maxLease
             && options.Lease > maxLease
         )
         {
@@ -46,19 +54,34 @@ internal sealed class LeadershipOptionsValidator(IServiceProvider services)
     /// <summary>
     /// The registered HostLoom lock, when available. Invalid lock options report their own errors.
     /// </summary>
-    private DistributedLock? ComposedLock()
+    private IDistributedLock? ComposedLock(string? name, out string? missingProfile)
     {
-        IDistributedLock? locks;
+        missingProfile = null;
+        string? profile = null;
+        if (
+            name is not null
+            && registration.LockProfiles.TryGetValue(name, out var configuredProfile)
+        )
+        {
+            profile = configuredProfile;
+        }
+
         try
         {
-            locks = services.GetService<IDistributedLock>();
+            var locks = profile is null
+                ? services.GetService<IDistributedLock>()
+                : services.GetKeyedService<IDistributedLock>(profile);
+            if (profile is not null && locks is null)
+            {
+                missingProfile = profile;
+            }
+
+            return locks;
         }
         catch (OptionsValidationException)
         {
             // The lock's own options are invalid; their validation reports that, not this one.
             return null;
         }
-
-        return locks as DistributedLock;
     }
 }

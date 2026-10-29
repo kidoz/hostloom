@@ -194,6 +194,108 @@ public sealed class SchedulingRegistrationTests
     }
 
     [Fact]
+    public async Task UseDistributedLock_claims_through_the_bound_profile()
+    {
+        var clock = new TestClock();
+        var defaultProvider = new ManualLockProvider(clock);
+        var namedProvider = new ManualLockProvider(clock);
+        var services = new ServiceCollection();
+        services.AddSingleton<TimeProvider>(clock);
+        services.AddSingleton(defaultProvider);
+        services.AddKeyedSingleton("catalog-jobs", namedProvider);
+        services.AddSingleton<RunLog>();
+        services.AddScoped<ScopedMarker>();
+        services.AddHostLoomLocking().UseProvider<ManualLockProvider>("Default");
+        services
+            .AddHostLoomLocking("catalog-jobs", locking => locking.Namespace = "catalog-jobs")
+            .UseProvider<ManualLockProvider>("Named");
+        services
+            .AddHostLoomScheduling(scheduling => scheduling.DefaultLease = TimeSpan.FromMinutes(1))
+            .UseDistributedLock("catalog-jobs")
+            .AddSchedule<MarkerJob>(
+                "nightly",
+                ScheduleTrigger.FixedRate(TenSeconds),
+                options => options.Exclusive = true
+            );
+        await using var provider = services.BuildServiceProvider();
+        var scheduler = provider.GetRequiredService<Scheduler>();
+        Assert.True(
+            await namedProvider.TryAcquireAsync(
+                "catalog-jobs:lock:schedule:nightly",
+                ManualLockProvider.TestOwner,
+                TimeSpan.FromHours(1),
+                TestContext.Current.CancellationToken
+            )
+        );
+
+        await scheduler.StartAsync(TestContext.Current.CancellationToken);
+        await SchedulingTests.WaitUntilAsync(() =>
+            scheduler.GetState("nightly").LastOutcome is not null
+        );
+
+        Assert.Equal(ScheduleRunOutcome.Skipped, scheduler.GetState("nightly").LastOutcome);
+        await scheduler.StopAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(0, defaultProvider.Count);
+        Assert.Equal(1, namedProvider.Count);
+        Assert.True(
+            await namedProvider.ReleaseAsync(
+                "catalog-jobs:lock:schedule:nightly",
+                ManualLockProvider.TestOwner,
+                TestContext.Current.CancellationToken
+            )
+        );
+    }
+
+    [Fact]
+    public async Task UseDistributedLock_validates_the_bound_profile_and_names_a_missing_profile()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomLocking(
+                "catalog-jobs",
+                locking =>
+                {
+                    locking.Namespace = "catalog-jobs";
+                    locking.MaxLease = TimeSpan.FromSeconds(30);
+                    locking.MaxKeyLength = 10;
+                }
+            )
+            .UseInMemory();
+        services
+            .AddHostLoomScheduling(scheduling => scheduling.DefaultLease = TimeSpan.FromMinutes(1))
+            .UseDistributedLock("catalog-jobs")
+            .AddSchedule<MarkerJob>(
+                "nightly",
+                ScheduleTrigger.FixedRate(TenSeconds),
+                options => options.Exclusive = true
+            );
+        await using var provider = services.BuildServiceProvider();
+        var failure = Assert.Throws<OptionsValidationException>(() =>
+            provider.GetRequiredService<IOptions<SchedulingOptions>>().Value
+        );
+        Assert.Contains("nightly", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("Locking:MaxLease", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("Locking:MaxKeyLength", failure.Message, StringComparison.Ordinal);
+
+        var missingServices = new ServiceCollection();
+        missingServices
+            .AddHostLoomScheduling()
+            .UseDistributedLock("missing")
+            .AddSchedule<MarkerJob>(
+                "nightly",
+                ScheduleTrigger.FixedRate(TenSeconds),
+                options => options.Exclusive = true
+            );
+        await using var missingProvider = missingServices.BuildServiceProvider();
+        var missing = Assert.Throws<OptionsValidationException>(() =>
+            missingProvider.GetRequiredService<IOptions<SchedulingOptions>>().Value
+        );
+        Assert.Contains("nightly", missing.Message, StringComparison.Ordinal);
+        Assert.Contains("missing", missing.Message, StringComparison.Ordinal);
+        Assert.Contains("not registered", missing.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task The_hosted_service_starts_and_stops_the_scheduler_with_the_host()
     {
         var clock = new TestClock();

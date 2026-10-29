@@ -151,6 +151,80 @@ public sealed class LeadershipRegistrationTests
     }
 
     [Fact]
+    public async Task AddRole_uses_its_exact_lock_profile_for_limits_and_uncoordinated_policy()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomLocking(locking => locking.MaxLease = TimeSpan.FromSeconds(30))
+            .UseInMemory();
+        services
+            .AddHostLoomLocking(
+                "catalog-jobs",
+                locking =>
+                {
+                    locking.Namespace = "catalog-jobs";
+                    locking.Enabled = false;
+                    locking.MaxLease = TimeSpan.FromSeconds(30);
+                }
+            )
+            .UseInMemory();
+        services
+            .AddHostLoomLeadership()
+            .AddRole(
+                "scheduler",
+                leadership =>
+                {
+                    leadership.Lease = TimeSpan.FromMinutes(1);
+                    leadership.RenewInterval = TimeSpan.FromSeconds(5);
+                    leadership.WhenUncoordinated = UncoordinatedLeadership.Lead;
+                },
+                lockProfile: "catalog-jobs"
+            );
+        await using var provider = services.BuildServiceProvider();
+
+        var options = provider
+            .GetRequiredService<IOptionsMonitor<LeadershipOptions>>()
+            .Get("scheduler");
+        var elector = provider.GetRequiredKeyedService<LeaderElector>("scheduler");
+        Assert.Equal(TimeSpan.FromMinutes(1), options.Lease);
+        Assert.False(elector.IsCoordinated);
+
+        await elector.StartAsync(TestContext.Current.CancellationToken);
+        await SchedulingTests.WaitUntilAsync(() => elector.IsLeader);
+        await elector.StopAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task AddRole_validation_uses_the_bound_key_limit_and_names_a_missing_profile()
+    {
+        var services = new ServiceCollection();
+        services.AddHostLoomLocking().UseInMemory();
+        services
+            .AddHostLoomLocking(
+                "catalog-jobs",
+                locking =>
+                {
+                    locking.Namespace = "catalog-jobs";
+                    locking.MaxKeyLength = 10;
+                }
+            )
+            .UseInMemory();
+        services
+            .AddHostLoomLeadership()
+            .AddRole("scheduler", lockProfile: "catalog-jobs")
+            .AddRole("reconciler", lockProfile: "missing");
+        await using var provider = services.BuildServiceProvider();
+        var monitor = provider.GetRequiredService<IOptionsMonitor<LeadershipOptions>>();
+
+        var keyFailure = Assert.Throws<OptionsValidationException>(() => monitor.Get("scheduler"));
+        Assert.Contains("Locking:MaxKeyLength", keyFailure.Message, StringComparison.Ordinal);
+        var missing = Assert.Throws<OptionsValidationException>(() => monitor.Get("reconciler"));
+        Assert.Contains("reconciler", missing.Message, StringComparison.Ordinal);
+        Assert.Contains("missing", missing.Message, StringComparison.Ordinal);
+        Assert.Contains("not registered", missing.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task The_hosted_service_starts_electors_with_the_host_and_releases_on_stop()
     {
         var clock = new TestClock();
