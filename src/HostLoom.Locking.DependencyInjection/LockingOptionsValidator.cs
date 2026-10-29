@@ -11,6 +11,17 @@ internal sealed class LockingOptionsValidator(LockingRegistration registration)
 {
     public ValidateOptionsResult Validate(string? name, LockingOptions options)
     {
+        if (
+            !string.Equals(
+                name ?? Options.DefaultName,
+                registration.OptionsName,
+                StringComparison.Ordinal
+            )
+        )
+        {
+            return ValidateOptionsResult.Success;
+        }
+
         List<string> problems = [.. options.Validate()];
         if (options.Enabled && registration.ProviderName is null)
         {
@@ -21,8 +32,10 @@ internal sealed class LockingOptionsValidator(LockingRegistration registration)
             );
         }
 
-        return problems.Count == 0
-            ? ValidateOptionsResult.Success
-            : ValidateOptionsResult.Fail(problems);
+        return problems.Count == 0 ? ValidateOptionsResult.Success
+            : registration.Profile is null ? ValidateOptionsResult.Fail(problems)
+            : ValidateOptionsResult.Fail(
+                LockingProfile.PrefixValidation(registration.Profile, problems)
+            );
     }
 }

@@ -19,6 +19,9 @@ public sealed class LockingBuilder
     /// <summary>The service collection receiving locking registrations.</summary>
     public IServiceCollection Services { get; }
 
+    /// <summary>The keyed-service identity of this lock, or null for the default unkeyed lock.</summary>
+    public string? Profile => _registration.Profile;
+
     /// <summary>
     /// Uses the per-process <see cref="InMemoryLockProvider"/>: real lease expiry, owner tokens,
     /// extension, and lost-lease detection, coordinating within this process only. It registers
@@ -53,15 +56,34 @@ public sealed class LockingBuilder
         }
 
         _registration.ProviderName = name;
-        Services.TryAddSingleton<TProvider>();
-        Services.TryAddSingleton<ILockProvider>(static provider =>
-            provider.GetRequiredService<TProvider>()
-        );
-        if (typeof(ILockProviderHealthProbe).IsAssignableFrom(typeof(TProvider)))
+        if (Profile is null)
         {
-            Services.TryAddSingleton<ILockProviderHealthProbe>(static provider =>
-                (ILockProviderHealthProbe)provider.GetRequiredService<TProvider>()
+            Services.TryAddSingleton<TProvider>();
+            Services.TryAddSingleton<ILockProvider>(static provider =>
+                provider.GetRequiredService<TProvider>()
             );
+            if (typeof(ILockProviderHealthProbe).IsAssignableFrom(typeof(TProvider)))
+            {
+                Services.TryAddSingleton<ILockProviderHealthProbe>(static provider =>
+                    (ILockProviderHealthProbe)provider.GetRequiredService<TProvider>()
+                );
+            }
+        }
+        else
+        {
+            Services.TryAddKeyedSingleton<TProvider>(Profile);
+            Services.TryAddKeyedSingleton<ILockProvider>(
+                Profile,
+                static (provider, key) => provider.GetRequiredKeyedService<TProvider>(key)
+            );
+            if (typeof(ILockProviderHealthProbe).IsAssignableFrom(typeof(TProvider)))
+            {
+                Services.TryAddKeyedSingleton<ILockProviderHealthProbe>(
+                    Profile,
+                    static (provider, key) =>
+                        (ILockProviderHealthProbe)provider.GetRequiredKeyedService<TProvider>(key)
+                );
+            }
         }
 
         return this;
@@ -82,9 +104,20 @@ public sealed class LockingBuilder
         }
 
         _registration.HealthChecksAdded = true;
+        if (readinessName == "hostloom-lock-ready")
+        {
+            readinessName = LockingProfile.HealthName(readinessName, Profile);
+        }
         Services
             .AddHealthChecks()
-            .AddCheck<LockProviderReadinessCheck>(readinessName, HealthStatus.Unhealthy, ["ready"]);
+            .Add(
+                new HealthCheckRegistration(
+                    readinessName,
+                    provider => new LockProviderReadinessCheck(Profile, provider),
+                    HealthStatus.Unhealthy,
+                    ["ready"]
+                )
+            );
         return this;
     }
 }

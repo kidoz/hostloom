@@ -192,6 +192,100 @@ public sealed class LockingRegistrationTests
     }
 
     [Fact]
+    public async Task Named_profiles_isolate_options_providers_and_disabled_mode()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomLocking("orders", locking => locking.Namespace = "orders")
+            .UseInMemory();
+        services.AddHostLoomLocking(
+            "local",
+            locking =>
+            {
+                locking.Namespace = "local";
+                locking.Enabled = false;
+            }
+        );
+        services.AddHostLoomLocking(locking => locking.Namespace = "default").UseInMemory();
+        await using var provider = services.BuildServiceProvider();
+
+        var orders = provider.GetRequiredKeyedService<IDistributedLock>("orders");
+        var local = provider.GetRequiredKeyedService<IDistributedLock>("local");
+
+        Assert.Equal("orders", LockingProbe.Describe(orders).Namespace);
+        Assert.Equal("local", LockingProbe.Describe(local).Namespace);
+        Assert.Equal(
+            "default",
+            LockingProbe.Describe(provider.GetRequiredService<IDistributedLock>()).Namespace
+        );
+        Assert.True(orders.IsCoordinated);
+        Assert.False(local.IsCoordinated);
+        Assert.NotSame(orders, local);
+        Assert.Equal(
+            1,
+            await local.ExecuteWithLockAsync(
+                "k",
+                static _ => ValueTask.FromResult(1),
+                cancellationToken: TestContext.Current.CancellationToken
+            )
+        );
+    }
+
+    [Fact]
+    public void Repeated_named_registration_shares_only_that_profile()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomLocking("orders", locking => locking.Namespace = "orders")
+            .UseInMemory();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            services.AddHostLoomLocking("orders").UseInMemory()
+        );
+        services
+            .AddHostLoomLocking("catalog", locking => locking.Namespace = "catalog")
+            .UseInMemory();
+
+        Assert.Single(
+            services,
+            descriptor =>
+                descriptor.ServiceType == typeof(IDistributedLock)
+                && descriptor.IsKeyedService
+                && Equals(descriptor.ServiceKey, "orders")
+        );
+        Assert.Single(
+            services,
+            descriptor =>
+                descriptor.ServiceType == typeof(IDistributedLock)
+                && descriptor.IsKeyedService
+                && Equals(descriptor.ServiceKey, "catalog")
+        );
+    }
+
+    [Fact]
+    public async Task Named_health_checks_include_the_profile()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services
+            .AddHostLoomLocking("orders", locking => locking.Namespace = "orders")
+            .UseInMemory()
+            .AddHealthChecks();
+        services
+            .AddHostLoomLocking("catalog", locking => locking.Namespace = "catalog")
+            .UseInMemory()
+            .AddHealthChecks();
+        await using var provider = services.BuildServiceProvider();
+
+        var report = await provider
+            .GetRequiredService<HealthCheckService>()
+            .CheckHealthAsync(TestContext.Current.CancellationToken);
+
+        Assert.Contains("hostloom-lock-ready:orders", report.Entries.Keys);
+        Assert.Contains("hostloom-lock-ready:catalog", report.Entries.Keys);
+    }
+
+    [Fact]
     public async Task Container_free_and_container_built_compositions_behave_the_same()
     {
         var clock = new TestClock();
