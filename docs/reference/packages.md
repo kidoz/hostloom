@@ -155,9 +155,11 @@ The package's conformance tests consume the schema and exact fixtures from
 `HostLoom.Logging` enable the .NET SDK Native AOT and trimming analyzers
 (`IsAotCompatible=true`), as does `HostLoom.Generators`.
 `examples/HostLoom.Examples.CachingAot` publishes with `PublishAot=true`
-and exercises a serialized cache round trip through a source-generated
-`JsonSerializerContext`, so the caching and locking packages are verified
-under Native AOT rather than only analyzed.
+and exercises named cache/lock profiles, a serialized cache round trip through a source-generated
+`JsonSerializerContext`, and opted-in sliding renewal and inactivity expiry, so the caching and
+locking packages are verified under Native AOT rather than only analyzed. The Valkey sample also
+executes named composition, serialized L2, a real conditional sliding renewal, leases, and
+explicit invalidation against a standalone server.
 `examples/HostLoom.Examples.GeneratorsAot` does the same for the generators:
 it resolves every generator from a service collection in the native binary
 and checks each output against its contract.

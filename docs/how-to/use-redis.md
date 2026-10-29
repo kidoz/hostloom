@@ -1,8 +1,8 @@
 # Cache and lock over Redis
 
 Move a HostLoom cache from the in-process store onto Redis, and a HostLoom
-lock from the in-process provider onto Redis, sharing one connection. The
-consumers do not change: they still inject `ICache` and `IDistributedLock`.
+lock from the in-process provider onto Redis. The default registrations share one connection;
+named profiles can isolate runtimes, connections, and databases.
 
 ## Before you begin
 
@@ -23,8 +23,9 @@ dotnet add package HostLoom.Redis
 
 ## 2. Swap the store and the provider
 
-Replace `UseInMemory()` with `UseRedis(...)` on each builder. The first call
-configures the connection; the second reuses it:
+Replace `UseInMemory()` with `UseRedis(...)` on each builder. The first default call
+configures the connection; the second reuses it. Existing consumers still inject unkeyed `ICache`
+and `IDistributedLock`:
 
 ```csharp
 using HostLoom.Redis;
@@ -44,6 +45,98 @@ builder.Services
 A distributed tier needs a serializer. The `TypeInfoResolver` is required, so
 a trimmed or Native AOT publish stays warning-free; `UseReflectionSerialization()`
 is the annotated opt-out.
+
+### Isolate named runtimes and connections
+
+Pass a profile name when a cache or lock needs independent options or backend composition, then
+resolve the keyed service:
+
+```csharp
+builder.Services.AddHostLoomCaching("catalog-read", options => options.Namespace = "catalog-read")
+    .UseRedis(redis =>
+    {
+        redis.Configuration = "redis-read:6379";
+        redis.DatabaseIndex = 2;
+    })
+    .UseSystemTextJson(new JsonSerializerOptions { TypeInfoResolver = CatalogJsonContext.Default });
+builder.Services.AddHostLoomLocking("catalog-jobs", options => options.Namespace = "catalog-jobs")
+    .UseRedis(redis =>
+    {
+        redis.Configuration = "redis-jobs:6379";
+        redis.DatabaseIndex = 1;
+    });
+
+var cache = provider.GetRequiredKeyedService<ICache>("catalog-read");
+var jobs = provider.GetRequiredKeyedService<IDistributedLock>("catalog-jobs");
+```
+
+Cache and lock registrations with the same profile name share one owned Redis connection.
+Different profiles own different connections. Configure a shared profile once and attach the other
+capability with parameterless `UseRedis()`. A repeated configuration must match; a conflict fails
+and names both registrations and conflicting option keys without exposing setting values.
+
+Provider disposal disposes each owned connection once. Profiles do not have independent teardown:
+their resources live until provider disposal. A multiplexer supplied through `ConnectionFactory`
+stays caller-owned and survives provider disposal.
+
+### Share one multiplexer across standalone databases
+
+Different databases over one multiplexer require standalone Redis and an externally owned
+multiplexer. Give each profile the same factory and its own database and namespace. HostLoom
+creates one unowned wrapper per profile:
+
+```csharp
+IConnectionMultiplexer multiplexer = await ConnectionMultiplexer.ConnectAsync(
+    "localhost:6379,allowAdmin=true,protocol=resp2");
+Func<CancellationToken, Task<IConnectionMultiplexer>> factory =
+    _ => Task.FromResult(multiplexer);
+
+builder.Services.AddHostLoomCaching("catalog", options => options.Namespace = "catalog")
+    .UseRedis(redis => { redis.ConnectionFactory = factory; redis.DatabaseIndex = 2; })
+    .UseSystemTextJson(new JsonSerializerOptions { TypeInfoResolver = CatalogJsonContext.Default });
+builder.Services.AddHostLoomLocking("catalog-jobs", options => options.Namespace = "catalog-jobs")
+    .UseRedis(redis => { redis.ConnectionFactory = factory; redis.DatabaseIndex = 1; });
+```
+
+This is not a Redis Cluster composition: Cluster requires database zero and hash tags. At most one
+cache profile on a multiplexer may use tracking or broadcast. Other profiles on that multiplexer
+fall back to explicit invalidation even when their mode requests `Auto`, `Tracking`, or
+`Broadcast`; independent wrappers cannot create independent multiplexer-wide tracking channels.
+
+### Bind consumers and Microsoft cache adapters
+
+Select the exact lock profile for leadership, node-ID leasing, and exclusive schedules:
+
+```csharp
+builder.Services.AddHostLoomLeadership()
+    .AddRole("catalog-reconciler", lockProfile: "catalog-jobs");
+builder.Services.AddHostLoomNodeLeasing()
+    .AddPool("catalog-workers", lockProfile: "catalog-jobs");
+builder.Services.AddHostLoomScheduling()
+    .UseDistributedLock(lockProfile: "catalog-jobs");
+```
+
+A missing profile fails startup and names its consumer and profile. Lease limits, key lengths, and
+uncoordinated behavior come from the bound lock, not from an enabled default lock.
+
+A named cache's `AddDistributedCacheAdapter(...)` registers keyed `IDistributedCache` and
+`IBufferDistributedCache`. Only the parameterless cache registration publishes the unkeyed
+adapters used by `HybridCache`. The primary `ICache` API remains absolute-only. To opt the
+Microsoft adapter into sliding expiration:
+
+```csharp
+builder.Services.AddHostLoomCaching(options => options.Namespace = "catalog")
+    .UseRedis(redis => redis.Configuration = "localhost:6379")
+    .UseSystemTextJson(new JsonSerializerOptions { TypeInfoResolver = CatalogJsonContext.Default })
+    .AddDistributedCacheAdapter(enableSlidingExpiration: true);
+```
+
+Without that opt-in, `DistributedCacheEntryOptions.SlidingExpiration` throws
+`NotSupportedException`. With it, a successful read is followed by a generation-checked,
+expire-only renewal bounded by the absolute deadline on Redis's clock. A deleted or replaced key
+is not refreshed. If renewal fails after a valid read, the adapter returns that value fail-open;
+caller cancellation still propagates. See [Caching](../reference/caching.md) for the storage-format
+and mixed-version rules.
 
 ## 3. Bind the options from configuration
 
@@ -85,15 +178,41 @@ service must not run without Redis at all.
 Every key of a namespace lives in its own domain, so nothing collides:
 
 ```text
-catalog:cache:data:{key}      the entry, SET … PX
-catalog:cache:lease:{key}     the stampede lease, SET … NX PX
-catalog:cache:tag:{tag}       a set of entry keys, expiring with its longest member
-catalog:cache:invalidate      the pub/sub channel
-catalog:lock:{key}            the lock, SET … NX PX with a random owner token
+catalog:cache:data:{key}          the tiered-cache entry, SET … PX
+catalog:cache:lease:{key}         the stampede lease, SET … NX PX
+catalog:cache:tag:{tag}           a set of entry keys, expiring with its longest member
+catalog:cache:invalidate          the pub/sub channel
+catalog:cache:external:{key}      legacy/default Microsoft-adapter bytes
+catalog:cache:external-v2:{key}   opted-in sliding envelope
+catalog:lock:{key}                the lock, SET … NX PX with a random owner token
 ```
 
 With `UseHashTags` the namespace segment is wrapped as `{catalog}` so a
-Redis Cluster keeps them in one slot. Nothing relies on `SELECT`.
+Redis Cluster keeps them in one slot. `DatabaseIndex` is passed per command rather than relying on
+`SELECT`.
+
+### Migrate cache and lock formats
+
+The default Microsoft adapter keeps raw payloads and absolute expiration. The sliding opt-in adds
+a binary envelope and moves writes to the `external-v2` domain; it still reads legacy raw entries.
+A successful enveloped write retires the legacy value for that consumer key, and removal deletes
+both forms. Old readers miss new enveloped entries, and legacy entries cannot gain sliding behavior. Stop or drain old writers before the cutover, or implement application-owned
+dual writes for an overlapping rollout. Dual deletion by itself does not make arbitrary
+mixed-version writers coherent. Roll back only after stopping the opted-in writers and draining
+or repopulating data the old readers need.
+
+Canonical locks use `{namespace}:lock:{key}`. If an existing deployment uses a different physical
+identity such as `lock:{key}`, an application-owned compatibility `ILockProvider` must map to that
+exact key while retaining owner tokens, lease accounting, typed failures, and owner-checked
+release and extension. HostLoom does not ship a namespace-validation bypass or a production
+legacy-identity switch.
+
+Without that compatibility provider, canonical and legacy locks are independent and do not
+contend. For an incompatible transition, stop all old workers, let existing leases expire, switch
+all instances, then start the new workers. Rollback requires the same stop-and-drain procedure;
+never run both identities for one logical lock. Compatibility does not add fencing or consensus:
+Redis replication and failover can still lose an unreplicated lease, so persisted-state invariants
+belong in transactions, constraints, or idempotency.
 
 ## 6. Choose how other instances learn about changes
 

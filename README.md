@@ -535,8 +535,9 @@ tier, per-key single-flight, a best-effort cluster-wide lease, cross-instance in
 fail-open behaviour when the store misbehaves. `HostLoom.Locking` is a distributed lock with
 leases, owner tokens, a retry policy, and lost-lease detection; it is coordination, not
 correctness, for persisted state. Both are kernels that compose with `new`; their
-`DependencyInjection` packages register them, and `HostLoom.Redis` supplies both backends over one
-connection:
+`DependencyInjection` packages register default unkeyed services and independently configured
+named profiles resolved as keyed services. `HostLoom.Redis` supplies both backends, sharing one
+connection within a profile and isolating connections between profiles:
 
 ```csharp
 builder.Services
@@ -564,6 +565,11 @@ public sealed class CatalogService(ICache cache, IDistributedLock locks)
         locks.ExecuteWithLockAsync("catalog:refresh", RebuildAsync, cancellationToken: ct);
 }
 ```
+
+The primary `ICache` API uses absolute expiration. The optional Microsoft
+`IDistributedCache`/`IBufferDistributedCache` adapter supports explicitly opted-in sliding
+expiration with generation-checked renewal on the in-memory, Redis, and Valkey stores. Leadership,
+node-ID pools, and exclusive schedules can bind to an exact named lock profile.
 
 A distributed-store failure never reaches a consumer as an exception from a read or a
 get-or-create: the cache serves from the in-process tier and the factory, records a `degraded`

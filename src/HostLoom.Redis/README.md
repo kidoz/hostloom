@@ -23,11 +23,38 @@ externally owned multiplexer, plus `DatabaseIndex`, `UseHashTags`, the connect, 
 health timeouts, `FailFast`, and a `ClientName` defaulting to `hostloom-{machine}-{pid}`. A
 password is never logged; probe output and the startup line redact it.
 
+## Named profiles and connection ownership
+
+Pass a profile to `AddHostLoomCaching` or `AddHostLoomLocking` to isolate options, providers,
+stores, and connections. Cache and lock registrations with the same profile and backend share one
+connection; different profiles have different connections. Configure that shared connection once,
+or attach with parameterless `UseRedis()`. A repeated configuration must be identical; a conflict
+fails with both registrations and the conflicting option keys, without including setting values.
+
+```csharp
+services.AddHostLoomCaching("catalog-read", caching => caching.Namespace = "catalog-read")
+    .UseRedis(redis => redis.DatabaseIndex = 2)
+    .UseSystemTextJson(new JsonSerializerOptions { TypeInfoResolver = CatalogJsonContext.Default });
+services.AddHostLoomLocking("catalog-jobs", locking => locking.Namespace = "catalog-jobs")
+    .UseRedis(redis => redis.DatabaseIndex = 1);
+```
+
+For standalone Redis, several profiles may use different databases over one externally owned
+multiplexer. Give each profile the same `ConnectionFactory` and its own `DatabaseIndex`; each
+profile gets an unowned `RedisConnection` wrapper and its own options. Redis Cluster still requires
+database zero and hash tags, so this composition is not a Cluster configuration. At most one cache
+profile on a multiplexer can use tracking or broadcast; another profile requesting either transport
+uses explicit invalidation instead.
+
+Provider teardown disposes every container-owned connection once. An external multiplexer remains
+caller-owned and is not disposed. Profiles have no independent teardown operation.
+
 ## What runs on the server
 
 | Purpose | Commands |
 |---|---|
 | cache entry | `SET … PX`, a Lua `GET`/`PTTL` snapshot per key (pipelined for bulk reads), deletion |
+| opted-in sliding renewal | a Lua snapshot comparison followed by `PEXPIRE`; `TIME` bounds the renewal by the absolute cap |
 | set-if-absent and stampede lease | `SET … NX PX` |
 | tag index | `SADD`, `EXPIRE NX` then `EXPIRE GT`, `SMEMBERS`, atomic Lua `UNLINK`/`SREM` batches; a tagged set-if-absent indexes only after the write is known to have happened. Only members under `{namespace}:cache:data:` are unlinked; any other member is dropped from the index with `SREM`, left untouched as a key, and counted on `hostloom.redis.tag.members_rejected` |
 | invalidation | `PUBLISH` and `SUBSCRIBE` on `{namespace}:cache:invalidate`; `CLIENT LIST`, `CLIENT TRACKINGINFO`, and `CLIENT TRACKING` in tracking mode; `PSUBSCRIBE __keyspace@{db}__:…` in broadcast mode |
@@ -38,6 +65,17 @@ Nothing relies on `SELECT`: `DatabaseIndex` is passed per command and exists onl
 can coexist with keys from a previous library during a migration. `UseHashTags` wraps the
 namespace segment in `{…}` so every key of a service lands in one Redis Cluster slot. Keys are the
 kernels' fully prefixed keys, so a cache entry, a lease, a tag index, and a lock can never collide.
+The default Microsoft adapter uses `{namespace}:cache:external:{key}`; its sliding opt-in uses a
+versioned binary envelope under `{namespace}:cache:external-v2:{key}` and reads legacy raw entries.
+A successful enveloped write retires the legacy value for that consumer key, and removal deletes
+both forms. Older readers miss enveloped entries, so drain mixed-version writers or use
+application-owned dual writes.
+
+Canonical locks use `{namespace}:lock:{key}`. An application migrating an exact legacy identity
+such as `lock:{key}` must supply a compatibility `ILockProvider` that preserves that physical key
+and all owner/lease semantics; there is no namespace-validation bypass. Without that adapter the
+identities do not contend. Stop all writers and drain leases before cutover, and use the same
+stop-and-drain procedure for rollback rather than running both identities together.
 
 Tagged writes through the store's public constructor require a value key in
 `namespace:cache:data:name` and tag keys in `namespace:cache:tag:name` with the same

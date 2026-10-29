@@ -26,6 +26,12 @@ test double after the builder to replace the electors deliberately, or register 
 pool you do not add. The hosted service starts every elector with the host and stops each with
 the host, releasing the leases they hold so a graceful restart hands the IDs over at once.
 
+A pool can select a named lock with `AddPool(pool, configure, lockProfile)`, for example
+`.AddPool("orders-workers", lockProfile: "catalog-nodes")`. Construction and startup validation use
+that exact keyed lock for lease and generated-key limits and for coordinated or disabled behavior.
+A missing profile fails startup with the pool and profile named; an enabled default lock does not
+change the bound profile's `NodeLeasing:WhenUncoordinated` behavior.
+
 A consumer that needs a node ID is then:
 
 ```csharp

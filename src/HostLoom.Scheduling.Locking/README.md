@@ -30,6 +30,9 @@ skips that run as `GuardFailed` rather than running unguarded.
 The guard composes without a container, `new DistributedLockScheduleGuard(distributedLock)`, for
 a scheduler built with `new`. `UseDistributedLock()` registers it as the one guard for the
 service collection and resolves the lock registered by `AddHostLoomLocking`.
+`UseDistributedLock("catalog-jobs")` instead resolves that named lock profile. Startup validation
+checks every exclusive schedule's lease and generated key against the bound lock and reports a
+missing profile with the schedule and profile named.
 
 Over a disabled lock (`Locking:Enabled = false`) every claim is granted on every instance, which
 is the lock's single-instance mode; the guard reports `IsCoordinated = false`, the scheduler warns

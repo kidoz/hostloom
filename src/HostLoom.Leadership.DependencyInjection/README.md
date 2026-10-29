@@ -26,6 +26,12 @@ double after the builder to replace the electors deliberately, or register it ke
 do not add. The hosted service starts every elector with the host and stops each with the host,
 releasing the leases they hold so a graceful restart hands over at once.
 
+A role can select a named lock with `AddRole(role, configure, lockProfile)`, for example
+`.AddRole("scheduler", lockProfile: "catalog-jobs")`. Construction and startup validation resolve
+that exact keyed lock, including its lease and key limits and its coordinated or disabled state. A
+missing profile fails startup with the role and profile named; an enabled default lock does not
+change the bound profile's `Leadership:WhenUncoordinated` behavior.
+
 Each role has a configurable consumer lock key, before the lock's namespace prefix.
 Share a format with named-options configuration, and override individual roles when needed:
 

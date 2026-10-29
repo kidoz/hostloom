@@ -156,16 +156,64 @@ on a `TimeProvider`, so the same state machine runs in tests as on a backend.
 ```csharp
 LockingBuilder AddHostLoomLocking(this IServiceCollection services,
     Action<LockingOptions>? configure = null);
+LockingBuilder AddHostLoomLocking(this IServiceCollection services,
+    string profile, Action<LockingOptions>? configure = null);
 ```
+
+The parameterless registration publishes unkeyed `IDistributedLock` and retains its shared
+configuration. A named registration publishes a keyed lock with independent options, provider,
+health, and backend resources:
+
+```csharp
+services.AddHostLoomLocking("orders", options => options.Namespace = "orders").UseInMemory();
+services.AddHostLoomLocking("catalog", options => options.Namespace = "catalog").UseInMemory();
+
+var orders = provider.GetRequiredKeyedService<IDistributedLock>("orders");
+```
+
+Disabling one profile does not disable another. Disposing the service provider disposes all owned
+resources; profiles have no independent teardown operation.
 
 | Builder member | Effect |
 | --- | --- |
 | `UseInMemory()` | the in-process provider |
 | `UseProvider<TProvider>(name)` | any provider; also registered as probe when it implements one; backend packages call this from their `Use*` |
-| `AddHealthChecks(name)` | readiness check tagged `ready` over the provider's probe; never liveness |
+| `AddHealthChecks(name)` | readiness check tagged `ready` over the provider's probe; never liveness; the default name gains `:{profile}` for a named profile |
 
 Exactly one provider per builder; a second choice throws naming the first.
 `Locking:Enabled = false` needs no provider.
+
+### Bind consumers to an exact profile
+
+Leadership roles, node-ID pools, and exclusive schedules can select a keyed lock explicitly:
+
+```csharp
+services.AddHostLoomLeadership()
+    .AddRole("catalog-reconciler", lockProfile: "catalog-jobs");
+services.AddHostLoomNodeLeasing()
+    .AddPool("catalog-workers", lockProfile: "catalog-jobs");
+services.AddHostLoomScheduling()
+    .UseDistributedLock(lockProfile: "catalog-jobs");
+```
+
+Omitting `lockProfile` selects the default unkeyed lock. The selected lock supplies the namespace,
+provider, lease and key-length limits, and enabled or uncoordinated behavior. A missing profile
+fails startup and names the role, pool, or schedule and missing profile. An enabled default lock
+never overrides a bound disabled profile's `Leadership:WhenUncoordinated` or
+`NodeLeasing:WhenUncoordinated` policy.
+
+### Legacy key identity and migration
+
+Canonical keys are `{namespace}:lock:{key}`. A legacy deployment whose physical keys are only
+`lock:{key}` needs an application-owned compatibility `ILockProvider` that maps the composed key
+to that exact identity while preserving owner tokens, leases, typed failures, and owner-checked
+release and extension. HostLoom does not provide a namespace-validation bypass or a production
+legacy-identity switch.
+
+Without such an adapter, canonical and legacy names are different locks and do not contend. Stop
+all old writers, let existing leases expire, switch every instance together, then start the new
+writers. Roll back with the same stop-and-drain procedure; do not run both identities for the same
+logical lock. These are coordination leases, not fencing or consensus, across backend failover.
 
 ## Diagnostics
 

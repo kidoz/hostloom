@@ -90,7 +90,7 @@ option key, and the `DependencyInjection` package runs it at startup.
 | `Caching:Invalidation:FlushLocalOnReconnect` | `true` | a backend channel clears the in-process tier after its connection is restored, because invalidations published during the outage were never delivered; the cost is one cold in-process tier per reconnect |
 | `Caching:Compression:ThresholdBytes` | 1 024 | Brotli above this size |
 | `Caching:Warmup:BatchSize` | 100 | entries per distributed write during warmup |
-| `Caching:Warmup:BlocksReadiness` | `false` | readiness waits for registered warmups |
+| `Caching:Warmup:BlocksReadiness` | `false` | readiness waits only for warmups currently in progress; terminal failure and cancellation stay fail-open |
 | `Caching:Diagnostics:DegradedLogInterval` | 1 min | one degraded warning per key per interval |
 | `Caching:MaxKeyLength` | 512 | longest consumer key |
 | `Caching:MaxPayloadBytes` | 10 MB | bounds the serialized body and the stored payload; oversize values stay in-process only, logged at error, and a stored entry declaring more is read as corrupt |
@@ -107,7 +107,8 @@ collide with a lease, a tag index, or a lock:
 | stampede lease | `{namespace}:cache:lease:{key}` |
 | tag index | `{namespace}:cache:tag:{tag}` |
 | invalidation channel | `{namespace}:cache:invalidate` |
-| `IDistributedCache` adapter entry | `{namespace}:cache:external:{key}` |
+| legacy `IDistributedCache` adapter entry | `{namespace}:cache:external:{key}` |
+| opted-in sliding adapter entry | `{namespace}:cache:external-v2:{key}` |
 
 Consumers never see or repeat the prefix. Keys are opaque strings without
 whitespace or control characters, at most `Caching:MaxKeyLength` long;
@@ -127,20 +128,19 @@ namespaces, or serializers. Members: `GetAsync` (payload and remaining time
 to live), `SetAsync` and `SetIfAbsentAsync` (both with tag-index keys),
 `RemoveAsync` (batched), `GetManyAsync`, `SetManyAsync`, `RemoveByTagAsync`, and a
 `Capabilities` flags value (`Tags`, `InvalidationChannel`,
-`ServerAssistedTracking`). A failure is `CacheStoreException` carrying a
-`CacheFailureKind` (`Unavailable`, `Timeout`, `Other`); cancellation
-propagates as `OperationCanceledException`. Memory passed to a write member
-is borrowed until the returned task completes.
+`ServerAssistedTracking`, `SlidingExpiration`). A failure is
+`CacheStoreException` carrying a `CacheFailureKind` (`Unavailable`, `Timeout`, `Other`);
+cancellation propagates as `OperationCanceledException`. Memory passed to a write member is
+borrowed until the returned task completes.
 
-`ICacheInvalidationChannel` fans invalidations out between instances that
-share a store. A `CacheInvalidation` carries keys and tags, or, as
-`CacheInvalidation.Flush`, clears every in-process entry; the Redis and Valkey
-channels raise the flush to their own subscribers after a reconnect and carry
-a published one on the wire. `ICacheStoreHealthProbe` is the optional
-readiness capability.
-`InMemoryDistributedCacheStore` implements both the store and the channel in
-process memory, which is what the conformance suite and the Native AOT
-sample use.
+`ISlidingExpirationCacheStore` is a separate optional interface for generation-checked,
+expire-only renewal; sliding support adds no required member to `IDistributedCacheStore`.
+`ICacheInvalidationChannel` fans invalidations out between instances that share a store. A
+`CacheInvalidation` carries keys and tags, or, as `CacheInvalidation.Flush`, clears every
+in-process entry; the Redis and Valkey channels raise the flush to their own subscribers after a
+reconnect and carry a published one on the wire. `ICacheStoreHealthProbe` is the optional
+readiness capability. `InMemoryDistributedCacheStore` implements the store, sliding renewal, and
+channel in process memory, which is what the conformance suite and Native AOT sample use.
 
 ## Serialization
 
@@ -163,23 +163,78 @@ writing.
 ```csharp
 CachingBuilder AddHostLoomCaching(this IServiceCollection services,
     Action<CachingOptions>? configure = null);
+CachingBuilder AddHostLoomCaching(this IServiceCollection services,
+    string profile, Action<CachingOptions>? configure = null);
 ```
+
+The parameterless registration publishes unkeyed `ICache` and preserves the existing shared
+configuration. A named registration publishes `ICache` keyed by its profile, with independent
+options, store, serializer, warmup, health, and backend resources:
+
+```csharp
+services.AddHostLoomCaching("catalog", options => options.Namespace = "catalog")
+    .UseStore<CatalogStore>("Catalog");
+services.AddHostLoomCaching("inventory", options => options.Namespace = "inventory")
+    .UseStore<InventoryStore>("Inventory");
+
+var catalog = provider.GetRequiredKeyedService<ICache>("catalog");
+```
+
+Repeated registrations of one profile attach to that profile; different profiles do not share
+cache runtime state. Backend connection sharing and ownership follow the selected adapter's rules.
+Disposing the service provider disposes every owned profile resource; individual profiles have no
+independent teardown operation.
 
 | Builder member | Effect |
 | --- | --- |
 | `UseInMemory()` | in-process tier as the only tier |
 | `UseStore<TStore>(name)` | a distributed store; also registers it as channel and probe when it implements them; backend packages call this from their `Use*` |
 | `UseSystemTextJson(options)` | serializer; requires a type-info resolver |
-| `UseSerializer<TSerializer>()` | any serializer; replaces an earlier choice |
+| `UseSerializer<TSerializer>()` | any serializer; replaces an earlier choice in this profile only |
 | `UseReflectionSerialization()` | the annotated non-AOT opt-out |
 | `AddWarmup<TWarmup>()` | runs an `ICacheWarmup` after startup, with the readiness contributor `Caching:Warmup:BlocksReadiness` governs |
-| `AddHealthChecks(name)` | readiness check tagged `ready` over the store's probe; never liveness |
-| `AddDistributedCacheAdapter(defaultExpiration)` | `IDistributedCache` and `IBufferDistributedCache` over the store for `HybridCache`; asynchronous members only; store failures answer as a miss, counted on `hostloom.cache.errors` and logged once per key per `Caching:Diagnostics:DegradedLogInterval` |
+| `AddHealthChecks(name)` | readiness check tagged `ready` over the store's probe; never liveness; the default name gains `:{profile}` for a named profile |
+| `AddDistributedCacheAdapter(defaultExpiration, enableSlidingExpiration)` | `IDistributedCache` and `IBufferDistributedCache` over the store for `HybridCache`; asynchronous members only; named profiles register keyed adapters only |
 
-Exactly one store per builder; a second choice throws naming the first.
-Repeated `AddHostLoomCaching` calls return a builder over the same
-registration. A composition with a distributed store and no serializer fails
-validation naming `UseSystemTextJson`.
+Exactly one store per builder; a second choice throws naming the first. A composition with a
+distributed store and no serializer fails validation naming `UseSystemTextJson`. Only the
+parameterless registration publishes unkeyed Microsoft distributed-cache services, so a named
+profile cannot capture the unkeyed adapter consumed by `HybridCache` through registration order.
+
+### Microsoft adapter expiration and compatibility
+
+The adapter stores raw bytes with absolute expiration by default. `SlidingExpiration` without
+`AddDistributedCacheAdapter(enableSlidingExpiration: true)` throws `NotSupportedException`; it is
+never silently converted to an absolute TTL. The opt-in requires a store that advertises
+`CacheStoreCapabilities.SlidingExpiration` and implements `ISlidingExpirationCacheStore`.
+`ICache`, `TieredCache`, and `CacheEntryOptions` remain absolute-only.
+
+With the opt-in, writes use a 40-byte versioned binary envelope under
+`{namespace}:cache:external-v2:{key}`. The envelope contains the consumer bytes, sliding window,
+absolute deadline when present, and a generation; it needs no reflection serializer.
+`Caching:MaxPayloadBytes` applies to the complete envelope and payload, and the consumer key must
+still satisfy `Caching:MaxKeyLength`. Legacy raw entries under
+`{namespace}:cache:external:{key}` remain readable but cannot gain sliding behavior. A successful
+enveloped write retires the legacy value for that consumer key, and removal deletes both forms.
+
+A sliding read or explicit refresh first completes a read, then conditionally extends only the
+same stored generation. The expire-only update cannot resurrect a deleted key or extend a
+replacement, even when the replacement uses the same expiration policy. Redis and Valkey bound
+the new TTL by the absolute deadline using server time; the in-memory store uses its
+`TimeProvider`. A refresh failure after a valid read returns that value fail-open, unless the
+backend established that it expired; caller cancellation still propagates. Refreshing an
+absolute-only entry is a no-op. Store failures otherwise retain the adapter's fail-open outcomes,
+counted on `hostloom.cache.errors` and logged once per key per
+`Caching:Diagnostics:DegradedLogInterval`.
+
+Readers without the opt-in miss enveloped entries. During a mixed-version rollout, drain writers
+before switching formats or use application-owned dual writes; deleting both forms alone does not
+make arbitrary old and new writers coherent.
+
+Warmup readiness distinguishes not started, running, succeeded, failed, and cancelled, retaining
+partial success and failure counts. Cancellation is neither success nor failure.
+`Caching:Warmup:BlocksReadiness` can block readiness only while a run is in progress; failed and
+cancelled terminal runs remain fail-open and healthy.
 
 ## Diagnostics
 
@@ -272,7 +327,8 @@ enough to cache in process.
 
 ## Limitations
 
-- Sliding expiration is not implemented.
+- `ICache` has absolute expiration only. Sliding expiration belongs exclusively to the opted-in
+  Microsoft distributed-cache adapter; other `IDistributedCache` registrations reject it.
 - Stale-while-revalidate is limited to an outage of the distributed store:
   while the store answers, an expired entry is a miss and no stale value is
   served. There is no background refresh ahead of expiry.
@@ -284,8 +340,9 @@ enough to cache in process.
 - Invalidation is not durable. A message dropped by a full queue costs one
   in-process expiry; a reconnect clears the in-process tier when
   `Caching:Invalidation:FlushLocalOnReconnect` is set, which is the default.
-- The `IDistributedCache` adapter has no touch operation, so `RefreshAsync`
-  is a no-op and sliding windows become absolute.
+- A sliding renewal is a completed read followed by a conditional expire, not one atomic
+  read-and-refresh operation. The generation check protects replacements, but a failed renewal
+  can leave the valid value with its previous TTL.
 
 Distributed-read promotion subtracts elapsed read and deserialization time from the returned
 remaining TTL before storing a value or cached null in L1, including bulk reads. Tags use

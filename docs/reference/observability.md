@@ -269,11 +269,21 @@ reachable — "cannot tell" must not read as "broken".
 checks `hostloom-cache-ready` and `hostloom-lock-ready`, tagged `ready`, that
 ask the store's `ICacheStoreHealthProbe` or the provider's
 `ILockProviderHealthProbe`; on Redis that is a `PING` bounded by
-`Redis:HealthTimeout`. A backend without a probe, including the in-process
-ones, reports healthy with an explanation. `AddWarmup<T>()` adds
-`hostloom-cache-warmup`, which reports unhealthy until every warmup finishes
-only when `Caching:Warmup:BlocksReadiness` is set. Neither builder registers
-a liveness check: a store outage must not read as "restart me".
+`Redis:HealthTimeout`. A named profile's default check name gains `:{profile}`, such as
+`hostloom-cache-ready:catalog`; an explicitly supplied name must be unique across components and
+profiles. A backend without a probe, including the in-process ones, reports healthy with an
+explanation.
+
+`AddWarmup<T>()` adds `hostloom-cache-warmup`, with the same profile suffix rule. Its description
+reports not started, running, succeeded, failed, or cancelled and retains partial success and
+failure counts. Cancellation is neither success nor failure. With
+`Caching:Warmup:BlocksReadiness` set, the check is unhealthy only while a run is in progress;
+terminal failure and cancellation remain healthy fail-open outcomes. Neither builder registers a
+liveness check: a store outage must not read as "restart me".
+
+Named profiles retain the existing low-cardinality metric identities: cache and lock metrics use
+the configured namespace, not the profile name. Adapter refresh failures and malformed sliding
+envelopes are counted on `hostloom.cache.errors` with the existing failure kind and namespace.
 
 ## Execution-free probes
 

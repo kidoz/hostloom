@@ -34,19 +34,41 @@ builder.Services.AddHostLoomLocking(options => options.Namespace = "catalog-work
 `CatalogJsonContext` is an application-owned source-generated `JsonSerializerContext` containing
 its cached types. A runnable example is in `examples/HostLoom.Examples.ValkeyAot` in the repository.
 
-Both registrations share one lazily connected `ValkeyConnection`, owned by the container.
-Configuration callbacks run in registration order; configure the endpoint once. Public constructors
-also work without a container: create `ValkeyConnection`, then `ValkeyCacheStore`,
-`ValkeyLockProvider`, and optionally `ValkeyCacheInvalidationChannel`. Stores and providers borrow
-the connection; dispose channels before disposing the connection. Connection settings are
-snapshotted at construction. Command recovery reuses the configured TLS, ACL and database settings.
-A standalone `ServiceCollection` needs a DI container implementation to call `BuildServiceProvider`.
+Default cache and lock registrations share one lazily connected `ValkeyConnection`, owned by the
+container. Configure the endpoint once and attach the other registration with parameterless
+`UseValkey()`. Named profiles isolate their options and connections; the same profile and backend
+shares one connection. A repeated configuration must be identical, and a conflict names both
+registrations and the conflicting option keys without exposing values.
+
+```csharp
+services.AddHostLoomCaching("catalog-read", caching => caching.Namespace = "catalog-read")
+    .UseValkey(options => options.Connection = new ValkeyClientOptions { Database = 2 });
+services.AddHostLoomLocking("catalog-jobs", locking => locking.Namespace = "catalog-jobs")
+    .UseValkey(options => options.Connection = new ValkeyClientOptions { Database = 1 });
+```
+
+Set `ValkeyOptions.ConnectionOwner` to borrow a caller-owned `ValkeyConnectionOwner`. Commands and
+invalidation subscribers use that owner's actual host and port; the other subscriber settings come
+from `ValkeyOptions.Connection`. Multiple profiles can share that owner; provider teardown disposes
+only container-owned connections and never disposes the external owner once per profile. Profiles
+have no independent teardown operation.
+
+Public constructors also work without a container: create `ValkeyConnection`, then
+`ValkeyCacheStore`, `ValkeyLockProvider`, and optionally `ValkeyCacheInvalidationChannel`. Stores
+and providers borrow the connection; dispose channels before disposing the connection. Connection
+settings are snapshotted at construction. Command recovery reuses the configured TLS, ACL and
+database settings. A standalone `ServiceCollection` needs a DI container implementation to call
+`BuildServiceProvider`.
 
 ## Cache behavior
 
 - Binary payloads and fully prefixed keys pass through unchanged. The kernel owns serialization,
   key domains, L1, single-flight, failure metrics and fail-open behavior.
 - Lua reads the value and remaining TTL together. Bulk reads pipeline these scripts in one call.
+- Opted-in Microsoft-adapter sliding renewal compares the complete read snapshot and then uses
+  `PEXPIRE` only; it cannot resurrect a deleted key or extend a replacement. Lua `TIME` enforces
+  the absolute cap on the server. A transport-failed renewal is not replayed, and the adapter
+  returns the completed-read value fail-open unless expiration was established.
 - Untagged writes use `SET PX`; conditional writes use `SET NX PX`. Tagged writes atomically add
   memberships and extend tag expiry only when the value is written. Lua runtime errors do not roll
   back partial writes; reserved key domains must contain the expected value/index types.
