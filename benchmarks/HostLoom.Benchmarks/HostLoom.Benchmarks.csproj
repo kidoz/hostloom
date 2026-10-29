@@ -17,7 +17,9 @@
     <PackageReference Include="ZiggyCreatures.FusionCache" />
     <ProjectReference Include="../../src/HostLoom.AspNetCore.WebSockets/HostLoom.AspNetCore.WebSockets.csproj" />
     <ProjectReference Include="../../src/HostLoom.Caching/HostLoom.Caching.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Caching.DependencyInjection/HostLoom.Caching.DependencyInjection.csproj" />
     <ProjectReference Include="../../src/HostLoom.Locking/HostLoom.Locking.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Locking.DependencyInjection/HostLoom.Locking.DependencyInjection.csproj" />
     <ProjectReference Include="../../src/HostLoom.Logging/HostLoom.Logging.csproj" />
   </ItemGroup>
 </Project>

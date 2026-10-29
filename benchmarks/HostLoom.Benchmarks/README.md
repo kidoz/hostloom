@@ -19,6 +19,38 @@ miss, a 100-key bulk read, and in-memory lock acquire/release and execute-with-l
 dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --filter "HostLoom.Benchmarks.CachingBenchmarks.*" "HostLoom.Benchmarks.LockingBenchmarks.*"
 ```
 
+Observation-only suites measure warm default versus keyed cache/lock resolution and absolute
+versus opted-in sliding Microsoft-adapter operations. The adapter workload uses a 64-byte payload
+and the in-memory distributed store, with setup and first resolution outside timing. Instrumented
+setup verifies that absolute reads perform one `get`, sliding reads one `get` plus one conditional
+`refresh`, absolute writes one `set`, and sliding writes one `set` plus one legacy-entry `remove`.
+Benchmark timing disables the counters while retaining the
+same store decorator. These suites are outside the committed regression baseline:
+
+```text
+dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --job Short --inProcess --exporters json --artifacts artifacts/locking-caching-performance --filter "*ProfileResolutionBenchmarks*" "*DistributedCacheAdapterBenchmarks*"
+```
+
+On 2026-10-29, BenchmarkDotNet 0.15.8 measured all eight cases on an Apple M4 Max with the .NET
+10.0.403 SDK and 10.0.14 runtime on macOS arm64. `Error` is half of the 99.9% confidence interval
+from the three-iteration `ShortRun`; these small samples are observations, not capacity estimates.
+
+| Case | Mean | Error | Allocated |
+| --- | ---: | ---: | ---: |
+| Default cache resolution | 5.581 ns | 0.4357 ns | 0 B |
+| Named cache resolution | 7.869 ns | 0.6232 ns | 0 B |
+| Default lock resolution | 5.652 ns | 0.0209 ns | 0 B |
+| Named lock resolution | 8.803 ns | 0.3707 ns | 0 B |
+| Absolute adapter read | 117.14 ns | 14.290 ns | 248 B |
+| Sliding adapter read | 222.94 ns | 17.257 ns | 384 B |
+| Absolute adapter write | 62.50 ns | 2.679 ns | 216 B |
+| Sliding adapter write | 347.88 ns | 8.320 ns | 536 B |
+
+The full reports are under `artifacts/locking-caching-performance/results/`. These in-memory
+results exclude Redis or Valkey commands, serialization of application values, and network work.
+No numeric acceptance budget exists for these suites, so they are neither a performance pass nor
+a replacement for the committed regression baseline.
+
 The Redis project measures warmed L2 hits for HostLoom, `HybridCache`, and FusionCache, plus
 uncontended acquire/release for HostLoom and Medallion `DistributedLock.Redis`. It defaults to
 `localhost:6379`; set `HOSTLOOM_BENCHMARK_REDIS` to a StackExchange.Redis configuration string for
