@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Native AOT validation of serialized Valkey L2, leases, and explicit invalidation.</Description>
+    <Description>Native AOT validation of named Valkey composition, serialized L2, sliding renewal, leases, and explicit invalidation.</Description>
     <IsPackable>false</IsPackable>
     <OutputType>Exe</OutputType>
     <PublishAot>true</PublishAot>

@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Native AOT sample: HostLoom caching over the in-process distributed store with a source-generated JSON context, and HostLoom locking over the in-process provider.</Description>
+    <Description>Native AOT sample: named HostLoom cache and lock profiles, serialized in-memory L2 with a source-generated JSON context, and opted-in sliding expiration.</Description>
     <IsPackable>false</IsPackable>
     <OutputType>Exe</OutputType>
     <PublishAot>true</PublishAot>
