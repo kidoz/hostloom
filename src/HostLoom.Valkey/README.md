@@ -1,6 +1,6 @@
 # HostLoom.Valkey
 
-Standalone Valkey caching and coordination locks over [ValkeyDotNet 1.1.0](https://github.com/kidoz/valkey-dotnet).
+Standalone Valkey caching and coordination locks over [ValkeyDotNet 1.2.0](https://github.com/kidoz/valkey-dotnet).
 Targets .NET 10. Applications continue to consume `ICache` and `IDistributedLock` from the
 backend-neutral kernels. The Redis adapter remains separately available.
 

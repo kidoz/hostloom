@@ -47,7 +47,7 @@
     <PackageVersion Include="Serilog.Extensions.Logging" Version="10.0.0" />
     <PackageVersion Include="Serilog.Formatting.Compact" Version="3.0.0" />
     <PackageVersion Include="Serilog.Sinks.Async" Version="2.1.0" />
-    <PackageVersion Include="ValkeyDotNet" Version="1.1.0" />
+    <PackageVersion Include="ValkeyDotNet" Version="1.2.0" />
     <PackageVersion Include="StackExchange.Redis" Version="3.4.20" />
     <PackageVersion Include="ZiggyCreatures.FusionCache" Version="2.9.0" />
     <PackageVersion
