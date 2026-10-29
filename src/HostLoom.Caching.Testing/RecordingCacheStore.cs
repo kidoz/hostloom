@@ -15,7 +15,7 @@ public readonly record struct RecordedCacheCall(string Operation, string Key);
 public sealed class RecordingCacheStore(
     IDistributedCacheStore inner,
     ICacheInvalidationChannel? channel = null
-) : IDistributedCacheStore, ICacheInvalidationChannel
+) : IDistributedCacheStore, ISlidingExpirationCacheStore, ICacheInvalidationChannel
 {
     private readonly Lock _gate = new();
     private readonly List<RecordedCacheCall> _calls = [];
@@ -64,6 +64,29 @@ public sealed class RecordingCacheStore(
     {
         Record("get", key);
         return Inner.GetAsync(key, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public ValueTask<CacheRefreshOutcome> RefreshAsync(
+        string key,
+        ReadOnlyMemory<byte> expectedPayload,
+        TimeSpan slidingWindow,
+        DateTimeOffset? absoluteExpiration,
+        CancellationToken cancellationToken = default
+    )
+    {
+        Record("refresh", key);
+        return Inner is ISlidingExpirationCacheStore sliding
+            ? sliding.RefreshAsync(
+                key,
+                expectedPayload,
+                slidingWindow,
+                absoluteExpiration,
+                cancellationToken
+            )
+            : ValueTask.FromException<CacheRefreshOutcome>(
+                new NotSupportedException("The wrapped store does not support sliding expiration.")
+            );
     }
 
     /// <inheritdoc />

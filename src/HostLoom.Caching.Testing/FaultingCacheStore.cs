@@ -8,12 +8,13 @@ namespace HostLoom.Caching.Testing;
 public sealed class FaultingCacheStore(
     IDistributedCacheStore inner,
     ICacheInvalidationChannel? channel = null
-) : IDistributedCacheStore, ICacheInvalidationChannel
+) : IDistributedCacheStore, ISlidingExpirationCacheStore, ICacheInvalidationChannel
 {
     private readonly Lock _gate = new();
     private CacheFailureKind _kind;
     private int _remaining;
     private bool _all;
+    private string? _failedOperation;
 
     /// <summary>The wrapped store.</summary>
     public IDistributedCacheStore Inner { get; } = inner;
@@ -28,13 +29,18 @@ public sealed class FaultingCacheStore(
     public CacheStoreCapabilities Capabilities => Inner.Capabilities;
 
     /// <summary>Fails the next <paramref name="count"/> calls with <paramref name="kind"/>.</summary>
-    public void Fail(CacheFailureKind kind, int count)
+    public void Fail(CacheFailureKind kind, int count) => FailOperation(kind, null, count);
+
+    /// <summary>Fails the next <paramref name="count"/> calls to one named operation.</summary>
+    public void FailOperation(CacheFailureKind kind, string? operation, int count = 1)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(count, 1);
         lock (_gate)
         {
             _kind = kind;
             _remaining = count;
             _all = false;
+            _failedOperation = operation;
         }
     }
 
@@ -45,6 +51,7 @@ public sealed class FaultingCacheStore(
         {
             _kind = kind;
             _all = true;
+            _failedOperation = null;
         }
     }
 
@@ -55,6 +62,7 @@ public sealed class FaultingCacheStore(
         {
             _all = false;
             _remaining = 0;
+            _failedOperation = null;
         }
     }
 
@@ -132,6 +140,39 @@ public sealed class FaultingCacheStore(
         return Inner.RemoveByTagAsync(tagKey, cancellationToken);
     }
 
+    /// <summary>Runs after a completed read and before the wrapped conditional refresh.</summary>
+    public Func<CancellationToken, ValueTask>? BeforeRefresh { get; set; }
+
+    /// <inheritdoc />
+    public async ValueTask<CacheRefreshOutcome> RefreshAsync(
+        string key,
+        ReadOnlyMemory<byte> expectedPayload,
+        TimeSpan slidingWindow,
+        DateTimeOffset? absoluteExpiration,
+        CancellationToken cancellationToken = default
+    )
+    {
+        Gate("refresh");
+        if (BeforeRefresh is { } beforeRefresh)
+        {
+            await beforeRefresh(cancellationToken).ConfigureAwait(false);
+        }
+
+        return Inner is ISlidingExpirationCacheStore sliding
+            ? await sliding
+                .RefreshAsync(
+                    key,
+                    expectedPayload,
+                    slidingWindow,
+                    absoluteExpiration,
+                    cancellationToken
+                )
+                .ConfigureAwait(false)
+            : throw new NotSupportedException(
+                "The wrapped store does not support sliding expiration."
+            );
+    }
+
     /// <summary>
     /// The channel messages travel on: the one given to the constructor, else the inner store's
     /// own, else none. Without one this store fans out nothing, like a backend store without a
@@ -170,7 +211,10 @@ public sealed class FaultingCacheStore(
     {
         lock (_gate)
         {
-            if (_all || _remaining > 0)
+            if (
+                _all
+                || (_remaining > 0 && (_failedOperation is null || _failedOperation == operation))
+            )
             {
                 if (!_all)
                 {

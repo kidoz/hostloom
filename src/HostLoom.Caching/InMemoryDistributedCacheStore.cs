@@ -14,6 +14,7 @@ namespace HostLoom.Caching;
 /// </remarks>
 public sealed class InMemoryDistributedCacheStore
     : IDistributedCacheStore,
+        ISlidingExpirationCacheStore,
         ICacheInvalidationChannel
 {
     private readonly ConcurrentDictionary<string, Entry> _entries = new(StringComparer.Ordinal);
@@ -31,7 +32,9 @@ public sealed class InMemoryDistributedCacheStore
 
     /// <inheritdoc />
     public CacheStoreCapabilities Capabilities =>
-        CacheStoreCapabilities.Tags | CacheStoreCapabilities.InvalidationChannel;
+        CacheStoreCapabilities.Tags
+        | CacheStoreCapabilities.InvalidationChannel
+        | CacheStoreCapabilities.SlidingExpiration;
 
     /// <summary>Entries currently held after reclaiming expired values and unused tag memberships.</summary>
     public int Count
@@ -69,6 +72,63 @@ public sealed class InMemoryDistributedCacheStore
             Maintain();
             cancellationToken.ThrowIfCancellationRequested();
             return ValueTask.FromResult(TryRead(key));
+        }
+    }
+
+    /// <inheritdoc />
+    public ValueTask<CacheRefreshOutcome> RefreshAsync(
+        string key,
+        ReadOnlyMemory<byte> expectedPayload,
+        TimeSpan slidingWindow,
+        DateTimeOffset? absoluteExpiration,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(slidingWindow, TimeSpan.Zero);
+        lock (_gate)
+        {
+            Maintain();
+            cancellationToken.ThrowIfCancellationRequested();
+            var now = _time.GetUtcNow().UtcTicks;
+            var expiration = absoluteExpiration?.UtcTicks;
+            if (!_entries.TryGetValue(key, out var entry))
+            {
+                return ValueTask.FromResult(
+                    expiration <= now ? CacheRefreshOutcome.Expired : CacheRefreshOutcome.Missing
+                );
+            }
+
+            if (entry.ExpiresAt <= now)
+            {
+                _entries.TryRemove(key, out _);
+                return ValueTask.FromResult(
+                    expiration <= now ? CacheRefreshOutcome.Expired : CacheRefreshOutcome.Missing
+                );
+            }
+
+            if (expiration <= now)
+            {
+                return ValueTask.FromResult(CacheRefreshOutcome.Expired);
+            }
+
+            if (!entry.Payload.AsSpan().SequenceEqual(expectedPayload.Span))
+            {
+                return ValueTask.FromResult(CacheRefreshOutcome.GenerationMismatch);
+            }
+
+            var timeToLive = slidingWindow.Ticks;
+            if (expiration is { } cap && cap - now < timeToLive)
+            {
+                timeToLive = cap - now;
+            }
+
+            if (timeToLive <= 0)
+            {
+                return ValueTask.FromResult(CacheRefreshOutcome.Expired);
+            }
+
+            _entries[key] = entry with { ExpiresAt = now + timeToLive };
+            return ValueTask.FromResult(CacheRefreshOutcome.Applied);
         }
     }
 

@@ -15,6 +15,47 @@ public enum CacheStoreCapabilities
 
     /// <summary>The backend can push invalidations for keys a client has read.</summary>
     ServerAssistedTracking = 4,
+
+    /// <summary>Generation-safe sliding renewal through <see cref="ISlidingExpirationCacheStore"/>.</summary>
+    SlidingExpiration = 8,
+}
+
+/// <summary>The result of a conditional sliding-expiration renewal.</summary>
+public enum CacheRefreshOutcome
+{
+    /// <summary>The entry still held the read snapshot and received the bounded TTL.</summary>
+    Applied,
+
+    /// <summary>The entry disappeared between the completed read and renewal.</summary>
+    Missing,
+
+    /// <summary>A replacement no longer matches the completed read snapshot.</summary>
+    GenerationMismatch,
+
+    /// <summary>The absolute cap has passed on the store's clock.</summary>
+    Expired,
+}
+
+/// <summary>
+/// Optional generation-safe sliding renewal for a distributed store. The expected payload is the
+/// complete snapshot returned by the completed read, including the adapter's generation, so an
+/// identical-policy replacement still prevents a delayed renewal.
+/// </summary>
+public interface ISlidingExpirationCacheStore
+{
+    /// <summary>
+    /// Extends only the entry that still holds <paramref name="expectedPayload"/>. The operation
+    /// never writes a value or resurrects a missing key. The resulting TTL is bounded by both
+    /// <paramref name="slidingWindow"/> and <paramref name="absoluteExpiration"/> on the store's
+    /// clock.
+    /// </summary>
+    ValueTask<CacheRefreshOutcome> RefreshAsync(
+        string key,
+        ReadOnlyMemory<byte> expectedPayload,
+        TimeSpan slidingWindow,
+        DateTimeOffset? absoluteExpiration,
+        CancellationToken cancellationToken = default
+    );
 }
 
 /// <summary>One entry read from a distributed store.</summary>
