@@ -195,9 +195,10 @@ Redis Cluster keeps them in one slot. `DatabaseIndex` is passed per command rath
 
 The default Microsoft adapter keeps raw payloads and absolute expiration. The sliding opt-in adds
 a binary envelope and moves writes to the `external-v2` domain; it still reads legacy raw entries.
-A successful enveloped write retires the legacy value for that consumer key, and removal deletes
-both forms. Old readers miss new enveloped entries, and legacy entries cannot gain sliding behavior. Stop or drain old writers before the cutover, or implement application-owned
-dual writes for an overlapping rollout. Dual deletion by itself does not make arbitrary
+An enveloped write retires the legacy value before publishing the replacement; if retirement
+fails, the replacement is not published. Removal deletes both forms. Old readers miss new
+enveloped entries, and legacy entries cannot gain sliding behavior. Stop or drain old writers
+before the cutover, or implement application-owned dual writes for an overlapping rollout. Dual deletion by itself does not make arbitrary
 mixed-version writers coherent. Roll back only after stopping the opted-in writers and draining
 or repopulating data the old readers need.
 

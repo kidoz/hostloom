@@ -56,6 +56,8 @@ public static class DistributedCacheConformance
                 EnvelopedAndLegacyPrefixes_AreDisjoint,
             [nameof(SuccessfulWrite_RetiresTheLegacyRepresentation)] =
                 SuccessfulWrite_RetiresTheLegacyRepresentation,
+            [nameof(FailedLegacyRetirement_DoesNotPublishTheReplacement)] =
+                FailedLegacyRetirement_DoesNotPublishTheReplacement,
             [nameof(MalformedEnvelope_IsAMissWithoutLegacyFallback)] =
                 MalformedEnvelope_IsAMissWithoutLegacyFallback,
         };
@@ -232,6 +234,27 @@ public static class DistributedCacheConformance
         await fixture.Cache.SetAsync(key, [16], Sliding(TimeSpan.FromSeconds(1)));
 
         Assert.Null(await fixture.Store.GetAsync(legacyKey));
+        await fixture.Clock.AdvanceAsync(TimeSpan.FromMilliseconds(1200));
+        Assert.Null(await fixture.Cache.GetAsync(key));
+    }
+
+    public static async Task FailedLegacyRetirement_DoesNotPublishTheReplacement(
+        DistributedCacheConformanceFixture fixture
+    )
+    {
+        var key = "catalog:failed-retirement";
+        await fixture.Store.SetAsync(
+            fixture.LegacyKey(key),
+            new byte[] { 17 },
+            TimeSpan.FromMinutes(10)
+        );
+        fixture.Faults.FailOperation(CacheFailureKind.Unavailable, "remove");
+
+        await fixture.Cache.SetAsync(key, [18], Sliding(TimeSpan.FromSeconds(1)));
+
+        Assert.Null(await fixture.Store.GetAsync(fixture.EnvelopedKey(key)));
+        Assert.Equal([17], await fixture.Cache.GetAsync(key));
+        await fixture.Cache.SetAsync(key, [18], Sliding(TimeSpan.FromSeconds(1)));
         await fixture.Clock.AdvanceAsync(TimeSpan.FromMilliseconds(1200));
         Assert.Null(await fixture.Cache.GetAsync(key));
     }

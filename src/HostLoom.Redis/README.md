@@ -67,9 +67,9 @@ namespace segment in `{…}` so every key of a service lands in one Redis Cluste
 kernels' fully prefixed keys, so a cache entry, a lease, a tag index, and a lock can never collide.
 The default Microsoft adapter uses `{namespace}:cache:external:{key}`; its sliding opt-in uses a
 versioned binary envelope under `{namespace}:cache:external-v2:{key}` and reads legacy raw entries.
-A successful enveloped write retires the legacy value for that consumer key, and removal deletes
-both forms. Older readers miss enveloped entries, so drain mixed-version writers or use
-application-owned dual writes.
+An enveloped write retires the legacy value before publishing the replacement; if retirement
+fails, the replacement is not published. Removal deletes both forms. Older readers miss enveloped
+entries, so drain mixed-version writers or use application-owned dual writes.
 
 Canonical locks use `{namespace}:lock:{key}`. An application migrating an exact legacy identity
 such as `lock:{key}` must supply a compatibility `ILockProvider` that preserves that physical key

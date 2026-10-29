@@ -22,9 +22,9 @@ namespace HostLoom.Caching.DependencyInjection;
 /// <c>Caching:Diagnostics:DegradedLogInterval</c>. Keys follow the kernel's rules and payloads are
 /// bounded by <c>Caching:MaxPayloadBytes</c>. With sliding expiration opted in, entries use a
 /// versioned binary envelope under <c>{namespace}:cache:external-v2:{key}</c>; legacy raw entries
-/// remain readable until a successful enveloped write retires them, and removal covers both
-/// domains. Legacy entries cannot gain sliding behavior, and readers without the opt-in miss
-/// enveloped entries.
+/// remain readable until an enveloped write retires them before publishing its replacement; a
+/// failed retirement does not publish the replacement. Removal covers both domains. Legacy entries
+/// cannot gain sliding behavior, and readers without the opt-in miss enveloped entries.
 /// </remarks>
 internal sealed class HostLoomDistributedCache(
     IDistributedCacheStore store,
@@ -274,10 +274,10 @@ internal sealed class HostLoomDistributedCache(
             }
 
             var enveloped = Encode(payload, policy);
+            await store.RemoveAsync([StorageKey(key, legacy: true)], token).ConfigureAwait(false);
             await store
                 .SetAsync(StorageKey(key, legacy: false), enveloped, policy.TimeToLive, null, token)
                 .ConfigureAwait(false);
-            await store.RemoveAsync([StorageKey(key, legacy: true)], token).ConfigureAwait(false);
         }
         catch (Exception exception)
             when (!IsCallerCancellation(exception, token) && exception is not NotSupportedException)

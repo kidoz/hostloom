@@ -49,8 +49,9 @@ propagates. Absolute-only refresh is a no-op.
 Opted-in writes use a 40-byte versioned binary envelope under
 `{namespace}:cache:external-v2:{key}`, with no reflection serializer. `Caching:MaxPayloadBytes`
 includes that envelope. Legacy raw entries under `{namespace}:cache:external:{key}` remain readable
-without gaining sliding behavior. A successful enveloped write retires the legacy value for that
-consumer key, and removal deletes both representations. Older readers miss new entries. Drain
+without gaining sliding behavior. An enveloped write retires the legacy value before publishing
+the replacement; if retirement fails, the replacement is not published. Removal deletes both
+representations. Older readers miss new entries. Drain
 mixed-version writers or use application-owned dual writes; dual deletion alone does not make
 arbitrary mixed-version writes coherent.
 

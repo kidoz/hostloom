@@ -214,8 +214,9 @@ With the opt-in, writes use a 40-byte versioned binary envelope under
 absolute deadline when present, and a generation; it needs no reflection serializer.
 `Caching:MaxPayloadBytes` applies to the complete envelope and payload, and the consumer key must
 still satisfy `Caching:MaxKeyLength`. Legacy raw entries under
-`{namespace}:cache:external:{key}` remain readable but cannot gain sliding behavior. A successful
-enveloped write retires the legacy value for that consumer key, and removal deletes both forms.
+`{namespace}:cache:external:{key}` remain readable but cannot gain sliding behavior. An enveloped
+write retires the legacy value before publishing the replacement; if retirement fails, the
+replacement is not published. Removal deletes both forms.
 
 A sliding read or explicit refresh first completes a read, then conditionally extends only the
 same stored generation. The expire-only update cannot resurrect a deleted key or extend a
