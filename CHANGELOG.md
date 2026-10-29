@@ -8,6 +8,31 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-10-29
+
+The twenty-second release of **HostLoom**. Nothing in it changes a signature an application
+compiles against: it moves the Valkey adapter onto the current ValkeyDotNet client.
+
+`ValkeyDotNet` moves from 1.1.0 to 1.2.0. The client now dispatches RESP3 pushes through a
+bounded background queue instead of the response reader, so a slow handler cannot desynchronize
+the wire or stop notification delivery, and events dropped when that queue is full are counted
+through `ValkeyClient.DroppedPushCount` instead of applying backpressure to replies. Server-error
+and protocol diagnostics are bounded and sanitized, shared connections reject commands that
+would change session state, and script recovery treats only the exact server cache-miss
+`NOSCRIPT` responses as recoverable. `HostLoom.Valkey` keeps its commands, pipelines, scripts,
+dedicated invalidation subscriber, and borrowed connection owner on the same behavior; the
+client continues to take no runtime package dependencies.
+
+No package is published for the first time; the whole set publishes at 0.19.1.
+`@hostloom/websocket-client` is not part of this NuGet set and has no changes since its 0.4.0
+release.
+
+### Changed
+
+- Update `ValkeyDotNet` from 1.1.0 to 1.2.0, including its bounded push-notification queue and
+  `DroppedPushCount`, sanitized server diagnostics, rejection of session-changing commands on
+  shared connections, and exact-match `NOSCRIPT` script recovery.
+
 ## [0.19.0] - 2026-10-29
 
 Cache and lock registrations can now compose independent named profiles, and the Microsoft
@@ -2344,7 +2369,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.19.1...HEAD
+[0.19.1]: https://github.com/kidoz/hostloom/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/kidoz/hostloom/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/kidoz/hostloom/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/kidoz/hostloom/compare/v0.16.1...v0.17.0
