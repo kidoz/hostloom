@@ -106,8 +106,8 @@ public sealed class RedisCacheConformanceTests
                 ReportsStoreWrites = broadcast,
                 ReportsOwnStoreWrites = broadcast,
                 FlushLocalOnReconnect = channelOptions.Invalidation.FlushLocalOnReconnect,
-                RestoreSubscriptionAsync = () =>
-                    RestoreSubscriptionAsync(connection, channel, token),
+                RestoreSubscriptionAsync = whileDown =>
+                    RestoreSubscriptionAsync(connection, channel, whileDown, token),
                 CreateCache =
                     composition == "container"
                         ? () => FromContainer(ns, faults, containers)
@@ -145,6 +145,7 @@ public sealed class RedisCacheConformanceTests
     private static async Task RestoreSubscriptionAsync(
         RedisConnection connection,
         RedisCacheInvalidationChannel channel,
+        Func<Task> whileDown,
         CancellationToken token
     )
     {
@@ -165,6 +166,7 @@ public sealed class RedisCacheConformanceTests
             );
             Assert.Equal(1, matches);
             await server.ClientKillAsync(new ClientKillFilter().WithId(subscriber!.Value));
+            await whileDown();
 
             await restored.Task.WaitAsync(TimeSpan.FromSeconds(30), token);
             var explicitChannel = RedisChannel.Literal(channel.ChannelName);

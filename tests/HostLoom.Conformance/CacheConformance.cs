@@ -47,11 +47,11 @@ public sealed class CacheConformanceFixture
     public bool FlushLocalOnReconnect { get; init; } = true;
 
     /// <summary>
-    /// Interrupts the subscription behind every instance's channel and returns once it has been
-    /// restored, such that a message published afterwards reaches the instances after any flush
-    /// the restoration hands them; null where the runner cannot interrupt a subscription.
+    /// Interrupts the subscription behind every instance's channel, invokes a callback while it is
+    /// down, and returns once restored. A message published afterwards reaches the instances after
+    /// any flush the restoration hands them; null where the runner cannot interrupt a subscription.
     /// </summary>
-    public Func<Task>? RestoreSubscriptionAsync { get; init; }
+    public Func<Func<Task>, Task>? RestoreSubscriptionAsync { get; init; }
 }
 
 /// <summary>
@@ -752,18 +752,26 @@ public static class CacheConformance
         );
         await b.SetAsync("inventory:marker", new Payload("marker"), entry);
 
-        await restoreSubscription();
+        await restoreSubscription(async () =>
+        {
+            await a.RemoveAsync("inventory:gap");
+            await a.SetAsync("inventory:gap", new Payload("v2"), entry);
+        });
 
         if (fixture.FlushLocalOnReconnect)
         {
-            // Whatever was published while the subscription was down never arrived, so every
-            // instance drops its in-process tier and reads the distributed tier again.
+            // The removal published while the subscription was down never arrived, so every
+            // instance drops its in-process tier and reads the replacement from the distributed tier.
             await WaitUntilAsync(async () =>
-                (await b.TryGetAsync<Payload>("inventory:gap")).Tier == CacheTier.L2
-            );
+            {
+                var lookup = await b.TryGetAsync<Payload>("inventory:gap");
+                return lookup.Tier == CacheTier.L2 && lookup.Value?.Text == "v2";
+            });
             await WaitUntilAsync(async () =>
-                (await a.TryGetAsync<Payload>("inventory:gap")).Tier == CacheTier.L2
-            );
+            {
+                var lookup = await a.TryGetAsync<Payload>("inventory:gap");
+                return lookup.Tier == CacheTier.L2 && lookup.Value?.Text == "v2";
+            });
             await invalidations.WaitForAsync("flushed", 2, CancellationToken.None);
         }
         else
@@ -776,8 +784,12 @@ public static class CacheConformance
                 !(await b.TryGetAsync<Payload>("inventory:marker")).Found
             );
             await invalidations.WaitForAsync("echoed", 1, CancellationToken.None);
-            Assert.Equal(CacheTier.L1, (await b.TryGetAsync<Payload>("inventory:gap")).Tier);
-            Assert.Equal(CacheTier.L1, (await a.TryGetAsync<Payload>("inventory:gap")).Tier);
+            var stale = await b.TryGetAsync<Payload>("inventory:gap");
+            Assert.Equal(CacheTier.L1, stale.Tier);
+            Assert.Equal("v1", stale.Value?.Text);
+            var rewritten = await a.TryGetAsync<Payload>("inventory:gap");
+            Assert.Equal(CacheTier.L1, rewritten.Tier);
+            Assert.Equal("v2", rewritten.Value?.Text);
             Assert.Equal(0, invalidations.Count("flushed"));
         }
 

@@ -75,7 +75,8 @@ public sealed class ValkeyCacheConformanceTests
                 Namespace = ns,
                 Faults = faults,
                 FlushLocalOnReconnect = channelOptions.Invalidation.FlushLocalOnReconnect,
-                RestoreSubscriptionAsync = () => RestoreSubscriptionAsync(options, ns, token),
+                RestoreSubscriptionAsync = whileDown =>
+                    RestoreSubscriptionAsync(options, ns, whileDown, token),
                 CreateCache =
                     composition == "container"
                         ? () => FromContainer(ns, faults, containers)
@@ -107,6 +108,7 @@ public sealed class ValkeyCacheConformanceTests
     private static async Task RestoreSubscriptionAsync(
         ValkeyOptions options,
         string ns,
+        Func<Task> whileDown,
         CancellationToken token
     )
     {
@@ -133,6 +135,7 @@ public sealed class ValkeyCacheConformanceTests
             3..
         ];
         await admin.ExecuteAsync(new ValkeyCommand("CLIENT", "KILL", "ID", id), deadline.Token);
+        await whileDown();
         await metrics.WaitForAsync(Resubscribed, 1, deadline.Token);
     }
 
