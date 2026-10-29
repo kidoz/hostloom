@@ -40,7 +40,8 @@ public static class LockConformance
                 ProviderUnavailable_ThrowsProviderUnavailable,
             [nameof(ReleaseFailure_IsLoggedNotThrown)] = ReleaseFailure_IsLoggedNotThrown,
             [nameof(ActionException_PropagatesAndReleases)] = ActionException_PropagatesAndReleases,
-            [nameof(Extend_MovesTheLeaseEnd)] = Extend_MovesTheLeaseEnd,
+            [nameof(Extend_KeepsAContenderRefusedUntilLeaseEnd)] =
+                Extend_KeepsAContenderRefusedUntilLeaseEnd,
             [nameof(OnLostCancel_CancelsTheActionToken)] = OnLostCancel_CancelsTheActionToken,
             [nameof(AbandonedAcquisition_LeavesTheKeyFree)] = AbandonedAcquisition_LeavesTheKeyFree,
         };
@@ -193,9 +194,12 @@ public static class LockConformance
         await afterwards.DisposeAsync();
     }
 
-    public static async Task Extend_MovesTheLeaseEnd(LockConformanceFixture fixture)
+    public static async Task Extend_KeepsAContenderRefusedUntilLeaseEnd(
+        LockConformanceFixture fixture
+    )
     {
         var a = fixture.CreateLock();
+        var b = fixture.CreateLock();
         var held = await a.TryAcquireAsync(
             "extend",
             new LockOptions { Lease = TimeSpan.FromSeconds(10) }
@@ -212,8 +216,16 @@ public static class LockConformance
             before + TimeSpan.FromSeconds(10),
             after + TimeSpan.FromSeconds(10)
         );
+        Assert.Null(await b.TryAcquireAsync("extend"));
         await fixture.Clock.AdvanceAsync(TimeSpan.FromSeconds(6));
         Assert.True(held.IsHeld);
+        Assert.Null(await b.TryAcquireAsync("extend"));
+
+        await fixture.Clock.AdvanceAsync(TimeSpan.FromSeconds(4));
+        Assert.False(held.IsHeld);
+        var successor = await b.TryAcquireAsync("extend");
+        Assert.NotNull(successor);
+        await successor.DisposeAsync();
         await held.DisposeAsync();
     }
 
