@@ -37,14 +37,14 @@ from the three-iteration `ShortRun`; these small samples are observations, not c
 
 | Case | Mean | Error | Allocated |
 | --- | ---: | ---: | ---: |
-| Default cache resolution | 5.581 ns | 0.4357 ns | 0 B |
-| Named cache resolution | 7.869 ns | 0.6232 ns | 0 B |
-| Default lock resolution | 5.652 ns | 0.0209 ns | 0 B |
-| Named lock resolution | 8.803 ns | 0.3707 ns | 0 B |
-| Absolute adapter read | 117.14 ns | 14.290 ns | 248 B |
-| Sliding adapter read | 222.94 ns | 17.257 ns | 384 B |
-| Absolute adapter write | 62.50 ns | 2.679 ns | 216 B |
-| Sliding adapter write | 347.88 ns | 8.320 ns | 536 B |
+| Default cache resolution | 5.827 ns | 0.0839 ns | 0 B |
+| Named cache resolution | 8.274 ns | 1.5648 ns | 0 B |
+| Default lock resolution | 5.959 ns | 0.3106 ns | 0 B |
+| Named lock resolution | 9.134 ns | 0.5928 ns | 0 B |
+| Absolute adapter read | 117.00 ns | 1.525 ns | 248 B |
+| Sliding adapter read | 222.42 ns | 4.800 ns | 384 B |
+| Absolute adapter write | 62.30 ns | 2.402 ns | 216 B |
+| Sliding adapter write | 349.89 ns | 16.829 ns | 536 B |
 
 The full reports are under `artifacts/locking-caching-performance/results/`. These in-memory
 results exclude Redis or Valkey commands, serialization of application values, and network work.
