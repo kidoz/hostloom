@@ -4,6 +4,7 @@ using System.Text.Json.Serialization.Metadata;
 using HostLoom.Caching;
 using HostLoom.Caching.DependencyInjection;
 using HostLoom.Conformance;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
@@ -155,6 +156,23 @@ public sealed class CachingRegistrationTests
     }
 
     [Fact]
+    public async Task AddWarmup_NamedProfile_DeduplicatesTheSameWarmupType()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+        );
+        services
+            .AddHostLoomCaching("catalog")
+            .UseInMemory()
+            .AddWarmup<GatedWarmup>()
+            .AddWarmup<GatedWarmup>();
+        await using var provider = services.BuildServiceProvider();
+
+        Assert.Single(provider.GetKeyedServices<ICacheWarmup>("catalog"));
+    }
+
+    [Fact]
     public async Task AddWarmup_RunsAfterStartAndReadinessObeysBlocksReadiness()
     {
         var builder = Host.CreateApplicationBuilder();
@@ -171,6 +189,10 @@ public sealed class CachingRegistrationTests
         using var host = builder.Build();
         var health = host.Services.GetRequiredService<HealthCheckService>();
 
+        var notStarted = await health.CheckHealthAsync(
+            r => r.Tags.Contains("ready"),
+            TestContext.Current.CancellationToken
+        );
         await host.StartAsync(TestContext.Current.CancellationToken);
         var whileRunning = await health.CheckHealthAsync(
             r => r.Tags.Contains("ready"),
@@ -185,9 +207,23 @@ public sealed class CachingRegistrationTests
             (await health.CheckHealthAsync(r => r.Tags.Contains("ready"))).Status
             == HealthStatus.Healthy
         );
+        var completed = await health.CheckHealthAsync(
+            r => r.Tags.Contains("ready"),
+            TestContext.Current.CancellationToken
+        );
         await host.StopAsync(TestContext.Current.CancellationToken);
 
+        Assert.Equal(HealthStatus.Healthy, notStarted.Status);
+        Assert.Equal(
+            "Cache warmup not started: 0 succeeded, 0 failed.",
+            notStarted.Entries["hostloom-cache-warmup"].Description
+        );
         Assert.Equal(HealthStatus.Unhealthy, whileRunning.Status);
+        Assert.Equal(HealthStatus.Healthy, completed.Status);
+        Assert.Equal(
+            "Cache warmup succeeded: 1 succeeded, 0 failed.",
+            completed.Entries["hostloom-cache-warmup"].Description
+        );
         Assert.Contains(
             "GatedWarmup",
             CachingProbe.Describe(cache, host.Services.GetServices<ICacheWarmup>()).Warmups
@@ -216,6 +252,85 @@ public sealed class CachingRegistrationTests
         await host.StopAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(HealthStatus.Healthy, whileRunning.Status);
+    }
+
+    [Fact]
+    public async Task AddWarmup_PartialFailureIsFailOpenAndRetainsProgress()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        builder.Services.AddSingleton(gate);
+        builder
+            .Services.AddHostLoomCaching(caching =>
+            {
+                caching.Namespace = "svc";
+                caching.Warmup.BlocksReadiness = true;
+            })
+            .UseInMemory()
+            .AddWarmup<GatedWarmup>()
+            .AddWarmup<FailingWarmup>();
+        using var host = builder.Build();
+        var health = host.Services.GetRequiredService<HealthCheckService>();
+
+        await host.StartAsync(TestContext.Current.CancellationToken);
+        gate.SetResult();
+        await CacheConformance.WaitUntilAsync(async () =>
+            (await health.CheckHealthAsync(r => r.Tags.Contains("ready"))).Status
+            == HealthStatus.Healthy
+        );
+        var completed = await health.CheckHealthAsync(
+            r => r.Tags.Contains("ready"),
+            TestContext.Current.CancellationToken
+        );
+        var cache = host.Services.GetRequiredService<ICache>();
+        var warm = await cache.TryGetAsync<int>("warm", TestContext.Current.CancellationToken);
+        await host.StopAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(HealthStatus.Healthy, completed.Status);
+        Assert.Equal(
+            "Cache warmup failed: 1 succeeded, 1 failed.",
+            completed.Entries["hostloom-cache-warmup"].Description
+        );
+        Assert.True(warm.Found);
+    }
+
+    [Fact]
+    public async Task AddWarmup_CancellationIsTerminalFailOpenAndNotAFailure()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var waiting = new WarmupWait();
+        builder.Services.AddSingleton(gate);
+        builder.Services.AddSingleton(waiting);
+        builder
+            .Services.AddHostLoomCaching(caching =>
+            {
+                caching.Namespace = "svc";
+                caching.Warmup.BlocksReadiness = true;
+            })
+            .UseInMemory()
+            .AddWarmup<GatedWarmup>()
+            .AddWarmup<WaitingWarmup>();
+        using var host = builder.Build();
+        var health = host.Services.GetRequiredService<HealthCheckService>();
+
+        await host.StartAsync(TestContext.Current.CancellationToken);
+        gate.SetResult();
+        await waiting.Started.Task.WaitAsync(TestContext.Current.CancellationToken);
+        await host.StopAsync(TestContext.Current.CancellationToken);
+        var completed = await health.CheckHealthAsync(
+            r => r.Tags.Contains("ready"),
+            TestContext.Current.CancellationToken
+        );
+        var cache = host.Services.GetRequiredService<ICache>();
+        var warm = await cache.TryGetAsync<int>("warm", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HealthStatus.Healthy, completed.Status);
+        Assert.Equal(
+            "Cache warmup cancelled: 1 succeeded, 0 failed.",
+            completed.Entries["hostloom-cache-warmup"].Description
+        );
+        Assert.True(warm.Found);
     }
 
     [Fact]
@@ -281,6 +396,185 @@ public sealed class CachingRegistrationTests
         Assert.Contains("UseInMemory()", exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task NamedProfiles_IsolateOptionsStoresAndSerializers()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomCaching("catalog", caching => caching.Namespace = "catalog")
+            .UseStore<InMemoryDistributedCacheStore>("InMemoryDistributed")
+            .UseSystemTextJson(Json());
+        services
+            .AddHostLoomCaching("inventory", caching => caching.Namespace = "inventory")
+            .UseStore<InMemoryDistributedCacheStore>("InMemoryDistributed")
+            .UseSerializer<CountingSerializer>();
+        services.AddHostLoomCaching(caching => caching.Namespace = "default").UseInMemory();
+        await using var provider = services.BuildServiceProvider();
+
+        var catalog = provider.GetRequiredKeyedService<ICache>("catalog");
+        var inventory = provider.GetRequiredKeyedService<ICache>("inventory");
+
+        Assert.Equal("catalog", CachingProbe.Describe(catalog).Namespace);
+        Assert.Equal("inventory", CachingProbe.Describe(inventory).Namespace);
+        Assert.Equal(
+            "default",
+            CachingProbe.Describe(provider.GetRequiredService<ICache>()).Namespace
+        );
+        Assert.NotSame(catalog, inventory);
+        Assert.Same(catalog, provider.GetRequiredKeyedService<ICache>("catalog"));
+        Assert.NotSame(
+            provider.GetRequiredKeyedService<IDistributedCacheStore>("catalog"),
+            provider.GetRequiredKeyedService<IDistributedCacheStore>("inventory")
+        );
+        Assert.IsType<SystemTextJsonCacheValueSerializer>(
+            provider.GetRequiredKeyedService<ICacheValueSerializer>("catalog")
+        );
+        Assert.IsType<CountingSerializer>(
+            provider.GetRequiredKeyedService<ICacheValueSerializer>("inventory")
+        );
+        Assert.Null(provider.GetService<ICacheValueSerializer>());
+    }
+
+    [Fact]
+    public async Task NamedDistributedCacheAdapter_RegistersKeyedServicesOnly()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoomCaching("catalog", caching => caching.Namespace = "catalog")
+            .UseStore<InMemoryDistributedCacheStore>("InMemoryDistributed")
+            .UseSystemTextJson(Json())
+            .AddDistributedCacheAdapter();
+        await using var provider = services.BuildServiceProvider();
+
+        Assert.Null(provider.GetService<IDistributedCache>());
+        var cache = provider.GetRequiredKeyedService<IDistributedCache>("catalog");
+        Assert.NotNull(cache);
+        Assert.Same(cache, provider.GetRequiredKeyedService<IBufferDistributedCache>("catalog"));
+    }
+
+    [Fact]
+    public async Task NamedWarmup_UsesItsBoundCacheAndHealthName()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        builder.Services.AddSingleton(gate);
+        builder
+            .Services.AddHostLoomCaching(
+                "catalog",
+                caching =>
+                {
+                    caching.Namespace = "catalog";
+                    caching.Warmup.BlocksReadiness = true;
+                }
+            )
+            .UseInMemory()
+            .AddWarmup<GatedWarmup>();
+        using var host = builder.Build();
+
+        await host.StartAsync(TestContext.Current.CancellationToken);
+        var cache = host.Services.GetRequiredKeyedService<ICache>("catalog");
+        var health = host.Services.GetRequiredService<HealthCheckService>();
+        var running = await health.CheckHealthAsync(
+            r => r.Tags.Contains("ready"),
+            TestContext.Current.CancellationToken
+        );
+        gate.SetResult();
+        await CacheConformance.WaitUntilAsync(async () =>
+            (await cache.TryGetAsync<int>("warm")).Found
+        );
+        await host.StopAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(HealthStatus.Unhealthy, running.Status);
+        Assert.Contains("hostloom-cache-warmup:catalog", running.Entries.Keys);
+        Assert.True(
+            (await cache.TryGetAsync<int>("warm", TestContext.Current.CancellationToken)).Found
+        );
+        Assert.Null(host.Services.GetService<ICache>());
+    }
+
+    [Fact]
+    public async Task ProviderTeardown_DisposesDefaultAndNamedCaches()
+    {
+        var services = new ServiceCollection();
+        services.AddHostLoomCaching(caching => caching.Namespace = "default").UseInMemory();
+        services
+            .AddHostLoomCaching("catalog", caching => caching.Namespace = "catalog")
+            .UseInMemory();
+        var provider = services.BuildServiceProvider();
+        var defaultCache = provider.GetRequiredService<ICache>();
+        var namedCache = provider.GetRequiredKeyedService<ICache>("catalog");
+
+        await provider.DisposeAsync();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            defaultCache.TryGetAsync<int>("k", TestContext.Current.CancellationToken).AsTask()
+        );
+        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            namedCache.TryGetAsync<int>("k", TestContext.Current.CancellationToken).AsTask()
+        );
+    }
+
+    [Fact]
+    public async Task NamedHealthChecks_IncludeTheProfile()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services
+            .AddHostLoomCaching("catalog", caching => caching.Namespace = "catalog")
+            .UseInMemory()
+            .AddHealthChecks();
+        services
+            .AddHostLoomCaching("inventory", caching => caching.Namespace = "inventory")
+            .UseInMemory()
+            .AddHealthChecks();
+        await using var provider = services.BuildServiceProvider();
+
+        var report = await provider
+            .GetRequiredService<HealthCheckService>()
+            .CheckHealthAsync(TestContext.Current.CancellationToken);
+
+        Assert.Contains("hostloom-cache-ready:catalog", report.Entries.Keys);
+        Assert.Contains("hostloom-cache-ready:inventory", report.Entries.Keys);
+    }
+
+    [Fact]
+    public async Task DuplicateHealthNamesAcrossProfiles_FailStartup()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder
+            .Services.AddHostLoomCaching("catalog", caching => caching.Namespace = "catalog")
+            .UseInMemory()
+            .AddHealthChecks("shared");
+        builder
+            .Services.AddHostLoomCaching("inventory", caching => caching.Namespace = "inventory")
+            .UseInMemory()
+            .AddHealthChecks("shared");
+        using var host = builder.Build();
+
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+            host.StartAsync(TestContext.Current.CancellationToken)
+        );
+
+        Assert.Contains("shared", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InvalidNamedOptions_IdentifyTheProfile()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder
+            .Services.AddHostLoomCaching("catalog", caching => caching.Namespace = "Bad Name")
+            .UseInMemory();
+        using var host = builder.Build();
+
+        var exception = await Assert.ThrowsAsync<OptionsValidationException>(() =>
+            host.StartAsync(TestContext.Current.CancellationToken)
+        );
+
+        Assert.Contains("catalog", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Caching:Namespace", exception.Message, StringComparison.Ordinal);
+    }
+
     private sealed class GatedWarmup(TaskCompletionSource gate) : ICacheWarmup
     {
         public async ValueTask WarmupAsync(ICache cache, CancellationToken cancellationToken)
@@ -292,6 +586,27 @@ public sealed class CachingRegistrationTests
                 new CacheEntryOptions(TimeSpan.FromMinutes(1)),
                 cancellationToken
             );
+        }
+    }
+
+    private sealed class FailingWarmup : ICacheWarmup
+    {
+        public ValueTask WarmupAsync(ICache cache, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Warmup failed.");
+    }
+
+    private sealed class WarmupWait
+    {
+        public TaskCompletionSource Started { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private sealed class WaitingWarmup(WarmupWait waiting) : ICacheWarmup
+    {
+        public async ValueTask WarmupAsync(ICache cache, CancellationToken cancellationToken)
+        {
+            waiting.Started.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
     }
 

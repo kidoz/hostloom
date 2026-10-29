@@ -27,6 +27,9 @@ public sealed class CachingBuilder
     /// <summary>The service collection receiving cache registrations.</summary>
     public IServiceCollection Services { get; }
 
+    /// <summary>The keyed-service identity of this cache, or null for the default unkeyed cache.</summary>
+    public string? Profile => _registration.Profile;
+
     /// <summary>
     /// Composes the in-process tier as the only tier: no serializer, no cross-instance
     /// invalidation, staleness across instances bounded by expiry.
@@ -61,22 +64,50 @@ public sealed class CachingBuilder
         }
 
         Choose(name);
-        Services.TryAddSingleton<TStore>();
-        Services.TryAddSingleton<IDistributedCacheStore>(static provider =>
-            provider.GetRequiredService<TStore>()
-        );
-        if (typeof(ICacheInvalidationChannel).IsAssignableFrom(typeof(TStore)))
+        if (Profile is null)
         {
-            Services.TryAddSingleton(static provider =>
-                (ICacheInvalidationChannel)provider.GetRequiredService<TStore>()
+            Services.TryAddSingleton<TStore>();
+            Services.TryAddSingleton<IDistributedCacheStore>(static provider =>
+                provider.GetRequiredService<TStore>()
             );
-        }
+            if (typeof(ICacheInvalidationChannel).IsAssignableFrom(typeof(TStore)))
+            {
+                Services.TryAddSingleton(static provider =>
+                    (ICacheInvalidationChannel)provider.GetRequiredService<TStore>()
+                );
+            }
 
-        if (typeof(ICacheStoreHealthProbe).IsAssignableFrom(typeof(TStore)))
+            if (typeof(ICacheStoreHealthProbe).IsAssignableFrom(typeof(TStore)))
+            {
+                Services.TryAddSingleton(static provider =>
+                    (ICacheStoreHealthProbe)provider.GetRequiredService<TStore>()
+                );
+            }
+        }
+        else
         {
-            Services.TryAddSingleton(static provider =>
-                (ICacheStoreHealthProbe)provider.GetRequiredService<TStore>()
+            Services.TryAddKeyedSingleton<TStore>(Profile);
+            Services.TryAddKeyedSingleton<IDistributedCacheStore>(
+                Profile,
+                static (provider, key) => provider.GetRequiredKeyedService<TStore>(key)
             );
+            if (typeof(ICacheInvalidationChannel).IsAssignableFrom(typeof(TStore)))
+            {
+                Services.TryAddKeyedSingleton<ICacheInvalidationChannel>(
+                    Profile,
+                    static (provider, key) =>
+                        (ICacheInvalidationChannel)provider.GetRequiredKeyedService<TStore>(key)
+                );
+            }
+
+            if (typeof(ICacheStoreHealthProbe).IsAssignableFrom(typeof(TStore)))
+            {
+                Services.TryAddKeyedSingleton<ICacheStoreHealthProbe>(
+                    Profile,
+                    static (provider, key) =>
+                        (ICacheStoreHealthProbe)provider.GetRequiredKeyedService<TStore>(key)
+                );
+            }
         }
 
         return this;
@@ -102,8 +133,16 @@ public sealed class CachingBuilder
     >()
         where TSerializer : class, ICacheValueSerializer
     {
-        Services.RemoveAll<ICacheValueSerializer>();
-        Services.AddSingleton<ICacheValueSerializer, TSerializer>();
+        RemoveSerializers();
+        if (Profile is null)
+        {
+            Services.AddSingleton<ICacheValueSerializer, TSerializer>();
+        }
+        else
+        {
+            Services.AddKeyedSingleton<ICacheValueSerializer, TSerializer>(Profile);
+        }
+
         _registration.SerializerName = typeof(TSerializer).Name;
         return this;
     }
@@ -136,20 +175,49 @@ public sealed class CachingBuilder
     >()
         where TWarmup : class, ICacheWarmup
     {
-        Services.TryAddEnumerable(ServiceDescriptor.Singleton<ICacheWarmup, TWarmup>());
+        if (Profile is null)
+        {
+            Services.TryAddEnumerable(ServiceDescriptor.Singleton<ICacheWarmup, TWarmup>());
+        }
+        else if (
+            !Services.Any(descriptor =>
+                descriptor.ServiceType == typeof(ICacheWarmup)
+                && descriptor.IsKeyedService
+                && Equals(descriptor.ServiceKey, Profile)
+                && descriptor.KeyedImplementationType == typeof(TWarmup)
+            )
+        )
+        {
+            Services.AddKeyedSingleton<ICacheWarmup, TWarmup>(Profile);
+        }
+
         if (!_registration.WarmupRegistered)
         {
             _registration.WarmupRegistered = true;
-            Services.TryAddSingleton<CacheWarmupState>();
-            Services.TryAddEnumerable(
-                ServiceDescriptor.Singleton<IHostedService, CacheWarmupRunner>()
-            );
+            if (Profile is null)
+            {
+                Services.TryAddSingleton<CacheWarmupState>();
+            }
+            else
+            {
+                Services.TryAddKeyedSingleton<CacheWarmupState>(Profile);
+            }
+
+            Services.AddSingleton<IHostedService>(provider => new CacheWarmupRunner(
+                Profile,
+                provider,
+                provider.GetService<ILoggerFactory>()?.CreateLogger<CacheWarmupRunner>()
+                    ?? NullLogger<CacheWarmupRunner>.Instance
+            ));
             Services
                 .AddHealthChecks()
-                .AddCheck<CacheWarmupReadinessCheck>(
-                    "hostloom-cache-warmup",
-                    HealthStatus.Unhealthy,
-                    ["ready"]
+                .Add(
+                    new HealthCheckRegistration(
+                        CachingProfile.HealthName("hostloom-cache-warmup", Profile),
+                        provider => new CacheWarmupReadinessCheck(Profile, provider),
+                        HealthStatus.Unhealthy,
+                        ["ready"]
+                    )
                 );
         }
 
@@ -171,9 +239,20 @@ public sealed class CachingBuilder
         }
 
         _registration.StoreReadinessRegistered = true;
+        if (readinessName == "hostloom-cache-ready")
+        {
+            readinessName = CachingProfile.HealthName(readinessName, Profile);
+        }
         Services
             .AddHealthChecks()
-            .AddCheck<CacheStoreReadinessCheck>(readinessName, HealthStatus.Unhealthy, ["ready"]);
+            .Add(
+                new HealthCheckRegistration(
+                    readinessName,
+                    provider => new CacheStoreReadinessCheck(Profile, provider),
+                    HealthStatus.Unhealthy,
+                    ["ready"]
+                )
+            );
         return this;
     }
 
@@ -192,39 +271,99 @@ public sealed class CachingBuilder
     {
         var expiration = defaultExpiration ?? TimeSpan.FromMinutes(30);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(expiration, TimeSpan.Zero);
-        Services.TryAddSingleton(provider =>
+        if (Profile is null)
         {
-            var store =
-                provider.GetService<IDistributedCacheStore>()
-                ?? throw new InvalidOperationException(
-                    "AddDistributedCacheAdapter needs a distributed store: call UseStore<TStore>(name) "
-                        + "or a backend's UseRedis() on the CachingBuilder. UseInMemory() composes no "
-                        + "distributed tier for the adapter to sit on."
-                );
-            return new HostLoomDistributedCache(
-                store,
-                provider.GetRequiredService<IOptions<CachingOptions>>().Value,
-                expiration,
-                provider.GetRequiredService<TimeProvider>(),
-                provider.GetService<ILoggerFactory>()?.CreateLogger<HostLoomDistributedCache>()
-                    ?? NullLogger<HostLoomDistributedCache>.Instance
+            Services.TryAddSingleton(provider =>
+                CreateDistributedCache(provider, expiration)
             );
-        });
-        Services.TryAddSingleton<IDistributedCache>(static provider =>
-            provider.GetRequiredService<HostLoomDistributedCache>()
-        );
-        Services.TryAddSingleton<IBufferDistributedCache>(static provider =>
-            provider.GetRequiredService<HostLoomDistributedCache>()
-        );
+            Services.TryAddSingleton<IDistributedCache>(static provider =>
+                provider.GetRequiredService<HostLoomDistributedCache>()
+            );
+            Services.TryAddSingleton<IBufferDistributedCache>(static provider =>
+                provider.GetRequiredService<HostLoomDistributedCache>()
+            );
+        }
+        else
+        {
+            Services.TryAddKeyedSingleton<HostLoomDistributedCache>(
+                Profile,
+                (provider, _) =>
+                    CreateDistributedCache(provider, expiration)
+            );
+            Services.TryAddKeyedSingleton<IDistributedCache>(
+                Profile,
+                static (provider, key) =>
+                    provider.GetRequiredKeyedService<HostLoomDistributedCache>(key)
+            );
+            Services.TryAddKeyedSingleton<IBufferDistributedCache>(
+                Profile,
+                static (provider, key) =>
+                    provider.GetRequiredKeyedService<HostLoomDistributedCache>(key)
+            );
+        }
+
         return this;
+    }
+
+    private HostLoomDistributedCache CreateDistributedCache(
+        IServiceProvider provider,
+        TimeSpan expiration
+    )
+    {
+        var store =
+            CachingProfile.Get<IDistributedCacheStore>(provider, Profile)
+            ?? throw new InvalidOperationException(
+                "AddDistributedCacheAdapter needs a distributed store: call UseStore<TStore>(name) "
+                    + "or a backend's UseRedis() on the CachingBuilder. UseInMemory() composes no "
+                    + "distributed tier for the adapter to sit on."
+            );
+
+        return new HostLoomDistributedCache(
+            store,
+            provider
+                .GetRequiredService<IOptionsMonitor<CachingOptions>>()
+                .Get(_registration.OptionsName),
+            expiration,
+            provider.GetRequiredService<TimeProvider>(),
+            provider.GetService<ILoggerFactory>()?.CreateLogger<HostLoomDistributedCache>()
+                ?? NullLogger<HostLoomDistributedCache>.Instance
+        );
     }
 
     private CachingBuilder UseSerializer(ICacheValueSerializer serializer, string name)
     {
-        Services.RemoveAll<ICacheValueSerializer>();
-        Services.AddSingleton(serializer);
+        RemoveSerializers();
+        if (Profile is null)
+        {
+            Services.AddSingleton(serializer);
+        }
+        else
+        {
+            Services.AddKeyedSingleton(Profile, serializer);
+        }
+
         _registration.SerializerName = name;
         return this;
+    }
+
+    private void RemoveSerializers()
+    {
+        for (var i = Services.Count - 1; i >= 0; i--)
+        {
+            var descriptor = Services[i];
+            if (descriptor.ServiceType != typeof(ICacheValueSerializer))
+            {
+                continue;
+            }
+
+            var matches = Profile is null
+                ? !descriptor.IsKeyedService
+                : descriptor.IsKeyedService && Equals(descriptor.ServiceKey, Profile);
+            if (matches)
+            {
+                Services.RemoveAt(i);
+            }
+        }
     }
 
     private void Choose(string storeName)

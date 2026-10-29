@@ -11,6 +11,17 @@ internal sealed class CachingOptionsValidator(CachingRegistration registration)
 {
     public ValidateOptionsResult Validate(string? name, CachingOptions options)
     {
+        if (
+            !string.Equals(
+                name ?? Options.DefaultName,
+                registration.OptionsName,
+                StringComparison.Ordinal
+            )
+        )
+        {
+            return ValidateOptionsResult.Success;
+        }
+
         var problems = new List<string>(options.Validate());
         if (registration.StoreName is null)
         {
@@ -38,8 +49,10 @@ internal sealed class CachingOptionsValidator(CachingRegistration registration)
             );
         }
 
-        return problems.Count == 0
-            ? ValidateOptionsResult.Success
-            : ValidateOptionsResult.Fail(problems);
+        return problems.Count == 0 ? ValidateOptionsResult.Success
+            : registration.Profile is null ? ValidateOptionsResult.Fail(problems)
+            : ValidateOptionsResult.Fail(
+                CachingProfile.PrefixValidation(registration.Profile, problems)
+            );
     }
 }
