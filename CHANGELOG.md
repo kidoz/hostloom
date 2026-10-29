@@ -8,9 +8,12 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-29
+
 Cache and lock registrations can now compose independent named profiles, and the Microsoft
 distributed-cache adapter can opt into sliding expiration. Leadership, node-ID pools, and
-exclusive schedules can select the exact lock profile they use.
+exclusive schedules can select the exact lock profile they use. No package is published for the
+first time; the whole set publishes at 0.19.0.
 
 ### Added
 
@@ -2342,6 +2345,7 @@ is a build break on upgrade rather than a silent change.
   do not require an external broker.
 
 [Unreleased]: https://github.com/kidoz/hostloom/compare/v0.18.0...HEAD
+[0.19.0]: https://github.com/kidoz/hostloom/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/kidoz/hostloom/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/kidoz/hostloom/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/kidoz/hostloom/compare/v0.16.0...v0.16.1
