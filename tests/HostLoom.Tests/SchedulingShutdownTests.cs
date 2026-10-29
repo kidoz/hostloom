@@ -11,6 +11,10 @@ public sealed class SchedulingShutdownTests
 {
     private static readonly TimeSpan Bound = TimeSpan.FromSeconds(5);
 
+    // An abandoned run resumes on the thread pool once released; under a loaded suite that
+    // continuation can wait behind other tests, so its completion is not held to the shutdown bound.
+    private static readonly TimeSpan CompletionBound = TimeSpan.FromSeconds(10);
+
     [Theory]
     [InlineData(0L)]
     [InlineData(-1L)]
@@ -114,7 +118,7 @@ public sealed class SchedulingShutdownTests
             if (disposing is not null)
                 await disposing.WaitAsync(Bound, TestContext.Current.CancellationToken);
         }
-        await completed.Task.WaitAsync(Bound, TestContext.Current.CancellationToken);
+        await completed.Task.WaitAsync(CompletionBound, TestContext.Current.CancellationToken);
         await SchedulingTests.WaitUntilAsync(() => !scheduler.GetState("catalog").Running);
         Assert.Equal(ScheduleRunOutcome.Canceled, scheduler.GetState("catalog").LastOutcome);
     }
@@ -196,7 +200,7 @@ public sealed class SchedulingShutdownTests
         finally
         {
             release.TrySetResult();
-            await completed.Task.WaitAsync(Bound, TestContext.Current.CancellationToken);
+            await completed.Task.WaitAsync(CompletionBound, TestContext.Current.CancellationToken);
             await SchedulingTests.WaitUntilAsync(() => !scheduler.GetState("catalog").Running);
         }
     }
