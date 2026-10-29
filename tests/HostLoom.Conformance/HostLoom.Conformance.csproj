@@ -8,6 +8,7 @@
     <PackageReference Include="xunit.v3.assert" />
     <ProjectReference Include="../../src/HostLoom/HostLoom.csproj" />
     <ProjectReference Include="../../src/HostLoom.Caching/HostLoom.Caching.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Caching.DependencyInjection/HostLoom.Caching.DependencyInjection.csproj" />
     <ProjectReference Include="../../src/HostLoom.Caching.Testing/HostLoom.Caching.Testing.csproj" />
     <ProjectReference Include="../../src/HostLoom.Locking/HostLoom.Locking.csproj" />
     <ProjectReference Include="../../src/HostLoom.Locking.Testing/HostLoom.Locking.Testing.csproj" />

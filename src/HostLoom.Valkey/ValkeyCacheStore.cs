@@ -9,13 +9,37 @@ namespace HostLoom.Valkey;
 /// Binary standalone Valkey cache store with atomic value/TTL reads, conditional writes and tag indexes.
 /// Keys are already prefixed by the kernel and are passed unchanged. The connection is borrowed.
 /// </summary>
-public sealed class ValkeyCacheStore : IDistributedCacheStore, ICacheStoreHealthProbe
+public sealed class ValkeyCacheStore
+    : IDistributedCacheStore,
+        ISlidingExpirationCacheStore,
+        ICacheStoreHealthProbe
 {
     private static readonly ValkeyScript Read = new(
         """
         local value = redis.call('GET', KEYS[1])
         if not value then return false end
         return {value, redis.call('PTTL', KEYS[1])}
+        """
+    );
+    private static readonly ValkeyScript Refresh = new(
+        """
+        local remaining = nil
+        if ARGV[4] == '1' then
+            local now = redis.call('TIME')
+            remaining = tonumber(ARGV[3]) - (tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000))
+        end
+        local value = redis.call('GET', KEYS[1])
+        if not value then
+            if remaining ~= nil and remaining <= 0 then return 3 end
+            return 1
+        end
+        if remaining ~= nil and remaining <= 0 then return 3 end
+        if value ~= ARGV[1] then return 2 end
+        local ttl = tonumber(ARGV[2])
+        if remaining ~= nil and remaining < ttl then ttl = remaining end
+        if ttl <= 0 then return 3 end
+        if redis.call('PEXPIRE', KEYS[1], ttl) ~= 1 then return 1 end
+        return 0
         """
     );
     private static readonly ValkeyScript Write = new(
@@ -52,7 +76,9 @@ public sealed class ValkeyCacheStore : IDistributedCacheStore, ICacheStoreHealth
 
     /// <inheritdoc />
     public CacheStoreCapabilities Capabilities =>
-        CacheStoreCapabilities.Tags | CacheStoreCapabilities.InvalidationChannel;
+        CacheStoreCapabilities.Tags
+        | CacheStoreCapabilities.InvalidationChannel
+        | CacheStoreCapabilities.SlidingExpiration;
 
     /// <inheritdoc />
     public async ValueTask<CacheStoreEntry?> GetAsync(
@@ -71,6 +97,51 @@ public sealed class ValkeyCacheStore : IDistributedCacheStore, ICacheStoreHealth
             when (!ValkeyFailures.IsCallerCancellation(exception, cancellationToken))
         {
             throw ValkeyFailures.Cache(exception, "read");
+        }
+    }
+
+    /// <inheritdoc />
+    public async ValueTask<CacheRefreshOutcome> RefreshAsync(
+        string key,
+        ReadOnlyMemory<byte> expectedPayload,
+        TimeSpan slidingWindow,
+        DateTimeOffset? absoluteExpiration,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(slidingWindow, TimeSpan.Zero);
+        var milliseconds = ValkeyFailures.Milliseconds(slidingWindow);
+        try
+        {
+            var reply = await _connection
+                .ScriptAsync(
+                    Refresh,
+                    [key],
+                    [
+                        expectedPayload,
+                        milliseconds,
+                        absoluteExpiration?.ToUnixTimeMilliseconds() ?? 0,
+                        absoluteExpiration is null ? "0" : "1",
+                    ],
+                    cancellationToken
+                )
+                .ConfigureAwait(false);
+            return reply.AsInt64() switch
+            {
+                0 => CacheRefreshOutcome.Applied,
+                1 => CacheRefreshOutcome.Missing,
+                2 => CacheRefreshOutcome.GenerationMismatch,
+                3 => CacheRefreshOutcome.Expired,
+                var other => throw new CacheStoreException(
+                    CacheFailureKind.Other,
+                    $"Unexpected Valkey refresh result '{other}'."
+                ),
+            };
+        }
+        catch (Exception exception)
+            when (!ValkeyFailures.IsCallerCancellation(exception, cancellationToken))
+        {
+            throw ValkeyFailures.Cache(exception, "refresh");
         }
     }
 

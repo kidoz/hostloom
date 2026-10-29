@@ -1,4 +1,6 @@
 using System.Buffers;
+using System.Buffers.Binary;
+using System.Security.Cryptography;
 using HostLoom.Caching.Internal;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Logging;
@@ -13,32 +15,38 @@ namespace HostLoom.Caching.DependencyInjection;
 /// </summary>
 /// <remarks>
 /// The synchronous members throw <see cref="NotSupportedException"/>: the store contract is
-/// asynchronous and blocking over it is exactly what the HostLoom analyzers forbid.
-/// <c>RefreshAsync</c> completes as a no-op because the store has no touch operation, so the
-/// adapter offers no sliding expiration. Store failures are fail-open here as everywhere: a read
-/// returns null and a write returns, each counted on <c>hostloom.cache.errors</c> and logged once
-/// per key per <c>Caching:Diagnostics:DegradedLogInterval</c>, because an outage otherwise turns
-/// every request into a log line. Keys follow the kernel's rules: every asynchronous member
-/// rejects an empty key, one with whitespace or control characters, or one longer than
-/// <c>Caching:MaxKeyLength</c> with <see cref="ArgumentException"/> before touching the store.
-/// Payloads are the consumer's own bytes, stored as they are: <c>Caching:MaxPayloadBytes</c>
-/// bounds them, and a larger one is not written, logged at error level and counted as a
-/// <c>payload</c> error, while the kernel's envelope and compression do not apply.
+/// asynchronous and blocking over it is exactly what the HostLoom analyzers forbid. Store failures
+/// are fail-open: a read returns null, a write or explicit refresh returns, and a failed sliding
+/// renewal returns the value from the completed read. Failures are counted on
+/// <c>hostloom.cache.errors</c> and logged once per key per
+/// <c>Caching:Diagnostics:DegradedLogInterval</c>. Keys follow the kernel's rules and payloads are
+/// bounded by <c>Caching:MaxPayloadBytes</c>. With sliding expiration opted in, entries use a
+/// versioned binary envelope under <c>{namespace}:cache:external-v2:{key}</c>; legacy raw entries
+/// remain readable until a successful enveloped write retires them, and removal covers both
+/// domains. Legacy entries cannot gain sliding behavior, and readers without the opt-in miss
+/// enveloped entries.
 /// </remarks>
 internal sealed class HostLoomDistributedCache(
     IDistributedCacheStore store,
     CachingOptions options,
     TimeSpan defaultExpiration,
     TimeProvider time,
-    ILogger<HostLoomDistributedCache> logger
+    ILogger<HostLoomDistributedCache> logger,
+    bool enableSlidingExpiration = false
 ) : IDistributedCache, IBufferDistributedCache
 {
     private const string NotSupported =
         "The HostLoom distributed cache adapter is asynchronous only; use the *Async member.";
+    private const int HeaderLength = 40;
+    private const byte FormatVersion = 1;
+    private const byte AbsoluteExpirationFlag = 1;
 
-    private readonly string _prefix = options.Namespace + ":cache:external:";
+    private readonly string _legacyPrefix = options.Namespace + ":cache:external:";
+    private readonly string _envelopedPrefix = options.Namespace + ":cache:external-v2:";
     private readonly int _maxKeyLength = options.MaxKeyLength;
     private readonly long _maxPayloadBytes = options.MaxPayloadBytes;
+    private readonly ISlidingExpirationCacheStore? _slidingStore =
+        store as ISlidingExpirationCacheStore;
     private readonly DegradedLogThrottle _throttle = new(
         time,
         options.Diagnostics.DegradedLogInterval
@@ -51,16 +59,9 @@ internal sealed class HostLoomDistributedCache(
     public async Task<byte[]?> GetAsync(string key, CancellationToken token = default)
     {
         CacheKey.Validate(key, _maxKeyLength, nameof(key));
-        try
-        {
-            var entry = await store.GetAsync(_prefix + key, token).ConfigureAwait(false);
-            return entry?.Payload.ToArray();
-        }
-        catch (Exception exception) when (!IsCallerCancellation(exception, token))
-        {
-            Degraded(exception, "read", key);
-            return null;
-        }
+        var entry = await ReadAsync(key, legacyFallback: true, renew: true, token)
+            .ConfigureAwait(false);
+        return entry?.Payload.ToArray();
     }
 
     /// <inheritdoc />
@@ -83,11 +84,20 @@ internal sealed class HostLoomDistributedCache(
     public void Refresh(string key) => throw new NotSupportedException(NotSupported);
 
     /// <inheritdoc />
-    public Task RefreshAsync(string key, CancellationToken token = default)
+    public async Task RefreshAsync(string key, CancellationToken token = default)
     {
         CacheKey.Validate(key, _maxKeyLength, nameof(key));
-        // The store contract has no touch operation, so there is no sliding window to reset.
-        return Task.CompletedTask;
+        if (!enableSlidingExpiration)
+        {
+            return;
+        }
+
+        var entry = await ReadAsync(key, legacyFallback: false, renew: false, token)
+            .ConfigureAwait(false);
+        if (entry is { } found && found.SlidingWindow > TimeSpan.Zero)
+        {
+            await RenewAsync(key, found, token).ConfigureAwait(false);
+        }
     }
 
     /// <inheritdoc />
@@ -99,7 +109,7 @@ internal sealed class HostLoomDistributedCache(
         CacheKey.Validate(key, _maxKeyLength, nameof(key));
         try
         {
-            await store.RemoveAsync([_prefix + key], token).ConfigureAwait(false);
+            await store.RemoveAsync(KeyDomains(key), token).ConfigureAwait(false);
         }
         catch (Exception exception) when (!IsCallerCancellation(exception, token))
         {
@@ -120,22 +130,15 @@ internal sealed class HostLoomDistributedCache(
     {
         CacheKey.Validate(key, _maxKeyLength, nameof(key));
         ArgumentNullException.ThrowIfNull(destination);
-        try
+        var entry = await ReadAsync(key, legacyFallback: true, renew: true, token)
+            .ConfigureAwait(false);
+        if (entry is not { } found)
         {
-            var entry = await store.GetAsync(_prefix + key, token).ConfigureAwait(false);
-            if (entry is not { } found)
-            {
-                return false;
-            }
-
-            destination.Write(found.Payload.Span);
-            return true;
-        }
-        catch (Exception exception) when (!IsCallerCancellation(exception, token))
-        {
-            Degraded(exception, "read", key);
             return false;
         }
+
+        destination.Write(found.Payload.Span);
+        return true;
     }
 
     /// <inheritdoc />
@@ -153,6 +156,77 @@ internal sealed class HostLoomDistributedCache(
         CancellationToken token = default
     ) => WriteAsync(key, value.IsSingleSegment ? value.First : value.ToArray(), options, token);
 
+    private async ValueTask<AdapterEntry?> ReadAsync(
+        string key,
+        bool legacyFallback,
+        bool renew,
+        CancellationToken token
+    )
+    {
+        CacheStoreEntry? stored;
+        var legacy = !enableSlidingExpiration;
+        try
+        {
+            stored = await store.GetAsync(StorageKey(key, legacy), token).ConfigureAwait(false);
+            if (stored is null && enableSlidingExpiration && legacyFallback)
+            {
+                legacy = true;
+                stored = await store.GetAsync(StorageKey(key, legacy), token).ConfigureAwait(false);
+            }
+        }
+        catch (Exception exception) when (!IsCallerCancellation(exception, token))
+        {
+            Degraded(exception, "read", key);
+            return null;
+        }
+
+        if (stored is not { } found)
+        {
+            return null;
+        }
+
+        AdapterEntry entry;
+        if (legacy)
+        {
+            entry = new AdapterEntry(found.Payload, TimeSpan.Zero, null, found.Payload);
+        }
+        else if (!TryDecode(found.Payload, out entry))
+        {
+            InvalidPayload(key);
+            return null;
+        }
+
+        return renew && entry.SlidingWindow > TimeSpan.Zero
+            ? await RenewAsync(key, entry, token).ConfigureAwait(false)
+            : entry;
+    }
+
+    private async ValueTask<AdapterEntry?> RenewAsync(
+        string key,
+        AdapterEntry entry,
+        CancellationToken token
+    )
+    {
+        try
+        {
+            var outcome = await _slidingStore!
+                .RefreshAsync(
+                    StorageKey(key, legacy: false),
+                    entry.StoredPayload,
+                    entry.SlidingWindow,
+                    entry.AbsoluteExpiration,
+                    token
+                )
+                .ConfigureAwait(false);
+            return outcome == CacheRefreshOutcome.Expired ? null : entry;
+        }
+        catch (Exception exception) when (!IsCallerCancellation(exception, token))
+        {
+            Degraded(exception, "refresh", key);
+            return entry;
+        }
+    }
+
     private async ValueTask WriteAsync(
         string key,
         ReadOnlyMemory<byte> payload,
@@ -162,26 +236,51 @@ internal sealed class HostLoomDistributedCache(
     {
         CacheKey.Validate(key, _maxKeyLength, nameof(key));
         ArgumentNullException.ThrowIfNull(options);
-        if (payload.Length > _maxPayloadBytes)
-        {
-            TooLarge(key, payload.Length);
-            return;
-        }
-
-        var timeToLive = TimeToLive(options);
         try
         {
-            if (timeToLive <= TimeSpan.Zero)
+            if (!enableSlidingExpiration)
             {
-                await store.RemoveAsync([_prefix + key], token).ConfigureAwait(false);
+                if (payload.Length > _maxPayloadBytes)
+                {
+                    TooLarge(key, payload.Length);
+                    return;
+                }
+
+                var timeToLive = TimeToLive(options);
+                if (timeToLive <= TimeSpan.Zero)
+                {
+                    await store.RemoveAsync(KeyDomains(key), token).ConfigureAwait(false);
+                    return;
+                }
+
+                await store
+                    .SetAsync(StorageKey(key, legacy: true), payload, timeToLive, null, token)
+                    .ConfigureAwait(false);
                 return;
             }
 
+            var policy = SlidingPolicy(options);
+            if (policy.TimeToLive <= TimeSpan.Zero)
+            {
+                await store.RemoveAsync(KeyDomains(key), token).ConfigureAwait(false);
+                return;
+            }
+
+            var storedBytes = HeaderLength + (long)payload.Length;
+            if (storedBytes > _maxPayloadBytes)
+            {
+                TooLarge(key, storedBytes);
+                return;
+            }
+
+            var enveloped = Encode(payload, policy);
             await store
-                .SetAsync(_prefix + key, payload, timeToLive, null, token)
+                .SetAsync(StorageKey(key, legacy: false), enveloped, policy.TimeToLive, null, token)
                 .ConfigureAwait(false);
+            await store.RemoveAsync([StorageKey(key, legacy: true)], token).ConfigureAwait(false);
         }
-        catch (Exception exception) when (!IsCallerCancellation(exception, token))
+        catch (Exception exception)
+            when (!IsCallerCancellation(exception, token) && exception is not NotSupportedException)
         {
             Degraded(exception, "write", key);
         }
@@ -189,6 +288,13 @@ internal sealed class HostLoomDistributedCache(
 
     private TimeSpan TimeToLive(DistributedCacheEntryOptions options)
     {
+        if (options.SlidingExpiration is not null)
+        {
+            throw new NotSupportedException(
+                "SlidingExpiration requires AddDistributedCacheAdapter(enableSlidingExpiration: true)."
+            );
+        }
+
         if (options.AbsoluteExpirationRelativeToNow is { } relative)
         {
             return relative;
@@ -199,12 +305,112 @@ internal sealed class HostLoomDistributedCache(
             return absolute - time.GetUtcNow();
         }
 
-        // Sliding expiration cannot be honoured without a touch operation; the window becomes an
-        // absolute time to live so the entry still expires.
-        return options.SlidingExpiration ?? defaultExpiration;
+        return defaultExpiration;
     }
 
-    private void TooLarge(string key, int bytes)
+    private ExpirationPolicy SlidingPolicy(DistributedCacheEntryOptions options)
+    {
+        var sliding = options.SlidingExpiration ?? TimeSpan.Zero;
+        DateTimeOffset? deadline = null;
+        TimeSpan timeToLive;
+        if (options.AbsoluteExpirationRelativeToNow is { } relative)
+        {
+            deadline = time.GetUtcNow() + relative;
+            timeToLive = relative;
+        }
+        else if (options.AbsoluteExpiration is { } absolute)
+        {
+            deadline = absolute;
+            timeToLive = absolute - time.GetUtcNow();
+        }
+        else if (sliding > TimeSpan.Zero)
+        {
+            timeToLive = sliding;
+        }
+        else
+        {
+            deadline = time.GetUtcNow() + defaultExpiration;
+            timeToLive = defaultExpiration;
+        }
+
+        if (sliding > TimeSpan.Zero && (timeToLive <= TimeSpan.Zero || sliding < timeToLive))
+        {
+            timeToLive = sliding;
+        }
+
+        return new ExpirationPolicy(timeToLive, sliding, deadline);
+    }
+
+    private string[] KeyDomains(string key) =>
+        enableSlidingExpiration
+            ? [StorageKey(key, legacy: false), StorageKey(key, legacy: true)]
+            : [StorageKey(key, legacy: true)];
+
+    private string StorageKey(string key, bool legacy) =>
+        (legacy ? _legacyPrefix : _envelopedPrefix) + key;
+
+    private static byte[] Encode(ReadOnlyMemory<byte> payload, ExpirationPolicy policy)
+    {
+        var stored = new byte[HeaderLength + payload.Length];
+        var span = stored.AsSpan();
+        span[0] = (byte)'H';
+        span[1] = (byte)'L';
+        span[2] = (byte)'D';
+        span[3] = (byte)'C';
+        span[4] = FormatVersion;
+        span[5] = policy.AbsoluteExpiration is null ? (byte)0 : AbsoluteExpirationFlag;
+        BinaryPrimitives.WriteInt64LittleEndian(span[8..], policy.SlidingWindow.Ticks);
+        BinaryPrimitives.WriteInt64LittleEndian(
+            span[16..],
+            policy.AbsoluteExpiration?.UtcTicks ?? 0
+        );
+        RandomNumberGenerator.Fill(span[24..HeaderLength]);
+        payload.Span.CopyTo(span[HeaderLength..]);
+        return stored;
+    }
+
+    private static bool TryDecode(ReadOnlyMemory<byte> stored, out AdapterEntry entry)
+    {
+        entry = default;
+        var span = stored.Span;
+        if (
+            span.Length < HeaderLength
+            || span[0] != (byte)'H'
+            || span[1] != (byte)'L'
+            || span[2] != (byte)'D'
+            || span[3] != (byte)'C'
+            || span[4] != FormatVersion
+            || (span[5] & ~AbsoluteExpirationFlag) != 0
+            || span[6] != 0
+            || span[7] != 0
+        )
+        {
+            return false;
+        }
+
+        var slidingTicks = BinaryPrimitives.ReadInt64LittleEndian(span[8..]);
+        var deadlineTicks = BinaryPrimitives.ReadInt64LittleEndian(span[16..]);
+        var hasDeadline = (span[5] & AbsoluteExpirationFlag) != 0;
+        if (
+            slidingTicks < 0
+            || deadlineTicks < 0
+            || deadlineTicks > DateTimeOffset.MaxValue.UtcTicks
+            || (!hasDeadline && deadlineTicks != 0)
+        )
+        {
+            return false;
+        }
+
+        entry = new AdapterEntry(
+            stored[HeaderLength..],
+            TimeSpan.FromTicks(slidingTicks),
+            hasDeadline ? new DateTimeOffset(deadlineTicks, TimeSpan.Zero) : null,
+            stored
+        );
+        return true;
+    }
+
+    private void TooLarge(string key, long bytes)
     {
         CachingDiagnostics.Errors.Add(
             1,
@@ -227,6 +433,27 @@ internal sealed class HostLoomDistributedCache(
         );
     }
 
+    private void InvalidPayload(string key)
+    {
+        CachingDiagnostics.Errors.Add(
+            1,
+            new KeyValuePair<string, object?>(CachingDiagnostics.NamespaceTag, options.Namespace),
+            new KeyValuePair<string, object?>(CachingDiagnostics.KindTag, "payload")
+        );
+        if (!_throttle.ShouldLog(key))
+        {
+            return;
+        }
+
+        logger.LogError(
+            new EventId(1009, "DistributedCacheAdapterPayloadInvalid"),
+            "The enveloped payload for '{Key}' in namespace '{Namespace}' is malformed or has an unsupported version; the adapter answered as a miss. Further errors for this key are suppressed for {Interval}.",
+            key,
+            options.Namespace,
+            options.Diagnostics.DegradedLogInterval
+        );
+    }
+
     private void Degraded(Exception exception, string operation, string key)
     {
         var kind = exception is CacheStoreException store ? store.Kind : CacheFailureKind.Other;
@@ -239,7 +466,7 @@ internal sealed class HostLoomDistributedCache(
         logger.LogWarning(
             new EventId(1007, "DistributedCacheAdapterDegraded"),
             exception,
-            "The distributed cache store failed ({Kind}) during {Operation} of '{Key}' in namespace '{Namespace}'; the adapter answered as a miss. Further warnings for this key are suppressed for {Interval}.",
+            "The distributed cache store failed ({Kind}) during {Operation} of '{Key}' in namespace '{Namespace}'; the adapter used its fail-open outcome. Further warnings for this key are suppressed for {Interval}.",
             kind,
             operation,
             key,
@@ -250,4 +477,17 @@ internal sealed class HostLoomDistributedCache(
 
     private static bool IsCallerCancellation(Exception exception, CancellationToken token) =>
         exception is OperationCanceledException && token.IsCancellationRequested;
+
+    private readonly record struct ExpirationPolicy(
+        TimeSpan TimeToLive,
+        TimeSpan SlidingWindow,
+        DateTimeOffset? AbsoluteExpiration
+    );
+
+    private readonly record struct AdapterEntry(
+        ReadOnlyMemory<byte> Payload,
+        TimeSpan SlidingWindow,
+        DateTimeOffset? AbsoluteExpiration,
+        ReadOnlyMemory<byte> StoredPayload
+    );
 }

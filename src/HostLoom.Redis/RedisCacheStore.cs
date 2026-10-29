@@ -18,6 +18,7 @@ namespace HostLoom.Redis;
 /// </remarks>
 public sealed class RedisCacheStore
     : IDistributedCacheStore,
+        ISlidingExpirationCacheStore,
         ICacheStoreHealthProbe,
         IAsyncDisposable
 {
@@ -28,6 +29,26 @@ public sealed class RedisCacheStore
         local value = redis.call('GET', KEYS[1])
         if not value then return false end
         return {value, redis.call('PTTL', KEYS[1])}
+        """;
+
+    private const string RefreshScript = """
+        local remaining = nil
+        if ARGV[4] == '1' then
+            local now = redis.call('TIME')
+            remaining = tonumber(ARGV[3]) - (tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000))
+        end
+        local value = redis.call('GET', KEYS[1])
+        if not value then
+            if remaining ~= nil and remaining <= 0 then return 3 end
+            return 1
+        end
+        if remaining ~= nil and remaining <= 0 then return 3 end
+        if value ~= ARGV[1] then return 2 end
+        local ttl = tonumber(ARGV[2])
+        if remaining ~= nil and remaining < ttl then ttl = remaining end
+        if ttl <= 0 then return 3 end
+        if redis.call('PEXPIRE', KEYS[1], ttl) ~= 1 then return 1 end
+        return 0
         """;
 
     private const string TaggedSetIfAbsentScript = """
@@ -88,7 +109,8 @@ public sealed class RedisCacheStore
     public CacheStoreCapabilities Capabilities =>
         CacheStoreCapabilities.Tags
         | CacheStoreCapabilities.InvalidationChannel
-        | CacheStoreCapabilities.ServerAssistedTracking;
+        | CacheStoreCapabilities.ServerAssistedTracking
+        | CacheStoreCapabilities.SlidingExpiration;
 
     /// <inheritdoc />
     public async ValueTask<CacheStoreEntry?> GetAsync(
@@ -108,6 +130,49 @@ public sealed class RedisCacheStore
             when (!RedisFailures.IsCallerCancellation(exception, cancellationToken))
         {
             throw RedisFailures.ToCacheStoreException(exception, "GET");
+        }
+    }
+
+    /// <inheritdoc />
+    public async ValueTask<CacheRefreshOutcome> RefreshAsync(
+        string key,
+        ReadOnlyMemory<byte> expectedPayload,
+        TimeSpan slidingWindow,
+        DateTimeOffset? absoluteExpiration,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(slidingWindow, TimeSpan.Zero);
+        var milliseconds = checked((long)Math.Ceiling(slidingWindow.TotalMilliseconds));
+        try
+        {
+            var db = await _connection.GetDatabaseAsync(cancellationToken).ConfigureAwait(false);
+            RedisValue[] arguments =
+            [
+                expectedPayload.ToArray(),
+                milliseconds,
+                absoluteExpiration?.ToUnixTimeMilliseconds() ?? 0,
+                absoluteExpiration is null ? "0" : "1",
+            ];
+            var result = await db.ScriptEvaluateAsync(RefreshScript, [Key(key)], arguments)
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+            return (long)result switch
+            {
+                0 => CacheRefreshOutcome.Applied,
+                1 => CacheRefreshOutcome.Missing,
+                2 => CacheRefreshOutcome.GenerationMismatch,
+                3 => CacheRefreshOutcome.Expired,
+                var other => throw new CacheStoreException(
+                    CacheFailureKind.Other,
+                    $"Unexpected Redis refresh result '{other}'."
+                ),
+            };
+        }
+        catch (Exception exception)
+            when (!RedisFailures.IsCallerCancellation(exception, cancellationToken))
+        {
+            throw RedisFailures.ToCacheStoreException(exception, "PEXPIRE");
         }
     }
 

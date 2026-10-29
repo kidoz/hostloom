@@ -260,21 +260,29 @@ public sealed class CachingBuilder
     /// Registers <see cref="IDistributedCache"/> (and <see cref="IBufferDistributedCache"/>) over
     /// the chosen distributed store, so <c>HybridCache</c> and other asynchronous Microsoft
     /// consumers share the backend. Entries live under <c>{namespace}:cache:external:</c>, apart
-    /// from the tiered cache's own. The synchronous members throw; <c>RefreshAsync</c> is a no-op
-    /// because the store has no touch operation. Requires a distributed store: the in-process
-    /// composition has nothing for the adapter to sit on.
+    /// from the tiered cache's own. The synchronous members throw. Sliding expiration is an
+    /// explicit opt-in and requires <see cref="CacheStoreCapabilities.SlidingExpiration"/> on the
+    /// store; without the opt-in, sliding options throw <see cref="NotSupportedException"/>.
+    /// Requires a distributed store: the in-process composition has nothing for the adapter to sit on.
     /// </summary>
     /// <param name="defaultExpiration">
     /// Time to live for entries whose options carry no expiration; thirty minutes when null.
     /// </param>
-    public CachingBuilder AddDistributedCacheAdapter(TimeSpan? defaultExpiration = null)
+    /// <param name="enableSlidingExpiration">
+    /// Whether to store versioned binary envelopes and renew sliding entries after reads and
+    /// explicit refreshes. Opted-in writes use a separate external key domain.
+    /// </param>
+    public CachingBuilder AddDistributedCacheAdapter(
+        TimeSpan? defaultExpiration = null,
+        bool enableSlidingExpiration = false
+    )
     {
         var expiration = defaultExpiration ?? TimeSpan.FromMinutes(30);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(expiration, TimeSpan.Zero);
         if (Profile is null)
         {
             Services.TryAddSingleton(provider =>
-                CreateDistributedCache(provider, expiration)
+                CreateDistributedCache(provider, expiration, enableSlidingExpiration)
             );
             Services.TryAddSingleton<IDistributedCache>(static provider =>
                 provider.GetRequiredService<HostLoomDistributedCache>()
@@ -288,7 +296,7 @@ public sealed class CachingBuilder
             Services.TryAddKeyedSingleton<HostLoomDistributedCache>(
                 Profile,
                 (provider, _) =>
-                    CreateDistributedCache(provider, expiration)
+                    CreateDistributedCache(provider, expiration, enableSlidingExpiration)
             );
             Services.TryAddKeyedSingleton<IDistributedCache>(
                 Profile,
@@ -307,7 +315,8 @@ public sealed class CachingBuilder
 
     private HostLoomDistributedCache CreateDistributedCache(
         IServiceProvider provider,
-        TimeSpan expiration
+        TimeSpan expiration,
+        bool enableSlidingExpiration
     )
     {
         var store =
@@ -317,6 +326,21 @@ public sealed class CachingBuilder
                     + "or a backend's UseRedis() on the CachingBuilder. UseInMemory() composes no "
                     + "distributed tier for the adapter to sit on."
             );
+        if (
+            enableSlidingExpiration
+            && (
+                (store.Capabilities & CacheStoreCapabilities.SlidingExpiration) == 0
+                || store is not ISlidingExpirationCacheStore
+            )
+        )
+        {
+            var profile = Profile is null ? "default cache profile" : $"cache profile '{Profile}'";
+            throw new InvalidOperationException(
+                $"The {profile} enabled sliding expiration, but its store does not provide "
+                    + $"{nameof(CacheStoreCapabilities.SlidingExpiration)} and "
+                    + $"{nameof(ISlidingExpirationCacheStore)}."
+            );
+        }
 
         return new HostLoomDistributedCache(
             store,
@@ -326,7 +350,8 @@ public sealed class CachingBuilder
             expiration,
             provider.GetRequiredService<TimeProvider>(),
             provider.GetService<ILoggerFactory>()?.CreateLogger<HostLoomDistributedCache>()
-                ?? NullLogger<HostLoomDistributedCache>.Instance
+                ?? NullLogger<HostLoomDistributedCache>.Instance,
+            enableSlidingExpiration
         );
     }
 

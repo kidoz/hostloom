@@ -18,11 +18,18 @@ public sealed class DistributedCacheAdapterKeyValidationTests
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     [Theory]
-    [InlineData("")]
-    [InlineData("catalog eu")]
-    [InlineData("catalog\teu")]
-    [InlineData("catalog:eu:longer-than-sixteen")]
-    public async Task AsyncMembers_RejectAnInvalidKeyBeforeTouchingTheStore(string key)
+    [InlineData("", false)]
+    [InlineData("", true)]
+    [InlineData("catalog eu", false)]
+    [InlineData("catalog eu", true)]
+    [InlineData("catalog\teu", false)]
+    [InlineData("catalog\teu", true)]
+    [InlineData("catalog:eu:longer-than-sixteen", false)]
+    [InlineData("catalog:eu:longer-than-sixteen", true)]
+    public async Task AsyncMembers_RejectAnInvalidKeyBeforeTouchingTheStore(
+        string key,
+        bool enableSlidingExpiration
+    )
     {
         var clock = new TestClock();
         var store = new InMemoryDistributedCacheStore(clock);
@@ -39,7 +46,7 @@ public sealed class DistributedCacheAdapterKeyValidationTests
             .UseSystemTextJson(
                 new JsonSerializerOptions { TypeInfoResolver = new DefaultJsonTypeInfoResolver() }
             )
-            .AddDistributedCacheAdapter(TimeSpan.FromMinutes(5));
+            .AddDistributedCacheAdapter(TimeSpan.FromMinutes(5), enableSlidingExpiration);
         await using var provider = services.BuildServiceProvider();
         var cache = provider.GetRequiredService<IDistributedCache>();
         var buffered = (IBufferDistributedCache)cache;

@@ -24,7 +24,8 @@ public sealed class DistributedCacheAdapterTests
     private static ServiceProvider Provider(
         InMemoryDistributedCacheStore store,
         TimeProvider clock,
-        Action<IServiceCollection>? more = null
+        Action<IServiceCollection>? more = null,
+        bool enableSlidingExpiration = false
     )
     {
         var services = new ServiceCollection();
@@ -34,7 +35,7 @@ public sealed class DistributedCacheAdapterTests
             .AddHostLoomCaching(caching => caching.Namespace = "svc")
             .UseStore<InMemoryDistributedCacheStore>("InMemoryDistributed")
             .UseSystemTextJson(Json())
-            .AddDistributedCacheAdapter(TimeSpan.FromMinutes(5));
+            .AddDistributedCacheAdapter(TimeSpan.FromMinutes(5), enableSlidingExpiration);
         more?.Invoke(services);
         return services.BuildServiceProvider();
     }
@@ -70,6 +71,65 @@ public sealed class DistributedCacheAdapterTests
     }
 
     [Fact]
+    public async Task OptedAbsoluteEntries_DoNotRefresh()
+    {
+        var clock = new TestClock();
+        var faults = new FaultingCacheStore(new InMemoryDistributedCacheStore(clock));
+        var services = new ServiceCollection();
+        services.AddSingleton(faults);
+        services.AddSingleton<TimeProvider>(clock);
+        services
+            .AddHostLoomCaching(caching => caching.Namespace = "svc")
+            .UseStore<FaultingCacheStore>("Faulting")
+            .UseSystemTextJson(Json())
+            .AddDistributedCacheAdapter(enableSlidingExpiration: true);
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<IDistributedCache>();
+        var buffered = provider.GetRequiredService<IBufferDistributedCache>();
+        var options = new DistributedCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1),
+        };
+        await cache.SetAsync("catalog", [1], options, Token);
+        faults.FailOperation(CacheFailureKind.Unavailable, "refresh");
+
+        Assert.Equal([1], await cache.GetAsync("catalog", Token));
+        Assert.True(await buffered.TryGetAsync("catalog", new ArrayBufferWriter<byte>(), Token));
+        await cache.RefreshAsync("catalog", Token);
+        Assert.Equal(0, faults.Faulted);
+    }
+
+    [Fact]
+    public async Task OperationFailures_KeepTheirFilterUntilTheCountIsExhausted()
+    {
+        var store = new FaultingCacheStore(new InMemoryDistributedCacheStore());
+        store.FailOperation(CacheFailureKind.Unavailable, "refresh", count: 2);
+
+        await Assert.ThrowsAsync<CacheStoreException>(async () =>
+            await store.RefreshAsync(
+                "missing",
+                ReadOnlyMemory<byte>.Empty,
+                TimeSpan.FromMinutes(1),
+                null,
+                Token
+            )
+        );
+        Assert.Null(await store.GetAsync("missing", Token));
+        await Assert.ThrowsAsync<CacheStoreException>(async () =>
+            await store.RefreshAsync(
+                "missing",
+                ReadOnlyMemory<byte>.Empty,
+                TimeSpan.FromMinutes(1),
+                null,
+                Token
+            )
+        );
+        Assert.Null(await store.GetAsync("missing", Token));
+        Assert.Equal(2, store.Faulted);
+        Assert.Equal(2, store.Calls);
+    }
+
+    [Fact]
     public async Task SynchronousMembers_ThrowNotSupported()
     {
         var clock = new TestClock();
@@ -90,7 +150,7 @@ public sealed class DistributedCacheAdapterTests
     }
 
     [Fact]
-    public async Task Expiration_MapsAbsoluteSlidingAndDefault()
+    public async Task Expiration_MapsAbsoluteAndDefault_SlidingThrowsWithoutOptIn()
     {
         var clock = new TestClock();
         var store = new InMemoryDistributedCacheStore(clock);
@@ -106,11 +166,13 @@ public sealed class DistributedCacheAdapterTests
             },
             Token
         );
-        await cache.SetAsync(
-            "sliding",
-            [1],
-            new DistributedCacheEntryOptions { SlidingExpiration = TimeSpan.FromMinutes(1) },
-            Token
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            cache.SetAsync(
+                "sliding",
+                [1],
+                new DistributedCacheEntryOptions { SlidingExpiration = TimeSpan.FromMinutes(1) },
+                Token
+            )
         );
         await cache.SetAsync("default", [1], new DistributedCacheEntryOptions(), Token);
         await cache.SetAsync(
@@ -127,10 +189,7 @@ public sealed class DistributedCacheAdapterTests
             TimeSpan.FromMinutes(2),
             (await store.GetAsync("svc:cache:external:absolute", Token))!.Value.RemainingTimeToLive
         );
-        Assert.Equal(
-            TimeSpan.FromMinutes(1),
-            (await store.GetAsync("svc:cache:external:sliding", Token))!.Value.RemainingTimeToLive
-        );
+        Assert.Null(await store.GetAsync("svc:cache:external:sliding", Token));
         Assert.Equal(
             TimeSpan.FromMinutes(5),
             (await store.GetAsync("svc:cache:external:default", Token))!.Value.RemainingTimeToLive
@@ -237,6 +296,131 @@ public sealed class DistributedCacheAdapterTests
         Assert.Equal(1, logs.Count(1008));
         Assert.Equal(2, errors.Total);
         Assert.Equal(["payload"], errors.Kinds);
+    }
+
+    [Fact]
+    public async Task OptedWrite_MaxPayloadBytesIncludesTheEnvelope()
+    {
+        var clock = new TestClock();
+        var store = new InMemoryDistributedCacheStore(clock);
+        using var logs = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddSingleton(store);
+        services.AddSingleton<TimeProvider>(clock);
+        services.AddLogging(logging => logging.AddProvider(logs));
+        services
+            .AddHostLoomCaching(caching =>
+            {
+                caching.Namespace = "adapter-envelope";
+                caching.MaxPayloadBytes = 48;
+            })
+            .UseStore<InMemoryDistributedCacheStore>("InMemoryDistributed")
+            .UseSystemTextJson(Json())
+            .AddDistributedCacheAdapter(enableSlidingExpiration: true);
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<IDistributedCache>();
+        using var errors = new ErrorRecorder("adapter-envelope");
+        var options = new DistributedCacheEntryOptions
+        {
+            SlidingExpiration = TimeSpan.FromMinutes(1),
+        };
+
+        await cache.SetAsync("small", new byte[8], options, Token);
+        await cache.SetAsync("large", new byte[9], options, Token);
+
+        var small = await store.GetAsync("adapter-envelope:cache:external-v2:small", Token);
+        Assert.Equal(48, small!.Value.Payload.Length);
+        Assert.Null(await store.GetAsync("adapter-envelope:cache:external-v2:large", Token));
+        Assert.Equal(1, logs.Count(1008));
+        Assert.Equal(1, errors.Total);
+    }
+
+    [Fact]
+    public async Task OptedEntries_AreMissesForTheLegacyAdapter()
+    {
+        var clock = new TestClock();
+        var store = new InMemoryDistributedCacheStore(clock);
+        await using var opted = Provider(store, clock, enableSlidingExpiration: true);
+        await using var legacy = Provider(store, clock);
+        var options = new DistributedCacheEntryOptions
+        {
+            SlidingExpiration = TimeSpan.FromMinutes(1),
+        };
+
+        await opted
+            .GetRequiredService<IDistributedCache>()
+            .SetAsync("catalog", [1], options, Token);
+
+        Assert.Null(
+            await legacy.GetRequiredService<IDistributedCache>().GetAsync("catalog", Token)
+        );
+        Assert.Equal(
+            [1],
+            await opted.GetRequiredService<IDistributedCache>().GetAsync("catalog", Token)
+        );
+    }
+
+    [Fact]
+    public async Task VersionMismatch_IsAnObservableMissWithoutLegacyFallback()
+    {
+        var clock = new TestClock();
+        var store = new InMemoryDistributedCacheStore(clock);
+        using var logs = new CapturingLoggerProvider();
+        await using var provider = Provider(
+            store,
+            clock,
+            services => services.AddLogging(logging => logging.AddProvider(logs)),
+            enableSlidingExpiration: true
+        );
+        var cache = provider.GetRequiredService<IDistributedCache>();
+        using var errors = new ErrorRecorder("svc");
+        await cache.SetAsync(
+            "catalog",
+            [1],
+            new DistributedCacheEntryOptions { SlidingExpiration = TimeSpan.FromMinutes(1) },
+            Token
+        );
+        const string key = "svc:cache:external-v2:catalog";
+        var payload = (await store.GetAsync(key, Token))!.Value.Payload.ToArray();
+        payload[4] = 2;
+        await store.SetAsync(key, payload, TimeSpan.FromMinutes(1), cancellationToken: Token);
+        await store.SetAsync(
+            "svc:cache:external:catalog",
+            new byte[] { 2 },
+            TimeSpan.FromMinutes(1),
+            cancellationToken: Token
+        );
+
+        Assert.Null(await cache.GetAsync("catalog", Token));
+        Assert.Equal(1, logs.Count(1009));
+        Assert.Equal(1, errors.Total);
+        Assert.Equal(["payload"], errors.Kinds);
+    }
+
+    [Fact]
+    public void UnsupportedStore_ResolutionNamesTheProfileAndCapability()
+    {
+        var faults = new FaultingCacheStore(NSubstitute.Substitute.For<IDistributedCacheStore>());
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton("catalog", faults);
+        services
+            .AddHostLoomCaching("catalog", caching => caching.Namespace = "catalog")
+            .UseStore<FaultingCacheStore>("Faulting")
+            .UseSystemTextJson(Json())
+            .AddDistributedCacheAdapter(enableSlidingExpiration: true);
+        using var provider = services.BuildServiceProvider();
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            provider.GetRequiredKeyedService<IDistributedCache>("catalog")
+        );
+
+        Assert.Contains("catalog", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("SlidingExpiration", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            "ISlidingExpirationCacheStore",
+            exception.Message,
+            StringComparison.Ordinal
+        );
     }
 
     [Fact]
