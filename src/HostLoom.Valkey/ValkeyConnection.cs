@@ -1,3 +1,4 @@
+using System.Globalization;
 using ValkeyDotNet;
 
 namespace HostLoom.Valkey;
@@ -11,6 +12,8 @@ public sealed class ValkeyConnection : IAsyncDisposable
 {
     private readonly ValkeyConnectionOwner _owner;
     private readonly bool _owned;
+    private readonly Lock _subscriberGate = new();
+    private ValkeyClientOptions? _resolvedSubscriberConnection;
     private int _disposed;
     internal ValkeyOptions Settings { get; }
     internal ValkeyClientOptions SubscriberConnection { get; }
@@ -94,6 +97,63 @@ public sealed class ValkeyConnection : IAsyncDisposable
             reply.ThrowIfError();
         }
         return replies;
+    }
+
+    internal async Task<ValkeyClientOptions> GetSubscriberConnectionAsync(CancellationToken token)
+    {
+        lock (_subscriberGate)
+        {
+            if (_resolvedSubscriberConnection is { } cached)
+                return cached;
+        }
+
+        if (_owned)
+            return SubscriberConnection;
+
+        var reply = await ExecuteAsync(new ValkeyCommand("CLIENT", "INFO"), token)
+            .ConfigureAwait(false);
+        reply.ThrowIfError();
+        var database = ReadDatabase(reply.AsString());
+        var current = SubscriberConnection;
+        var resolved = new ValkeyClientOptions
+        {
+            Host = current.Host,
+            Port = current.Port,
+            Username = current.Username,
+            Password = current.Password,
+            ClientName = current.ClientName,
+            Database = database,
+            Protocol = current.Protocol,
+            UseTls = current.UseTls,
+            CertificateValidationCallback = current.CertificateValidationCallback,
+            ConnectTimeout = current.ConnectTimeout,
+            ResponseDrainTimeout = current.ResponseDrainTimeout,
+            MaxPendingRequests = current.MaxPendingRequests,
+            MaxResponseBytes = current.MaxResponseBytes,
+            MaxResponseElements = current.MaxResponseElements,
+            MaxNestingDepth = current.MaxNestingDepth,
+        };
+        lock (_subscriberGate)
+            return _resolvedSubscriberConnection ??= resolved;
+    }
+
+    private static int ReadDatabase(string? info)
+    {
+        foreach (var field in (info ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (
+                field.StartsWith("db=", StringComparison.Ordinal)
+                && int.TryParse(
+                    field.AsSpan(3),
+                    NumberStyles.None,
+                    CultureInfo.InvariantCulture,
+                    out var database
+                )
+            )
+                return database;
+        }
+
+        throw new ValkeyProtocolException("CLIENT INFO did not report a valid database.");
     }
 
     internal async Task PingAsync(CancellationToken token)

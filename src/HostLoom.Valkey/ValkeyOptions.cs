@@ -11,6 +11,8 @@ public sealed class ValkeyOptions
     /// <summary>
     /// A caller-owned command owner shared with this connection. When supplied, it takes precedence
     /// over <see cref="Connection"/> and is not disposed with the HostLoom connection or container.
+    /// Invalidation resolves its actual host, port, and database with <c>CLIENT INFO</c>; the
+    /// owner's ACL must permit that command when a cache invalidation channel is used.
     /// </summary>
     public ValkeyConnectionOwner? ConnectionOwner { get; set; }
 

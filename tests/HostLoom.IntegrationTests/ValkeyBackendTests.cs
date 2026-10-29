@@ -238,9 +238,10 @@ public sealed class ValkeyBackendTests
     }
 
     [Fact(Skip = ValkeyAvailability.Skip, SkipUnless = nameof(Available))]
-    public async Task BorrowedOwner_InvalidationUsesItsActualEndpoint()
+    public async Task BorrowedOwner_InvalidationUsesItsActualEndpointAndDatabase()
     {
         var actual = ValkeyAvailability.Options().Connection;
+        var ns = "valkey-borrowed-" + Guid.NewGuid().ToString("N");
         await using var owner = new ValkeyConnectionOwner(
             new ValkeyConnectionOwnerOptions
             {
@@ -254,7 +255,7 @@ public sealed class ValkeyBackendTests
                 },
             }
         );
-        await using var connection = new ValkeyConnection(
+        await using var subscriberConnection = new ValkeyConnection(
             new ValkeyOptions
             {
                 ConnectionOwner = owner,
@@ -266,24 +267,43 @@ public sealed class ValkeyBackendTests
                 },
             }
         );
-        await using var channel = new ValkeyCacheInvalidationChannel(
-            connection,
-            new CachingOptions { Namespace = "valkey-borrowed-" + Guid.NewGuid().ToString("N") }
+        await using var publisherConnection = new ValkeyConnection(
+            new ValkeyOptions
+            {
+                ConnectionOwner = owner,
+                Connection = new ValkeyClientOptions
+                {
+                    Host = actual.Host,
+                    Port = actual.Port,
+                    Protocol = actual.Protocol,
+                    Database = 2,
+                },
+            }
+        );
+        await using var subscriber = new ValkeyCacheInvalidationChannel(
+            subscriberConnection,
+            new CachingOptions { Namespace = ns }
+        );
+        await using var publisher = new ValkeyCacheInvalidationChannel(
+            publisherConnection,
+            new CachingOptions { Namespace = ns }
         );
         var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var subscription = channel.Subscribe(message =>
+        using var subscription = subscriber.Subscribe(message =>
         {
             if (message.Keys.Contains("catalog"))
                 received.TrySetResult();
         });
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Token);
         timeout.CancelAfter(TimeSpan.FromSeconds(10));
-        await channel.StartAsync(timeout.Token);
+        await subscriber.StartAsync(timeout.Token);
 
-        await channel.PublishAsync(new CacheInvalidation(["catalog"], []), timeout.Token);
+        await publisher.PublishAsync(new CacheInvalidation(["catalog"], []), timeout.Token);
 
         await received.Task.WaitAsync(timeout.Token);
-        Assert.True(channel.IsSubscribed);
+        Assert.EndsWith(":db:2", subscriber.ChannelName, StringComparison.Ordinal);
+        Assert.EndsWith(":db:2", publisher.ChannelName, StringComparison.Ordinal);
+        Assert.True(subscriber.IsSubscribed);
     }
 
     [Fact(Skip = ValkeyAvailability.Skip, SkipUnless = nameof(Available))]

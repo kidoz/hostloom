@@ -35,6 +35,7 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
     );
     private Task? _worker;
     private ValkeySubscriber? _subscriber;
+    private ValkeyClientOptions? _resolvedSubscriberConnection;
     private bool _disposed;
     private int _subscribed;
     private long _dropped;
@@ -93,7 +94,7 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
     }
 
     /// <summary>Database-qualified channel; values are encoded as versioned JSON without reflection.</summary>
-    public string ChannelName { get; }
+    public string ChannelName { get; private set; }
 
     /// <summary>Whether the current subscriber has acknowledged its subscription and remains connected.</summary>
     public bool IsSubscribed =>
@@ -141,6 +142,7 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
         var payload = ValkeyInvalidationCodec.Encode(invalidation);
         try
         {
+            await ResolveSubscriberConnectionAsync(cancellationToken).ConfigureAwait(false);
             await _connection
                 .ExecuteAsync(new ValkeyCommand("PUBLISH", ChannelName, payload), cancellationToken)
                 .ConfigureAwait(false);
@@ -150,6 +152,22 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
         {
             throw ValkeyFailures.Cache(exception, "publish invalidation");
         }
+    }
+
+    private async Task<ValkeyClientOptions> ResolveSubscriberConnectionAsync(
+        CancellationToken token
+    )
+    {
+        if (_resolvedSubscriberConnection is { } current)
+            return current;
+
+        var resolved = await _connection.GetSubscriberConnectionAsync(token).ConfigureAwait(false);
+        ChannelName =
+            _namespace
+            + ":cache:invalidate:db:"
+            + resolved.Database.ToString(CultureInfo.InvariantCulture);
+        _resolvedSubscriberConnection = resolved;
+        return resolved;
     }
 
     private void StartWorker()
@@ -169,11 +187,13 @@ public sealed class ValkeyCacheInvalidationChannel : ICacheInvalidationChannel, 
             long? acknowledgedAt = null;
             try
             {
+                var subscriberConnection = await ResolveSubscriberConnectionAsync(token)
+                    .ConfigureAwait(false);
                 var subscriber = await ValkeySubscriber
                     .ConnectAsync(
                         new ValkeySubscriberOptions
                         {
-                            Connection = _connection.SubscriberConnection,
+                            Connection = subscriberConnection,
                             QueueCapacity = _connection.Settings.InvalidationQueueCapacity,
                             MaxSubscriptions = 2,
                             OperationTimeout = _connection.Settings.CommandTimeout,

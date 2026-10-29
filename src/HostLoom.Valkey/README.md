@@ -48,10 +48,11 @@ services.AddHostLoomLocking("catalog-jobs", locking => locking.Namespace = "cata
 ```
 
 Set `ValkeyOptions.ConnectionOwner` to borrow a caller-owned `ValkeyConnectionOwner`. Commands and
-invalidation subscribers use that owner's actual host and port; the other subscriber settings come
-from `ValkeyOptions.Connection`. Multiple profiles can share that owner; provider teardown disposes
-only container-owned connections and never disposes the external owner once per profile. Profiles
-have no independent teardown operation.
+invalidation subscribers use that owner's actual host, port, and database. Before subscribing or
+publishing, the channel resolves the database with `CLIENT INFO`, which the borrowed owner's ACL
+must permit. Other subscriber settings come from `ValkeyOptions.Connection`. Multiple profiles can
+share that owner; provider teardown disposes only container-owned connections and never disposes
+the external owner once per profile. Profiles have no independent teardown operation.
 
 Public constructors also work without a container: create `ValkeyConnection`, then
 `ValkeyCacheStore`, `ValkeyLockProvider`, and optionally `ValkeyCacheInvalidationChannel`. Stores
