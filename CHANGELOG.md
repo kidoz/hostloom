@@ -8,6 +8,24 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+Outgoing `HttpClient` calls can now share token-bucket quotas across service instances through
+Redis or standalone Valkey. `HostLoom.RateLimiting`,
+`HostLoom.RateLimiting.DependencyInjection`, and `HostLoom.RateLimiting.HttpClient` publish for the
+first time in the next release.
+
+### Added
+
+- Add an asynchronously acquired token-bucket `RateLimiter` with named profiles, an in-process
+  reference store, weighted permits, server-time refill, expiring idle state, and explicit `Deny`
+  or `Allow` behavior when the store cannot decide.
+- Add atomic Redis and standalone Valkey stores over the existing shared profile connections,
+  readiness probes, failure classification, and script recovery boundaries.
+- Add an outgoing `DelegatingHandler` that charges every physical HTTP attempt, supports bounded
+  local waiting, and distinguishes local quota exhaustion from backend unavailability without
+  manufacturing HTTP 429 responses.
+- Add shared in-memory, Redis, and Valkey conformance scenarios, HTTP retry and cancellation
+  coverage, rate-limit metrics, and Valkey Native AOT execution of named and container-free stores.
+
 ## [0.19.1] - 2026-10-29
 
 The twenty-second release of **HostLoom**. Nothing in it changes a signature an application
