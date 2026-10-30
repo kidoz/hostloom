@@ -1,7 +1,8 @@
 # HostLoom.Redis
 
-The Redis backend for `HostLoom.Caching` and `HostLoom.Locking`, over StackExchange.Redis. One
-connection per process serves the cache store, the invalidation channel, and the lock provider:
+The Redis backend for `HostLoom.Caching`, `HostLoom.Locking`, and `HostLoom.RateLimiting`, over
+StackExchange.Redis. One connection per profile serves the cache store, invalidation channel, lock
+provider, and token-bucket store:
 
 ```csharp
 services
@@ -16,8 +17,9 @@ services
     .AddHealthChecks();
 ```
 
-`UseRedis` on either builder registers `RedisOptions`, validates them at startup, and creates the
-connection lazily on first use; calling it on both builders shares that connection. `RedisOptions`
+`UseRedis` on a caching, locking, or rate-limiting builder registers `RedisOptions`, validates them
+at startup, and creates the connection lazily on first use; calling it on several builders with the
+same profile shares that connection. `RedisOptions`
 takes a configuration string, a prebuilt `ConfigurationOptions`, or a `ConnectionFactory` for an
 externally owned multiplexer, plus `DatabaseIndex`, `UseHashTags`, the connect, command, and
 health timeouts, `FailFast`, and a `ClientName` defaulting to `hostloom-{machine}-{pid}`. A
@@ -25,11 +27,12 @@ password is never logged; probe output and the startup line redact it.
 
 ## Named profiles and connection ownership
 
-Pass a profile to `AddHostLoomCaching` or `AddHostLoomLocking` to isolate options, providers,
-stores, and connections. Cache and lock registrations with the same profile and backend share one
-connection; different profiles have different connections. Configure that shared connection once,
-or attach with parameterless `UseRedis()`. A repeated configuration must be identical; a conflict
-fails with both registrations and the conflicting option keys, without including setting values.
+Pass a profile to `AddHostLoomCaching`, `AddHostLoomLocking`, or `AddHostLoomRateLimiting` to
+isolate options, providers, stores, and connections. Cache, lock, and rate-limit registrations
+with the same profile and backend share one connection; different profiles have different
+connections. Configure that shared connection once, or attach with parameterless `UseRedis()`. A
+repeated configuration must be identical; a conflict fails with both registrations and the
+conflicting option keys, without including setting values.
 
 ```csharp
 services.AddHostLoomCaching("catalog-read", caching => caching.Namespace = "catalog-read")
@@ -59,12 +62,14 @@ caller-owned and is not disposed. Profiles have no independent teardown operatio
 | tag index | `SADD`, `EXPIRE NX` then `EXPIRE GT`, `SMEMBERS`, atomic Lua `UNLINK`/`SREM` batches; a tagged set-if-absent indexes only after the write is known to have happened. Only members under `{namespace}:cache:data:` are unlinked; any other member is dropped from the index with `SREM`, left untouched as a key, and counted on `hostloom.redis.tag.members_rejected` |
 | invalidation | `PUBLISH` and `SUBSCRIBE` on `{namespace}:cache:invalidate`; `CLIENT LIST`, `CLIENT TRACKINGINFO`, and `CLIENT TRACKING` in tracking mode; `PSUBSCRIBE __keyspace@{db}__:…` in broadcast mode |
 | lock | `SET {namespace}:lock:{key} owner NX PX lease`; release and extend are Lua compare-and-set, sent as `EVALSHA` with `EVAL` fallback |
+| rate limit | one Lua operation reads `TIME`, refills and consumes the token bucket, then persists it with `SET … PX` and an idle-timeout TTL |
 | readiness | `PING` bounded by `Redis:HealthTimeout`. The health description reports reachability, latency, and the database index only; endpoints, the client name, and the process identity stay in logs through `RedisConnection.Describe()` |
 
 Nothing relies on `SELECT`: `DatabaseIndex` is passed per command and exists only so a service
 can coexist with keys from a previous library during a migration. `UseHashTags` wraps the
 namespace segment in `{…}` so every key of a service lands in one Redis Cluster slot. Keys are the
-kernels' fully prefixed keys, so a cache entry, a lease, a tag index, and a lock can never collide.
+kernels' fully prefixed keys, so a cache entry, a lease, a tag index, a lock, and a rate-limit
+bucket under `{namespace}:rate:{key}` can never collide.
 The default Microsoft adapter uses `{namespace}:cache:external:{key}`; its sliding opt-in uses a
 versioned binary envelope under `{namespace}:cache:external-v2:{key}` and reads legacy raw entries.
 An enveloped write retires the legacy value before publishing the replacement; if retirement
@@ -116,9 +121,11 @@ raises `LockProviderUnavailableException`, until the connection recovers. StackE
 reconnects in the background; `hostloom.redis.connection.state` and `hostloom.redis.reconnects`
 on the `HostLoom.Redis` meter show it. With `FailFast = true` the host fails to start instead.
 
-Every backend failure reaches the kernels as `CacheStoreException` or `LockProviderException`
-with a backend-neutral kind: a connection failure is `Unavailable`, a timeout is `Timeout`, and
-anything else is `Other`. Consumers never see a StackExchange.Redis exception type.
+Every backend failure reaches the kernels as `CacheStoreException`, `LockProviderException`, or
+`RateLimitStoreException` with a backend-neutral kind: a connection failure is `Unavailable`, a
+timeout is `Timeout`, and anything else is `Other`. Consumers never see a StackExchange.Redis
+exception type. A rate-limit store failure denies acquisition by default; explicit `Allow`
+admits degraded work instead. Ambiguous acquisitions are never replayed or refunded.
 
 ## Invalidation
 

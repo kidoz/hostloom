@@ -47,6 +47,9 @@ real broker with [RabbitMQ](how-to/use-rabbitmq.md) or
 [migration guide](how-to/migrate-composition.md), and review
 [measured startup and compiler costs](reference/composition-performance.md).
 
+**Protecting an outgoing API quota?** Configure a shared token bucket and an `HttpClient` handler
+in the [rate-limiting reference](reference/rate-limiting.md).
+
 ## How this documentation is organized
 
 The documentation follows the [Diátaxis](https://diataxis.fr/) model: each

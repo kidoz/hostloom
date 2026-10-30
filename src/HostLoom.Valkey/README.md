@@ -1,8 +1,9 @@
 # HostLoom.Valkey
 
-Standalone Valkey caching and coordination locks over [ValkeyDotNet 1.2.0](https://github.com/kidoz/valkey-dotnet).
-Targets .NET 10. Applications continue to consume `ICache` and `IDistributedLock` from the
-backend-neutral kernels. The Redis adapter remains separately available.
+Standalone Valkey caching, coordination locks, and token-bucket rate limiting over
+[ValkeyDotNet 1.2.0](https://github.com/kidoz/valkey-dotnet). Targets .NET 10. Applications consume
+`ICache`, `IDistributedLock`, and `RateLimiter` from backend-neutral kernels. The Redis adapter
+remains separately available.
 
 ```csharp
 using System.Text.Json;
@@ -34,10 +35,10 @@ builder.Services.AddHostLoomLocking(options => options.Namespace = "catalog-work
 `CatalogJsonContext` is an application-owned source-generated `JsonSerializerContext` containing
 its cached types. A runnable example is in `examples/HostLoom.Examples.ValkeyAot` in the repository.
 
-Default cache and lock registrations share one lazily connected `ValkeyConnection`, owned by the
-container. Configure the endpoint once and attach the other registration with parameterless
-`UseValkey()`. Named profiles isolate their options and connections; the same profile and backend
-shares one connection. A repeated configuration must be identical, and a conflict names both
+Default cache, lock, and rate-limit registrations share one lazily connected `ValkeyConnection`,
+owned by the container. Configure the endpoint once and attach other registrations with
+parameterless `UseValkey()`. Named profiles isolate their options and connections; the same profile
+and backend shares one connection. A repeated configuration must be identical, and a conflict names both
 registrations and the conflicting option keys without exposing values.
 
 ```csharp
@@ -55,11 +56,11 @@ share that owner; provider teardown disposes only container-owned connections an
 the external owner once per profile. Profiles have no independent teardown operation.
 
 Public constructors also work without a container: create `ValkeyConnection`, then
-`ValkeyCacheStore`, `ValkeyLockProvider`, and optionally `ValkeyCacheInvalidationChannel`. Stores
-and providers borrow the connection; dispose channels before disposing the connection. Connection
-settings are snapshotted at construction. Command recovery reuses the configured TLS, ACL and
-database settings. A standalone `ServiceCollection` needs a DI container implementation to call
-`BuildServiceProvider`.
+`ValkeyCacheStore`, `ValkeyLockProvider`, `ValkeyRateLimitStore`, and optionally
+`ValkeyCacheInvalidationChannel`. Stores and providers borrow the connection; dispose channels
+before disposing the connection. Connection settings are snapshotted at construction. Command
+recovery reuses the configured TLS, ACL and database settings. A standalone `ServiceCollection`
+needs a DI container implementation to call `BuildServiceProvider`.
 
 ## Cache behavior
 
@@ -159,6 +160,18 @@ failover can lose a lease. Database constraints, transactions, or idempotency ow
 correctness. Cluster routing, Sentinel, replica reads, tracking and sharded invalidation are outside
 this adapter's current scope.
 
+## Rate-limit behavior
+
+A single-key Lua operation reads server `TIME`, refills the token bucket, consumes weighted permits,
+and sets a TTL that lets an idle bucket return to full capacity. Backend denial uses the configured
+`Deny` or `Allow` behavior: deny reports the limiter unavailable, while allow explicitly admits
+degraded work. Transport-failed scripts are never replayed, and an ambiguous acquisition is never
+refunded because the server may already have consumed its permits.
+
+The store supports standalone Valkey only. Asynchronous replication and failover can lose recent
+token consumption and temporarily allow more work, so this is shared coordination rather than an
+absolute quota guarantee during failover.
+
 ## Options and verification
 
 | Option | Default |
@@ -183,8 +196,9 @@ artifacts/valkey-aot/HostLoom.Examples.ValkeyAot
 
 Tests and the sample default to localhost:16379; override `HOSTLOOM_VALKEY_PORT` for another local
 port. Use your platform's RID for Native AOT (for example `osx-arm64`). The sample verifies a
-source-generated serialized L2 round trip, leases and explicit invalidation against a real server.
-`HOSTLOOM_REQUIRE_VALKEY=1` or `HOSTLOOM_REQUIRE_BROKERS=1` makes an absent listener fail tests.
+source-generated serialized L2 round trip, leases, explicit invalidation, and named and
+container-free rate limiting against a real server. `HOSTLOOM_REQUIRE_VALKEY=1` or
+`HOSTLOOM_REQUIRE_BROKERS=1` makes an absent listener fail tests.
 
 Validation on 2026-09-06: 44 shared conformance cases and eight adapter cases passed on Valkey
 9.1.2; the eight adapter cases also passed on 8.1.10 and 7.2.14. Binary cache and lease cases cover

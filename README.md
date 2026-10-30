@@ -24,6 +24,8 @@ implements:
 - a two-tier cache with per-key single-flight, cross-instance invalidation, and
   fail-open reads, and a distributed lock with leases, owner tokens, bounded
   retry, and lost-lease detection, backed by Redis or standalone Valkey;
+- asynchronous token-bucket rate limiting for outgoing `HttpClient` calls, with
+  bounded local waits and shared Redis or standalone Valkey quotas;
 - scheduled jobs on cron, fixed-rate, and fixed-delay triggers over
   `TimeProvider`, run sequentially per schedule and, when marked exclusive, on
   one instance at a time through the distributed lock;
@@ -107,6 +109,9 @@ packages are versioned together:
 | `HostLoom.Locking.DependencyInjection` | Lock registration, options validation, and health checks |
 | `HostLoom.Locking.Testing` | Container-free lock composition, scripted, recording, and fault-injecting providers |
 | `HostLoom.Locking.Pipelines` | Distributed-lock filter for HostLoom pipelines |
+| `HostLoom.RateLimiting` | Asynchronous token-bucket limiter, in-process store, and backend-neutral contracts |
+| `HostLoom.RateLimiting.DependencyInjection` | Named limiter profiles, store registration, options validation, and readiness |
+| `HostLoom.RateLimiting.HttpClient` | Per-attempt outgoing HTTP handler with bounded local waiting |
 | `HostLoom.Scheduling` | Cron, fixed-rate, and fixed-delay schedules over `TimeProvider`, sequential runs, guard contract |
 | `HostLoom.Scheduling.DependencyInjection` | Schedule registration, per-run scopes, options validation, and hosting |
 | `HostLoom.Scheduling.Locking` | One-instance-runs guard over the HostLoom distributed lock |
@@ -120,8 +125,8 @@ packages are versioned together:
 | `HostLoom.NodeLeasing.Testing` | Scripted `INodeLeasing` for node-ID consumers |
 | `HostLoom.Generators` | Secure random strings, numeric codes, coupon codes, opaque tokens, and prefixed and GUID identifiers |
 | `HostLoom.Generators.Testing` | Deterministic `IRandomSource` fakes for generator tests |
-| `HostLoom.Valkey` | Standalone Valkey cache store, explicit invalidation, coordination locks, and health probes over ValkeyDotNet |
-| `HostLoom.Redis` | Redis cache store, invalidation channel, lock provider, and health probes over one connection |
+| `HostLoom.Valkey` | Standalone Valkey cache store, explicit invalidation, coordination locks, token-bucket rate limits, and health probes over ValkeyDotNet |
+| `HostLoom.Redis` | Redis cache store, invalidation channel, lock provider, token-bucket rate limits, and health probes over shared connections |
 
 The browser package source lives at
 [`@hostloom/websocket-client`](clients/hostloom-websocket-client/README.md). It provides typed
@@ -583,6 +588,45 @@ BenchmarkDotNet comparisons cover HostLoom against Microsoft `HybridCache` and F
 cache paths, and against Medallion `DistributedLock.Redis` for Redis locking. The deterministic
 HostLoom-only cases have a committed, machine-checked 10% regression gate. See the
 [benchmark guide](benchmarks/HostLoom.Benchmarks/README.md).
+
+## Outgoing rate limiting
+
+`HostLoom.RateLimiting` supplies an asynchronous token-bucket `RateLimiter`, an in-process store,
+and backend-neutral contracts. Redis and standalone Valkey stores share one quota across service
+instances using `{namespace}:rate:{key}` keys and server-time Lua decisions. Named profiles compose
+through `HostLoom.RateLimiting.DependencyInjection`; `HostLoom.RateLimiting.HttpClient` adds a
+transient handler that acquires once per physical HTTP attempt:
+
+```csharp
+builder.Services
+    .AddHostLoomRateLimiting("catalog-api", options =>
+    {
+        options.Namespace = "catalog";
+        options.TokenBucket = new TokenBucketRateLimitPolicy
+        {
+            TokenLimit = 100,
+            TokensPerPeriod = 100,
+            ReplenishmentPeriod = TimeSpan.FromSeconds(1),
+        };
+    })
+    .UseRedis();
+
+builder.Services
+    .AddHttpClient("catalog", client => client.BaseAddress = new Uri("https://catalog.example"))
+    .AddHostLoomRateLimit("catalog-api", options =>
+    {
+        options.MaxWait = TimeSpan.FromSeconds(2);
+        options.QueueLimit = 32;
+    });
+```
+
+Register the handler after retry or hedging handlers to charge every attempt. Waiting is bounded
+per handler pipeline, not globally ordered. Local exhaustion throws `RateLimitExceededException`;
+backend denial throws `RateLimiterUnavailableException`; real downstream responses, including 429,
+pass through unchanged. `OnUnavailable = Deny` is the default, with explicit degraded `Allow` as
+the alternative. The handler never disposes the shared limiter. See the
+[rate-limiting reference](docs/reference/rate-limiting.md) for manual composition, options,
+failure semantics, and the asynchronous-replication limit during failover.
 
 ## Scheduling
 
@@ -1089,10 +1133,13 @@ src/HostLoom.Locking/            distributed lock kernel: contracts, retry polic
 src/HostLoom.Locking.DependencyInjection/ lock registration, validation, health checks
 src/HostLoom.Locking.Testing/    container-free lock composition, scripted, recording, faulting providers
 src/HostLoom.Locking.Pipelines/  distributed-lock filter for generic pipelines
+src/HostLoom.RateLimiting/       token-bucket kernel, in-process store, and lease contracts
+src/HostLoom.RateLimiting.DependencyInjection/ named limiter registration and readiness
+src/HostLoom.RateLimiting.HttpClient/ per-attempt outgoing HTTP handler and bounded waits
 src/HostLoom.Generators/         dependency-free secure random strings, codes, tokens, and identifiers
 src/HostLoom.Generators.Testing/ deterministic seeded/scripted random sources and a numeric test sequence
-src/HostLoom.Valkey/             standalone Valkey cache, invalidation, locks, and connection owner
-src/HostLoom.Redis/              Redis store, invalidation channel, lock provider, owned connection
+src/HostLoom.Valkey/             standalone Valkey cache, invalidation, locks, rate limits, and connection owner
+src/HostLoom.Redis/              Redis store, invalidation, locks, rate limits, and owned connection
 src/HostLoom.Pipelines/          transport-neutral middleware pipelines
   Contexts/                      pipe context and thread-safe typed payloads
   Filters/                       delegate, execute, conditional, concurrency, timeout, instrumented, terminal

@@ -31,6 +31,9 @@ recorded in `CHANGELOG.md`.
 | `HostLoom.Locking.DependencyInjection` | Lock registration, options validation, and health checks |
 | `HostLoom.Locking.Testing` | Container-free lock composition, scripted, recording, and fault-injecting providers |
 | `HostLoom.Locking.Pipelines` | Distributed-lock filter for HostLoom pipelines |
+| `HostLoom.RateLimiting` | Asynchronous token-bucket limiter, in-process store, and backend-neutral contracts |
+| `HostLoom.RateLimiting.DependencyInjection` | Named limiter profiles, store registration, options validation, and readiness |
+| `HostLoom.RateLimiting.HttpClient` | Per-attempt outgoing HTTP handler with bounded local waiting |
 | `HostLoom.Scheduling` | Cron, fixed-rate, and fixed-delay schedules over `TimeProvider`, sequential runs, guard contract |
 | `HostLoom.Scheduling.DependencyInjection` | Schedule registration, per-run scopes, options validation, and hosting |
 | `HostLoom.Scheduling.Locking` | One-instance-runs guard over the HostLoom distributed lock |
@@ -44,8 +47,8 @@ recorded in `CHANGELOG.md`.
 | `HostLoom.NodeLeasing.Testing` | Scripted `INodeLeasing` for node-ID consumers |
 | `HostLoom.Generators` | Secure random strings, numeric codes, coupon codes, opaque tokens, and prefixed and GUID identifiers |
 | `HostLoom.Generators.Testing` | Deterministic `IRandomSource` fakes for generator tests |
-| `HostLoom.Valkey` | Standalone Valkey cache, explicit invalidation, coordination locks, and health probes over ValkeyDotNet |
-| `HostLoom.Redis` | Redis cache store, invalidation channel, lock provider, and health probes over one connection |
+| `HostLoom.Valkey` | Standalone Valkey cache, explicit invalidation, coordination locks, token-bucket rate limits, and health probes over ValkeyDotNet |
+| `HostLoom.Redis` | Redis cache store, invalidation channel, lock provider, token-bucket rate limits, and health probes over shared connections |
 | `HostLoom.Analyzers` | Compile-time checks for asynchronous, DI, mapping, and caching usage |
 
 Install only the runtime and transport the application needs:
@@ -128,16 +131,21 @@ The package's conformance tests consume the schema and exact fixtures from
   `HostLoom.Caching`; `HostLoom.Locking.Pipelines` on `HostLoom.Pipelines`
   and `HostLoom.Locking`. Neither references a `DependencyInjection` package
   or the messaging core.
+- [`HostLoom.RateLimiting`](rate-limiting.md) depends on
+  `System.Threading.RateLimiting` and logging abstractions, with no container or backend SDK.
+  `HostLoom.RateLimiting.DependencyInjection` adds registration, options, and health checks;
+  `HostLoom.RateLimiting.HttpClient` depends on the kernel and `Microsoft.Extensions.Http`.
 - [`HostLoom.Generators`](generators.md) is dependency-free (pure BCL) and independent of the
   messaging core; `HostLoom.Generators.Testing` depends on it alone and adds the deterministic
   `IRandomSource` fakes, without a test framework dependency.
-- `HostLoom.Valkey` depends on both caching/locking `DependencyInjection` packages and
-  `ValkeyDotNet` 1.1.0. SDK types stay in this adapter. Its Native AOT sample executes
-  serialized L2, leases and explicit invalidation against a real standalone server.
-- `HostLoom.Redis` depends on both `DependencyInjection` packages, for its
-  `UseRedis` extensions, and on `StackExchange.Redis`; its store, channel,
-  and provider keep public constructors over a multiplexer, so they compose
-  without a container as the kernels do.
+- `HostLoom.Valkey` depends on the caching, locking, and rate-limiting `DependencyInjection`
+  packages and `ValkeyDotNet` 1.2.0. SDK types stay in this adapter. Its Native AOT sample executes
+  serialized L2, leases, token-bucket limits, and explicit invalidation against a real standalone
+  server.
+- `HostLoom.Redis` depends on the caching, locking, and rate-limiting `DependencyInjection`
+  packages for its `UseRedis` extensions, and on `StackExchange.Redis`; its stores, channel,
+  providers, and rate-limit store keep public constructors, so they compose without a container as
+  the kernels do.
 
 ## AOT compatibility
 
@@ -146,7 +154,8 @@ The package's conformance tests consume the schema and exact fixtures from
 `HostLoom.Caching`, `HostLoom.Caching.DependencyInjection`,
 `HostLoom.Caching.Testing`, `HostLoom.Caching.Pipelines`, `HostLoom.Locking`,
 `HostLoom.Locking.DependencyInjection`, `HostLoom.Locking.Testing`,
-`HostLoom.Locking.Pipelines`, `HostLoom.Scheduling`,
+`HostLoom.Locking.Pipelines`, `HostLoom.RateLimiting`,
+`HostLoom.RateLimiting.DependencyInjection`, `HostLoom.Scheduling`,
 `HostLoom.Scheduling.DependencyInjection`, `HostLoom.Scheduling.Locking`,
 `HostLoom.Scheduling.Testing`, `HostLoom.Scheduling.Leadership`, `HostLoom.Leadership`,
 `HostLoom.Leadership.DependencyInjection`, `HostLoom.Leadership.Testing`,
@@ -158,8 +167,9 @@ The package's conformance tests consume the schema and exact fixtures from
 and exercises named cache/lock profiles, a serialized cache round trip through a source-generated
 `JsonSerializerContext`, and opted-in sliding renewal and inactivity expiry, so the caching and
 locking packages are verified under Native AOT rather than only analyzed. The Valkey sample also
-executes named composition, serialized L2, a real conditional sliding renewal, leases, and
-explicit invalidation against a standalone server.
+executes named composition, serialized L2, a real conditional sliding renewal, leases,
+token-bucket rate limits through named and container-free composition, and explicit invalidation
+against a standalone server.
 `examples/HostLoom.Examples.GeneratorsAot` does the same for the generators:
 it resolves every generator from a service collection in the native binary
 and checks each output against its contract.

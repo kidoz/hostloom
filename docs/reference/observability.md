@@ -12,6 +12,8 @@ configuration needs.
 | `HostLoom.Logging` | `Meter` | logging provider health |
 | `HostLoom.Caching` | `ActivitySource` and `Meter` | every `TieredCache` |
 | `HostLoom.Locking` | `ActivitySource` and `Meter` | every `DistributedLock` |
+| `HostLoom.RateLimiting` | `Meter` | every `DistributedRateLimiter` |
+| `HostLoom.RateLimiting.HttpClient` | `Meter` | outgoing HTTP rate-limit handlers |
 | `HostLoom.Scheduling` | `ActivitySource` and `Meter` | every `Scheduler` |
 | `HostLoom.Leadership` | `ActivitySource` and `Meter` | every `LeaderElector` |
 | `HostLoom.NodeLeasing` | `ActivitySource` and `Meter` | every `NodeIdElector` |
@@ -23,7 +25,7 @@ configuration needs.
 ```csharp
 builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics => metrics.AddMeter(
-        "HostLoom", "HostLoom.Pipelines", "HostLoom.Logging", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Scheduling", "HostLoom.Leadership", "HostLoom.NodeLeasing", "HostLoom.Redis",
+        "HostLoom", "HostLoom.Pipelines", "HostLoom.Logging", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.RateLimiting", "HostLoom.RateLimiting.HttpClient", "HostLoom.Scheduling", "HostLoom.Leadership", "HostLoom.NodeLeasing", "HostLoom.Redis",
         "HostLoom.Transport.RabbitMq", "HostLoom.Transport.Kafka", "HostLoom.AspNetCore.WebSockets"))
     .WithTracing(tracing => tracing.AddSource(
         "HostLoom", "HostLoom.Pipelines", "HostLoom.Caching", "HostLoom.Locking", "HostLoom.Scheduling", "HostLoom.Leadership", "HostLoom.NodeLeasing",
@@ -136,6 +138,27 @@ Identity is the `hostloom.lock.namespace` tag.
 | `hostloom.lock.lost` | counter | Leases that ended before release |
 | `hostloom.lock.orphan_releases` | counter | Best-effort releases of leases an abandoned acquisition may hold: granted after the caller gave up, confirmed after the usable lease, or left uncertain by a provider `Timeout` or `Other` failure; tagged `hostloom.lock.outcome` (`released`, `absent`, `failed`) |
 | `hostloom.lock.enabled` | observable gauge | 1 when the lock coordinates, 0 in single-instance mode |
+
+## Rate-limit instruments (`HostLoom.RateLimiting`)
+
+Kernel instruments carry `hostloom.rate.namespace`, never a raw limiter key or URL. Acquisition
+instruments also carry `hostloom.rate.outcome` (`acquired`, `rejected`, `degraded`, or
+`unavailable`). Store errors replace the outcome tag with `hostloom.rate.failure.kind`
+(`unavailable`, `timeout`, or `other`).
+
+| Instrument | Type | Meaning |
+| --- | --- | --- |
+| `hostloom.ratelimit.acquisitions` | counter | Asynchronous store decisions and explicit degraded admissions |
+| `hostloom.ratelimit.acquire.duration` | histogram (s) | Time spent obtaining one asynchronous decision |
+| `hostloom.ratelimit.store.errors` | counter | Store failures by backend-neutral kind |
+
+Outgoing HTTP instruments use only `hostloom.rate.http.outcome` (`sent`, `degraded`, `rejected`,
+`queue_full`, or `unavailable`), with no URL, partition, key, or request-content labels.
+
+| Instrument | Type | Meter | Meaning |
+| --- | --- | --- | --- |
+| `hostloom.ratelimit.http.requests` | counter | `HostLoom.RateLimiting.HttpClient` | Outgoing requests by local rate-limit outcome |
+| `hostloom.ratelimit.http.wait.duration` | histogram (s) | `HostLoom.RateLimiting.HttpClient` | Acquisition time, including bounded local waits |
 
 ## Schedule instruments (`HostLoom.Scheduling`)
 

@@ -79,6 +79,7 @@ nav:
       - Mapping: reference/mapping.md
       - Caching: reference/caching.md
       - Locking: reference/locking.md
+      - Rate limiting: reference/rate-limiting.md
       - Scheduling: reference/scheduling.md
       - Leadership: reference/leadership.md
       - Node leasing: reference/node-leasing.md
