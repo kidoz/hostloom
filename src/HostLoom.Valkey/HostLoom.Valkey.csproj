@@ -1,9 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Standalone Valkey backend for HostLoom caching and coordination locks over ValkeyDotNet.</Description>
+    <Description>Standalone Valkey backend for HostLoom caching, coordination locks, and token-bucket rate limiting over ValkeyDotNet.</Description>
     <PackageId>HostLoom.Valkey</PackageId>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageTags>hostloom;valkey;cache;distributed-lock;aot</PackageTags>
+    <PackageTags>hostloom;valkey;cache;distributed-lock;rate-limiting;aot</PackageTags>
     <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
   <ItemGroup>
@@ -11,6 +11,7 @@
     <PackageReference Include="ValkeyDotNet" />
     <ProjectReference Include="../HostLoom.Caching.DependencyInjection/HostLoom.Caching.DependencyInjection.csproj" />
     <ProjectReference Include="../HostLoom.Locking.DependencyInjection/HostLoom.Locking.DependencyInjection.csproj" />
+    <ProjectReference Include="../HostLoom.RateLimiting.DependencyInjection/HostLoom.RateLimiting.DependencyInjection.csproj" />
     <InternalsVisibleTo Include="HostLoom.Tests" />
     <InternalsVisibleTo Include="HostLoom.IntegrationTests" />
   </ItemGroup>

@@ -1,9 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Redis backend for HostLoom caching and locking: one owned connection, a cache store, an invalidation channel, a lock provider, and health probes over StackExchange.Redis.</Description>
+    <Description>Redis backend for HostLoom caching, locking, and rate limiting over shared connections and StackExchange.Redis.</Description>
     <PackageId>HostLoom.Redis</PackageId>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageTags>hostloom;redis;cache;distributed-cache;distributed-lock</PackageTags>
+    <PackageTags>hostloom;redis;cache;distributed-cache;distributed-lock;rate-limiting</PackageTags>
   </PropertyGroup>
   <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="/" />
@@ -12,6 +12,7 @@
     <PackageReference Include="StackExchange.Redis" />
     <ProjectReference Include="../HostLoom.Caching.DependencyInjection/HostLoom.Caching.DependencyInjection.csproj" />
     <ProjectReference Include="../HostLoom.Locking.DependencyInjection/HostLoom.Locking.DependencyInjection.csproj" />
+    <ProjectReference Include="../HostLoom.RateLimiting.DependencyInjection/HostLoom.RateLimiting.DependencyInjection.csproj" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="HostLoom.Tests" />

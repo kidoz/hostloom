@@ -1,5 +1,6 @@
 using HostLoom.Caching;
 using HostLoom.Locking;
+using HostLoom.RateLimiting;
 using StackExchange.Redis;
 
 namespace HostLoom.Redis.Internal;
@@ -23,6 +24,22 @@ internal static class RedisFailures
     ) =>
         new(
             ClassifyLock(exception),
+            $"Redis {operation} failed: {exception.GetType().Name}.",
+            exception
+        );
+
+    public static RateLimitStoreException ToRateLimitStoreException(
+        Exception exception,
+        string operation
+    ) =>
+        new(
+            exception switch
+            {
+                RedisConnectionException or ObjectDisposedException =>
+                    RateLimitFailureKind.Unavailable,
+                RedisTimeoutException or TimeoutException => RateLimitFailureKind.Timeout,
+                _ => RateLimitFailureKind.Other,
+            },
             $"Redis {operation} failed: {exception.GetType().Name}.",
             exception
         );

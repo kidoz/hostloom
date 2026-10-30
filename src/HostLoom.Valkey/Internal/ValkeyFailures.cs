@@ -1,5 +1,6 @@
 using HostLoom.Caching;
 using HostLoom.Locking;
+using HostLoom.RateLimiting;
 using ValkeyDotNet;
 
 namespace HostLoom.Valkey.Internal;
@@ -32,6 +33,18 @@ internal static class ValkeyFailures
                 CacheFailureKind.Timeout => LockFailureKind.Timeout,
                 CacheFailureKind.Unavailable => LockFailureKind.Unavailable,
                 _ => LockFailureKind.Other,
+            },
+            $"Valkey {operation} failed ({exception.GetType().Name}).",
+            exception
+        );
+
+    internal static RateLimitStoreException RateLimit(Exception exception, string operation) =>
+        new(
+            Classify(exception) switch
+            {
+                CacheFailureKind.Timeout => RateLimitFailureKind.Timeout,
+                CacheFailureKind.Unavailable => RateLimitFailureKind.Unavailable,
+                _ => RateLimitFailureKind.Other,
             },
             $"Valkey {operation} failed ({exception.GetType().Name}).",
             exception
