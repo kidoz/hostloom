@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Native AOT validation of named Valkey composition, serialized L2, sliding renewal, leases, and explicit invalidation.</Description>
+    <Description>Native AOT validation of named Valkey caching, locking, rate limiting, serialized L2, sliding renewal, and invalidation.</Description>
     <IsPackable>false</IsPackable>
     <OutputType>Exe</OutputType>
     <PublishAot>true</PublishAot>
@@ -13,6 +13,8 @@
     <ProjectReference Include="../../src/HostLoom.Caching.DependencyInjection/HostLoom.Caching.DependencyInjection.csproj" />
     <ProjectReference Include="../../src/HostLoom.Locking/HostLoom.Locking.csproj" />
     <ProjectReference Include="../../src/HostLoom.Locking.DependencyInjection/HostLoom.Locking.DependencyInjection.csproj" />
+    <ProjectReference Include="../../src/HostLoom.RateLimiting/HostLoom.RateLimiting.csproj" />
+    <ProjectReference Include="../../src/HostLoom.RateLimiting.DependencyInjection/HostLoom.RateLimiting.DependencyInjection.csproj" />
     <ProjectReference Include="../../src/HostLoom.Valkey/HostLoom.Valkey.csproj" />
   </ItemGroup>
 </Project>

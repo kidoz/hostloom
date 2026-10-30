@@ -1,10 +1,13 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
 using HostLoom.Caching;
 using HostLoom.Caching.DependencyInjection;
 using HostLoom.Locking;
 using HostLoom.Locking.DependencyInjection;
+using HostLoom.RateLimiting;
+using HostLoom.RateLimiting.DependencyInjection;
 using HostLoom.Valkey;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection;
@@ -28,6 +31,21 @@ services
     .UseSystemTextJson(json)
     .AddDistributedCacheAdapter(enableSlidingExpiration: true);
 services.AddHostLoomLocking(profile, options => options.Namespace = ns).UseValkey();
+services
+    .AddHostLoomRateLimiting(
+        profile,
+        options =>
+        {
+            options.Namespace = ns;
+            options.TokenBucket = new TokenBucketRateLimitPolicy
+            {
+                TokenLimit = 1,
+                TokensPerPeriod = 1,
+                ReplenishmentPeriod = TimeSpan.FromMinutes(1),
+            };
+        }
+    )
+    .UseValkey();
 var container = services.BuildServiceProvider(
     new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true }
 );
@@ -76,6 +94,39 @@ try
     )
         throw new InvalidOperationException("Valkey lease acquisition or extension failed.");
 
+    var rateLimiter = container.GetRequiredKeyedService<RateLimiter>(profile);
+    using var allowed = await rateLimiter
+        .AcquireAsync(cancellationToken: token)
+        .ConfigureAwait(false);
+    using var rejected = await rateLimiter
+        .AcquireAsync(cancellationToken: token)
+        .ConfigureAwait(false);
+    if (!allowed.IsAcquired || rejected.IsAcquired)
+        throw new InvalidOperationException("Valkey named rate limiting failed.");
+    var manualLimiter = new DistributedRateLimiter(
+        new RateLimitingOptions
+        {
+            Namespace = ns,
+            TokenBucket = new TokenBucketRateLimitPolicy
+            {
+                TokenLimit = 1,
+                TokensPerPeriod = 1,
+                ReplenishmentPeriod = TimeSpan.FromMinutes(1),
+            },
+        },
+        "manual",
+        container.GetRequiredKeyedService<IRateLimitStore>(profile)
+    );
+    await using var manualLifetime = manualLimiter.ConfigureAwait(false);
+    using var manualAllowed = await manualLimiter
+        .AcquireAsync(cancellationToken: token)
+        .ConfigureAwait(false);
+    using var manualRejected = await manualLimiter
+        .AcquireAsync(cancellationToken: token)
+        .ConfigureAwait(false);
+    if (!manualAllowed.IsAcquired || manualRejected.IsAcquired)
+        throw new InvalidOperationException("Valkey container-free rate limiting failed.");
+
     byte[] slidingPayload = [1, 2, 3, 4];
     await distributedCache
         .SetAsync(
@@ -112,7 +163,7 @@ try
     await writer.RemoveAsync("catalog:eu", token).ConfigureAwait(false);
     await invalidated.Task.WaitAsync(token).ConfigureAwait(false);
     Console.WriteLine(
-        "Valkey named profile, serialized L2, sliding renewal, lock scope, and invalidation passed."
+        "Valkey named profiles, serialized L2, sliding renewal, locks, rate limits, and invalidation passed."
     );
 }
 finally
