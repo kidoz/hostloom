@@ -20,7 +20,7 @@ public sealed class HistogramAdviceTests
             .Where(IsHistogram)
             .ToList();
 
-        Assert.Equal(17, histograms.Count);
+        Assert.Equal(18, histograms.Count);
         Assert.All(
             histograms,
             histogram =>

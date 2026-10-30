@@ -50,6 +50,7 @@
     <Project Path="src/HostLoom.Pipelines/HostLoom.Pipelines.csproj" />
     <Project Path="src/HostLoom.RateLimiting/HostLoom.RateLimiting.csproj" />
     <Project Path="src/HostLoom.RateLimiting.DependencyInjection/HostLoom.RateLimiting.DependencyInjection.csproj" />
+    <Project Path="src/HostLoom.RateLimiting.HttpClient/HostLoom.RateLimiting.HttpClient.csproj" />
     <Project Path="src/HostLoom.Scheduling.DependencyInjection/HostLoom.Scheduling.DependencyInjection.csproj" />
     <Project Path="src/HostLoom.Scheduling.Leadership/HostLoom.Scheduling.Leadership.csproj" />
     <Project Path="src/HostLoom.Scheduling.Locking/HostLoom.Scheduling.Locking.csproj" />
