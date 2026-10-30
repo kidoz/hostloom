@@ -12,5 +12,6 @@
     <ProjectReference Include="../../src/HostLoom.Caching.Testing/HostLoom.Caching.Testing.csproj" />
     <ProjectReference Include="../../src/HostLoom.Locking/HostLoom.Locking.csproj" />
     <ProjectReference Include="../../src/HostLoom.Locking.Testing/HostLoom.Locking.Testing.csproj" />
+    <ProjectReference Include="../../src/HostLoom.RateLimiting/HostLoom.RateLimiting.csproj" />
   </ItemGroup>
 </Project>

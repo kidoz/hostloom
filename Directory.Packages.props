@@ -34,6 +34,7 @@
     />
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.14" />
     <PackageVersion Include="NSubstitute" Version="6.2.0" />
@@ -49,6 +50,7 @@
     <PackageVersion Include="Serilog.Sinks.Async" Version="2.1.0" />
     <PackageVersion Include="ValkeyDotNet" Version="1.2.0" />
     <PackageVersion Include="StackExchange.Redis" Version="3.4.20" />
+    <PackageVersion Include="System.Threading.RateLimiting" Version="10.0.14" />
     <PackageVersion Include="ZiggyCreatures.FusionCache" Version="2.9.0" />
     <PackageVersion
       Include="ZiggyCreatures.FusionCache.Serialization.SystemTextJson"
