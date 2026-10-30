@@ -207,6 +207,9 @@ jobs:
           HostLoom.Locking.DependencyInjection
           HostLoom.Locking.Testing
           HostLoom.Locking.Pipelines
+          HostLoom.RateLimiting
+          HostLoom.RateLimiting.DependencyInjection
+          HostLoom.RateLimiting.HttpClient
           HostLoom.NodeLeasing
           HostLoom.NodeLeasing.DependencyInjection
           HostLoom.NodeLeasing.Testing
