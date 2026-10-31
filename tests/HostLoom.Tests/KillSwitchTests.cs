@@ -14,19 +14,33 @@ public sealed class KillSwitchTests
     {
         var clock = new ManualTimeProvider();
         var state = new State();
-        using var host = await StartAsync(clock, state, new KillSwitchPolicy(
-            activationThreshold: 2,
-            tripThreshold: 1,
-            trackingPeriod: TimeSpan.FromMinutes(1),
-            restartTimeout: TimeSpan.FromMinutes(1)
-        ));
+        using var host = await StartAsync(
+            clock,
+            state,
+            new KillSwitchPolicy(
+                activationThreshold: 2,
+                tripThreshold: 1,
+                trackingPeriod: TimeSpan.FromMinutes(1),
+                restartTimeout: TimeSpan.FromMinutes(1)
+            )
+        );
         var client = host.Services.GetRequiredService<IRequestClient<Work, Done>>();
 
         await Assert.ThrowsAsync<RemoteRequestException>(async () =>
-            await client.GetResponseAsync("work", new Work(), timeout: TimeSpan.FromMinutes(10), cancellationToken: TestContext.Current.CancellationToken)
+            await client.GetResponseAsync(
+                "work",
+                new Work(),
+                timeout: TimeSpan.FromMinutes(10),
+                cancellationToken: TestContext.Current.CancellationToken
+            )
         );
         await Assert.ThrowsAsync<RemoteRequestException>(async () =>
-            await client.GetResponseAsync("work", new Work(), timeout: TimeSpan.FromMinutes(10), cancellationToken: TestContext.Current.CancellationToken)
+            await client.GetResponseAsync(
+                "work",
+                new Work(),
+                timeout: TimeSpan.FromMinutes(10),
+                cancellationToken: TestContext.Current.CancellationToken
+            )
         );
         Assert.Equal(2, state.Attempts);
 
@@ -49,15 +63,24 @@ public sealed class KillSwitchTests
     {
         var clock = new ManualTimeProvider();
         var state = new State();
-        using var host = await StartAsync(clock, state, new KillSwitchPolicy(
-            activationThreshold: 2,
-            tripThreshold: 1,
-            trackingPeriod: TimeSpan.FromMinutes(1),
-            restartTimeout: TimeSpan.FromMinutes(1)
-        ));
+        using var host = await StartAsync(
+            clock,
+            state,
+            new KillSwitchPolicy(
+                activationThreshold: 2,
+                tripThreshold: 1,
+                trackingPeriod: TimeSpan.FromMinutes(1),
+                restartTimeout: TimeSpan.FromMinutes(1)
+            )
+        );
         var client = host.Services.GetRequiredService<IRequestClient<Work, Done>>();
         await Assert.ThrowsAsync<RemoteRequestException>(async () =>
-            await client.GetResponseAsync("work", new Work(), timeout: TimeSpan.FromMinutes(10), cancellationToken: TestContext.Current.CancellationToken)
+            await client.GetResponseAsync(
+                "work",
+                new Work(),
+                timeout: TimeSpan.FromMinutes(10),
+                cancellationToken: TestContext.Current.CancellationToken
+            )
         );
         state.Allow = true;
         var done = await client.GetResponseAsync(
@@ -88,7 +111,12 @@ public sealed class KillSwitchTests
         );
         var client = host.Services.GetRequiredService<IRequestClient<Work, Done>>();
         await Assert.ThrowsAsync<RemoteRequestException>(async () =>
-            await client.GetResponseAsync("work", new Work(), timeout: TimeSpan.FromMinutes(10), cancellationToken: TestContext.Current.CancellationToken)
+            await client.GetResponseAsync(
+                "work",
+                new Work(),
+                timeout: TimeSpan.FromMinutes(10),
+                cancellationToken: TestContext.Current.CancellationToken
+            )
         );
         state.Allow = true;
         var done = await client.GetResponseAsync(
@@ -113,22 +141,19 @@ public sealed class KillSwitchTests
             .AddSubscriber<Notice, NoticeHandler>("notices");
         using var host = builder.Build();
         await host.StartAsync(TestContext.Current.CancellationToken);
-        host.Services.GetRequiredService<ReceiveAdmission>().Suspend(
-            new ReceiveDestination("notices", "default"),
-            clock.GetUtcNow().AddMinutes(5)
-        );
+        host.Services.GetRequiredService<ReceiveAdmission>()
+            .Suspend(new ReceiveDestination("notices", "default"), clock.GetUtcNow().AddMinutes(5));
 
-        await host.Services.GetRequiredService<IPublishEndpoint>().PublishAsync(
-            "notices",
-            new Notice("n1"),
-            TestContext.Current.CancellationToken
-        );
+        await host
+            .Services.GetRequiredService<IPublishEndpoint>()
+            .PublishAsync("notices", new Notice("n1"), TestContext.Current.CancellationToken);
 
         var store = host.Services.GetRequiredService<InMemoryOutboxStore>();
         var held = false;
         for (var attempt = 0; attempt < 50 && !held; attempt++)
         {
-            held = store.Pending.Count == 1
+            held =
+                store.Pending.Count == 1
                 && store.Pending[0].Attempts >= 1
                 && store.Published.Count == 0;
             if (!held)
@@ -144,21 +169,24 @@ public sealed class KillSwitchTests
     public async Task The_probe_reports_the_kill_switch()
     {
         var clock = new ManualTimeProvider();
-        using var host = await StartAsync(clock, new State(), new KillSwitchPolicy(
-            2,
-            0.5,
-            TimeSpan.FromSeconds(30),
-            TimeSpan.FromSeconds(10)
-        ));
-        var probe = host.Services.GetRequiredService<HostLoomProbe>().ReceivePipeline(
-            TestContext.Current.CancellationToken
+        using var host = await StartAsync(
+            clock,
+            new State(),
+            new KillSwitchPolicy(2, 0.5, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(10))
         );
+        var probe = host
+            .Services.GetRequiredService<HostLoomProbe>()
+            .ReceivePipeline(TestContext.Current.CancellationToken);
         var filter = Assert.Single(probe.Children, child => child.Name == "kill-switch");
         Assert.Equal(2, filter.Properties["activationThreshold"]);
         Assert.Equal(0, filter.Properties["suspended"]);
     }
 
-    private static async Task<IHost> StartAsync(ManualTimeProvider clock, State state, KillSwitchPolicy policy)
+    private static async Task<IHost> StartAsync(
+        ManualTimeProvider clock,
+        State state,
+        KillSwitchPolicy policy
+    )
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton<TimeProvider>(clock);

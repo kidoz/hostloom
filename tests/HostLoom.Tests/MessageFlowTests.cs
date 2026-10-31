@@ -1,10 +1,9 @@
 using System.Text.Json;
+using HostLoom;
 using HostLoom.Transport.InMemory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Xunit;
-
-using HostLoom;
 
 namespace HostLoom.Tests;
 
@@ -62,7 +61,11 @@ public sealed class MessageFlowTests
             await Broker(host).DeliverRequestAsync("echo", frame)
         );
 
-        Assert.Contains(field == "conversationId" ? "conversation id" : "initiator id", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            field == "conversationId" ? "conversation id" : "initiator id",
+            exception.Message,
+            StringComparison.Ordinal
+        );
         Assert.Equal(0, Handled(host));
     }
 
@@ -115,7 +118,10 @@ public sealed class MessageFlowTests
             TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken
         );
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        await started.Task.WaitAsync(
+            TimeSpan.FromSeconds(2),
+            TestContext.Current.CancellationToken
+        );
         clock.Advance(TimeSpan.FromSeconds(5));
         await Assert.ThrowsAsync<RequestTimeoutException>(async () => await waiting);
     }
@@ -158,7 +164,11 @@ public sealed class MessageFlowTests
     {
         using var host = await StartAsync();
         var endpoint = host.Services.GetRequiredService<IPublishEndpoint>();
-        await endpoint.PublishAsync("orders", new Placed("n1"), TestContext.Current.CancellationToken);
+        await endpoint.PublishAsync(
+            "orders",
+            new Placed("n1"),
+            TestContext.Current.CancellationToken
+        );
 
         var published = JsonDocument.Parse(Assert.Single(Broker(host).Events));
         Assert.NotEqual(Guid.Empty, published.RootElement.GetProperty("conversationId").GetGuid());
@@ -213,22 +223,23 @@ public sealed class MessageFlowTests
     {
         using var host = await StartAsync();
         var conversationId = Guid.NewGuid();
-        await Broker(host).DeliverRequestAsync(
-            "echo",
-            Frame(
-                $$"""
-                {
-                  "messageId": "{{Guid.NewGuid()}}",
-                  "conversationId": "{{conversationId}}",
-                  "kind": "Request",
-                  "messageType": "{{TypeName<Echo>()}}",
-                  "responseType": "{{TypeName<Echoed>()}}",
-                  "sentAt": "2026-09-20T10:00:00Z",
-                  "body": "{{Body(new Echo("read"))}}"
-                }
-                """
-            )
-        );
+        await Broker(host)
+            .DeliverRequestAsync(
+                "echo",
+                Frame(
+                    $$"""
+                    {
+                      "messageId": "{{Guid.NewGuid()}}",
+                      "conversationId": "{{conversationId}}",
+                      "kind": "Request",
+                      "messageType": "{{TypeName<Echo>()}}",
+                      "responseType": "{{TypeName<Echoed>()}}",
+                      "sentAt": "2026-09-20T10:00:00Z",
+                      "body": "{{Body(new Echo("read"))}}"
+                    }
+                    """
+                )
+            );
 
         Assert.Equal(conversationId, host.Services.GetRequiredService<Count>().Seen);
     }
@@ -286,13 +297,20 @@ public sealed class MessageFlowTests
         IPublishEndpoint publish
     ) : IRequestHandler<Echo, Echoed>
     {
-        public async ValueTask<Echoed> HandleAsync(Echo request, CancellationToken cancellationToken)
+        public async ValueTask<Echoed> HandleAsync(
+            Echo request,
+            CancellationToken cancellationToken
+        )
         {
             count.Handled++;
             count.Seen = flow.ConversationId;
             if (request.Value == "continue")
             {
-                await client.GetResponseAsync("nested", new Nested(request.Value), cancellationToken: cancellationToken);
+                await client.GetResponseAsync(
+                    "nested",
+                    new Nested(request.Value),
+                    cancellationToken: cancellationToken
+                );
                 await publish.PublishAsync("orders", new Placed(request.Value), cancellationToken);
             }
 
@@ -302,8 +320,10 @@ public sealed class MessageFlowTests
 
     public sealed class NestedHandler : IRequestHandler<Nested, NestedResult>
     {
-        public ValueTask<NestedResult> HandleAsync(Nested request, CancellationToken cancellationToken) =>
-            ValueTask.FromResult(new NestedResult(request.Value));
+        public ValueTask<NestedResult> HandleAsync(
+            Nested request,
+            CancellationToken cancellationToken
+        ) => ValueTask.FromResult(new NestedResult(request.Value));
     }
 
     public sealed class PlacedHandler : IEventHandler<Placed>

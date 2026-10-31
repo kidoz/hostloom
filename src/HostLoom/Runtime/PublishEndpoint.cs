@@ -10,6 +10,7 @@ internal sealed class PublishEndpoint(
 ) : IPublishEndpoint
 {
     private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
+
     public ValueTask PublishAsync<TEvent>(
         RequestAddress topic,
         TEvent @event,

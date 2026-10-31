@@ -11,6 +11,7 @@ internal sealed class RequestClient<TRequest, TResponse>(
     where TRequest : IRequest<TResponse>
 {
     private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
+
     public async ValueTask<TResponse> GetResponseAsync(
         RequestAddress destination,
         TRequest request,

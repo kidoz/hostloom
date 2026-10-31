@@ -29,9 +29,8 @@ public static class KillSwitchRegistration
             );
         var admission = services.GetRequiredService<ReceiveAdmission>();
         var clock = timeProvider ?? services.GetService<TimeProvider>() ?? TimeProvider.System;
-        var logger = services
-            .GetService<ILoggerFactory>()
-            ?.CreateLogger("HostLoom.KillSwitch")
+        var logger =
+            services.GetService<ILoggerFactory>()?.CreateLogger("HostLoom.KillSwitch")
             ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
         return builder.Use(new KillSwitchFilter(policy, admission, clock, logger));
     }

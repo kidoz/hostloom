@@ -15,6 +15,7 @@ internal sealed class EventDispatcher(
 {
     private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
     private readonly ReceiveAdmission _admission = admission ?? new ReceiveAdmission();
+
     public async ValueTask DispatchAsync(
         RequestAddress topic,
         string subscription,

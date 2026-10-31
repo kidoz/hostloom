@@ -8,31 +8,41 @@ public sealed class PartitionerTests
     [Fact]
     public async Task Different_keys_run_together()
     {
-        var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var secondEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
         var pipe = Pipe.Create<KeyedContext>(builder =>
-            builder.UsePartitioner(2, context => context.Key)
-                .Use(async (context, next) =>
-                {
-                    if (context.Key == 0)
+            builder
+                .UsePartitioner(2, context => context.Key)
+                .Use(
+                    async (context, next) =>
                     {
-                        firstEntered.SetResult();
-                        await release.Task;
-                    }
-                    else
-                    {
-                        secondEntered.SetResult();
-                    }
+                        if (context.Key == 0)
+                        {
+                            firstEntered.SetResult();
+                            await release.Task;
+                        }
+                        else
+                        {
+                            secondEntered.SetResult();
+                        }
 
-                    await next.SendAsync(context);
-                })
+                        await next.SendAsync(context);
+                    }
+                )
         );
 
         var first = pipe.SendAsync(new KeyedContext(0));
         await firstEntered.Task;
         var second = pipe.SendAsync(new KeyedContext(1));
-        await secondEntered.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        await secondEntered.Task.WaitAsync(
+            TimeSpan.FromSeconds(2),
+            TestContext.Current.CancellationToken
+        );
         release.SetResult();
         await Task.WhenAll(first.AsTask(), second.AsTask());
     }
@@ -41,25 +51,32 @@ public sealed class PartitionerTests
     public async Task The_same_key_runs_one_at_a_time_in_arrival_order()
     {
         var entered = new List<int>();
-        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var firstEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
         var pipe = Pipe.Create<KeyedContext>(builder =>
-            builder.UsePartitioner(2, context => context.Key)
-                .Use(async (context, next) =>
-                {
-                    lock (entered)
+            builder
+                .UsePartitioner(2, context => context.Key)
+                .Use(
+                    async (context, next) =>
                     {
-                        entered.Add(context.Order);
-                    }
+                        lock (entered)
+                        {
+                            entered.Add(context.Order);
+                        }
 
-                    if (context.Order == 1)
-                    {
-                        firstEntered.SetResult();
-                        await releaseFirst.Task;
-                    }
+                        if (context.Order == 1)
+                        {
+                            firstEntered.SetResult();
+                            await releaseFirst.Task;
+                        }
 
-                    await next.SendAsync(context);
-                })
+                        await next.SendAsync(context);
+                    }
+                )
         );
 
         var first = pipe.SendAsync(new KeyedContext(0, 1));
@@ -83,21 +100,24 @@ public sealed class PartitionerTests
         var holding = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var ran = 0;
         var pipe = Pipe.Create<KeyedContext>(builder =>
-            builder.UsePartitioner(1, context => context.Key)
-                .Use(async (context, next) =>
-                {
-                    if (context.Order == 1)
+            builder
+                .UsePartitioner(1, context => context.Key)
+                .Use(
+                    async (context, next) =>
                     {
-                        holding.SetResult();
-                        await release.Task;
-                    }
-                    else
-                    {
-                        Interlocked.Increment(ref ran);
-                    }
+                        if (context.Order == 1)
+                        {
+                            holding.SetResult();
+                            await release.Task;
+                        }
+                        else
+                        {
+                            Interlocked.Increment(ref ran);
+                        }
 
-                    await next.SendAsync(context);
-                })
+                        await next.SendAsync(context);
+                    }
+                )
         );
 
         var first = pipe.SendAsync(new KeyedContext(0, 1));
@@ -117,11 +137,13 @@ public sealed class PartitionerTests
     {
         var failed = false;
         var pipe = Pipe.Create<KeyedContext>(builder =>
-            builder.UsePartitioner(1, context => context.Key)
-                .Use((context, next) =>
-                    !failed
-                        ? throw new InvalidOperationException("fail")
-                        : next.SendAsync(context)
+            builder
+                .UsePartitioner(1, context => context.Key)
+                .Use(
+                    (context, next) =>
+                        !failed
+                            ? throw new InvalidOperationException("fail")
+                            : next.SendAsync(context)
                 )
         );
 
@@ -135,9 +157,7 @@ public sealed class PartitionerTests
     [Fact]
     public async Task A_null_key_is_rejected()
     {
-        var pipe = Pipe.Create<KeyedContext>(builder =>
-            builder.UsePartitioner(1, _ => null!)
-        );
+        var pipe = Pipe.Create<KeyedContext>(builder => builder.UsePartitioner(1, _ => null!));
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await pipe.SendAsync(new KeyedContext(0))
@@ -157,8 +177,11 @@ public sealed class PartitionerTests
         Assert.Equal(4, partitioner.Properties["partitionCount"]);
     }
 
-    private sealed class KeyedContext(int key, int order = 0, CancellationToken cancellationToken = default)
-        : PipeContext(cancellationToken)
+    private sealed class KeyedContext(
+        int key,
+        int order = 0,
+        CancellationToken cancellationToken = default
+    ) : PipeContext(cancellationToken)
     {
         public int Key { get; } = key;
 

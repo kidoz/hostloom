@@ -437,7 +437,8 @@ public sealed class InMemoryRequestBroker
     {
         try
         {
-            var response = await RunRequestAsync(subscription, request, reply).ConfigureAwait(false);
+            var response = await RunRequestAsync(subscription, request, reply)
+                .ConfigureAwait(false);
             if (response is null)
             {
                 return;
@@ -476,7 +477,9 @@ public sealed class InMemoryRequestBroker
         {
             try
             {
-                return await subscription.Handler(request, subscription.Token).ConfigureAwait(false);
+                return await subscription
+                    .Handler(request, subscription.Token)
+                    .ConfigureAwait(false);
             }
             catch (RequestExpiredException)
             {
