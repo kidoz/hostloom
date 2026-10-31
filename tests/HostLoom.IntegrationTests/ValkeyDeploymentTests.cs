@@ -289,15 +289,6 @@ public sealed class ValkeyDeploymentTests
                         )
                     ).IsNull
                 );
-                await databaseProbe.ExecuteAsync(new ValkeyCommand("SELECT", 0), token);
-                Assert.True(
-                    (
-                        await databaseProbe.ExecuteAsync(
-                            new ValkeyCommand("GET", ns + ":cache:data:catalog"),
-                            token
-                        )
-                    ).IsNull
-                );
             }
             // The re-established subscription flushes the reader's in-process tier, because
             // invalidations published during the outage were never delivered; the copy of
@@ -338,6 +329,34 @@ public sealed class ValkeyDeploymentTests
             );
             Assert.True(channel.IsSubscribed);
             Assert.True(fixture.CertificateValidations >= validatedBefore + 2);
+            // The independent database probe must not count toward TLS recovery above.
+            var currentConnection = fixture.Options(protocol).Connection;
+            var databaseZeroOptions = new ValkeyClientOptions
+            {
+                Host = currentConnection.Host,
+                Port = currentConnection.Port,
+                Protocol = currentConnection.Protocol,
+                Database = 0,
+                Username = currentConnection.Username,
+                Password = currentConnection.Password,
+                ClientName = currentConnection.ClientName,
+                UseTls = currentConnection.UseTls,
+                ConnectTimeout = currentConnection.ConnectTimeout,
+                CertificateValidationCallback = currentConnection.CertificateValidationCallback,
+            };
+            await using (
+                var databaseZeroProbe = await ValkeyClient.ConnectAsync(databaseZeroOptions, token)
+            )
+            {
+                Assert.True(
+                    (
+                        await databaseZeroProbe.ExecuteAsync(
+                            new ValkeyCommand("GET", ns + ":cache:data:catalog"),
+                            token
+                        )
+                    ).IsNull
+                );
+            }
             await writer.RemoveAsync("catalog", token);
             await WaitUntilAsync(
                 async () => !(await reader.TryGetAsync<string>("catalog", token)).Found,
