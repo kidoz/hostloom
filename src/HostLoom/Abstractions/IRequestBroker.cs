@@ -57,6 +57,13 @@ public interface IRequestBroker : IAsyncDisposable
     /// <exception cref="ObjectDisposedException">The transport was disposed before or during the call.</exception>
     /// <exception cref="MessagingTransportException">Any other transport failure. Whether the request was delivered is unknown.</exception>
     /// <exception cref="MalformedEnvelopeException">The received reply exceeds <see cref="HostLoomOptions.MaxFrameBytes"/>, or an in-memory request frame exceeds it.</exception>
+    /// <remarks>
+    /// A listener that throws <see cref="RequestExpiredException"/> must not run the handler again
+    /// and must not answer: Kafka commits past the record and RabbitMQ rejects it without requeue.
+    /// A listener that throws <see cref="ReceiveSuspendedException"/> must keep the delivery and
+    /// pause that listener until <see cref="ReceiveSuspendedException.ResumeAt"/>. One that lets
+    /// either exception escape follows its ordinary failure path.
+    /// </remarks>
     ValueTask<ReadOnlyMemory<byte>> RequestAsync(
         RequestAddress address,
         ReadOnlyMemory<byte> request,

@@ -14,7 +14,7 @@ implements:
 
 - generic `IPipe<TContext>` and `IFilter<TContext>` composition, with typed
   context payloads, conditional branches, retry, circuit breaking, rate and
-  concurrency limits, timeouts, intentional short-circuits, and immutable
+  concurrency limits, per-key partitioning, timeouts, intentional short-circuits, and immutable
   pipeline probes;
 - dependency-injection pipeline registration with named stages, per-run filter
   resolution, feature toggles, startup validation, built-in per-filter metrics

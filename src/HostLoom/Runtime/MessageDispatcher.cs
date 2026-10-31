@@ -45,6 +45,8 @@ internal sealed class MessageDispatcher
     private readonly bool _includeFaultDetails;
     private readonly int _maxFrameBytes;
     private readonly ILogger<MessageDispatcher> _logger;
+    private readonly TimeProvider _clock;
+    private readonly ReceiveAdmission _admission;
 
     public MessageDispatcher(
         HostLoomConfiguration configuration,
@@ -52,7 +54,9 @@ internal sealed class MessageDispatcher
         ReceivePipeline receivePipeline,
         IServiceScopeFactory scopeFactory,
         IOptions<HostLoomOptions>? options = null,
-        ILogger<MessageDispatcher>? logger = null
+        ILogger<MessageDispatcher>? logger = null,
+        TimeProvider? timeProvider = null,
+        ReceiveAdmission? admission = null
     )
     {
         _configuration = configuration;
@@ -62,6 +66,8 @@ internal sealed class MessageDispatcher
         _includeFaultDetails = options?.Value.IncludeFaultDetails ?? false;
         _maxFrameBytes = options?.Value.MaxFrameBytes ?? HostLoomOptions.DefaultMaxFrameBytes;
         _logger = logger ?? NullLogger<MessageDispatcher>.Instance;
+        _clock = timeProvider ?? TimeProvider.System;
+        _admission = admission ?? new ReceiveAdmission();
     }
 
     public async ValueTask<ReadOnlyMemory<byte>> DispatchAsync(
@@ -77,6 +83,31 @@ internal sealed class MessageDispatcher
             throw new MalformedEnvelopeException(
                 $"Expected a request envelope, received '{request.Kind}'."
             );
+        }
+
+        var now = _clock.GetUtcNow();
+        if (request.ExpiresAt is { } expiresAt && expiresAt <= now)
+        {
+            HostLoomDiagnostics.RequestsExpired.Add(
+                1,
+                new TagList { { "messaging.destination.name", endpoint.Value } }
+            );
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Request '{MessageType}' on endpoint '{Endpoint}' expired at {ExpiresAt} and was not handled.",
+                    request.MessageType,
+                    endpoint.Value,
+                    expiresAt
+                );
+            }
+            throw new RequestExpiredException(endpoint, expiresAt);
+        }
+
+        var destination = new ReceiveDestination(endpoint.Value, null);
+        if (_admission.TryGetSuspension(destination, now, out var resumeAt))
+        {
+            throw new ReceiveSuspendedException(endpoint, subscription: null, resumeAt);
         }
 
         if (!_configuration.TryGetHandler(endpoint, request.MessageType, out var registration))
@@ -122,6 +153,7 @@ internal sealed class MessageDispatcher
             );
         }
 
+        using var flow = MessageFlow.Begin(request);
         using var activity = HostLoomDiagnostics.ActivitySource.StartActivity(
             "hostloom handle request"
         );
@@ -129,6 +161,7 @@ internal sealed class MessageDispatcher
         activity?.SetTag("messaging.destination.name", endpoint.Value);
         activity?.SetTag("messaging.message.type", request.MessageType);
         activity?.SetTag("messaging.message.id", request.MessageId);
+        MessageFlow.Tag(activity);
 
         var start = Stopwatch.GetTimestamp();
         HostLoomDiagnostics.ActiveRequests.Add(1, tags);
@@ -173,10 +206,12 @@ internal sealed class MessageDispatcher
             {
                 MessageId = Guid.NewGuid(),
                 CorrelationId = request.MessageId,
+                ConversationId = request.ConversationId ?? request.MessageId,
+                InitiatorId = request.CorrelationId ?? request.MessageId,
                 Kind = MessageKind.Response,
                 MessageType = request.ResponseType,
                 ResponseType = request.ResponseType,
-                SentAt = DateTimeOffset.UtcNow,
+                SentAt = _clock.GetUtcNow(),
                 Body = _serializer.Serialize(receiveContext.Response, registration.ResponseType),
             };
 
@@ -337,6 +372,8 @@ internal sealed class MessageDispatcher
             {
                 MessageId = Guid.NewGuid(),
                 CorrelationId = request.MessageId,
+                ConversationId = request.ConversationId ?? request.MessageId,
+                InitiatorId = request.CorrelationId ?? request.MessageId,
                 Kind = MessageKind.Fault,
                 MessageType = request.ResponseType,
                 ResponseType = request.ResponseType,

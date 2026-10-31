@@ -50,6 +50,61 @@ public sealed class KafkaConsumerLoopTests
     }
 
     [Fact]
+    public async Task An_expired_request_is_committed_past_without_a_rewind()
+    {
+        var log = new PartitionLog("requests", 1);
+        var seen = 0;
+        await using (
+            Start(
+                log,
+                (_, _) =>
+                {
+                    seen++;
+                    throw new RequestExpiredException("requests", DateTimeOffset.UnixEpoch);
+                }
+            )
+        )
+        {
+            await WaitUntilAsync(() => log.Commits.Count == 1, "the expired record commits");
+        }
+
+        Assert.Equal(1, seen);
+        Assert.Empty(log.Seeks);
+    }
+
+    [Fact]
+    public async Task A_suspended_record_is_read_again_from_the_same_offset()
+    {
+        var log = new PartitionLog("requests", 1);
+        var seen = 0;
+        await using (
+            Start(
+                log,
+                (_, _) =>
+                {
+                    seen++;
+                    if (seen == 1)
+                    {
+                        throw new ReceiveSuspendedException(
+                            "requests",
+                            subscription: null,
+                            DateTimeOffset.UtcNow.AddMilliseconds(-1)
+                        );
+                    }
+
+                    return ValueTask.CompletedTask;
+                }
+            )
+        )
+        {
+            await WaitUntilAsync(() => log.Commits.Count == 1, "the record commits after resume");
+        }
+
+        Assert.Equal(2, seen);
+        Assert.NotEmpty(log.Seeks);
+    }
+
+    [Fact]
     public async Task Failed_record_is_redelivered_before_any_later_record_commits()
     {
         var log = new PartitionLog("requests", 2);

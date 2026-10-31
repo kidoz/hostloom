@@ -356,6 +356,12 @@ public sealed class InMemoryRequestBroker
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (subscription.Token.IsCancellationRequested) { }
+        catch (ReceiveSuspendedException)
+        {
+            // The subscription is paused. The publisher, including an outbox relay, must see it
+            // and leave the message pending. Other subscriber failures stay local.
+            throw;
+        }
         catch (Exception exception)
         {
             _logger.LogError(
@@ -431,12 +437,14 @@ public sealed class InMemoryRequestBroker
     {
         try
         {
-            var response = await Task.Run(async () =>
-                    await subscription.Handler(request, subscription.Token).ConfigureAwait(false)
-                )
-                .ConfigureAwait(false);
-            ValidateFrameSize(response.Length);
-            reply.TrySetResult(response);
+            var response = await RunRequestAsync(subscription, request, reply).ConfigureAwait(false);
+            if (response is null)
+            {
+                return;
+            }
+
+            ValidateFrameSize(response.Value.Length);
+            reply.TrySetResult(response.Value);
         }
         catch (OperationCanceledException) { }
         catch (Exception exception)
@@ -450,6 +458,50 @@ public sealed class InMemoryRequestBroker
         finally
         {
             subscription.Exit();
+        }
+    }
+
+    /// <summary>
+    /// Runs the listener, waiting out a pause without starting the handler once the caller has
+    /// stopped waiting. An expired request is dropped the same way: no reply, so the caller
+    /// reaches its own timeout.
+    /// </summary>
+    private async Task<ReadOnlyMemory<byte>?> RunRequestAsync(
+        RequestSubscription subscription,
+        byte[] request,
+        TaskCompletionSource<ReadOnlyMemory<byte>> reply
+    )
+    {
+        while (true)
+        {
+            try
+            {
+                return await subscription.Handler(request, subscription.Token).ConfigureAwait(false);
+            }
+            catch (RequestExpiredException)
+            {
+                return null;
+            }
+            catch (ReceiveSuspendedException suspended)
+            {
+                var delay = suspended.ResumeAt - _clock.GetUtcNow();
+                if (delay > TimeSpan.Zero)
+                {
+                    try
+                    {
+                        await Task.Delay(delay, _clock, subscription.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return null;
+                    }
+                }
+
+                if (!_waiting.ContainsKey(reply) || subscription.Token.IsCancellationRequested)
+                {
+                    return null;
+                }
+            }
         }
     }
 

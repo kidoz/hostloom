@@ -305,6 +305,52 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                 TryCommit(record);
                 retries.Remove(record.TopicPartition);
             }
+            catch (RequestExpiredException exception)
+            {
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        KafkaEvents.RecordMalformed,
+                        exception,
+                        "HostLoom Kafka request at {Offset} on '{Topic}' expired; skipping it.",
+                        record.TopicPartitionOffset,
+                        _topic
+                    );
+                }
+
+                RecordSkipped("expired");
+                TryCommit(record);
+                retries.Remove(record.TopicPartition);
+            }
+            catch (ReceiveSuspendedException exception)
+            {
+                // Keep the record. Pause so the loop does not spin, then read the same offset again.
+                var assigned = _consumer.Assignment;
+                if (assigned is { Count: > 0 })
+                {
+                    _consumer.Pause(assigned);
+                }
+
+                var delay = exception.ResumeAt - _clock.GetUtcNow();
+                if (delay > TimeSpan.Zero)
+                {
+                    try
+                    {
+                        await Task.Delay(delay, _clock, _stopping.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+
+                if (assigned is { Count: > 0 })
+                {
+                    _consumer.Resume(assigned);
+                }
+
+                _consumer.Seek(record.TopicPartitionOffset);
+            }
             catch (UnroutableReplyException exception)
             {
                 // The handler completed; only the reply failed to leave. Rewinding would run the

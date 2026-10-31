@@ -44,6 +44,7 @@ on a shared context.
 | `UseRetry(RetryPolicy policy, Func<Exception, bool>? shouldRetry = null, TimeProvider? timeProvider = null)` | never retries cancellation; exposes `RetryAttempt(int Number)` payload (absent on the first attempt) |
 | `UseCircuitBreaker(int failureThreshold, TimeSpan resetInterval, TimeProvider? timeProvider = null)` | consecutive failures open the circuit; one trial call per interval |
 | `UseRateLimit(int limit, TimeSpan interval, TimeProvider? timeProvider = null)` | shapes throughput by waiting, not throwing |
+| `UsePartitioner(int partitionCount, Func<TContext, object> keySelector)` | one call at a time per key on this process. A null key throws. `UseRetry` then `UsePartitioner` releases the lane during a retry delay; the other order holds the lane across attempts |
 | `Build()` | single-use — a second `Build` throws `ObjectDisposedException` |
 
 `UseTimeout(TimeSpan, TimeProvider? = null)` is an extension method

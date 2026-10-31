@@ -31,7 +31,10 @@ public static class ServiceCollectionExtensions
                     "HostLoomOptions.MaxFrameBytes must be positive."
                 )
                 .ValidateOnStart();
+            services.TryAddSingleton(TimeProvider.System);
             services.TryAddSingleton<IMessageSerializer, SystemTextJsonMessageSerializer>();
+            services.TryAddSingleton<ReceiveAdmission>();
+            services.TryAddScoped<IMessageFlow, AmbientMessageFlow>();
             services.TryAddSingleton<ReceivePipeline>();
             services.TryAddSingleton<MessageDispatcher>();
             services.TryAddSingleton<EventDispatcher>();

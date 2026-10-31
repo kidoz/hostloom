@@ -128,4 +128,16 @@ public static class HostLoomDiagnostics
         "{delivery}",
         "Redelivered events the inbox recognised and did not run handlers for."
     );
+
+    internal static readonly Counter<long> RequestsExpired = Meter.CreateCounter<long>(
+        "hostloom.messaging.requests.expired",
+        "{request}",
+        "Requests dropped because their expiry had passed, before a handler ran."
+    );
+
+    internal static readonly Counter<long> ReceiveSuspensions = Meter.CreateCounter<long>(
+        "hostloom.receive.suspensions",
+        "{suspension}",
+        "Times a receive destination was paused after its failure ratio tripped."
+    );
 }

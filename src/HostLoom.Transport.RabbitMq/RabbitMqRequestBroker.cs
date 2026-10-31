@@ -290,6 +290,17 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                     await RequeueAsync(channel, delivery.DeliveryTag).ConfigureAwait(false);
                     return;
                 }
+                catch (RequestExpiredException exception)
+                {
+                    await RejectAsync(channel, owner, delivery, exception).ConfigureAwait(false);
+                    return;
+                }
+                catch (ReceiveSuspendedException exception)
+                {
+                    await RequeueAsync(channel, delivery.DeliveryTag).ConfigureAwait(false);
+                    owner.SchedulePause(exception.ResumeAt);
+                    return;
+                }
                 catch (Exception exception)
                 {
                     await RejectAsync(channel, owner, delivery, exception).ConfigureAwait(false);
@@ -512,7 +523,12 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
             _clientTag,
             new(
                 RabbitMqDiagnostics.ReasonTag,
-                exception is MalformedEnvelopeException ? "malformed" : "handler_failed"
+                exception switch
+                {
+                    MalformedEnvelopeException => "malformed",
+                    RequestExpiredException => "expired",
+                    _ => "handler_failed",
+                }
             )
         );
 
@@ -647,6 +663,12 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                 catch (OperationCanceledException) when (linked.IsCancellationRequested)
                 {
                     await RequeueAsync(channel, delivery.DeliveryTag).ConfigureAwait(false);
+                    return;
+                }
+                catch (ReceiveSuspendedException exception)
+                {
+                    await RequeueAsync(channel, delivery.DeliveryTag).ConfigureAwait(false);
+                    owner.SchedulePause(exception.ResumeAt);
                     return;
                 }
                 catch (Exception exception)
@@ -878,6 +900,7 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
                 ContentType = ContentType,
                 CorrelationId = requestId.ToString("N"),
                 ReplyTo = _replyQueue,
+                Expiration = Milliseconds(timeout),
             };
 
             try
@@ -1256,6 +1279,22 @@ public sealed partial class RabbitMqRequestBroker : IRequestBroker, IEventBroker
         {
             _initializationGate.Release();
         }
+    }
+
+    private static string Milliseconds(TimeSpan timeout)
+    {
+        var milliseconds = Math.Ceiling(timeout.TotalMilliseconds);
+        if (milliseconds < 1)
+        {
+            milliseconds = 1;
+        }
+
+        if (milliseconds > int.MaxValue)
+        {
+            milliseconds = int.MaxValue;
+        }
+
+        return ((long)milliseconds).ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private void ValidateFrameSize(int length)

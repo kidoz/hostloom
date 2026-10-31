@@ -44,10 +44,17 @@ returns a `HostLoomBuilder`:
 | `AddSubscriber<TEvent, THandler>(RequestAddress topic, string subscription = "default")` | handler **scoped** |
 | `AddBehavior<TRequest, TResponse, TBehavior>()` | behavior **scoped**; additive — multiple behaviors run for one request |
 | `AddRequestClient<TRequest, TResponse>()` | client **transient**; for applications with no local handler |
-| `ConfigureReceivePipeline(Action<PipeBuilder<ReceiveContext>> configure)` | appends receive filters; callable repeatedly |
+| `ConfigureReceivePipeline(Action<PipeBuilder<ReceiveContext>> configure)` | appends receive filters; callable repeatedly. `UseKillSwitch` pauses one destination when its failure ratio trips |
 | `AddHealthChecks(string livenessName = "hostloom-live", string readinessName = "hostloom-ready")` | two checks tagged `live` / `ready` |
 | `UseTransport<TBroker>()` | broker **singleton**; throws `InvalidOperationException` if a transport is already registered |
 | `Services` | the underlying `IServiceCollection` |
+
+`IMessageFlow` is scoped. Inside a delivery it exposes that delivery's
+`ConversationId`, `InitiatorId`, and `MessageId`. Reading it outside a delivery
+throws. A publish or request made on the delivery's context copies the
+conversation. One made with no delivery starts a new conversation and sets no
+initiator. A publish that hops to another thread without that context starts a
+new flow.
 
 Handlers, subscribers, and behaviors are scoped on purpose: every delivery
 attempt runs in its own dependency-injection scope. Registering them as
@@ -63,7 +70,7 @@ handlers before opening any transport listener or subscription.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `RequestTimeout` | 30 seconds | How long a client waits for a reply before failing; overridable per call via `GetResponseAsync`'s `timeout` parameter. For a stream it bounds only the wait for a listener to accept, not the gaps between items |
+| `RequestTimeout` | 30 seconds | How long a client waits for a reply before failing; overridable per call via `GetResponseAsync`'s `timeout` parameter. The same duration is written on the request as `ExpiresAt`. For a stream it bounds only the wait for a listener to accept, not the gaps between items |
 | `MaxFrameBytes` | 1,048,576 (1 MiB) | Positive, inclusive limit on encoded request, event, response and fault frames, checked before envelope decoding and before built-in request, event, and outbox sends perform broker or store I/O. Also used by the built-in transports, including raw frame handlers and correlated replies. Typed in-process streams have no frame |
 | `IncludeFaultDetails` | `false` | Forward every handler exception's type name and message in the fault envelope. Off, a caller sees `HandlerFault` / "The request handler failed." for everything except a `RemoteFaultException`; the full exception is logged on the handling side either way |
 
@@ -83,7 +90,9 @@ when bounding those allocations. See [oversized-frame handling](transports.md#ov
 | `RemoteFaultException` (thrown by handlers, not raised by HostLoom) | a handler wants the caller to read its message; its type and message cross the wire verbatim, unlike any other exception | standard constructors; subclass it for typed faults |
 | `RequestTimeoutException` (`: TimeoutException`) | no reply within the timeout | `RequestAddress Address`, `TimeSpan Timeout` |
 | `MessagingTransportException` | the transport could not carry a request or event: the broker refused or lost the connection, rejected the publication, or its client library failed; whether the broker accepted the message is unknown, so a retry can deliver twice | `RequestAddress Address`; the client library's exception as `InnerException` |
-| `MalformedEnvelopeException` | an envelope cannot be decoded, has no message id, has an unusable correlation id, or lacks a name or fault field its kind requires ([validation](wire-envelope.md#identifier-and-name-validation)) | message only |
+| `MalformedEnvelopeException` | an envelope cannot be decoded, has no message id, has an unusable correlation, conversation, or initiator id, or lacks a name or fault field its kind requires ([validation](wire-envelope.md#identifier-and-name-validation)) | message only |
+| `RequestExpiredException` | a request's `ExpiresAt` has passed. The handler does not run and no fault is sent. Kafka commits past the record, RabbitMQ rejects it without requeue, and an in-memory caller waits out its own timeout | `RequestAddress Destination`, `DateTimeOffset ExpiresAt` |
+| `ReceiveSuspendedException` | the destination's kill switch has paused consumption. The handler did not start. A transport keeps the delivery and pauses that listener until `ResumeAt`. The in-memory transport waits out a paused request inside the caller's timeout, and fails a paused event publish so an outbox row stays pending | `RequestAddress Destination`, `string? Subscription`, `DateTimeOffset ResumeAt` |
 | `NotSupportedException` | publishing through a transport without `IEventBroker`, or streaming through a transport without `IStreamRequestBroker`; a registered stream endpoint also fails host startup | — |
 
 ## Serialization boundary

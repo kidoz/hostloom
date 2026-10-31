@@ -75,6 +75,20 @@ internal static class WireEnvelopeCodec
             );
         }
 
+        if (envelope.ConversationId == Guid.Empty)
+        {
+            throw new MalformedEnvelopeException(
+                "The message envelope carries an empty conversation id."
+            );
+        }
+
+        if (envelope.InitiatorId == Guid.Empty)
+        {
+            throw new MalformedEnvelopeException(
+                "The message envelope carries an empty initiator id."
+            );
+        }
+
         if (
             envelope.Kind is MessageKind.Response or MessageKind.Fault
             && envelope.CorrelationId is null

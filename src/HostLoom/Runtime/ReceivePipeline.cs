@@ -24,7 +24,11 @@ internal sealed class ReceivePipeline
     {
         _pipe = Pipe.Create<ReceiveContext>(builder =>
         {
-            configuration.ReceivePipeline?.Invoke(builder, provider);
+            using (ReceivePipelineServices.Begin(provider))
+            {
+                configuration.ReceivePipeline?.Invoke(builder, provider);
+            }
+
             builder.Use(new ExecuteReceiveFilter(scopeFactory));
         });
     }

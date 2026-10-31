@@ -35,9 +35,12 @@ internal sealed class OutboxPublishEndpoint(
         var eventType = @event.GetType();
         var messageType = MessageTypeName.For(eventType);
         var now = clock.GetUtcNow();
+        var (conversationId, initiatorId) = MessageFlow.StampOutbound();
         var envelope = new MessageEnvelope
         {
             MessageId = Guid.NewGuid(),
+            ConversationId = conversationId,
+            InitiatorId = initiatorId,
             Kind = MessageKind.Event,
             MessageType = messageType,
             ResponseType = string.Empty,

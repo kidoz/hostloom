@@ -241,6 +241,114 @@ public sealed partial class RabbitMqRequestBroker
             }
         }
 
+        private DateTimeOffset _pausedUntil;
+        private Task? _pausing;
+
+        /// <summary>
+        /// Stops this consumer until <paramref name="resumeAt"/>, then consumes again. The
+        /// delivery that observed the pause has already been requeued.
+        /// </summary>
+        public void SchedulePause(DateTimeOffset resumeAt)
+        {
+            lock (_gate)
+            {
+                if (resumeAt > _pausedUntil)
+                {
+                    _pausedUntil = resumeAt;
+                }
+
+                if (_pausing is { IsCompleted: false })
+                {
+                    return;
+                }
+
+                _pausing = Task.Run(PauseAsync);
+            }
+        }
+
+        private async Task PauseAsync()
+        {
+            while (!Stopping.IsCancellationRequested)
+            {
+                DateTimeOffset until;
+                IChannel? channel;
+                string? tag;
+                lock (_gate)
+                {
+                    until = _pausedUntil;
+                    channel = _channel;
+                    tag = _consumerTag;
+                }
+
+                var delay = until - _broker._clock.GetUtcNow();
+                if (delay <= TimeSpan.Zero)
+                {
+                    return;
+                }
+
+                if (channel is not null && !string.IsNullOrEmpty(tag))
+                {
+                    try
+                    {
+                        await channel
+                            .BasicCancelAsync(tag, noWait: false, Stopping)
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception exception)
+                    {
+                        _broker._logger.LogWarning(
+                            new EventId(1414, "RabbitMqConsumerPauseFailed"),
+                            exception,
+                            "Pausing RabbitMQ {Role} consumption on queue {Queue} failed to cancel its consumer.",
+                            _role,
+                            _queue
+                        );
+                    }
+                }
+
+                try
+                {
+                    await Task.Delay(delay, _broker._clock, Stopping).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                lock (_gate)
+                {
+                    if (_pausedUntil > _broker._clock.GetUtcNow())
+                    {
+                        continue;
+                    }
+                }
+
+                try
+                {
+                    var consumption = await _consume(this, restoring: true, _restoration.Token)
+                        .ConfigureAwait(false);
+                    Attach(consumption);
+                }
+                catch (Exception) when (Stopping.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception exception)
+                {
+                    _broker._logger.LogWarning(
+                        new EventId(1415, "RabbitMqConsumerResumeFailed"),
+                        exception,
+                        "Resuming RabbitMQ {Role} consumption on queue {Queue} after a pause failed.",
+                        _role,
+                        _queue
+                    );
+                    return;
+                }
+
+                return;
+            }
+        }
+
         public async ValueTask DisposeAsync()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0)

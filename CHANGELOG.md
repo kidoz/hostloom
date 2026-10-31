@@ -13,6 +13,10 @@ Redis or standalone Valkey. `HostLoom.RateLimiting`,
 `HostLoom.RateLimiting.DependencyInjection`, and `HostLoom.RateLimiting.HttpClient` publish for the
 first time in the next release.
 
+Messages can now carry a conversation id and an initiator id, and a request carries an expiry.
+A receive destination can pause after its failure ratio trips, and a pipeline can run one call
+at a time for each key on a single process.
+
 ### Added
 
 - Add an asynchronously acquired token-bucket `RateLimiter` with named profiles, an in-process
@@ -25,6 +29,13 @@ first time in the next release.
   manufacturing HTTP 429 responses.
 - Add shared in-memory, Redis, and Valkey conformance scenarios, HTTP retry and cancellation
   coverage, rate-limit metrics, and Valkey Native AOT execution of named and container-free stores.
+- Add optional `ConversationId`, `InitiatorId`, and request `ExpiresAt` envelope fields. A delivery
+  copies the conversation onto messages it sends. An expired request does not run and does not
+  send a fault. RabbitMQ also sets the AMQP expiration from the client timeout.
+- Add `UsePartitioner` so one process runs one call at a time for each key.
+- Add `UseKillSwitch` to pause one request endpoint, or one topic and subscription, when its
+  failure ratio trips. RabbitMQ requeues and stops that consumer, Kafka reads the same record
+  again, and a paused in-memory event publish leaves an outbox row pending.
 
 ## [0.19.1] - 2026-10-29
 

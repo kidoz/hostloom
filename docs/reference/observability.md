@@ -67,6 +67,8 @@ event deliveries share them, so each measurement also carries
 | `hostloom.outbox.dead_lettered` | counter | Outbox messages that exhausted `Outbox:MaxAttempts` and are no longer claimed |
 | `hostloom.outbox.lag` | histogram (s) | Time between appending an outbox message and publishing it |
 | `hostloom.inbox.duplicates` | counter | Redelivered events the inbox recognised, tagged destination and `messaging.consumer.group.name` |
+| `hostloom.messaging.requests.expired` | counter | Requests dropped because `ExpiresAt` had passed, tagged `messaging.destination.name` |
+| `hostloom.receive.suspensions` | counter | Times a kill switch paused a destination, tagged `messaging.destination.name` |
 
 ## Pipeline instruments (`HostLoom.Pipelines`)
 

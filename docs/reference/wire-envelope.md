@@ -17,6 +17,9 @@ See [transport handling of oversized frames](transports.md#oversized-frames).
 | --- | --- | --- |
 | `MessageId` | GUID | Unique per message |
 | `CorrelationId` | GUID, optional | Ties a response or fault back to its request |
+| `ConversationId` | GUID, optional | Stable id of a chain of messages. A receiver that sends onward copies it. When the inbound frame has none, that onward message uses the inbound message id |
+| `InitiatorId` | GUID, optional | Message id that caused this one, or its correlation id when that is set. Absent on a message that starts a flow |
+| `ExpiresAt` | timestamp, optional | Absolute UTC time after which a request must not run. Events leave it unset |
 | `Kind` | `Request` \| `Response` \| `Fault` \| `Event` | What this envelope carries |
 | `MessageType` | string | Logical type name of the body |
 | `ResponseType` | string | Logical type name of the expected response |
@@ -54,7 +57,8 @@ dependency injection because it is registered with `TryAddSingleton`.
 ## Identifier and name validation
 
 Decoding rejects an envelope whose `MessageId` is missing or the all-zero
-GUID, one whose `CorrelationId` is present but all-zero, and a `Response`
+GUID, one whose `CorrelationId`, `ConversationId`, or `InitiatorId` is present
+but all-zero, and a `Response`
 or `Fault` without a `CorrelationId`. Each is a `MalformedEnvelopeException`
 raised before any handler runs: the message id is the sender's, and every
 inbox key and reply correlation is built on it, so an empty one would let
@@ -72,6 +76,21 @@ empty `ResponseType` by design, and neither a `Response`'s nor an `Event`'s
 `Unknown`. Transports treat the exception as a poison frame rather than a
 handler failure: Kafka commits past the record, and RabbitMQ rejects it
 without requeue.
+
+The three flow fields are omitted when they are null, so a frame that does not
+use them keeps the previous bytes. A receiver that does not know the fields
+ignores them. A new receiver treats a missing `ConversationId` as absent and,
+when it sends a message because of that delivery, continues the chain from the
+inbound message id. `ExpiresAt` is enforced only by an upgraded receiver.
+RabbitMQ also sets the request's AMQP expiration to the client timeout, so the
+broker can drop the message before an older consumer sees it. Kafka has no
+native expiry; only an upgraded consumer commits past an expired request.
+
+A request client sets `ExpiresAt` to the send time plus the effective timeout.
+An expired request does not run its handler and does not produce a fault. The
+caller reaches `RequestTimeoutException` from its own clock. Kafka commits past
+the record. RabbitMQ rejects it without requeue. The in-memory transport leaves
+the caller waiting for that timeout.
 
 ## Faults
 

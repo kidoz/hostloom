@@ -5,9 +5,11 @@ namespace HostLoom;
 internal sealed class PublishEndpoint(
     IRequestBroker broker,
     IMessageSerializer serializer,
-    IOptions<HostLoomOptions> options
+    IOptions<HostLoomOptions> options,
+    TimeProvider? timeProvider = null
 ) : IPublishEndpoint
 {
+    private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
     public ValueTask PublishAsync<TEvent>(
         RequestAddress topic,
         TEvent @event,
@@ -27,13 +29,16 @@ internal sealed class PublishEndpoint(
         // Runtime type, not TEvent: publishing through a base-typed variable must still reach
         // subscribers registered for the concrete contract.
         var eventType = @event.GetType();
+        var (conversationId, initiatorId) = MessageFlow.StampOutbound();
         var envelope = new MessageEnvelope
         {
             MessageId = Guid.NewGuid(),
+            ConversationId = conversationId,
+            InitiatorId = initiatorId,
             Kind = MessageKind.Event,
             MessageType = MessageTypeName.For(eventType),
             ResponseType = string.Empty,
-            SentAt = DateTimeOffset.UtcNow,
+            SentAt = _clock.GetUtcNow(),
             Body = serializer.Serialize(@event, eventType),
         };
 

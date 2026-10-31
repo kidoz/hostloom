@@ -5,10 +5,12 @@ namespace HostLoom;
 internal sealed class RequestClient<TRequest, TResponse>(
     IRequestBroker broker,
     IMessageSerializer serializer,
-    IOptions<HostLoomOptions> options
+    IOptions<HostLoomOptions> options,
+    TimeProvider? timeProvider = null
 ) : IRequestClient<TRequest, TResponse>
     where TRequest : IRequest<TResponse>
 {
+    private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
     public async ValueTask<TResponse> GetResponseAsync(
         RequestAddress destination,
         TRequest request,
@@ -27,13 +29,18 @@ internal sealed class RequestClient<TRequest, TResponse>(
         }
 
         var requestId = Guid.NewGuid();
+        var sentAt = _clock.GetUtcNow();
+        var (conversationId, initiatorId) = MessageFlow.StampOutbound();
         var envelope = new MessageEnvelope
         {
             MessageId = requestId,
+            ConversationId = conversationId,
+            InitiatorId = initiatorId,
             Kind = MessageKind.Request,
             MessageType = MessageTypeName.For<TRequest>(),
             ResponseType = MessageTypeName.For<TResponse>(),
-            SentAt = DateTimeOffset.UtcNow,
+            SentAt = sentAt,
+            ExpiresAt = sentAt + effectiveTimeout,
             Body = serializer.Serialize(request),
         };
 
@@ -41,6 +48,11 @@ internal sealed class RequestClient<TRequest, TResponse>(
         activity?.SetTag("messaging.operation.type", "send");
         activity?.SetTag("messaging.destination.name", destination.Value);
         activity?.SetTag("messaging.message.id", requestId);
+        activity?.SetTag("hostloom.conversation.id", conversationId);
+        if (initiatorId is { } initiator)
+        {
+            activity?.SetTag("hostloom.initiator.id", initiator);
+        }
 
         var responseFrame = await broker
             .RequestAsync(

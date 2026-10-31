@@ -96,6 +96,19 @@ public sealed class PipeBuilder<TContext>
         TimeProvider? timeProvider = null
     ) => Use(new RateLimitFilter<TContext>(limit, interval, timeProvider ?? TimeProvider.System));
 
+    /// <summary>
+    /// Admits one call at a time for each key on this process. Keys are hashed into
+    /// <paramref name="partitionCount"/> lanes. Register this after <c>UseRetry</c> to release the
+    /// lane during a retry delay, or before it to hold the lane across attempts.
+    /// </summary>
+    /// <remarks>
+    /// The selector must not return null. Ordering holds only inside this process.
+    /// </remarks>
+    public PipeBuilder<TContext> UsePartitioner(
+        int partitionCount,
+        Func<TContext, object> keySelector
+    ) => Use(new PartitionerFilter<TContext>(partitionCount, keySelector));
+
     public IPipe<TContext> Build()
     {
         ObjectDisposedException.ThrowIf(_built, this);

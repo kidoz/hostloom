@@ -8,9 +8,13 @@ internal sealed class EventDispatcher(
     HostLoomConfiguration configuration,
     IMessageSerializer serializer,
     ReceivePipeline receivePipeline,
-    IOptions<HostLoomOptions> options
+    IOptions<HostLoomOptions> options,
+    TimeProvider? timeProvider = null,
+    ReceiveAdmission? admission = null
 )
 {
+    private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
+    private readonly ReceiveAdmission _admission = admission ?? new ReceiveAdmission();
     public async ValueTask DispatchAsync(
         RequestAddress topic,
         string subscription,
@@ -24,6 +28,12 @@ internal sealed class EventDispatcher(
             throw new MalformedEnvelopeException(
                 $"Expected an event envelope, received '{envelope.Kind}'."
             );
+        }
+
+        var destination = new ReceiveDestination(topic.Value, subscription);
+        if (_admission.TryGetSuspension(destination, _clock.GetUtcNow(), out var resumeAt))
+        {
+            throw new ReceiveSuspendedException(topic, subscription, resumeAt);
         }
 
         // A topic carries every event type published to it. A subscription that has no handler for
@@ -40,6 +50,7 @@ internal sealed class EventDispatcher(
             return;
         }
 
+        using var flow = MessageFlow.Begin(envelope);
         using var activity = HostLoomDiagnostics.ActivitySource.StartActivity(
             "hostloom handle event"
         );
@@ -48,6 +59,7 @@ internal sealed class EventDispatcher(
         activity?.SetTag("messaging.consumer.group.name", subscription);
         activity?.SetTag("messaging.message.type", envelope.MessageType);
         activity?.SetTag("messaging.message.id", envelope.MessageId);
+        MessageFlow.Tag(activity);
 
         var tags = new TagList
         {

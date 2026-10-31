@@ -30,6 +30,7 @@ handler; each filter only knows `next`.
 ## Resilience as filters, not a policy engine
 
 `UseRetry`, `UseCircuitBreaker`, `UseRateLimit`, `UseConcurrencyLimit`,
+`UsePartitioner`,
 and `UseTimeout` are ordinary filters, so their placement — and therefore
 their scope — is visible in the composition. Their contracts:
 
