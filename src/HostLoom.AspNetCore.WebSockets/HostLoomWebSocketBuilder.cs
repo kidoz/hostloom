@@ -16,6 +16,17 @@ public sealed class HostLoomWebSocketBuilder
 
     public IServiceCollection Services => _hostLoom.Services;
 
+    /// <summary>Registers related request operations and channels under a shared public prefix.</summary>
+    public HostLoomWebSocketBuilder AddHub(
+        string name,
+        Action<HostLoomWebSocketHubBuilder> configure
+    )
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        configure(new HostLoomWebSocketHubBuilder(this, name));
+        return this;
+    }
+
     public HostLoomWebSocketBuilder AddRequest<TRequest, TResponse>(
         string operation,
         RequestAddress destination,

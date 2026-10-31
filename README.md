@@ -326,15 +326,23 @@ builder.Services
     .AddHostLoom()
     .UseRabbitMq()
     .AddWebSocketGateway()
-    .AddRequest<GetOrder, OrderView>("orders.get", "orders-api", "orders.read")
-    .AddTopic<OrderChanged>("orders.changed", "orders", e => e.CustomerId,
-        subscription: "realtime-node-a", authorizationPolicy: TopicKeyPolicy.SubjectOnly);
+    .AddHub("orders", hub =>
+    {
+        hub.AddRequest<GetOrder, OrderView>("get", "orders-api", "orders.read");
+        hub.AddChannel<OrderChanged>("changed", "orders", e => e.CustomerId,
+            subscription: "realtime-node-a", authorizationPolicy: TopicKeyPolicy.SubjectOnly);
+    });
 
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseHostLoomWebSockets();
 app.MapHostLoomWebSocketHub("/realtime");
 ```
+
+`AddHub` is a registration-time facade that produces the public names `orders.get` and
+`orders.changed` while preserving the existing gateway behavior. Direct `AddRequest`, `AddTopic`,
+and `AddTopicSnapshot` registrations remain available; `AddChannelSnapshot` is their Hub
+counterpart for snapshots.
 
 The parameterless middleware helper uses a 20-second keep-alive interval and a 10-second Pong
 timeout. An overload accepts ASP.NET Core `WebSocketOptions`; applications that already called

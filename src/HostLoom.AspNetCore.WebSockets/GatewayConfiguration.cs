@@ -202,7 +202,7 @@ internal sealed class GatewayConfiguration(HostLoomWebSocketOptions options)
 
     private static string TypeName(Type type) => type.FullName ?? type.Name;
 
-    private static void ValidateName(string value, string parameterName)
+    internal static void ValidateName(string value, string parameterName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(value, parameterName);
         if (

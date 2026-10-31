@@ -29,13 +29,16 @@ builder.Services
         options.AllowedOrigins.Add("https://admin.example.com");
         options.AllowMissingOrigin = false;
     })
-    .AddRequest<GetOrder, OrderView>("orders.get", "orders-api", "orders.read")
-    .AddTopic<OrderChanged>(
-        "orders.changed",
-        "orders",
-        changed => changed.CustomerId,
-        subscription: "realtime-node-a",
-        authorizationPolicy: TopicKeyPolicy.SubjectOnly);
+    .AddHub("orders", hub =>
+    {
+        hub.AddRequest<GetOrder, OrderView>("get", "orders-api", "orders.read");
+        hub.AddChannel<OrderChanged>(
+            "changed",
+            "orders",
+            changed => changed.CustomerId,
+            subscription: "realtime-node-a",
+            authorizationPolicy: TopicKeyPolicy.SubjectOnly);
+    });
 
 var app = builder.Build();
 app.UseAuthentication();
@@ -44,6 +47,12 @@ app.UseHostLoomWebSockets();
 app.MapHostLoomWebSocketHub("/realtime");
 app.Run();
 ```
+
+`AddHub` is an optional registration-time facade. It prefixes the request and channel names to
+produce `orders.get` and `orders.changed`, then uses the same request, topic, authorization, and
+cleanup paths as direct `AddRequest` and `AddTopic` registrations. Use `AddChannelSnapshot` for the
+Hub equivalent of `AddTopicSnapshot`. A Hub creates no runtime Hub instance, groups, presence,
+replay, or separate endpoint.
 
 The parameterless `UseHostLoomWebSockets()` uses a 20-second keep-alive interval and a 10-second
 Pong timeout. Pass ASP.NET Core `WebSocketOptions` when the host needs different middleware

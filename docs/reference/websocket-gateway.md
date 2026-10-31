@@ -48,11 +48,34 @@ HostLoomWebSocketBuilder AddTopic<TEvent>(
 
 HostLoomWebSocketBuilder AddTopicSnapshot<TEvent, TProvider>(string topic)
     where TProvider : class, IWebSocketTopicSnapshotProvider<TEvent>;
+
+HostLoomWebSocketBuilder AddHub(
+    string name, Action<HostLoomWebSocketHubBuilder> configure);
+
+HostLoomWebSocketHubBuilder AddRequest<TRequest, TResponse>(
+    string operation, RequestAddress destination, string? authorizationPolicy = null);
+
+HostLoomWebSocketHubBuilder AddChannel<TEvent>(
+    string channel, RequestAddress source, Func<TEvent, string?> keySelector,
+    string subscription = "hostloom-websocket", string? authorizationPolicy = null,
+    bool allowTopicWideSubscription = false);
+
+HostLoomWebSocketHubBuilder AddChannelSnapshot<TEvent, TProvider>(string channel)
+    where TProvider : class, IWebSocketTopicSnapshotProvider<TEvent>;
 ```
 
 `AddRequest` also registers the typed request client; `AddTopic` also
 registers a broker subscription under `subscription`. One event type maps
 to one public topic — a second mapping throws.
+
+`AddHub` groups related registrations under one prefix. For example, Hub `orders` with request
+`get` and channel `changed` exposes `orders.get` and `orders.changed`. Hub and relative names use
+the same public-name alphabet, cannot start or end with a dot, and their composed name cannot
+exceed 128 characters. `AddChannel` delegates to keyed `AddTopic`, and `AddChannelSnapshot`
+delegates to `AddTopicSnapshot`; authorization, duplicate validation, credit, snapshots, and
+cleanup are identical. The direct registration methods remain available. A Hub is only a
+registration-time namespace: it creates no runtime Hub object, groups, presence, replay, or
+separate endpoint.
 
 On a keyed topic a `subscribe` without a key is denied with `forbidden` unless the registration
 sets `allowTopicWideSubscription: true`, because a keyless subscriber would receive every key's

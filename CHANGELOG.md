@@ -8,6 +8,11 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- Add `AddHub` as a protocol-compatible WebSocket registration facade for prefixed typed requests
+  and keyed snapshot-plus-live channels, with existing authorization, credit, and cleanup behavior.
+
 ## [0.20.0] - 2026-10-31
 
 The twenty-third release of **HostLoom**. It adds distributed token-bucket rate limiting for
