@@ -1,3 +1,4 @@
+using System.Threading.Channels;
 using HostLoom.Scheduling;
 using HostLoom.Scheduling.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection;
@@ -121,6 +122,71 @@ public sealed class SchedulingShutdownTests
         await completed.Task.WaitAsync(CompletionBound, TestContext.Current.CancellationToken);
         await SchedulingTests.WaitUntilAsync(() => !scheduler.GetState("catalog").Running);
         Assert.Equal(ScheduleRunOutcome.Canceled, scheduler.GetState("catalog").LastOutcome);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task Bounded_stop_cancels_every_run_even_when_a_cancellation_callback_blocks()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var entered = Channel.CreateUnbounded<CancellationToken>();
+        var callbackEntered = Signal();
+        using var releaseCallbacks = new ManualResetEventSlim();
+        var releaseRuns = Signal();
+        var scheduler = new Scheduler(
+            new(),
+            [
+                new ScheduleDefinition(
+                    "catalog",
+                    ScheduleTrigger.FixedRate(TimeSpan.FromHours(1)),
+                    Run
+                ),
+                new ScheduleDefinition(
+                    "inventory",
+                    ScheduleTrigger.FixedRate(TimeSpan.FromHours(1)),
+                    Run
+                ),
+            ]
+        );
+        try
+        {
+            await scheduler.StartAsync(token);
+            var first = await entered.Reader.ReadAsync(token).AsTask().WaitAsync(Bound, token);
+            var second = await entered.Reader.ReadAsync(token).AsTask().WaitAsync(Bound, token);
+            using var stopBound = new CancellationTokenSource();
+            var stopping = scheduler.StopAsync(stopBound.Token);
+            await callbackEntered.Task.WaitAsync(Bound, token);
+            await stopBound.CancelAsync();
+            await stopping.WaitAsync(Bound, token);
+            await scheduler.DisposeAsync().AsTask().WaitAsync(Bound, token);
+
+            Assert.True(first.IsCancellationRequested);
+            Assert.True(second.IsCancellationRequested);
+            Assert.All(scheduler.GetStates(), state => Assert.True(state.Running));
+        }
+        finally
+        {
+            releaseCallbacks.Set();
+            releaseRuns.TrySetResult();
+            await scheduler.DisposeAsync().AsTask().WaitAsync(Bound, token);
+            await SchedulingTests.WaitUntilAsync(() =>
+                scheduler.GetStates().All(state => !state.Running)
+            );
+        }
+        Assert.All(
+            scheduler.GetStates(),
+            state => Assert.Equal(ScheduleRunOutcome.Canceled, state.LastOutcome)
+        );
+
+        async ValueTask Run(ScheduledRun _, CancellationToken cancellationToken)
+        {
+            using var registration = cancellationToken.Register(() =>
+            {
+                callbackEntered.TrySetResult();
+                releaseCallbacks.Wait(token);
+            });
+            await entered.Writer.WriteAsync(cancellationToken, token);
+            await releaseRuns.Task;
+        }
     }
 
     [Fact(Timeout = 30_000)]

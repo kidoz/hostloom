@@ -156,7 +156,8 @@ public sealed class Scheduler : IAsyncDisposable
     /// <summary>
     /// Cancels every waiting and running schedule and waits for the loops to end, bounded by
     /// <paramref name="cancellationToken"/>. A job that ignores its token keeps running past the
-    /// bound; the scheduler stops waiting for it.
+    /// bound; the scheduler stops waiting for it. Run tokens are cancelled before the bounded
+    /// wait begins, without waiting for their cancellation callbacks.
     /// </summary>
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
@@ -180,8 +181,19 @@ public sealed class Scheduler : IAsyncDisposable
         }
     }
 
-    private Task StopCoreAsync() =>
-        Task.WhenAll(_stopping.CancelAsync(), _loops ?? Task.CompletedTask);
+    private Task StopCoreAsync()
+    {
+        var pending = new Task[_runners.Length + 2];
+        pending[0] = _stopping.CancelAsync();
+        pending[1] = _loops ?? Task.CompletedTask;
+        for (var index = 0; index < _runners.Length; index++)
+        {
+            // Linked-token propagation runs with the stop callbacks. Cancel each active run
+            // directly so a slow callback cannot leave another job's token uncancelled.
+            pending[index + 2] = _runners[index].CancelRunAsync();
+        }
+        return Task.WhenAll(pending);
+    }
 
     /// <summary>The current state of the schedule named <paramref name="name"/>.</summary>
     /// <exception cref="ArgumentException">No schedule has that name.</exception>
@@ -283,6 +295,7 @@ public sealed class Scheduler : IAsyncDisposable
         private static readonly TimeSpan MaxWaitChunk = TimeSpan.FromDays(1);
 
         private readonly Lock _gate = new();
+        private CancellationTokenSource? _runCancellation;
         private DateTimeOffset? _nextDue;
         private bool _running;
         private long _runs;
@@ -293,6 +306,33 @@ public sealed class Scheduler : IAsyncDisposable
         private DateTimeOffset _heldUntil;
 
         public ScheduleDefinition Definition { get; } = definition;
+
+        public Task CancelRunAsync()
+        {
+            lock (_gate)
+            {
+                return _runCancellation?.CancelAsync() ?? Task.CompletedTask;
+            }
+        }
+
+        private CancellationTokenSource CreateRunCancellation(
+            CancellationToken stopping,
+            CancellationToken timeout,
+            CancellationToken claimLost
+        )
+        {
+            lock (_gate)
+            {
+                // Stop marks its source first. Creating and publishing the linked source
+                // under the same gate as CancelRunAsync closes the run-start/stop race.
+                _runCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                    stopping,
+                    timeout,
+                    claimLost
+                );
+                return _runCancellation;
+            }
+        }
 
         public ScheduleState Snapshot()
         {
@@ -562,12 +602,13 @@ public sealed class Scheduler : IAsyncDisposable
             var options = Definition.Options;
             using var timeout = new CancellationTokenSource();
             using var timeoutTimer = StartTimeout(clock, options.Timeout, timeout);
+            using var linked = CreateRunCancellation(
+                stopping,
+                timeout.Token,
+                claim?.LostToken ?? CancellationToken.None
+            );
+            try
             {
-                using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-                    stopping,
-                    timeout.Token,
-                    claim?.LostToken ?? CancellationToken.None
-                );
                 using var activity = SchedulingDiagnostics.ActivitySource.StartActivity(
                     "schedule.run"
                 );
@@ -631,6 +672,15 @@ public sealed class Scheduler : IAsyncDisposable
                 );
                 SchedulingDiagnostics.Lag.Record(run.Lag.TotalSeconds, nameTag);
                 return outcome;
+            }
+            finally
+            {
+                lock (_gate)
+                {
+                    // Unpublish before the using declaration disposes the source, so a
+                    // concurrent stop cannot try to cancel a disposed run.
+                    _runCancellation = null;
+                }
             }
         }
 
