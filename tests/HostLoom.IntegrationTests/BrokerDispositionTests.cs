@@ -31,24 +31,27 @@ public sealed class BrokerDispositionTests : IAsyncLifetime
 
     public static bool KafkaAvailable => BrokerAvailability.Kafka;
 
-    [Fact(Timeout = 60_000, Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(RabbitMqAvailable))]
+    [Fact(
+        Timeout = 60_000,
+        Skip = BrokerAvailability.RabbitMqSkip,
+        SkipUnless = nameof(RabbitMqAvailable)
+    )]
     public async Task An_expired_RabbitMQ_request_is_rejected_and_a_later_request_is_handled()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var address = _rabbit.Request(Unique("expired-rabbit"));
         var counter = new DispositionCounter();
-        using var expired = new MeterCapture(
-            "HostLoom",
-            "messaging.destination.name",
-            address
-        );
+        using var expired = new MeterCapture("HostLoom", "messaging.destination.name", address);
         using var rejected = new MeterCapture(
             RabbitMqDiagnostics.MeterName,
             "hostloom.rabbitmq.client",
             address
         );
-        using var host = await StartRabbitAsync(address, counter, static services =>
-            services.AddHandler<Greet, Greeting, CountingGreetHandler>(services.Address)
+        using var host = await StartRabbitAsync(
+            address,
+            counter,
+            static services =>
+                services.AddHandler<Greet, Greeting, CountingGreetHandler>(services.Address)
         );
 
         await PublishRabbitAsync(address, ExpiredRequest(), cancellationToken);
@@ -68,25 +71,29 @@ public sealed class BrokerDispositionTests : IAsyncLifetime
         Assert.Equal(1, counter.Attempts);
     }
 
-    [Fact(Timeout = 90_000, Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(KafkaAvailable))]
+    [Fact(
+        Timeout = 90_000,
+        Skip = BrokerAvailability.KafkaSkip,
+        SkipUnless = nameof(KafkaAvailable)
+    )]
     public async Task An_expired_Kafka_request_is_skipped_and_a_later_request_is_handled()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var address = await CreateTopicAsync("expired-kafka", cancellationToken);
         var replies = await CreateTopicAsync("expired-kafka-replies", cancellationToken);
         var counter = new DispositionCounter();
-        using var expired = new MeterCapture(
-            "HostLoom",
-            "messaging.destination.name",
-            address
-        );
+        using var expired = new MeterCapture("HostLoom", "messaging.destination.name", address);
         using var skipped = new MeterCapture(
             KafkaDiagnostics.MeterName,
             "messaging.destination.name",
             address
         );
-        using var host = await StartKafkaAsync(address, replies, counter, static services =>
-            services.AddHandler<Greet, Greeting, CountingGreetHandler>(services.Address)
+        using var host = await StartKafkaAsync(
+            address,
+            replies,
+            counter,
+            static services =>
+                services.AddHandler<Greet, Greeting, CountingGreetHandler>(services.Address)
         );
 
         await PublishKafkaAsync(address, replies, ExpiredRequest(), cancellationToken);
@@ -107,27 +114,38 @@ public sealed class BrokerDispositionTests : IAsyncLifetime
         Assert.Equal(0, skipped.Sum("hostloom.kafka.records.rewound"));
     }
 
-    [Fact(Timeout = 60_000, Skip = BrokerAvailability.RabbitMqSkip, SkipUnless = nameof(RabbitMqAvailable))]
+    [Fact(
+        Timeout = 60_000,
+        Skip = BrokerAvailability.RabbitMqSkip,
+        SkipUnless = nameof(RabbitMqAvailable)
+    )]
     public async Task A_tripped_RabbitMQ_destination_pauses_before_the_next_handler_run()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var address = _rabbit.Request(Unique("pause-rabbit"));
         var counter = new DispositionCounter();
-        using var suspensions = new MeterCapture(
-            "HostLoom",
-            "messaging.destination.name",
-            address
-        );
-        using var host = await StartRabbitAsync(address, counter, static services =>
-            services.AddHandler<Greet, Greeting, PausingGreetHandler>(services.Address)
+        using var suspensions = new MeterCapture("HostLoom", "messaging.destination.name", address);
+        using var host = await StartRabbitAsync(
+            address,
+            counter,
+            static services =>
+                services.AddHandler<Greet, Greeting, PausingGreetHandler>(services.Address)
         );
         var client = ClientOf(host);
 
         await Assert.ThrowsAsync<RemoteRequestException>(async () =>
-            await client.GetResponseAsync(address, new Greet("1"), cancellationToken: cancellationToken)
+            await client.GetResponseAsync(
+                address,
+                new Greet("1"),
+                cancellationToken: cancellationToken
+            )
         );
         await Assert.ThrowsAsync<RemoteRequestException>(async () =>
-            await client.GetResponseAsync(address, new Greet("2"), cancellationToken: cancellationToken)
+            await client.GetResponseAsync(
+                address,
+                new Greet("2"),
+                cancellationToken: cancellationToken
+            )
         );
         Assert.Equal(2, counter.Attempts);
         using var deadline = Deadline(cancellationToken);
@@ -145,20 +163,24 @@ public sealed class BrokerDispositionTests : IAsyncLifetime
         Assert.Equal(3, counter.Attempts);
     }
 
-    [Fact(Timeout = 90_000, Skip = BrokerAvailability.KafkaSkip, SkipUnless = nameof(KafkaAvailable))]
+    [Fact(
+        Timeout = 90_000,
+        Skip = BrokerAvailability.KafkaSkip,
+        SkipUnless = nameof(KafkaAvailable)
+    )]
     public async Task A_tripped_Kafka_destination_pauses_before_the_next_handler_run()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var address = await CreateTopicAsync("pause-kafka", cancellationToken);
         var replies = await CreateTopicAsync("pause-kafka-replies", cancellationToken);
         var counter = new DispositionCounter();
-        using var suspensions = new MeterCapture(
-            "HostLoom",
-            "messaging.destination.name",
-            address
-        );
-        using var host = await StartKafkaAsync(address, replies, counter, static services =>
-            services.AddHandler<Greet, Greeting, PausingGreetHandler>(services.Address)
+        using var suspensions = new MeterCapture("HostLoom", "messaging.destination.name", address);
+        using var host = await StartKafkaAsync(
+            address,
+            replies,
+            counter,
+            static services =>
+                services.AddHandler<Greet, Greeting, PausingGreetHandler>(services.Address)
         );
         var client = ClientOf(host);
 
@@ -390,8 +412,7 @@ public sealed class BrokerDispositionTests : IAsyncLifetime
         return Encoding.UTF8.GetBytes(json);
     }
 
-    private static string Name<T>() =>
-        $"{typeof(T).Assembly.GetName().Name}:{typeof(T).FullName}";
+    private static string Name<T>() => $"{typeof(T).Assembly.GetName().Name}:{typeof(T).FullName}";
 
     private sealed class HostSetup(HostLoomBuilder builder, string address)
     {
@@ -415,7 +436,8 @@ public sealed class DispositionCounter
 }
 
 /// <summary>Records that an expired request reached a handler.</summary>
-public sealed class CountingGreetHandler(DispositionCounter counter) : IRequestHandler<Greet, Greeting>
+public sealed class CountingGreetHandler(DispositionCounter counter)
+    : IRequestHandler<Greet, Greeting>
 {
     public ValueTask<Greeting> HandleAsync(Greet request, CancellationToken cancellationToken)
     {
@@ -425,7 +447,8 @@ public sealed class CountingGreetHandler(DispositionCounter counter) : IRequestH
 }
 
 /// <summary>Fails its first two runs, then answers, so a kill switch can trip and resume.</summary>
-public sealed class PausingGreetHandler(DispositionCounter counter) : IRequestHandler<Greet, Greeting>
+public sealed class PausingGreetHandler(DispositionCounter counter)
+    : IRequestHandler<Greet, Greeting>
 {
     public ValueTask<Greeting> HandleAsync(Greet request, CancellationToken cancellationToken)
     {
