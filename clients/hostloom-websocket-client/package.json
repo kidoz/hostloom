@@ -52,6 +52,9 @@
     "websocket",
     "typescript"
   ],
+  "overrides": {
+    "minimatch": "11.0.3"
+  },
   "devDependencies": {
     "@babel/core": "8.0.6",
     "@babel/eslint-parser": "8.0.1",
