@@ -8,14 +8,30 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-31
+
+The twenty-third release of **HostLoom**. It adds distributed token-bucket rate limiting for
+outgoing `HttpClient` calls, and it lets messages carry a conversation and an initiator, lets a
+request expire at the destination, pauses a failing receive destination, and runs one pipeline
+call at a time for each key. Nothing in it changes a signature an application compiles against.
+
 Outgoing `HttpClient` calls can now share token-bucket quotas across service instances through
 Redis or standalone Valkey. `HostLoom.RateLimiting`,
 `HostLoom.RateLimiting.DependencyInjection`, and `HostLoom.RateLimiting.HttpClient` publish for the
-first time in the next release.
+first time in this release.
 
 Messages can now carry a conversation id and an initiator id, and a request carries an expiry.
 A receive destination can pause after its failure ratio trips, and a pipeline can run one call
 at a time for each key on a single process.
+
+Upgrading from 0.19.0 is additive: the three rate-limiting packages are new, the flow and expiry
+fields are optional and omitted when unset so existing frames keep their bytes, and the
+partitioner and kill switch are opt-in filters. 0.20.0 also carries the `ValkeyDotNet` 1.2.0
+update recorded under 0.19.1, which was not published to NuGet.
+`HostLoom.RateLimiting`, `HostLoom.RateLimiting.DependencyInjection`, and
+`HostLoom.RateLimiting.HttpClient` are published for the first time; the remaining packages
+carry the changes above. `@hostloom/websocket-client` is not part of this NuGet set and has no
+changes since its 0.4.0 release.
 
 ### Added
 
@@ -36,6 +52,11 @@ at a time for each key on a single process.
 - Add `UseKillSwitch` to pause one request endpoint, or one topic and subscription, when its
   failure ratio trips. RabbitMQ requeues and stops that consumer, Kafka reads the same record
   again, and a paused in-memory event publish leaves an outbox row pending.
+
+### Fixed
+
+- Cancel every active schedule run directly when the scheduler stops, so a blocked cancellation
+  callback cannot leave another job's run token uncancelled when the bounded stop expires.
 
 ## [0.19.1] - 2026-10-29
 
@@ -2398,7 +2419,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.19.1...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/kidoz/hostloom/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/kidoz/hostloom/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/kidoz/hostloom/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/kidoz/hostloom/compare/v0.17.0...v0.18.0
