@@ -34,6 +34,9 @@ public static class RateLimitConformance
             [nameof(Instances_ShareQuotaAndKeysStayIsolated)] =
                 Instances_ShareQuotaAndKeysStayIsolated,
             [nameof(IdleBucket_StartsFullAgain)] = IdleBucket_StartsFullAgain,
+            [nameof(ConcurrentWeightedAcquisitions_DoNotExceedCapacity)] =
+                ConcurrentWeightedAcquisitions_DoNotExceedCapacity,
+            [nameof(LeaseDisposal_DoesNotRefundPermits)] = LeaseDisposal_DoesNotRefundPermits,
         };
 
     public static async Task Capacity_WeightedPermitsAndCancellation(
@@ -137,5 +140,73 @@ public static class RateLimitConformance
         await fixture.Clock.AdvanceAsync(TimeSpan.FromMilliseconds(200));
         using var replenished = await limiter.AcquireAsync(2);
         Assert.True(replenished.IsAcquired);
+    }
+
+    public static async Task ConcurrentWeightedAcquisitions_DoNotExceedCapacity(
+        RateLimitConformanceFixture fixture
+    )
+    {
+        var policy = new TokenBucketRateLimitPolicy
+        {
+            TokenLimit = 100,
+            TokensPerPeriod = 100,
+            ReplenishmentPeriod = TimeSpan.FromMinutes(1),
+        };
+        using var first = fixture.CreateLimiter("concurrent", policy);
+        using var second = fixture.CreateLimiter("concurrent", policy);
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var cancellationToken = timeout.Token;
+        var attempts = Enumerable
+            .Range(0, 128)
+            .Select(index =>
+                Task.Run(
+                    async () =>
+                    {
+                        await start.Task.WaitAsync(cancellationToken);
+                        var limiter = index % 2 == 0 ? first : second;
+                        using var lease = await limiter.AcquireAsync(2, cancellationToken);
+                        Assert.True(
+                            lease.TryGetMetadata(
+                                RateLimitMetadata.RemainingPermits,
+                                out int remaining
+                            )
+                        );
+                        Assert.InRange(remaining, 0, 100);
+                        return lease.IsAcquired;
+                    },
+                    cancellationToken
+                )
+            )
+            .ToArray();
+
+        start.SetResult();
+        var outcomes = await Task.WhenAll(attempts)
+            .WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+
+        Assert.Equal(50, outcomes.Count(acquired => acquired));
+        using var exhausted = await first.AcquireAsync(1, cancellationToken);
+        Assert.False(exhausted.IsAcquired);
+    }
+
+    public static async Task LeaseDisposal_DoesNotRefundPermits(RateLimitConformanceFixture fixture)
+    {
+        using var limiter = fixture.CreateLimiter(
+            "no-refund",
+            new TokenBucketRateLimitPolicy
+            {
+                TokenLimit = 2,
+                ReplenishmentPeriod = TimeSpan.FromMinutes(1),
+            }
+        );
+        using (var acquired = await limiter.AcquireAsync(2))
+        {
+            Assert.True(acquired.IsAcquired);
+        }
+
+        using var rejected = await limiter.AcquireAsync(1);
+        Assert.False(rejected.IsAcquired);
+        Assert.True(rejected.TryGetMetadata(RateLimitMetadata.RemainingPermits, out int remaining));
+        Assert.Equal(0, remaining);
     }
 }
