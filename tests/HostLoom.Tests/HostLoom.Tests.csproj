@@ -18,6 +18,11 @@
   </ItemGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../../src/HostLoom.DataGrid/HostLoom.DataGrid.csproj" />
+    <ProjectReference Include="../../src/HostLoom.DataGrid.Client/HostLoom.DataGrid.Client.csproj" />
+    <ProjectReference Include="../../src/HostLoom.DataGrid.Runtime/HostLoom.DataGrid.Runtime.csproj" />
+    <ProjectReference Include="../../src/HostLoom.DataGrid.Storage/HostLoom.DataGrid.Storage.csproj" />
+    <ProjectReference Include="../../src/HostLoom.DataGrid.Testing/HostLoom.DataGrid.Testing.csproj" />
     <ProjectReference Include="../../src/HostLoom.AspNetCore.WebSockets/HostLoom.AspNetCore.WebSockets.csproj" />
     <ProjectReference Include="../../src/HostLoom.AspNetCore.WebSockets.Testing/HostLoom.AspNetCore.WebSockets.Testing.csproj" />
     <ProjectReference Include="../../src/HostLoom.Caching.DependencyInjection/HostLoom.Caching.DependencyInjection.csproj" />
@@ -62,8 +67,11 @@
     <ProjectReference Include="../HostLoom.Conformance/HostLoom.Conformance.csproj" />
     <!-- Launched as a child process by LoggingProcessExitTests; referenced so it builds and ships beside the tests. -->
     <ProjectReference Include="../HostLoom.Logging.ExitProbe/HostLoom.Logging.ExitProbe.csproj" />
+    <ProjectReference Include="../HostLoom.DataGrid.ProcessProbe/HostLoom.DataGrid.ProcessProbe.csproj" />
+    <ProjectReference Include="../HostLoom.DataGrid.StorageProbe/HostLoom.DataGrid.StorageProbe.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="../HostLoom.DataGrid.ProcessProbe/ProbeConfiguration.cs" Link="DataGrid/ProbeConfiguration.cs" />
     <Compile Include="../../examples/HostLoom.Examples.CompositionDiagnostics/ApplicationCompositionLedger.cs" Link="Examples/ApplicationCompositionLedger.cs" />
     <None
       Include="../../src/HostLoom.AspNetCore.WebSockets/protocol/**/*.json"

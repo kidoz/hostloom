@@ -18,6 +18,12 @@
     <Project Path="examples/HostLoom.Examples.Pipelines/HostLoom.Examples.Pipelines.csproj" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/HostLoom.DataGrid/HostLoom.DataGrid.csproj" />
+    <Project Path="src/HostLoom.DataGrid.Client/HostLoom.DataGrid.Client.csproj" />
+    <Project Path="src/HostLoom.DataGrid.Transport/HostLoom.DataGrid.Transport.csproj" />
+    <Project Path="src/HostLoom.DataGrid.Runtime/HostLoom.DataGrid.Runtime.csproj" />
+    <Project Path="src/HostLoom.DataGrid.Storage/HostLoom.DataGrid.Storage.csproj" />
+    <Project Path="src/HostLoom.DataGrid.Testing/HostLoom.DataGrid.Testing.csproj" />
     <Project Path="src/HostLoom.Analyzers/HostLoom.Analyzers.csproj" />
     <Project Path="src/HostLoom.AspNetCore.WebSockets/HostLoom.AspNetCore.WebSockets.csproj" />
     <Project Path="src/HostLoom.AspNetCore.WebSockets.Testing/HostLoom.AspNetCore.WebSockets.Testing.csproj" />
@@ -64,6 +70,8 @@
     <Project Path="src/HostLoom.Transport.RabbitMq/HostLoom.Transport.RabbitMq.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/HostLoom.DataGrid.ProcessProbe/HostLoom.DataGrid.ProcessProbe.csproj" />
+    <Project Path="tests/HostLoom.DataGrid.StorageProbe/HostLoom.DataGrid.StorageProbe.csproj" />
     <Project Path="tests/HostLoom.Analyzers.Tests/HostLoom.Analyzers.Tests.csproj" />
     <Project Path="tests/HostLoom.Conformance/HostLoom.Conformance.csproj" />
     <Project Path="tests/HostLoom.IntegrationTests/HostLoom.IntegrationTests.csproj" />
