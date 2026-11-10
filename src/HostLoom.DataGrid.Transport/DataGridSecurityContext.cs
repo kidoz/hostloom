@@ -156,8 +156,22 @@ internal sealed class DataGridPrincipalAdmission
         {
             var count = _active.GetValueOrDefault(principal);
             if (count == 8 || count == 0 && _active.Count == 128)
-                throw new IOException("Client principal capacity.");
+            {
+                DataGridTransportDiagnostics.Reject(
+                    DataGridTransportRole.Client,
+                    DataGridTransportDirection.Inbound,
+                    DataGridTransportResource.Principal,
+                    DataGridTransportRejection.Capacity
+                );
+                throw new DataGridTransportAdmissionException();
+            }
             _active[principal] = count + 1;
+            DataGridTransportDiagnostics.Change(
+                DataGridTransportRole.Client,
+                DataGridTransportDirection.Inbound,
+                DataGridTransportResource.Principal,
+                1
+            );
             return new Lease(this, principal);
         }
     }
@@ -178,6 +192,12 @@ internal sealed class DataGridPrincipalAdmission
                     held._active.Remove(principal);
                 else
                     held._active[principal] = count;
+                DataGridTransportDiagnostics.Change(
+                    DataGridTransportRole.Client,
+                    DataGridTransportDirection.Inbound,
+                    DataGridTransportResource.Principal,
+                    -1
+                );
             }
         }
     }

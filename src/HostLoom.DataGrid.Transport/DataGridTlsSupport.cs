@@ -97,13 +97,71 @@ internal static class DataGridTlsSupport
 internal sealed class DataGridTransportLease : IDisposable
 {
     private SemaphoreSlim? _semaphore;
+    private readonly DataGridTransportRole _role;
+    private readonly DataGridTransportDirection _direction;
+    private readonly DataGridTransportResource _resource;
+    private readonly long _bytes;
 
-    internal DataGridTransportLease(SemaphoreSlim semaphore, CancellationToken token)
+    private DataGridTransportLease(
+        SemaphoreSlim semaphore,
+        DataGridTransportRole role,
+        DataGridTransportDirection direction,
+        DataGridTransportResource resource,
+        long bytes
+    )
     {
-        if (!semaphore.Wait(0, token))
-            throw new IOException("Transport reservation unavailable.");
         _semaphore = semaphore;
+        _role = role;
+        _direction = direction;
+        _resource = resource;
+        _bytes = bytes;
+        DataGridTransportDiagnostics.Change(role, direction, resource, 1, bytes);
     }
 
-    public void Dispose() => Interlocked.Exchange(ref _semaphore, null)?.Release();
+    internal static DataGridTransportLease? TryAcquire(
+        SemaphoreSlim semaphore,
+        DataGridTransportRole role,
+        DataGridTransportDirection direction,
+        DataGridTransportResource resource,
+        long bytes = 0,
+        CancellationToken token = default
+    )
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(bytes);
+        if (semaphore.Wait(0, token))
+            return new(semaphore, role, direction, resource, bytes);
+        DataGridTransportDiagnostics.Reject(
+            role,
+            direction,
+            resource,
+            DataGridTransportRejection.Capacity
+        );
+        return null;
+    }
+
+    internal static DataGridTransportLease Acquire(
+        SemaphoreSlim semaphore,
+        DataGridTransportRole role,
+        DataGridTransportDirection direction,
+        DataGridTransportResource resource,
+        long bytes = 0,
+        CancellationToken token = default
+    ) =>
+        TryAcquire(semaphore, role, direction, resource, bytes, token)
+        ?? throw new DataGridTransportAdmissionException();
+
+    public void Dispose()
+    {
+        var held = Interlocked.Exchange(ref _semaphore, null);
+        if (held is null)
+            return;
+        try
+        {
+            DataGridTransportDiagnostics.Change(_role, _direction, _resource, -1, -_bytes);
+        }
+        finally
+        {
+            held.Release();
+        }
+    }
 }

@@ -66,3 +66,25 @@ per owner; there is no cluster-wide atomic cutover, dual-root overlap, file watc
 rolling-rotation guarantee. Broader production abuse/resource isolation, deployment, performance
 and Native AOT qualification remain open. The SDK and separate process fixture provide bounded
 history and failure evidence; they do not establish full production readiness.
+
+
+`DataGridTransportDiagnostics.MeterName` (`HostLoom.DataGrid.Transport`) publishes fixed-label
+reservation deltas, reserved encoded-work/image bytes, explicit admission refusals and terminal
+exchange outcomes. Labels are role, direction, resource and fixed reason/outcome vocabulary;
+member/principal counters aggregate without identity labels. One socket can hold multiple kinds
+of reservation. Client requests reserve two MiB of encoded work; inbound snapshots reserve their
+descriptor length. Neither value measures managed heap usage. Collect before constructing owners
+to observe a complete up-down baseline; no instance registry or payload history is retained.
+
+A valid failure reply can complete a transport exchange; completion does not assert application
+success. Admission refusals and terminal exchange outcomes are separate counters, and can describe
+the same failed exchange. Deadline, shutdown and linked credential cancellation share `canceled`;
+explicit retired-generation exceptions use `retired`. IO outcomes do not infer remote cause or
+mutation fate. The SDK records its own calls/attempts in its separate meter. Listeners are trusted
+synchronous diagnostic code and must not throw or block.
+
+Portable checks cover every semaphore budget, concurrent/idempotent release, anonymous principal
+limits and exact monotonic handshake burst/refill. Directed Linux tests cover stalled handshake
+capacity/deadline/stop, bound-member overflow and recovery, unauthorized/unbound clients, malformed
+requests/lengths and snapshot disconnect/reuse without actor installation. These checks preserve
+existing TLS/hello/admission rules and do not complete the broader production abuse/resource gate.

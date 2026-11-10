@@ -37,9 +37,8 @@ internal sealed class DataGridClientServer : IAsyncDisposable
     private readonly Dictionary<long, Task> _sessions = [];
     private Task? _accept,
         _shutdown;
-    private long _id,
-        _rateTime = TimeProvider.System.GetTimestamp();
-    private double _tokens = 8;
+    private long _id;
+    private readonly DataGridHandshakeRate _rate = new(8, DataGridTransportRole.Client);
     private int _rejected;
 
     internal DataGridClientServer(
@@ -105,22 +104,7 @@ internal sealed class DataGridClientServer : IAsyncDisposable
         _accept = Accept();
     }
 
-    private bool StartHandshake()
-    {
-        lock (_sync)
-        {
-            var now = TimeProvider.System.GetTimestamp();
-            _tokens = Math.Min(
-                8,
-                _tokens + TimeProvider.System.GetElapsedTime(_rateTime, now).TotalSeconds * 8
-            );
-            _rateTime = now;
-            if (_tokens < 1)
-                return false;
-            _tokens--;
-            return true;
-        }
-    }
+    private bool StartHandshake() => _rate.TryAcquire(DataGridTransportDirection.Inbound);
 
     [SuppressMessage(
         "Reliability",
@@ -134,7 +118,13 @@ internal sealed class DataGridClientServer : IAsyncDisposable
             while (!_stop.IsCancellationRequested)
             {
                 var tcp = await _listener.AcceptTcpClientAsync(_stop.Token).ConfigureAwait(false);
-                if (!_connections.Wait(0))
+                var connection = DataGridTransportLease.TryAcquire(
+                    _connections,
+                    DataGridTransportRole.Client,
+                    DataGridTransportDirection.Inbound,
+                    DataGridTransportResource.Connection
+                );
+                if (connection is null)
                 {
                     tcp.Dispose();
                     Interlocked.Increment(ref _rejected);
@@ -143,20 +133,26 @@ internal sealed class DataGridClientServer : IAsyncDisposable
                 if (!StartHandshake())
                 {
                     tcp.Dispose();
-                    _connections.Release();
+                    connection.Dispose();
                     Interlocked.Increment(ref _rejected);
                     continue;
                 }
                 DataGridTransportLease handshake;
                 try
                 {
-                    handshake = new(_handshakes, _stop.Token);
+                    handshake = DataGridTransportLease.Acquire(
+                        _handshakes,
+                        DataGridTransportRole.Client,
+                        DataGridTransportDirection.Inbound,
+                        DataGridTransportResource.Handshake,
+                        token: _stop.Token
+                    );
                 }
                 catch (Exception exception)
                     when (exception is IOException or OperationCanceledException)
                 {
                     tcp.Dispose();
-                    _connections.Release();
+                    connection.Dispose();
                     Interlocked.Increment(ref _rejected);
                     continue;
                 }
@@ -167,6 +163,7 @@ internal sealed class DataGridClientServer : IAsyncDisposable
                         id,
                         Task.Run(async () =>
                         {
+                            Exception? failure = null;
                             try
                             {
                                 await Serve(tcp, handshake).ConfigureAwait(false);
@@ -181,18 +178,25 @@ internal sealed class DataGridClientServer : IAsyncDisposable
                                             or ObjectDisposedException
                                 )
                             {
+                                failure = exception;
                                 Interlocked.Increment(ref _rejected);
                             }
                             catch (Exception exception)
                             {
+                                failure = exception;
                                 FatalError = exception;
                                 await _stop.CancelAsync().ConfigureAwait(false);
                             }
                             finally
                             {
+                                DataGridTransportDiagnostics.Exchange(
+                                    DataGridTransportRole.Client,
+                                    DataGridTransportDirection.Inbound,
+                                    failure
+                                );
                                 handshake.Dispose();
                                 tcp.Dispose();
-                                _connections.Release();
+                                connection.Dispose();
                                 lock (_sync)
                                     _sessions.Remove(id);
                             }
@@ -274,7 +278,14 @@ internal sealed class DataGridClientServer : IAsyncDisposable
             )
             .ConfigureAwait(false);
         handshake.Dispose();
-        using var requestLease = new DataGridTransportLease(_requests, token);
+        using var requestLease = DataGridTransportLease.Acquire(
+            _requests,
+            DataGridTransportRole.Client,
+            DataGridTransportDirection.Inbound,
+            DataGridTransportResource.Request,
+            2L * 1024 * 1024,
+            token
+        );
         var frame = await DataGridTlsSupport
             .ReadAsync(tls, member.Configuration.IncarnationId, principal.PrincipalId, token)
             .ConfigureAwait(false);
@@ -287,6 +298,12 @@ internal sealed class DataGridClientServer : IAsyncDisposable
         }
         catch (InvalidDataException)
         {
+            DataGridTransportDiagnostics.Reject(
+                DataGridTransportRole.Client,
+                DataGridTransportDirection.Inbound,
+                DataGridTransportResource.Request,
+                DataGridTransportRejection.InvalidRequest
+            );
             using var writer = new GridWriter(22);
             writer.Number((ulong)DataGridClientFailureCode.InvalidRequest, 2);
             writer.Number(0, 1);
@@ -312,6 +329,13 @@ internal sealed class DataGridClientServer : IAsyncDisposable
         }
         var authorized = principal.Allows(request);
         security.Check(); // Fully validated admission is ordered against generation publication.
+        if (!authorized)
+            DataGridTransportDiagnostics.Reject(
+                DataGridTransportRole.Client,
+                DataGridTransportDirection.Inbound,
+                DataGridTransportResource.Request,
+                DataGridTransportRejection.Unauthorized
+            );
         var reply = authorized
             ? await _receiver
                 .ExecuteAsync(principal.PrincipalId, request, token)

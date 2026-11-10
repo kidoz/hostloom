@@ -211,7 +211,7 @@ public sealed class DataGridCredentialTests
             .ToArray();
         try
         {
-            Assert.Throws<IOException>(() =>
+            Assert.Throws<DataGridTransportAdmissionException>(() =>
                 pool.Acquire(DataGridPeerFixture.Principal, TestContext.Current.CancellationToken)
             );
         }

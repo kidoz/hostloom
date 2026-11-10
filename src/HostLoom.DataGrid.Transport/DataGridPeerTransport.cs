@@ -38,8 +38,7 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
     private readonly Dictionary<long, Task> _sessions = [];
     private Task? _accept;
     private long _sessionId;
-    private long _rateTime = TimeProvider.System.GetTimestamp();
-    private double _rateTokens = 24;
+    private readonly DataGridHandshakeRate _rate = new(24, DataGridTransportRole.Peer);
     private int _rejected;
     private Task? _shutdown;
 
@@ -144,6 +143,31 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
         CancellationToken cancellationToken
     )
     {
+        Exception? failure = null;
+        try
+        {
+            return await SendCore(message, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+            throw;
+        }
+        finally
+        {
+            DataGridTransportDiagnostics.Exchange(
+                DataGridTransportRole.Peer,
+                DataGridTransportDirection.Outbound,
+                failure
+            );
+        }
+    }
+
+    private async Task<RaftMessage> SendCore(
+        RaftMessage message,
+        CancellationToken cancellationToken
+    )
+    {
         if (
             !message.Matches(_config)
             || message.From != _local
@@ -164,15 +188,31 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
                 : TimeSpan.FromSeconds(5)
         );
         var token = lifetime.Token;
-        if (!_connections.Wait(0, cancellationToken))
-            throw new IOException("Peer connection capacity.");
-        var memberHeld = false;
+        using var connection = DataGridTransportLease.Acquire(
+            _connections,
+            DataGridTransportRole.Peer,
+            DataGridTransportDirection.Outbound,
+            DataGridTransportResource.Connection,
+            token: token
+        );
+        using var member = DataGridTransportLease.Acquire(
+            _members[message.To],
+            DataGridTransportRole.Peer,
+            DataGridTransportDirection.Outbound,
+            DataGridTransportResource.Member,
+            token: token
+        );
+        if (!StartHandshake(DataGridTransportDirection.Outbound))
+            throw new DataGridTransportAdmissionException();
         try
         {
-            memberHeld = _members[message.To].Wait(0, token);
-            if (!memberHeld || !StartHandshake())
-                throw new IOException("Peer admission capacity.");
-            using var handshake = new DataGridTransportLease(_handshakes, token);
+            using var handshake = DataGridTransportLease.Acquire(
+                _handshakes,
+                DataGridTransportRole.Peer,
+                DataGridTransportDirection.Outbound,
+                DataGridTransportResource.Handshake,
+                token: token
+            );
             using var client = new TcpClient { NoDelay = true };
             security.Attach(client);
             await client
@@ -216,12 +256,6 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
         {
             throw new DataGridCredentialRetiredException();
         }
-        finally
-        {
-            if (memberHeld)
-                _members[message.To].Release();
-            _connections.Release();
-        }
     }
 
     [SuppressMessage(
@@ -238,29 +272,41 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
                 var client = await _listener
                     .AcceptTcpClientAsync(_stop.Token)
                     .ConfigureAwait(false);
-                if (!_connections.Wait(0))
+                var connection = DataGridTransportLease.TryAcquire(
+                    _connections,
+                    DataGridTransportRole.Peer,
+                    DataGridTransportDirection.Inbound,
+                    DataGridTransportResource.Connection
+                );
+                if (connection is null)
                 {
                     client.Dispose();
                     Interlocked.Increment(ref _rejected);
                     continue;
                 }
-                if (!StartHandshake())
+                if (!StartHandshake(DataGridTransportDirection.Inbound))
                 {
                     client.Dispose();
-                    _connections.Release();
+                    connection.Dispose();
                     Interlocked.Increment(ref _rejected);
                     continue;
                 }
                 DataGridTransportLease handshake;
                 try
                 {
-                    handshake = new(_handshakes, _stop.Token);
+                    handshake = DataGridTransportLease.Acquire(
+                        _handshakes,
+                        DataGridTransportRole.Peer,
+                        DataGridTransportDirection.Inbound,
+                        DataGridTransportResource.Handshake,
+                        token: _stop.Token
+                    );
                 }
                 catch (Exception exception)
                     when (exception is IOException or OperationCanceledException)
                 {
                     client.Dispose();
-                    _connections.Release();
+                    connection.Dispose();
                     Interlocked.Increment(ref _rejected);
                     continue;
                 }
@@ -271,6 +317,7 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
                         id,
                         Task.Run(async () =>
                         {
+                            Exception? failure = null;
                             try
                             {
                                 await Serve(client, handshake).ConfigureAwait(false);
@@ -285,18 +332,25 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
                                             or ObjectDisposedException
                                 )
                             {
+                                failure = exception;
                                 Interlocked.Increment(ref _rejected);
                             }
                             catch (Exception exception)
                             {
+                                failure = exception;
                                 FatalError = exception;
                                 await _stop.CancelAsync().ConfigureAwait(false);
                             }
                             finally
                             {
+                                DataGridTransportDiagnostics.Exchange(
+                                    DataGridTransportRole.Peer,
+                                    DataGridTransportDirection.Inbound,
+                                    failure
+                                );
                                 handshake.Dispose();
                                 client.Dispose();
-                                _connections.Release();
+                                connection.Dispose();
                                 lock (_sync)
                                     _sessions.Remove(id);
                             }
@@ -330,51 +384,37 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
             ? credentials.Resolve(certificate)
             : -1;
         CheckTls(tls, remote, security);
-        if (!_members[remote].Wait(0))
-            throw new IOException("Member connection capacity.");
-        try
+        using var member = DataGridTransportLease.Acquire(
+            _members[remote],
+            DataGridTransportRole.Peer,
+            DataGridTransportDirection.Inbound,
+            DataGridTransportResource.Member,
+            token: lifetime.Token
+        );
+
+        var hello = await Read(tls, remote, security, lifetime.Token).ConfigureAwait(false);
+        DataGridPeerCodec.ValidateHello(hello, _config, credentials.BuildDigest);
+        await Write(
+                tls,
+                DataGridPeerCodec.Hello(_config, _local, hello.AttemptId, credentials.BuildDigest),
+                lifetime.Token
+            )
+            .ConfigureAwait(false);
+        handshake.Dispose();
+        var request = await Read(tls, remote, security, lifetime.Token).ConfigureAwait(false);
+        if (request.Kind == DataGridMessageKind.SnapshotStart)
         {
-            var hello = await Read(tls, remote, security, lifetime.Token).ConfigureAwait(false);
-            DataGridPeerCodec.ValidateHello(hello, _config, credentials.BuildDigest);
-            await Write(
-                    tls,
-                    DataGridPeerCodec.Hello(
-                        _config,
-                        _local,
-                        hello.AttemptId,
-                        credentials.BuildDigest
-                    ),
-                    lifetime.Token
-                )
+            lifetime.CancelAfter(TimeSpan.FromSeconds(60));
+            await ReceiveSnapshot(tls, request, remote, security, lifetime.Token)
                 .ConfigureAwait(false);
-            handshake.Dispose();
-            var request = await Read(tls, remote, security, lifetime.Token).ConfigureAwait(false);
-            if (request.Kind == DataGridMessageKind.SnapshotStart)
-            {
-                lifetime.CancelAfter(TimeSpan.FromSeconds(60));
-                await ReceiveSnapshot(tls, request, remote, security, lifetime.Token)
-                    .ConfigureAwait(false);
-                return;
-            }
-            var message = DataGridPeerCodec.Decode(
-                request,
-                _config,
-                remote,
-                _local,
-                response: false
-            );
-            security.Check();
-            var response = await _receiver
-                .ReceiveAsync(message, lifetime.Token)
+            return;
+        }
+        var message = DataGridPeerCodec.Decode(request, _config, remote, _local, response: false);
+        security.Check();
+        var response = await _receiver.ReceiveAsync(message, lifetime.Token).ConfigureAwait(false);
+        if (response is not null)
+            await Write(tls, DataGridPeerCodec.Encode(response, _config), lifetime.Token)
                 .ConfigureAwait(false);
-            if (response is not null)
-                await Write(tls, DataGridPeerCodec.Encode(response, _config), lifetime.Token)
-                    .ConfigureAwait(false);
-        }
-        finally
-        {
-            _members[remote].Release();
-        }
     }
 
     private void CheckTls(
@@ -416,22 +456,8 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
         CancellationToken token
     ) => DataGridPeerCodec.WriteAsync(tls, frame, token);
 
-    private bool StartHandshake()
-    {
-        lock (_sync)
-        {
-            var now = TimeProvider.System.GetTimestamp();
-            _rateTokens = Math.Min(
-                24,
-                _rateTokens + TimeProvider.System.GetElapsedTime(_rateTime, now).TotalSeconds * 24
-            );
-            _rateTime = now;
-            if (_rateTokens < 1)
-                return false;
-            _rateTokens--;
-            return true;
-        }
-    }
+    private bool StartHandshake(DataGridTransportDirection direction) =>
+        _rate.TryAcquire(direction);
 
     public ValueTask DisposeAsync()
     {
@@ -542,12 +568,33 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
         var (term, descriptor) = SnapshotStart(start);
         var attempt = start.AttemptId;
         _ = DataGridPeerCodec.Token(attempt);
-        if (!_transfer.Wait(0, token))
-            throw new IOException("Snapshot reservation unavailable.");
-        try
+        using var transfer = DataGridTransportLease.Acquire(
+            _transfer,
+            DataGridTransportRole.Peer,
+            DataGridTransportDirection.Inbound,
+            DataGridTransportResource.Snapshot,
+            descriptor.ByteCount,
+            token
+        );
+
+        security.Check();
+        var current = await _receiver.ObserveLeaderAsync(term, token).ConfigureAwait(false);
+        if (current != term)
         {
+            await SnapshotAck(tls, attempt, descriptor.SnapshotId, current, false, false, 0, token)
+                .ConfigureAwait(false);
+            return;
+        }
+        var bytes = new byte[checked((int)descriptor.ByteCount)];
+        var offset = 0;
+        await SnapshotAck(tls, attempt, descriptor.SnapshotId, current, true, false, 0, token)
+            .ConfigureAwait(false);
+        while (offset < bytes.Length)
+        {
+            var frame = await Read(tls, remote, security, token).ConfigureAwait(false);
+            offset = CopyChunk(frame, attempt, descriptor.SnapshotId, bytes, offset);
             security.Check();
-            var current = await _receiver.ObserveLeaderAsync(term, token).ConfigureAwait(false);
+            current = await _receiver.ObserveLeaderAsync(term, token).ConfigureAwait(false);
             if (current != term)
             {
                 await SnapshotAck(
@@ -563,77 +610,47 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
                     .ConfigureAwait(false);
                 return;
             }
-            var bytes = new byte[checked((int)descriptor.ByteCount)];
-            var offset = 0;
-            await SnapshotAck(tls, attempt, descriptor.SnapshotId, current, true, false, 0, token)
-                .ConfigureAwait(false);
-            while (offset < bytes.Length)
+            if (offset < bytes.Length)
             {
-                var frame = await Read(tls, remote, security, token).ConfigureAwait(false);
-                offset = CopyChunk(frame, attempt, descriptor.SnapshotId, bytes, offset);
-                security.Check();
-                current = await _receiver.ObserveLeaderAsync(term, token).ConfigureAwait(false);
-                if (current != term)
-                {
-                    await SnapshotAck(
-                            tls,
-                            attempt,
-                            descriptor.SnapshotId,
-                            current,
-                            false,
-                            false,
-                            0,
-                            token
-                        )
-                        .ConfigureAwait(false);
-                    return;
-                }
-                if (offset < bytes.Length)
-                {
-                    await SnapshotAck(
-                            tls,
-                            attempt,
-                            descriptor.SnapshotId,
-                            current,
-                            true,
-                            false,
-                            offset,
-                            token
-                        )
-                        .ConfigureAwait(false);
-                    continue;
-                }
-                DataGridLocalStateMachine.Restore(_config, descriptor, bytes);
-                var request = new RaftMessage(
-                    RaftMessageKind.SnapshotRequest,
-                    remote,
-                    _local,
-                    term,
-                    DataGridPeerCodec.Token(attempt),
-                    _config.IncarnationId,
-                    _config.ComputeDigest(),
-                    snapshot: new(descriptor, bytes)
-                );
-                security.Check();
-                var reply = await _receiver.ReceiveAsync(request, token).ConfigureAwait(false);
-                if (reply is null)
-                    return;
                 await SnapshotAck(
                         tls,
                         attempt,
                         descriptor.SnapshotId,
-                        reply.Term,
-                        reply.Accepted,
-                        reply.Accepted,
-                        reply.Accepted ? offset : 0,
+                        current,
+                        true,
+                        false,
+                        offset,
                         token
                     )
                     .ConfigureAwait(false);
+                continue;
             }
-        }
-        finally
-        {
-            _transfer.Release();
+            DataGridLocalStateMachine.Restore(_config, descriptor, bytes);
+            var request = new RaftMessage(
+                RaftMessageKind.SnapshotRequest,
+                remote,
+                _local,
+                term,
+                DataGridPeerCodec.Token(attempt),
+                _config.IncarnationId,
+                _config.ComputeDigest(),
+                snapshot: new(descriptor, bytes)
+            );
+            security.Check();
+            var reply = await _receiver.ReceiveAsync(request, token).ConfigureAwait(false);
+            if (reply is null)
+                return;
+            await SnapshotAck(
+                    tls,
+                    attempt,
+                    descriptor.SnapshotId,
+                    reply.Term,
+                    reply.Accepted,
+                    reply.Accepted,
+                    reply.Accepted ? offset : 0,
+                    token
+                )
+                .ConfigureAwait(false);
         }
     }
 
