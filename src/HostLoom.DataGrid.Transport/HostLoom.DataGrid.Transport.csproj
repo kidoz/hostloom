@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Experimental bounded TLS peer transport for the native data grid.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HostLoom.DataGrid/HostLoom.DataGrid.csproj" />
+  </ItemGroup>
+</Project>
