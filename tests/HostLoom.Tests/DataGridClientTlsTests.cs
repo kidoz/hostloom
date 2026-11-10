@@ -568,7 +568,7 @@ public sealed class DataGridClientTlsTests
         return outcome.Reply.Result.GetItem(0).Version;
     }
 
-    private sealed class ClientCluster : IAsyncDisposable
+    internal sealed class ClientCluster : IAsyncDisposable
     {
         private readonly X509Certificate2 _writer,
             _reader,
