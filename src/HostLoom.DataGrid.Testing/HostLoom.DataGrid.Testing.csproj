@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Deterministic local data-grid simulation with owned in-memory journal and transport.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HostLoom.DataGrid/HostLoom.DataGrid.csproj" />
+  </ItemGroup>
+</Project>
