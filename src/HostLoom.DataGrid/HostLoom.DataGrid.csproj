@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Experimental byte-map contract primitives for the HostLoom native data grid.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+</Project>
