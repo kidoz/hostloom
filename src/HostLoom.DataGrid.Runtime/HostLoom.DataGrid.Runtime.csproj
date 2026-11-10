@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Experimental serialized native grid actor with file storage and TLS peers.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HostLoom.DataGrid.Storage/HostLoom.DataGrid.Storage.csproj" />
+    <ProjectReference Include="../HostLoom.DataGrid.Transport/HostLoom.DataGrid.Transport.csproj" />
+  </ItemGroup>
+</Project>
