@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -100,6 +101,41 @@ public sealed class DataGridClient : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
+        var operation = DataGridClientDiagnostics.Operation(request.Kind);
+        var started = Stopwatch.GetTimestamp();
+        var outcome = "faulted";
+        var mayHaveBeenAdmitted = false;
+        DataGridClientDiagnostics.Begin(operation);
+        try
+        {
+            var result = await ExecuteCore(request, cancellationToken).ConfigureAwait(false);
+            outcome = DataGridClientDiagnostics.Outcome(result.Reply.Failure?.Code);
+            mayHaveBeenAdmitted = result.MayHaveBeenAdmitted;
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            outcome = "canceled";
+            throw;
+        }
+        finally
+        {
+            DataGridClientDiagnostics.End(
+                operation,
+                outcome,
+                mayHaveBeenAdmitted,
+                Stopwatch.GetElapsedTime(started).TotalSeconds
+            );
+        }
+    }
+
+    private async Task<DataGridClientOutcome> ExecuteCore(
+        DataGridClientRequest request,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
         var historyId = _history?.Begin(_configuration.IncarnationId, _principal, request);
         var attempts = new List<DataGridClientAttempt>(3);
         var mayHaveBeenAdmitted = false;
@@ -113,6 +149,10 @@ public sealed class DataGridClient : IAsyncDisposable
             if (!recorded)
             {
                 attempts.Add(new(currentAttempt, currentMember, submitted));
+                DataGridClientDiagnostics.Attempt(
+                    DataGridClientDiagnostics.Operation(request.Kind),
+                    submitted
+                );
                 recorded = true;
             }
         }

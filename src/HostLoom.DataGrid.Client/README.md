@@ -86,3 +86,13 @@ expiry with injected UTC time. Remaining work includes broader partition/fault s
 multi-attempt semantic failure histories, coordinated rolling rotation, full resource/telemetry
 qualification, supported filesystem/device and shutdown evidence, workload targets, and any
 claimed Native AOT path.
+
+
+`DataGridClientDiagnostics.MeterName` (`HostLoom.DataGrid.Client`) publishes logical call counts,
+active invocations, whole-call duration and entered physical attempts. Fixed operation/outcome
+and Boolean admission/submission tags preserve the difference between uncertain caller outcomes
+and committed/retained results. Counts include immediate capacity/disabled decisions; the active
+invocation count includes those brief decisions outside the eight-exchange reservation. An entered
+attempt can be canceled before it connects or writes. Entry cancellation precedes metric admission.
+Collect before client construction for a complete up-down baseline. No key/value/map/endpoint/
+principal/exception labels, payload history, exporter or grid trace propagation is added.
