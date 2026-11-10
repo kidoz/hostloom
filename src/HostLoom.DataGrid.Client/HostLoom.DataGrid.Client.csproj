@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Experimental bounded mutually authenticated native data-grid client.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HostLoom.DataGrid.Transport/HostLoom.DataGrid.Transport.csproj" />
+  </ItemGroup>
+</Project>
