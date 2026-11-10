@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Sockets;
@@ -43,24 +44,8 @@ internal sealed class DataGridPeerRuntime
     private readonly DataGridPeerTransport _transport;
     private readonly TimeProvider _time;
     private readonly CancellationTokenSource _stop = new();
-    private readonly Channel<Work> _control = Channel.CreateBounded<Work>(
-        new BoundedChannelOptions(256)
-        {
-            SingleReader = true,
-            FullMode = BoundedChannelFullMode.Wait,
-        }
-    );
-    private readonly Channel<Work> _clients = Channel.CreateBounded<Work>(
-        new BoundedChannelOptions(128)
-        {
-            SingleReader = true,
-            FullMode = BoundedChannelFullMode.Wait,
-        }
-    );
-    private readonly SemaphoreSlim _ready = new(0, 384);
+    private readonly DataGridRuntimeQueue _queue = new();
     private readonly object _admission = new();
-    private long _controlBytes,
-        _clientBytes;
     private readonly Dictionary<
         Guid,
         (TaskCompletionSource<RaftCompletion> Result, bool Read)
@@ -74,7 +59,7 @@ internal sealed class DataGridPeerRuntime
     private Exception? _failure;
     private Task? _shutdown;
 
-    // Caller transfers store/listener ownership; certificates remain borrowed until disposal completes.
+    // Caller transfers store/listener ownership; the transport captures owned credential material.
     internal DataGridPeerRuntime(
         DataGridFileStore store,
         DataGridPeerCredentials credentials,
@@ -126,7 +111,7 @@ internal sealed class DataGridPeerRuntime
             finally
             {
                 _store.Dispose();
-                _ready.Dispose();
+                _queue.Dispose();
                 _stop.Dispose();
             }
             throw;
@@ -168,6 +153,40 @@ internal sealed class DataGridPeerRuntime
     }
 
     private async Task<RaftCompletion> Submit(
+        DataGridCommittedCommand? command,
+        Guid? map,
+        DataGridKey? key,
+        CancellationToken token,
+        IReadOnlyList<DataGridKey>? keys = null
+    )
+    {
+        token.ThrowIfCancellationRequested();
+        var operation = DataGridRuntimeDiagnostics.Operation(command);
+        var started = Stopwatch.GetTimestamp();
+        var outcome = "faulted";
+        DataGridRuntimeDiagnostics.Begin(operation);
+        try
+        {
+            var result = await SubmitCore(command, map, key, token, keys).ConfigureAwait(false);
+            outcome = DataGridRuntimeDiagnostics.Outcome(result.Kind);
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            outcome = "canceled";
+            throw;
+        }
+        finally
+        {
+            DataGridRuntimeDiagnostics.End(
+                operation,
+                outcome,
+                Stopwatch.GetElapsedTime(started).TotalSeconds
+            );
+        }
+    }
+
+    private async Task<RaftCompletion> SubmitCore(
         DataGridCommittedCommand? command,
         Guid? map,
         DataGridKey? key,
@@ -451,24 +470,8 @@ internal sealed class DataGridPeerRuntime
             reject(new IOException("Runtime stopped or admission capacity exceeded."));
     }
 
-    private bool TryPost(Work work)
-    {
-        lock (_admission)
-        {
-            ref var bytes = ref (work.Control ? ref _controlBytes : ref _clientBytes);
-            if (
-                _stop.IsCancellationRequested
-                || work.Bytes < 0
-                || bytes + work.Bytes > 16L * 1024 * 1024
-            )
-                return false;
-            if (!(work.Control ? _control : _clients).Writer.TryWrite(work))
-                return false;
-            bytes += work.Bytes;
-            _ready.Release();
-            return true;
-        }
-    }
+    private bool TryPost(DataGridRuntimeWork work) =>
+        _queue.TryWrite(work, _stop.IsCancellationRequested);
 
     private async Task Run()
     {
@@ -476,26 +479,9 @@ internal sealed class DataGridPeerRuntime
         {
             Apply(_node.Start());
             Publish();
-            var controlRun = 0;
             while (!_stop.IsCancellationRequested)
             {
-                await _ready.WaitAsync(_stop.Token).ConfigureAwait(false);
-                Work? work;
-                if (controlRun < 8 && _control.Reader.TryRead(out work))
-                    controlRun++;
-                else if (_clients.Reader.TryRead(out work))
-                    controlRun = 0;
-                else if (_control.Reader.TryRead(out work))
-                    controlRun = 1;
-                else
-                    continue;
-                lock (_admission)
-                {
-                    if (work.Control)
-                        _controlBytes -= work.Bytes;
-                    else
-                        _clientBytes -= work.Bytes;
-                }
+                var work = await _queue.ReadAsync(_stop.Token).ConfigureAwait(false);
                 work.Action();
                 Publish();
                 if (_node.Role == RaftRole.Faulted)
@@ -513,15 +499,11 @@ internal sealed class DataGridPeerRuntime
         finally
         {
             await _stop.CancelAsync().ConfigureAwait(false);
-            _control.Writer.TryComplete();
-            _clients.Writer.TryComplete();
             var error = new IOException(
                 "Runtime stopped; admitted mutations may have committed.",
                 Failure
             );
-            while (_control.Reader.TryRead(out var work))
-                work.Reject(error);
-            while (_clients.Reader.TryRead(out var work))
+            foreach (var work in _queue.Complete())
                 work.Reject(error);
             foreach (var pending in _pending)
                 pending.Value.Result.TrySetResult(
@@ -587,7 +569,7 @@ internal sealed class DataGridPeerRuntime
                     IReadOnlyList<RaftEffect> completed;
                     try
                     {
-                        _store.Persist(write.Image, _stop.Token);
+                        Persist(write.Image);
                         completed = _node.Persisted(write.Token, true);
                     }
                     catch (Exception exception)
@@ -636,6 +618,29 @@ internal sealed class DataGridPeerRuntime
             }
         }
         return reply;
+    }
+
+    private void Persist(RaftDurableImage image)
+    {
+        var started = Stopwatch.GetTimestamp();
+        var outcome = "faulted";
+        try
+        {
+            _store.Persist(image, _stop.Token);
+            outcome = "persisted";
+        }
+        catch (OperationCanceledException)
+        {
+            outcome = "canceled";
+            throw;
+        }
+        finally
+        {
+            DataGridRuntimeDiagnostics.Persisted(
+                outcome,
+                Stopwatch.GetElapsedTime(started).TotalSeconds
+            );
+        }
     }
 
     private void Schedule(RaftTimer timer)
@@ -831,7 +836,7 @@ internal sealed class DataGridPeerRuntime
         await _stop.CancelAsync().ConfigureAwait(false);
         // A timed-out synchronous filesystem operation retains ownership until the actor actually exits.
         await _loop.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
-        _ready.Dispose();
+        _queue.Dispose();
         _stop.Dispose();
     }
 
@@ -845,8 +850,6 @@ internal sealed class DataGridPeerRuntime
         internal RaftToken DiscardedToken { get; set; }
         internal Task Task { get; set; } = Task.CompletedTask;
     }
-
-    private sealed record Work(Action Action, Action<Exception> Reject, int Bytes, bool Control);
 
     private sealed record Watcher(long Index, bool Leader, TaskCompletionSource Completion);
 }
