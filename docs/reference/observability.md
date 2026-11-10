@@ -21,6 +21,9 @@ configuration needs.
 | `HostLoom.Transport.RabbitMq` | `Meter` | the RabbitMQ transport |
 | `HostLoom.Transport.Kafka` | `Meter` | the Kafka transport |
 | `HostLoom.AspNetCore.WebSockets` | `ActivitySource` and `Meter` | raw WebSocket gateway |
+| `HostLoom.DataGrid.Runtime` | `Meter` | experimental grid actor |
+| `HostLoom.DataGrid.Client` | `Meter` | experimental grid SDK |
+| `HostLoom.DataGrid.Transport` | `Meter` | experimental peer/client listeners |
 
 ```csharp
 builder.Services.AddOpenTelemetry()
@@ -328,3 +331,91 @@ envelopes are counted on `hostloom.cache.errors` with the existing failure kind 
   immutable registration-time or runtime snapshots of gateway options, request
   routes, topic routes, and optional composition-ledger-shaped decisions;
   neither resolves application services nor contacts a transport.
+
+
+## Experimental native grid instruments
+
+The non-packable grid prototype publishes `HostLoom.DataGrid.Runtime`,
+`HostLoom.DataGrid.Client` and `HostLoom.DataGrid.Transport` meters. Their names are also exposed
+by `DataGridRuntimeDiagnostics.MeterName`, `DataGridClientDiagnostics.MeterName` and
+`DataGridTransportDiagnostics.MeterName` in the corresponding packages. Enable the meters before
+constructing actors, clients or listeners. Up-down
+counters report deltas; a listener attached halfway through an owner's lifetime has no initial
+baseline. Metrics aggregate all instances in one process; use exporter resource attributes
+for service identity. There is no grid activity source, trace propagation or exporter setup.
+
+| Instrument | Type / unit | Meaning |
+| --- | --- | --- |
+| `hostloom.datagrid.runtime.queue.items` | up-down counter / `{item}` | Work waiting in control/client lanes; released on dequeue or shutdown drain |
+| `hostloom.datagrid.runtime.queue.bytes` | up-down counter / `By` | Encoded-byte reservations waiting in those lanes; excludes executing work and heap overhead |
+| `hostloom.datagrid.runtime.queue.rejected` | counter / `{item}` | Pre-queue refusals by lane and reason: `items`, `bytes`, or `stopped` |
+| `hostloom.datagrid.runtime.operations` | counter / `{operation}` | Local submission completions, including rejection, uncertainty, cancellation and faults |
+| `hostloom.datagrid.runtime.operations.active` | up-down counter / `{operation}` | Local callers awaiting actor completion |
+| `hostloom.datagrid.runtime.operation.duration` | histogram / `s` | Local submission through caller completion, including queue, quorum and persistence waits |
+| `hostloom.datagrid.runtime.persistence.duration` | histogram / `s` | One synchronous file-store `Persist` call, including required flush/publication and excluding dependent actor application |
+| `hostloom.datagrid.client.calls` | counter / `{call}` | SDK logical completions, including immediate capacity/disabled refusals |
+| `hostloom.datagrid.client.calls.active` | up-down counter / `{call}` | Invocations awaiting caller completion, including brief pre-admission decisions |
+| `hostloom.datagrid.client.call.duration` | histogram / `s` | Whole logical invocation, including reconnect waits and all attempts |
+| `hostloom.datagrid.client.attempts` | counter / `{attempt}` | Entered attempts, including attempts canceled while waiting to reconnect or before request writing |
+| `hostloom.datagrid.transport.reservations.active` | up-down counter / `{reservation}` | Held connection, handshake, member, principal, request or inbound snapshot reservations; one socket can hold several kinds |
+| `hostloom.datagrid.transport.reservations.bytes` | up-down counter / `By` | Reserved client encoded work (2 MiB per request reservation) or inbound snapshot descriptor bytes; excludes managed overhead |
+| `hostloom.datagrid.transport.admission.rejected` | counter / `{rejection}` | Explicit capacity/rate, invalid decoded request, or map/session grant refusals |
+| `hostloom.datagrid.transport.exchanges` | counter / `{exchange}` | Accepted inbound sessions and outbound peer invocations by terminal transport outcome; excludes TCP refusals before session creation |
+
+
+Fixed tags are `hostloom.datagrid.lane` (`control`/`client`), `hostloom.datagrid.reason`,
+`hostloom.datagrid.operation`, `hostloom.datagrid.outcome`,
+`hostloom.datagrid.may_have_been_admitted` and `hostloom.datagrid.submitted`.
+Operation names come from fixed request/command kinds; outcomes come from fixed completion or
+failure codes plus `canceled`/`faulted`. Persistence outcomes are `persisted`, `canceled` or
+`faulted`. The last two tags are Boolean SDK admission/submission observations. No meter label
+contains a key, value, map name, directory, endpoint, credential, exception message or identity.
+The optional payload-bearing history recorder remains a separate experiment facility.
+
+Counts describe their own boundary. A local `applied` result can contain a rejected conditional
+or session result; SDK `success` also includes completed conditional rejections. Retries may
+recover the same retained result, so neither counter counts unique writes. A canceled local
+caller does not establish rollback. SDK `outcome_unknown` retains cumulative admission
+uncertainty even if the actor already applied the mutation. An attempt's `submitted` means
+request writing began, not that the server admitted it. SDK/local-submission entry cancellation throws before their metric
+admission. Persistence measurements include no-op `Persist` calls and do not count fsyncs or
+establish device durability. Synchronous metric listeners are trusted diagnostic code and should
+not block or throw; this slice does not isolate listener failures.
+
+Actor admission retains 256 control / 128 client queued items and 16 MiB per lane. A waiting
+client gets a turn after at most eight control turns; this does not promise fairness among
+external principals. Each SDK still reserves at most eight concurrent exchanges. The active
+invocation metric includes brief decisions outside that reservation. The meters retain no
+per-owner registry or payload history. Queue/SDK boundary tests and Linux actor tests establish
+these measured paths, not collector delivery, full transport abuse isolation, all required
+per-map/readiness/storage metrics, performance capacity or production readiness.
+
+
+Transport labels are `hostloom.datagrid.transport.role` (`peer`/`client`),
+`hostloom.datagrid.transport.direction` (`inbound`/`outbound`),
+`hostloom.datagrid.transport.resource` (`connection`, `handshake`, `member`, `principal`,
+`request`, `snapshot`), `hostloom.datagrid.transport.reason` (`capacity`, `rate`, `unauthorized`,
+`invalid_request`) and `hostloom.datagrid.transport.outcome` (`completed`, `rejected`, `retired`,
+`authentication`, `protocol`, `canceled`, `io`, `faulted`). Only peers emit outbound exchanges;
+SDK attempts belong to the client meter. Per-member/principal counters aggregate anonymously:
+these series cannot identify a hot member or principal. Limits still apply separately to each
+bound identity, and principal accounting survives credential replacement.
+
+Transport counters describe separate boundaries. A capacity refusal can increment both admission
+rejection and a terminal `rejected` exchange; these counters must not be added as distinct failed
+requests. Rate/connection/handshake refusals before an inbound session is created increment only
+admission rejection. Authentication/framing failures close an accepted session and appear in
+exchange outcomes. A decoded grant refusal or invalid request can send a valid failure response
+and finish with transport outcome `completed`. Application reply failures also count as completed
+exchanges. `canceled` combines physical deadlines, stop and credential cancellation; `retired`
+applies when the explicit retired-generation exception reaches the boundary. Some disconnects or
+TLS failures surface as `io`; the meter does not infer their remote cause or committed-write fate.
+
+Reservations decrement exactly once on release, including early hello failure, malformed frames,
+shutdown and snapshot disconnect. Snapshot bytes cover the reserved inbound image, including
+before allocation or a term refusal; they are not allocated heap measurements. Client request
+bytes are fixed encoded-work budget reservations, not actual wire sizes. Collection must begin
+before ownership for complete delta baselines. Metrics retain no credentials, endpoints, identities
+or payload history. Controlled TLS tests establish these paths and recovery after refusal; full
+connection churn, slow-consumer fairness, credential-retirement budgets, managed-memory pressure,
+collector delivery and complete production abuse isolation remain unqualified.
