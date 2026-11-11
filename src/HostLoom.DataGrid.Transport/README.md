@@ -46,7 +46,12 @@ handshakes and 32 starts/second. Peer/client encoded work reservations split eig
 these raw-byte budgets do not measure managed-memory amplification. TLS/hello and regular calls
 have five-second deadlines. Snapshot calls have a 60-second deadline. Each connection processes one request, so it has no unbounded writer queue
 or pending-call map. Excess work closes/rejects; retries belong to Raft, preserving correlation.
-Disposal joins accepted sessions; the runtime drains its outgoing workers before disposal.
+Disposal stops new outgoing calls and joins registered outgoing invocations plus accepted sessions
+before disposing credential material or semaphore gates. This also applies with shared credentials;
+late sends throw a stopped IOException. The ownership tracker is capped at 16 outgoing calls;
+its capacity refusal uses the existing outbound connection/capacity reason. Gate reservation
+counters still describe gate leases, not retiring invocation tasks. The runtime drains its sender workers before releasing
+the transport. Local send completion or cancellation does not prove remote rollback.
 
 The separate client ALPN accepts ClientHello and unary mutation/read/session messages only.
 Client certificates require private-root chain/client EKU/expiry validation and explicit leaf-pin
@@ -114,3 +119,11 @@ identity can read after drain. This deliberately retained test receiver is not a
 or a supported extension API. These cases establish directed cleanup and quota behavior, not
 sustained-load fairness, full connection saturation, every TCP reset path, device durability or
 numerical workload acceptance.
+
+Additional Linux lifetime checks stop outgoing calls during stalled TLS using owned or shared
+credentials, including concurrent caller cancellation. Disposal returns after their original
+tasks complete and reservations release. A snapshot case stops the local sender while a controlled
+remote receiver still owns the complete image; stopping that receiver then releases its transfer.
+A real peer deadline can end an inbound session while its blocked actor action remains charged
+by the runtime's separate retained-control budget. These checks do not establish a hard bound
+for arbitrary OS I/O or an uncooperative receiver.

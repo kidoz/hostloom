@@ -39,6 +39,24 @@ removed on release and bounded by at most 128 held operations. Encoded charges i
 keys (including trusted single-key reads), or canonical committed commands, plus 128 bytes of
 submission overhead. They exclude response/log/replay state, copies and managed heap overhead.
 
+Control work also retains a separate 256-item/16-MiB charge from before enqueue until its action
+finishes or is rejected during drain. This covers peer receives, snapshot authority observation,
+local control calls, timer deliveries and peer-response deliveries. Dequeue, caller cancellation
+or a peer physical deadline cannot refund an executing action that still owns its input. Thus
+one executing item leaves room for 255 waiting items, even if its transport session has ended.
+Client and control pools remain separate. Watcher waits, timer registrations, outbound sender
+payloads and transport buffers have their own lifetimes; these counters do not bound total heap.
+The anonymous `runtime.control.active`/`runtime.control.bytes` series report held control charges,
+while queue series still report only waiting work. Zero charges do not certify full shutdown.
+
+Peer transport disposal now joins registered outgoing invocations as well as accepted sessions
+before disposing credential material or semaphore gates, including with a shared security owner.
+Late sends throw a stopped IOException. The transport retains at most 16 registered outgoing
+invocations inside its ownership tracker. The runtime still joins its sender workers first;
+workers and final drain discard the latest pending payload, then clear sender/timer references.
+There remains one active and one latest pending message per remote peer. Canceling a local send
+does not prove rollback of a request or snapshot already being processed remotely.
+
 Portable tests cover concurrent producers, byte/item saturation, principal churn and exact turn
 ordering. Linux wire cases verify definite per-principal refusal and another principal's queue
 admission during blocked persistence, alongside full-lane fault/shutdown cleanup. Further cases

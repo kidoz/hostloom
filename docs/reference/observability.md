@@ -353,6 +353,8 @@ for service identity. There is no grid activity source, trace propagation or exp
 | `hostloom.datagrid.runtime.queue.rejected` | counter / `{item}` | Pre-queue refusals by lane and reason: `items`, `bytes`, `principal`, or `stopped` |
 | `hostloom.datagrid.runtime.admission.active` | up-down counter / `{operation}` | Held client operation reservations from before enqueue through actor completion/drain; caller cancellation does not refund them |
 | `hostloom.datagrid.runtime.admission.bytes` | up-down counter / `By` | Retained encoded submission charges across queued/executing/pending work; excludes responses, log/replay state and heap overhead |
+| `hostloom.datagrid.runtime.control.active` | up-down counter / `{item}` | Held control work from before enqueue through action completion or rejection/drain |
+| `hostloom.datagrid.runtime.control.bytes` | up-down counter / `By` | Retained encoded control inputs across queue and execution; excludes sender/transport copies and heap overhead |
 | `hostloom.datagrid.runtime.operations` | counter / `{operation}` | Local submission completions, including rejection, uncertainty, cancellation and faults |
 | `hostloom.datagrid.runtime.operations.active` | up-down counter / `{operation}` | Local callers awaiting actor completion |
 | `hostloom.datagrid.runtime.operation.duration` | histogram / `s` | Local submission through caller completion, including queue, quorum and persistence waits |
@@ -426,6 +428,23 @@ blocked work early. Controlled Linux cases cover pending cancellation, wire refu
 completion, quorum recovery and blocked-WAL physical timeout followed by recovery/stop/fault.
 Zero admission reservations do not establish completed transport/storage cleanup or expired
 replay state; the actual completion/closed diagnostics describe those separate boundaries.
+
+The two unlabelled `runtime.control.*` series describe a separate 256-item/16-MiB pool across
+queued and executing peer/local control calls, timer deliveries and peer-response deliveries.
+Queue deltas release at dequeue; a control charge remains until the action returns or rejects.
+A peer physical deadline or canceled caller can therefore leave control-active positive after
+transport reservations return to zero. One executing item leaves 255 waiting places. Timer
+registrations, diagnostic watcher waits, outbound sender references and transport buffers are
+outside this pool and have separate bounds. Do not add these overlapping counters as heap bytes.
+
+Peer transport disposal joins outgoing invocation tasks before disposing its gates, including
+with shared credentials; late sends throw IOException and report `io`. Its bounded 16-call
+ownership tracker can refuse with outbound connection/capacity even after socket gates released;
+reservation-active counters still count gate leases. Local snapshot cancellation can
+finish while a remote receiver still owns the image. Directed Linux cases cover these distinctions
+and blocked control work through recovery, a cached disposal timeout and storage fault. They do
+not establish remote rollback, full cleanup from a zero counter, hard OS-I/O shutdown or numerical
+workload acceptance. The grid inventory is now 30 instruments; no identity labels are added.
 
 
 Transport labels are `hostloom.datagrid.transport.role` (`peer`/`client`),
