@@ -55,5 +55,19 @@ positions; it requires space for the old and new generation together.
 every torn prefix of an uncommitted record, rehashed-invalid transitions and killed child writers.
 `HostLoom.DataGrid.StorageProbe` exists only for those process tests. There is no three-process
 deployment or public-client linearizability, real disk-full experiment,
-bounded OS-I/O shutdown, telemetry or Native AOT evidence yet. The separate transport/runtime
+bounded OS-I/O shutdown, full operational telemetry or Native AOT evidence yet. The separate transport/runtime
 projects now exercise actual Linux loopback TLS and file-backed consensus.
+
+
+Internal `Progress` exposes cached WAL/snapshot bytes, current-generation record count and commit
+position from the last successful owned publication, plus fault/closed flags. It performs no
+filesystem access and remains readable after disposal. Failed writes can change physical bytes
+without publishing new metadata. Generation rollover can reduce record count without reducing
+logical positions; these fields are not total directory usage, free space or device durability.
+
+`DataGridStorageDiagnostics.MeterName` (`HostLoom.DataGrid.Storage`) records Open recovery count
+and duration with fixed `recovered`/`failed` outcomes. It includes ownership/inventory/WAL/snapshot
+validation and constructor refusals, excludes bootstrap and subsequent actor replay/startup, and
+emits no path, certificate, key/value, identity or exception-message labels. Measurements establish
+emission, not collector delivery or a recovery-time target. Synchronous listeners are trusted
+instrumentation code and must not throw or block.

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using HostLoom.DataGrid.Consensus;
 using Microsoft.Win32.SafeHandles;
@@ -40,6 +41,7 @@ internal sealed partial class DataGridFileStore : IDisposable
     private FileStream? _wal;
     private RaftDurableImage _image;
     private long _lastNumber;
+    private long _publishedWalBytes;
     private bool _disposed;
 
     private DataGridFileStore(
@@ -106,6 +108,15 @@ internal sealed partial class DataGridFileStore : IDisposable
 
     internal bool IsFaulted { get; private set; }
     internal Guid GenerationId { get; private set; }
+    internal DataGridStorageProgress Progress =>
+        new(
+            _publishedWalBytes,
+            _image.Snapshot?.Descriptor.ByteCount ?? 0,
+            _image.CommitIndex,
+            _lastNumber,
+            IsFaulted,
+            _disposed
+        );
     internal RaftDurableImage Image
     {
         get
@@ -164,6 +175,31 @@ internal sealed partial class DataGridFileStore : IDisposable
         Action<DataGridStorageStep>? observe = null
     )
     {
+        var started = Stopwatch.GetTimestamp();
+        var success = false;
+        try
+        {
+            var store = OpenCore(directory, configuration, member, limits, observe);
+            success = true;
+            return store;
+        }
+        finally
+        {
+            DataGridStorageDiagnostics.Recovered(
+                success,
+                Stopwatch.GetElapsedTime(started).TotalSeconds
+            );
+        }
+    }
+
+    private static DataGridFileStore OpenCore(
+        string directory,
+        DataGridBootstrapConfiguration configuration,
+        int member,
+        DataGridStorageLimits? limits = null,
+        Action<DataGridStorageStep>? observe = null
+    )
+    {
         var store = new DataGridFileStore(directory, configuration, member, limits, observe);
         try
         {
@@ -185,7 +221,8 @@ internal sealed partial class DataGridFileStore : IDisposable
                 anchor.GenerationId,
                 store.ReadSnapshot
             );
-            store._wal.Position = store._wal.Length;
+            store._publishedWalBytes = store._wal.Length;
+            store._wal.Position = store._publishedWalBytes;
             return store;
         }
         catch
@@ -214,7 +251,8 @@ internal sealed partial class DataGridFileStore : IDisposable
             throw new IOException("WAL record capacity requires a new generation.");
         var bytes = records.Sum(record => (long)record.Length);
         Reserve(bytes, 0);
-        if (_wal!.Length + bytes > _limits.WalBytes)
+        var walBytes = _wal!.Length;
+        if (walBytes + bytes > _limits.WalBytes)
             throw new IOException("WAL capacity requires a new generation.");
         try
         {
@@ -225,6 +263,7 @@ internal sealed partial class DataGridFileStore : IDisposable
             Reached(DataGridStorageStep.WalFlushed, cancellationToken);
             _lastNumber += records.Count;
             _image = target;
+            _publishedWalBytes = walBytes + bytes;
         }
         catch
         {
@@ -329,6 +368,7 @@ internal sealed partial class DataGridFileStore : IDisposable
             _image = target;
             GenerationId = generation;
             _lastNumber = records.Count;
+            _publishedWalBytes = seedBytes;
         }
         catch
         {
