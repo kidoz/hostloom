@@ -24,6 +24,7 @@ configuration needs.
 | `HostLoom.DataGrid.Runtime` | `Meter` | experimental grid actor |
 | `HostLoom.DataGrid.Client` | `Meter` | experimental grid SDK |
 | `HostLoom.DataGrid.Transport` | `Meter` | experimental peer/client listeners |
+| `HostLoom.DataGrid.Storage` | `Meter` | experimental file-store recovery |
 
 ```csharp
 builder.Services.AddOpenTelemetry()
@@ -336,9 +337,10 @@ envelopes are counted on `hostloom.cache.errors` with the existing failure kind 
 ## Experimental native grid instruments
 
 The non-packable grid prototype publishes `HostLoom.DataGrid.Runtime`,
-`HostLoom.DataGrid.Client` and `HostLoom.DataGrid.Transport` meters. Their names are also exposed
-by `DataGridRuntimeDiagnostics.MeterName`, `DataGridClientDiagnostics.MeterName` and
-`DataGridTransportDiagnostics.MeterName` in the corresponding packages. Enable the meters before
+`HostLoom.DataGrid.Client`, `HostLoom.DataGrid.Transport` and `HostLoom.DataGrid.Storage` meters.
+Their names are also exposed by `DataGridRuntimeDiagnostics.MeterName`,
+`DataGridClientDiagnostics.MeterName`, `DataGridTransportDiagnostics.MeterName` and
+`DataGridStorageDiagnostics.MeterName` in the corresponding packages. Enable the meters before
 constructing actors, clients or listeners. Up-down
 counters report deltas; a listener attached halfway through an owner's lifetime has no initial
 baseline. Metrics aggregate all instances in one process; use exporter resource attributes
@@ -361,6 +363,18 @@ for service identity. There is no grid activity source, trace propagation or exp
 | `hostloom.datagrid.transport.reservations.bytes` | up-down counter / `By` | Reserved client encoded work (2 MiB per request reservation) or inbound snapshot descriptor bytes; excludes managed overhead |
 | `hostloom.datagrid.transport.admission.rejected` | counter / `{rejection}` | Explicit capacity/rate, invalid decoded request, or map/session grant refusals |
 | `hostloom.datagrid.transport.exchanges` | counter / `{exchange}` | Accepted inbound sessions and outbound peer invocations by terminal transport outcome; excludes TCP refusals before session creation |
+| `hostloom.datagrid.runtime.observation.time` | gauge / `ms` | Physical UTC Unix milliseconds at the last owner publication, for assessing sample age |
+| `hostloom.datagrid.runtime.state` | gauge / `{state}` | Local role, fault/stop/busy/storage flags and a local-ready hint; never a current-quorum assertion |
+| `hostloom.datagrid.runtime.position` | gauge / `{position}` | Term/log-end/commit/apply/snapshot positions and historical successful actor read-barrier index/term |
+| `hostloom.datagrid.runtime.replica.observed` | gauge / `{observation}` | Whether this leader term has a validated acknowledgement from the peer |
+| `hostloom.datagrid.runtime.replica.lag` | gauge / `{entry}` | Leader log-end minus last acknowledged index; zero is a placeholder when observed is zero |
+| `hostloom.datagrid.runtime.map.keys` | gauge / `{key}` | Charged physical entries and configured key limit |
+| `hostloom.datagrid.runtime.map.bytes` | gauge / `By` | Charged encoded key/value bytes and configured byte limit |
+| `hostloom.datagrid.runtime.storage.bytes` | gauge / `By` | WAL/snapshot bytes from the last successful owned publication, not current disk inventory |
+| `hostloom.datagrid.runtime.storage.records` | gauge / `{record}` | Record count in the last successfully published WAL generation |
+| `hostloom.datagrid.storage.recoveries` | counter / `{recovery}` | Explicit file-store Open calls, including failed attempts; excludes bootstrap |
+| `hostloom.datagrid.storage.recovery.duration` | histogram / `s` | Synchronous ownership, inventory and WAL/snapshot validation; excludes subsequent actor replay/startup |
+
 
 
 Fixed tags are `hostloom.datagrid.lane` (`control`/`client`), `hostloom.datagrid.reason`,
@@ -369,7 +383,7 @@ Fixed tags are `hostloom.datagrid.lane` (`control`/`client`), `hostloom.datagrid
 Operation names come from fixed request/command kinds; outcomes come from fixed completion or
 failure codes plus `canceled`/`faulted`. Persistence outcomes are `persisted`, `canceled` or
 `faulted`. The last two tags are Boolean SDK admission/submission observations. No meter label
-contains a key, value, map name, directory, endpoint, credential, exception message or identity.
+contains a key, value, map name, directory, endpoint, credential, exception message or user-supplied identity.
 The optional payload-bearing history recorder remains a separate experiment facility.
 
 Counts describe their own boundary. A local `applied` result can contain a rejected conditional
@@ -419,3 +433,52 @@ before ownership for complete delta baselines. Metrics retain no credentials, en
 or payload history. Controlled TLS tests establish these paths and recovery after refusal; full
 connection churn, slow-consumer fairness, credential-retirement budgets, managed-memory pressure,
 collector delivery and complete production abuse isolation remain unqualified.
+
+
+State/progress observations add bounded integer tags `hostloom.datagrid.member.ordinal` and
+`hostloom.datagrid.peer.ordinal` (0–2), and `hostloom.datagrid.map.ordinal` (0–15). They identify
+canonical configuration positions within one group, not GUIDs or arbitrary map names. Gauge
+series from multiple groups sharing one process collide at equal ordinals: use the internal
+per-runtime snapshot for unambiguous observations, or isolate groups through deployment/exporter
+resources. This prototype adds no multi-group hosting or health-check registration contract.
+Existing counters continue to aggregate across instances.
+
+Additional fixed tags are `hostloom.datagrid.state`, `hostloom.datagrid.position`,
+`hostloom.datagrid.measure` and `hostloom.datagrid.storage.outcome`. State names are `follower`,
+`candidate`, `leader`, `faulted`, `stopped`, `local_ready_hint`, `busy`, `storage_faulted`,
+`storage_closed`. Position names are `term`, `log_end`, `committed`, `applied`, `snapshot`,
+`last_read_barrier`, `last_read_barrier_term`. Map measures are `charged`/`limit`; storage byte
+measures are `wal_published`/`snapshot_published`. Recovery outcomes are `recovered`/`failed`.
+
+Internal runtime `Diagnostics` returns the last immutable owner-thread snapshot without posting
+to the actor, reading files, probing peers, or changing application state. Its bounded read-only
+map and replica collections contain numeric/Boolean metadata only. It remains readable during
+blocked persistence and after stop. `CapturedTimestamp` uses the process monotonic clock;
+`CapturedUnixMilliseconds` and the observation-time gauge use physical UTC, independent of the
+injected logical grid clock. Publications occur after owner work and final cleanup; observations
+can become stale during blocked work. UTC clocks can jump, and scrape/export delays are not bounded.
+Gauges are recorded publication events; there is no observable callback or owner registry.
+
+The local-ready hint means the node is locally a leader with a committed current-term prefix and
+no observed fault/busy/stop condition at publication. It can remain true after losing the majority.
+A historical successful actor read barrier records quorum evidence for that completed operation,
+including when a caller may have lost its reply; it grants no fresh authority to another request.
+It resets on process restart. Only an actual strong read establishes its own quorum-backed result.
+The snapshot's embedded local state is coherent with its other fields; independently reading the
+older `Status` surface and `Diagnostics` need not observe the same publication.
+
+Replica observations exist only in a healthy active leader term after a validated correlated
+acknowledgement. They reset with leadership and become unknown on stop/fault. A stopped or silent
+peer's last acknowledgement can remain recorded for that term: zero lag is not fresh reachability,
+commit visibility or peer application. An unknown replica has nullable lag in the snapshot and
+zero/observed-zero gauge values. Consumers must inspect observed alongside lag.
+
+Map usage counts physically charged entries and encoded key/value bytes. Expired entries remain
+charged until deterministic reclamation, so these are not logical live-key or heap counts. All
+maps recover under the same group state; no separate map readiness or source-loading guarantee
+is inferred. Storage progress uses cached last-successful publication sizes/record count. Failed
+writes can change physical file sizes while leaving these cached numbers unchanged; fault/closed
+flags qualify them. Record count can fall when a generation rolls. Recovery duration covers
+validation in Open, not all runtime startup, supported device durability, progress percentage or
+recovery-time acceptance. Per-map error rates, explicit source freshness/redistribution policy,
+full overload/fairness and device/shutdown qualification remain open.
