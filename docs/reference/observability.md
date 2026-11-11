@@ -482,3 +482,18 @@ flags qualify them. Record count can fall when a generation rolls. Recovery dura
 validation in Open, not all runtime startup, supported device durability, progress percentage or
 recovery-time acceptance. Per-map error rates, explicit source freshness/redistribution policy,
 full overload/fairness and device/shutdown qualification remain open.
+
+
+Definite queue refusal is now distinguished from admitted uncertainty: full actor item/byte
+admission returns `CapacityExceeded` with admission false; a stopped owner returns
+`QuorumUnavailable` with admission false. Already queued or possibly submitted work remains
+conservative, and earlier SDK uncertainty cannot be erased by a later refusal. The local runtime
+operation metric reports definite refusals as `busy`/`unavailable` rather than a generic fault.
+
+Runtime cleanup belongs to the actor's actual completion, independently of its cached ten-second
+dispose wait. A timeout can leave the directory owned and the last diagnostic snapshot unchanged
+until blocked work returns. Internal `Completion` joins actual cleanup; final closed/stopped state
+and reservation balance follow it. Controlled tests cover this distinction, live client request
+saturation with peer control preserved, slow bodies/deadlines/stop, a non-reading response client,
+and storage budget refusal. They do not establish universal blocked-write behavior, kernel memory
+bounds, external-principal fairness, real disk-full/power-loss safety or numerical release NFRs.
