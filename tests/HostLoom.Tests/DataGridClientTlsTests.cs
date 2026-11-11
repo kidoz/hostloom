@@ -1,11 +1,13 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using HostLoom.DataGrid;
 using HostLoom.DataGrid.Client;
 using HostLoom.DataGrid.Runtime;
+using HostLoom.DataGrid.Storage;
 using HostLoom.DataGrid.Transport;
 using Xunit;
 using GridClient = HostLoom.DataGrid.Client.DataGridClient;
@@ -586,12 +588,12 @@ public sealed class DataGridClientTlsTests
             Task<DataGridClientReply>
         >? Override { get; set; }
 
-        internal ClientCluster()
+        internal ClientCluster(Action<int, DataGridStorageStep>? observe = null)
         {
             _writer = Peer.Issue("catalog-writer.example", clientOnly: true);
             _reader = Peer.Issue("catalog-reader.example", clientOnly: true);
             _otherWriter = Peer.Issue("catalog-editor.example", clientOnly: true);
-            Cluster = new(Peer);
+            Cluster = new(Peer, observe: observe);
             Cluster.StartAll();
             _listeners = Enumerable
                 .Range(0, 3)
@@ -683,6 +685,17 @@ public sealed class DataGridClientTlsTests
                     member
                 ),
                 history
+            );
+
+        internal Task<SslStream> Hello(int member, TcpClient tcp, CancellationToken token) =>
+            DataGridTransportAdmissionTlsTests.ClientHello(
+                Peer,
+                tcp,
+                ((IPEndPoint)_listeners[member].LocalEndpoint).Port,
+                _writer,
+                DataGridPeerFixture.Principal,
+                token,
+                member
             );
 
         internal void AssertHealthy()

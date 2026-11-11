@@ -193,7 +193,10 @@ public sealed class DataGridDiagnosticsTlsTests
                     )
                     .ToArray();
                 Assert.Equal(128, capture.Sum("runtime.queue.items", "client"));
-                Assert.Equal(128 * 128, capture.Sum("runtime.queue.bytes", "client"));
+                Assert.Equal(
+                    128 * (128 + DataGridPeerFixture.Key.ByteCount + 2),
+                    capture.Sum("runtime.queue.bytes", "client")
+                );
                 var overflow = await Record.ExceptionAsync(() =>
                     runtime.ReadAsync(
                         DataGridPeerFixture.Map,

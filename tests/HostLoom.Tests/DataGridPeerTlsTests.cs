@@ -832,15 +832,18 @@ public sealed class DataGridPeerTlsTests
     {
         private readonly DataGridPeerFixture _fixture;
         private readonly IReadOnlyList<DataGridSecurityContext>? _security;
+        private readonly Action<int, DataGridStorageStep>? _observe;
         private readonly long[] _epochs = new long[3];
 
         internal LiveCluster(
             DataGridPeerFixture fixture,
-            IReadOnlyList<DataGridSecurityContext>? security = null
+            IReadOnlyList<DataGridSecurityContext>? security = null,
+            Action<int, DataGridStorageStep>? observe = null
         )
         {
             _fixture = fixture;
             _security = security;
+            _observe = observe;
             Paths = Enumerable
                 .Range(0, 3)
                 .Select(_ =>
@@ -880,7 +883,12 @@ public sealed class DataGridPeerTlsTests
                 _fixture.Listeners[node] = new TcpListener(System.Net.IPAddress.Loopback, port);
                 _fixture.Listeners[node].Start(16);
             }
-            var store = DataGridFileStore.Open(Paths[node], _fixture.Configuration, node);
+            var store = DataGridFileStore.Open(
+                Paths[node],
+                _fixture.Configuration,
+                node,
+                observe: _observe is null ? null : step => _observe(node, step)
+            );
             try
             {
                 Nodes[node] = new(

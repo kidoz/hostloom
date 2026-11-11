@@ -411,7 +411,8 @@ public sealed class DataGridTransportAdmissionTlsTests
         int port,
         X509Certificate2 certificate,
         Guid principal,
-        CancellationToken token
+        CancellationToken token,
+        int member = 0
     )
     {
         await tcp.ConnectAsync(IPAddress.Loopback, port, token);
@@ -422,7 +423,7 @@ public sealed class DataGridTransportAdmissionTlsTests
                 new SslClientAuthenticationOptions
                 {
                     EnabledSslProtocols = SslProtocols.Tls13,
-                    TargetHost = fixture.Configuration.GetMember(0).DnsName,
+                    TargetHost = fixture.Configuration.GetMember(member).DnsName,
                     ClientCertificates = new X509CertificateCollection { certificate },
                     CertificateChainPolicy = DataGridTlsSupport.ChainPolicy(
                         fixture.Root,
@@ -436,7 +437,7 @@ public sealed class DataGridTransportAdmissionTlsTests
                         && remote is X509Certificate2 leaf
                         && CryptographicOperations.FixedTimeEquals(
                             leaf.GetCertHash(HashAlgorithmName.SHA256),
-                            fixture.Fingerprints[0]
+                            fixture.Fingerprints[member]
                         ),
                 },
                 token
@@ -453,7 +454,7 @@ public sealed class DataGridTransportAdmissionTlsTests
                 await DataGridTlsSupport.ReadAsync(
                     tls,
                     fixture.Configuration.IncarnationId,
-                    fixture.Configuration.GetMember(0).MemberId,
+                    fixture.Configuration.GetMember(member).MemberId,
                     token
                 ),
                 fixture.Configuration
