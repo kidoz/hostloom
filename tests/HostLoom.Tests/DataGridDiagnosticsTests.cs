@@ -324,6 +324,7 @@ internal sealed class DataGridMeterCapture : IDisposable
                     || m.Name.EndsWith("queue.bytes", StringComparison.Ordinal)
                     || m.Name == "hostloom.datagrid.transport.reservations.bytes"
                     || m.Name == "hostloom.datagrid.runtime.admission.bytes"
+                    || m.Name == "hostloom.datagrid.runtime.control.bytes"
                 )
                 .GroupBy(m =>
                     (
