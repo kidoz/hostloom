@@ -12,6 +12,7 @@ internal sealed class RaftNode
     private readonly Dictionary<int, RaftToken> _votes = [];
     private readonly HashSet<int> _granted = [];
     private readonly long[] _matched = new long[3];
+    private readonly bool[] _acknowledged = new bool[3];
     private readonly long[] _next = new long[3];
     private long _sequence;
     private RaftToken _mainTimer;
@@ -49,6 +50,14 @@ internal sealed class RaftNode
     internal RaftDurableImage Durable => _durable;
     internal DataGridLocalStateMachine Machine => _machine;
     internal int? LeaderId { get; private set; }
+
+    // Historical evidence in this leadership term; never a fresh quorum/availability assertion.
+    internal (bool Acknowledged, long MatchedIndex) ReplicationProgress(int peer)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(peer);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(peer, 2);
+        return Role == RaftRole.Leader ? (_acknowledged[peer], _matched[peer]) : (false, 0);
+    }
 
     internal IReadOnlyList<RaftEffect> Start() => Run(() => ResetMainTimer());
 
@@ -405,6 +414,7 @@ internal sealed class RaftNode
         for (var i = 0; i < 3; i++)
         {
             _matched[i] = i == _id ? _durable.LastIndex : 0;
+            _acknowledged[i] = i == _id;
             _next[i] = checked(_durable.LastIndex + 1);
         }
         if (_durable.LastIndex == long.MaxValue)
@@ -570,6 +580,7 @@ internal sealed class RaftNode
             if (message.Index != rpc.LastIndex)
                 throw new InvalidDataException("Unproven append acknowledgement.");
             _matched[message.From] = Math.Max(_matched[message.From], message.Index);
+            _acknowledged[message.From] = true;
             _next[message.From] = checked(_matched[message.From] + 1);
             TryCommit();
             if (!IsBusy && _next[message.From] <= _durable.LastIndex)

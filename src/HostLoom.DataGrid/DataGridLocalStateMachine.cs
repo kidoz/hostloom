@@ -1,5 +1,13 @@
 namespace HostLoom.DataGrid;
 
+internal sealed record DataGridMapUsage(
+    int Ordinal,
+    int ChargedKeys,
+    long ChargedBytes,
+    int KeyLimit,
+    long ByteLimit
+);
+
 /// <summary>Single-owner deterministic local application. Not thread safe; contains no quorum or I/O.</summary>
 /// <remarks>The driver serializes commands and reads and supplies only verified committed positions.</remarks>
 public sealed partial class DataGridLocalStateMachine
@@ -33,6 +41,21 @@ public sealed partial class DataGridLocalStateMachine
     public int StoredKeyCount => _maps.Sum(map => map.Entries.Count);
     public long StoredDataByteCount => _maps.Sum(map => map.Bytes);
     public Guid NextMaintenanceMapId => _maps[_maintenanceMapOrdinal].Configuration.MapId;
+
+    // Owner-thread observation only. Expired entries remain charged until deterministic reclamation.
+    internal DataGridMapUsage GetMapUsage(int ordinal)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(ordinal);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(ordinal, _maps.Length);
+        var map = _maps[ordinal];
+        return new(
+            ordinal,
+            map.Entries.Count,
+            map.Bytes,
+            map.Configuration.MaxKeyCount,
+            map.Configuration.MaxDataByteCount
+        );
+    }
 
     public DataGridApplyResult Apply(long committedIndex, DataGridCommittedCommand command)
     {
