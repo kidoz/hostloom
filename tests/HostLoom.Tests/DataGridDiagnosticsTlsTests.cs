@@ -201,7 +201,7 @@ public sealed class DataGridDiagnosticsTlsTests
                         timeout.Token
                     )
                 );
-                Assert.IsType<IOException>(overflow);
+                Assert.IsType<DataGridRuntimeAdmissionException>(overflow);
                 Task? shutdown = fault ? null : runtime.DisposeAsync().AsTask();
                 release.Set();
                 await Record.ExceptionAsync(() => blocked);

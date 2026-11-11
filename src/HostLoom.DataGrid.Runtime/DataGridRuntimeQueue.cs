@@ -1,5 +1,18 @@
 namespace HostLoom.DataGrid.Runtime;
 
+internal enum DataGridRuntimeAdmissionFailure
+{
+    None,
+    Stopped,
+    Capacity,
+}
+
+internal sealed class DataGridRuntimeAdmissionException(DataGridRuntimeAdmissionFailure failure)
+    : IOException("Runtime admission refused.")
+{
+    internal DataGridRuntimeAdmissionFailure Failure { get; } = failure;
+}
+
 internal sealed record DataGridRuntimeWork(
     Action Action,
     Action<Exception> Reject,
@@ -22,7 +35,14 @@ internal sealed class DataGridRuntimeQueue : IDisposable
     private int _controlRun;
     private bool _completed;
 
-    internal bool TryWrite(DataGridRuntimeWork work, bool stopping = false)
+    internal bool TryWrite(DataGridRuntimeWork work, bool stopping = false) =>
+        TryWrite(work, out _, stopping);
+
+    internal bool TryWrite(
+        DataGridRuntimeWork work,
+        out DataGridRuntimeAdmissionFailure failure,
+        bool stopping = false
+    )
     {
         lock (_sync)
         {
@@ -35,9 +55,14 @@ internal sealed class DataGridRuntimeQueue : IDisposable
                 : null;
             if (reason is not null)
             {
+                failure =
+                    reason == "stopped"
+                        ? DataGridRuntimeAdmissionFailure.Stopped
+                        : DataGridRuntimeAdmissionFailure.Capacity;
                 DataGridRuntimeDiagnostics.Reject(work.Control, reason);
                 return false;
             }
+            failure = DataGridRuntimeAdmissionFailure.None;
             queue.Enqueue(work);
             bytes += work.Bytes;
             DataGridRuntimeDiagnostics.QueueChange(work.Control, 1, work.Bytes);

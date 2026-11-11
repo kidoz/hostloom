@@ -77,3 +77,18 @@ from multiple groups in one process collide; use per-runtime snapshots for unamb
 or isolate group export resources. No group GUID, arbitrary map name, value/key label, callback
 registry or automatic health integration is added. Expired entries remain charged until reclamation;
 storage sizes describe the last successful publication, not current physical files after failure.
+
+
+Definite refusal before actor enqueue now returns `CapacityExceeded` (full item/byte budget) or
+`QuorumUnavailable` (stopped), with admission false. This applies to reads and side-effecting
+session/mutation requests. Work already queued or possibly submitted retains conservative
+uncertainty, and the SDK still accumulates uncertainty across attempts. No new wire code or
+retry identity is introduced.
+
+The actor owns final queue/cancellation-source disposal independently of `DisposeAsync`'s bounded
+wait. Concurrent disposals join one cached ten-second wait; timeout does not release the store or
+mean cleanup finished. Internal `Completion` observes actual actor/transport/storage/synchronization
+cleanup after blocked work returns. A cached disposal timeout stays the result of that wait;
+it does not prevent eventual cleanup. Stopped/faulted owners can be disposed after completion
+without touching a disposed cancellation source. This does not interrupt arbitrary OS I/O or
+establish a hard wall-clock shutdown guarantee.

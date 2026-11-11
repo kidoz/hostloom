@@ -43,7 +43,19 @@ internal sealed class DataGridPeerRuntime
     )]
     private readonly DataGridPeerTransport _transport;
     private readonly TimeProvider _time;
+
+    [SuppressMessage(
+        "Usage",
+        "CA2213:Disposable fields should be disposed",
+        Justification = "RunOwned finally disposes the source after actual owner cleanup, including when the bounded disposal wait times out. Completion joins that owner task."
+    )]
     private readonly CancellationTokenSource _stop = new();
+
+    [SuppressMessage(
+        "Usage",
+        "CA2213:Disposable fields should be disposed",
+        Justification = "RunOwned finally disposes the drained queue independently of the bounded disposal wait; Completion joins actual cleanup."
+    )]
     private readonly DataGridRuntimeQueue _queue = new();
     private readonly object _admission = new();
     private readonly Dictionary<
@@ -62,6 +74,7 @@ internal sealed class DataGridPeerRuntime
         _lastReadBarrierTerm;
     private Exception? _failure;
     private Task? _shutdown;
+    private Task? _cancellation;
 
     // Caller transfers store/listener ownership; the transport captures owned credential material.
     internal DataGridPeerRuntime(
@@ -106,7 +119,7 @@ internal sealed class DataGridPeerRuntime
             transport.Start();
             _transport = transport;
             _diagnostics = CaptureDiagnostics(_status);
-            _loop = Task.Run(Run);
+            _loop = Task.Run(RunOwned);
         }
         catch
         {
@@ -126,6 +139,9 @@ internal sealed class DataGridPeerRuntime
 
     internal DataGridPeerRuntimeStatus Status => Volatile.Read(ref _status);
     internal DataGridRuntimeSnapshot Diagnostics => Volatile.Read(ref _diagnostics);
+
+    // Actual owner cleanup, independent of the bounded DisposeAsync wait.
+    internal Task Completion => _loop;
     internal Exception? Failure => Volatile.Read(ref _failure) ?? _transport.FatalError;
     internal int ActiveConnections => _transport.ActiveConnections;
     internal int RejectedConnections => _transport.RejectedConnections;
@@ -183,6 +199,14 @@ internal sealed class DataGridPeerRuntime
             outcome = "canceled";
             throw;
         }
+        catch (DataGridRuntimeAdmissionException exception)
+        {
+            outcome =
+                exception.Failure == DataGridRuntimeAdmissionFailure.Capacity
+                    ? "busy"
+                    : "unavailable";
+            throw;
+        }
         finally
         {
             DataGridRuntimeDiagnostics.End(
@@ -216,7 +240,7 @@ internal sealed class DataGridPeerRuntime
         var bytes = command is null
             ? 128 + (keys?.Sum(key => key.ByteCount + 2) ?? 0)
             : DataGridCommittedCommandCodec.Encode(command).Length + 128;
-        Post(
+        var work = new DataGridRuntimeWork(
             () =>
             {
                 if (token.IsCancellationRequested)
@@ -240,8 +264,10 @@ internal sealed class DataGridPeerRuntime
             },
             exception => result.TrySetException(exception),
             bytes,
-            control: false
+            Control: false
         );
+        if (!_queue.TryWrite(work, out var failure, _stop.IsCancellationRequested))
+            throw new DataGridRuntimeAdmissionException(failure);
         // Cancellation after posting may leave an admitted mutation; logical identity stays caller-owned.
         try
         {
@@ -301,6 +327,17 @@ internal sealed class DataGridPeerRuntime
                     .ConfigureAwait(false),
                 _ => throw new InvalidDataException("Invalid client operation."),
             };
+        }
+        catch (DataGridRuntimeAdmissionException exception)
+        {
+            return DataGridClientReply.Failed(
+                new(
+                    exception.Failure == DataGridRuntimeAdmissionFailure.Capacity
+                        ? DataGridClientFailureCode.CapacityExceeded
+                        : DataGridClientFailureCode.QuorumUnavailable,
+                    false
+                )
+            );
         }
         catch (Exception exception) when (exception is IOException or OperationCanceledException)
         {
@@ -480,6 +517,39 @@ internal sealed class DataGridPeerRuntime
     private bool TryPost(DataGridRuntimeWork work) =>
         _queue.TryWrite(work, _stop.IsCancellationRequested);
 
+    private Task StopAsync()
+    {
+        lock (_admission)
+            return _cancellation ??= _stop.CancelAsync();
+    }
+
+    private async Task RunOwned()
+    {
+        try
+        {
+            await Run().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            Interlocked.CompareExchange(ref _failure, exception, null);
+            var final = Capture(true);
+            Volatile.Write(ref _status, final);
+            PublishDiagnostics(final);
+            throw;
+        }
+        finally
+        {
+            try
+            {
+                _queue.Dispose();
+            }
+            finally
+            {
+                _stop.Dispose();
+            }
+        }
+    }
+
     private async Task Run()
     {
         try
@@ -501,11 +571,11 @@ internal sealed class DataGridPeerRuntime
         catch (Exception exception)
         {
             Interlocked.CompareExchange(ref _failure, exception, null);
-            await _stop.CancelAsync().ConfigureAwait(false);
+            await StopAsync().ConfigureAwait(false);
         }
         finally
         {
-            await _stop.CancelAsync().ConfigureAwait(false);
+            await StopAsync().ConfigureAwait(false);
             var error = new IOException(
                 "Runtime stopped; admitted mutations may have committed.",
                 Failure
@@ -762,7 +832,7 @@ internal sealed class DataGridPeerRuntime
         catch (Exception exception)
         {
             Interlocked.CompareExchange(ref _failure, exception, null);
-            await _stop.CancelAsync().ConfigureAwait(false);
+            await StopAsync().ConfigureAwait(false);
         }
     }
 
@@ -803,7 +873,7 @@ internal sealed class DataGridPeerRuntime
             new IOException("Reserved control lane exhausted."),
             null
         );
-        _stop.Cancel();
+        _ = StopAsync();
     }
 
     private DataGridTimestamp Now() => DataGridTimestamp.FromUtc(_time.GetUtcNow());
@@ -894,11 +964,9 @@ internal sealed class DataGridPeerRuntime
 
     private async Task ShutdownAsync()
     {
-        await _stop.CancelAsync().ConfigureAwait(false);
+        _ = StopAsync();
         // A timed-out synchronous filesystem operation retains ownership until the actor actually exits.
         await _loop.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
-        _queue.Dispose();
-        _stop.Dispose();
     }
 
     private sealed class SendSlot
