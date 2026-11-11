@@ -62,3 +62,18 @@ up-down baseline. Labels contain fixed operation/outcome/lane/reason values only
 caller and persistence-call observations, not unique committed-write counts or quorum readiness.
 Canceled callers may leave admitted work; no-op persistence calls are included. No owner registry,
 value/key/identity labels, exporter, tracing or complete operational telemetry is added.
+
+
+Internal `Diagnostics` captures immutable local consensus positions, charged map counts/bytes and
+limits, leader-observed replica acknowledgement/lag, cached successful storage publication state,
+and historical successful actor read-barrier index/term. Reading the snapshot performs no actor,
+network or filesystem work. Collections are bounded and read-only; publication timestamps reveal
+cached observations during blocked work. Stop preserves final metadata and clears readiness/replica
+observations. A local-ready hint and an old read barrier do not verify a currently reachable quorum.
+Replica lag reflects historical validated acknowledgements, not fresh liveness or peer application.
+
+Publication-driven gauges use bounded member/peer ordinals 0–2 and map ordinals 0–15. Equal ordinals
+from multiple groups in one process collide; use per-runtime snapshots for unambiguous observations
+or isolate group export resources. No group GUID, arbitrary map name, value/key label, callback
+registry or automatic health integration is added. Expired entries remain charged until reclamation;
+storage sizes describe the last successful publication, not current physical files after failure.

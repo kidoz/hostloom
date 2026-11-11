@@ -4,7 +4,7 @@ using HostLoom.DataGrid.Consensus;
 namespace HostLoom.DataGrid.Runtime;
 
 /// <summary>Bounded, process-aggregate measurements for the experimental grid actor.</summary>
-public static class DataGridRuntimeDiagnostics
+public static partial class DataGridRuntimeDiagnostics
 {
     public const string MeterName = "HostLoom.DataGrid.Runtime";
     public const string LaneTag = "hostloom.datagrid.lane";
@@ -13,6 +13,52 @@ public static class DataGridRuntimeDiagnostics
     public const string OutcomeTag = "hostloom.datagrid.outcome";
 
     private static readonly Meter Meter = new(MeterName);
+    private static readonly Gauge<long> ObservationTime = Meter.CreateGauge<long>(
+        "hostloom.datagrid.runtime.observation.time",
+        "ms",
+        "UTC Unix milliseconds at the last owner publication; clocks may jump and samples may become stale."
+    );
+    private static readonly Gauge<long> State = Meter.CreateGauge<long>(
+        "hostloom.datagrid.runtime.state",
+        "{state}",
+        "Published local Boolean hints. No current-quorum or lease authority is asserted."
+    );
+    private static readonly Gauge<long> Position = Meter.CreateGauge<long>(
+        "hostloom.datagrid.runtime.position",
+        "{position}",
+        "Last published local consensus positions and historical successful read barrier."
+    );
+    private static readonly Gauge<long> ReplicaObserved = Meter.CreateGauge<long>(
+        "hostloom.datagrid.runtime.replica.observed",
+        "{observation}",
+        "One when this leadership term has a validated acknowledgement; not fresh reachability."
+    );
+    private static readonly Gauge<long> ReplicaLag = Meter.CreateGauge<long>(
+        "hostloom.datagrid.runtime.replica.lag",
+        "{entry}",
+        "Log-end minus last acknowledged position. Zero is a placeholder when observed is zero."
+    );
+    private static readonly Gauge<long> MapKeys = Meter.CreateGauge<long>(
+        "hostloom.datagrid.runtime.map.keys",
+        "{key}",
+        "Charged physical entries, including unreclaimed expired entries, and configured limit."
+    );
+    private static readonly Gauge<long> MapBytes = Meter.CreateGauge<long>(
+        "hostloom.datagrid.runtime.map.bytes",
+        "By",
+        "Charged encoded key/value bytes and configured limit; excludes heap and replay state."
+    );
+    private static readonly Gauge<long> StorageBytes = Meter.CreateGauge<long>(
+        "hostloom.datagrid.runtime.storage.bytes",
+        "By",
+        "Cached WAL/image bytes from last successful owned publication; not current disk inventory."
+    );
+    private static readonly Gauge<long> StorageRecords = Meter.CreateGauge<long>(
+        "hostloom.datagrid.runtime.storage.records",
+        "{record}",
+        "Record count in the last successfully published WAL generation."
+    );
+
     private static readonly UpDownCounter<long> QueueItems = Meter.CreateUpDownCounter<long>(
         "hostloom.datagrid.runtime.queue.items",
         "{item}",

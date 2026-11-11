@@ -56,6 +56,10 @@ internal sealed class DataGridPeerRuntime
     private readonly List<Watcher> _watchers = [];
     private readonly Task _loop;
     private DataGridPeerRuntimeStatus _status;
+    private DataGridRuntimeSnapshot _diagnostics;
+    private readonly int _memberOrdinal;
+    private long _lastReadBarrierIndex,
+        _lastReadBarrierTerm;
     private Exception? _failure;
     private Task? _shutdown;
 
@@ -72,6 +76,7 @@ internal sealed class DataGridPeerRuntime
     {
         _store = store;
         _configuration = credentials.Configuration;
+        _memberOrdinal = credentials.LocalMember;
         _time = timeProvider ?? TimeProvider.System;
         DataGridPeerTransport? transport = null;
         try
@@ -100,6 +105,7 @@ internal sealed class DataGridPeerRuntime
                 : new(security, listener, peerAddresses, this);
             transport.Start();
             _transport = transport;
+            _diagnostics = CaptureDiagnostics(_status);
             _loop = Task.Run(Run);
         }
         catch
@@ -119,6 +125,7 @@ internal sealed class DataGridPeerRuntime
     }
 
     internal DataGridPeerRuntimeStatus Status => Volatile.Read(ref _status);
+    internal DataGridRuntimeSnapshot Diagnostics => Volatile.Read(ref _diagnostics);
     internal Exception? Failure => Volatile.Read(ref _failure) ?? _transport.FatalError;
     internal int ActiveConnections => _transport.ActiveConnections;
     internal int RejectedConnections => _transport.RejectedConnections;
@@ -550,7 +557,9 @@ internal sealed class DataGridPeerRuntime
                     }
                     finally
                     {
-                        Volatile.Write(ref _status, Capture(true));
+                        var final = Capture(true);
+                        Volatile.Write(ref _status, final);
+                        PublishDiagnostics(final);
                     }
                 }
             }
@@ -610,6 +619,11 @@ internal sealed class DataGridPeerRuntime
                     CancelTimer(cancel.Token);
                     break;
                 case RaftCompletion completion:
+                    if (completion.Kind == RaftCompletionKind.Read)
+                    {
+                        _lastReadBarrierIndex = completion.Index;
+                        _lastReadBarrierTerm = _node.CurrentTerm;
+                    }
                     if (_pending.Remove(completion.RequestId, out var result))
                         result.Result.TrySetResult(completion);
                     break;
@@ -814,6 +828,7 @@ internal sealed class DataGridPeerRuntime
     {
         var state = Capture(false);
         Volatile.Write(ref _status, state);
+        PublishDiagnostics(state);
         foreach (
             var watcher in _watchers
                 .Where(watcher =>
@@ -823,6 +838,52 @@ internal sealed class DataGridPeerRuntime
         )
             watcher.Completion.TrySetResult();
         _watchers.RemoveAll(watcher => watcher.Completion.Task.IsCompleted);
+    }
+
+    private DataGridRuntimeSnapshot CaptureDiagnostics(DataGridPeerRuntimeStatus state)
+    {
+        var faulted = Failure is not null || _store.IsFaulted || _node.Role == RaftRole.Faulted;
+        var maps = Enumerable
+            .Range(0, _configuration.MapCount)
+            .Select(_node.Machine.GetMapUsage)
+            .ToArray();
+        var replicas = Enumerable
+            .Range(0, 3)
+            .Where(peer => peer != _memberOrdinal)
+            .Select(peer =>
+            {
+                var progress = _node.ReplicationProgress(peer);
+                var known = !state.Stopped && !faulted && progress.Acknowledged;
+                return new DataGridReplicaProgress(
+                    peer,
+                    known,
+                    known ? progress.MatchedIndex : null,
+                    known ? Math.Max(0, _node.Durable.LastIndex - progress.MatchedIndex) : null
+                );
+            })
+            .ToArray();
+        return new(
+            _memberOrdinal,
+            Stopwatch.GetTimestamp(),
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            state,
+            faulted,
+            _node.IsBusy,
+            state.Ready && !faulted,
+            _node.Durable.LastIndex,
+            _lastReadBarrierIndex,
+            _lastReadBarrierTerm,
+            Array.AsReadOnly(maps),
+            Array.AsReadOnly(replicas),
+            _store.Progress
+        );
+    }
+
+    private void PublishDiagnostics(DataGridPeerRuntimeStatus state)
+    {
+        var snapshot = CaptureDiagnostics(state);
+        Volatile.Write(ref _diagnostics, snapshot);
+        DataGridRuntimeDiagnostics.RecordState(snapshot);
     }
 
     public ValueTask DisposeAsync()
