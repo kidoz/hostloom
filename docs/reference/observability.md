@@ -520,3 +520,12 @@ and reservation balance follow it. Controlled tests cover this distinction, live
 saturation with peer control preserved, slow bodies/deadlines/stop, a non-reading response client,
 and storage budget refusal. They do not establish universal blocked-write behavior, kernel memory
 bounds, external-principal fairness, real disk-full/power-loss safety or numerical release NFRs.
+
+Directed Linux contention/churn checks observe reservation deltas through repeated disconnects
+at TCP, TLS, hello and incomplete-frame stages. Client handshake saturation preserves peer vote
+traffic and drains on deadline or concurrent stop. An eight-request principal remains charged
+across credential replacement while a controlled receiver retains canceled work; a second
+principal can proceed, and retirement/quota reuse follows actual release. The counters remain
+anonymous and the instrument inventory is unchanged. These are bounded fixture observations;
+they do not measure sustained churn, heap amplification, full connection saturation, durable
+consensus progress or end-to-end fairness.

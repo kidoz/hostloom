@@ -97,3 +97,20 @@ work reservation. After expiry a normal request can dispatch again. A separate n
 receives a near-limit response while later clients remain usable and managed reservations drain.
 That write can complete into OS buffers or terminate by deadline; these tests do not force every
 backpressure path or measure kernel socket memory, long-running churn or principal fairness.
+
+Directed Linux contention checks now repeat 16 disconnects at each of four stages: raw TCP,
+authenticated TLS before hello, validated hello before a request, and an incomplete frame body.
+Every cycle returns connection/handshake/principal/request reservations to baseline without
+application dispatch; peer vote exchanges remain usable between cycles and a final client read
+completes. Separate cases fill all 12 client handshake reservations, reject the next attempt,
+preserve peer progress and release on the physical deadline or concurrent disposal.
+
+A credential-reload case holds eight dispatched requests for one principal in a controlled
+receiver after cancellation. Replacement closes old sockets and cancels those calls, while the
+principal quota stays charged until the receiver actually returns. A replacement certificate for
+the same principal cannot bypass the quota; another principal and peer traffic remain usable.
+Retirement waits for release, a second reload is refused while it is pending, and the replacement
+identity can read after drain. This deliberately retained test receiver is not a durable actor
+or a supported extension API. These cases establish directed cleanup and quota behavior, not
+sustained-load fairness, full connection saturation, every TCP reset path, device durability or
+numerical workload acceptance.
