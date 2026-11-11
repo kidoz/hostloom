@@ -351,6 +351,8 @@ for service identity. There is no grid activity source, trace propagation or exp
 | `hostloom.datagrid.runtime.queue.items` | up-down counter / `{item}` | Work waiting in control/client lanes; released on dequeue or shutdown drain |
 | `hostloom.datagrid.runtime.queue.bytes` | up-down counter / `By` | Encoded-byte reservations waiting in those lanes; excludes executing work and heap overhead |
 | `hostloom.datagrid.runtime.queue.rejected` | counter / `{item}` | Pre-queue refusals by lane and reason: `items`, `bytes`, `principal`, or `stopped` |
+| `hostloom.datagrid.runtime.admission.active` | up-down counter / `{operation}` | Held client operation reservations from before enqueue through actor completion/drain; caller cancellation does not refund them |
+| `hostloom.datagrid.runtime.admission.bytes` | up-down counter / `By` | Retained encoded submission charges across queued/executing/pending work; excludes responses, log/replay state and heap overhead |
 | `hostloom.datagrid.runtime.operations` | counter / `{operation}` | Local submission completions, including rejection, uncertainty, cancellation and faults |
 | `hostloom.datagrid.runtime.operations.active` | up-down counter / `{operation}` | Local callers awaiting actor completion |
 | `hostloom.datagrid.runtime.operation.duration` | histogram / `s` | Local submission through caller completion, including queue, quorum and persistence waits |
@@ -398,16 +400,32 @@ not block or throw; this slice does not isolate listener failures.
 
 Actor admission retains 256 control / 128 client queued items and 16 MiB per lane. A waiting
 client gets a turn after at most eight control turns. Authenticated principal FIFO queues rotate
-one client turn each, with eight items/4 MiB per principal inside the shared client budget. The
+one client turn each. A separate retained-operation budget enforces eight operations/4 MiB per
+principal inside 128 operations/16 MiB shared across queued/executing/pending client work. The
 fixed `principal` refusal reason combines its item/byte limits without exposing identity; shared
 limits and stopped state take precedence. Queue budgets exclude executing/pending consensus
-work and release on dequeue/drain; canceled queued work remains charged until then. Trusted local
-test entry points share a separate FIFO in the same rotation. These rules do not guarantee fair
+work and release on dequeue/drain; operation reservations remain until actor completion/drain.
+Canceled queued work remains charged until skipped on dequeue; cancellation/disconnect or a
+physical caller timeout cannot release pending ownership early. Trusted local test entry points
+share a separate FIFO and the global operation budget in the same rotation. These rules do not guarantee fair
 handshake/request admission, completion latency or CPU time. Each SDK still reserves at most eight concurrent exchanges. The active
 invocation metric includes brief decisions outside that reservation. The meters retain no
 per-owner registry or payload history. Queue/SDK boundary tests and Linux actor tests establish
 these measured paths, not collector delivery, full transport abuse isolation, all required
 per-map/readiness/storage metrics, performance capacity or production readiness.
+
+The two `runtime.admission.*` series have no labels and include internal trusted submissions.
+They can remain positive while `runtime.operations.active` is zero because all callers timed out
+or canceled. Queue counts are a subset during the waiting phase; transport reservations describe
+another overlapping boundary. Do not sum them as distinct operations or heap bytes. Charges
+include requested keys or canonical commands plus 128 bytes of submission overhead, and release
+on definite enqueue refusal, canceled dequeue, terminal Raft completion or actual owner drain.
+A terminal unknown result can release a wait reservation while the log may still commit later;
+retained log/replay state is outside these counts. Stop refuses new charges without releasing
+blocked work early. Controlled Linux cases cover pending cancellation, wire refusal, higher-term
+completion, quorum recovery and blocked-WAL physical timeout followed by recovery/stop/fault.
+Zero admission reservations do not establish completed transport/storage cleanup or expired
+replay state; the actual completion/closed diagnostics describe those separate boundaries.
 
 
 Transport labels are `hostloom.datagrid.transport.role` (`peer`/`client`),

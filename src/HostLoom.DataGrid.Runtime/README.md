@@ -21,18 +21,34 @@ building a chain of tasks. Correlation/term checks discard obsolete replies. Sna
 refer to bounded immutable images and are encoded as individual 64 KiB chunks at the transport.
 The shared queue component enforces both count and byte limits atomically and drains its
 reservations on shutdown/fault. Within the client lane, authenticated principals have FIFO queues
-and take one turn each in round-robin order. Each principal can queue eight items and 4 MiB;
-the shared 128-item/16-MiB limits still apply. A new or returning principal joins the rotation's
-tail. Trusted local Propose/Read test calls share one FIFO without the external-principal cap.
-Dequeue releases queue budgets; executing and pending consensus work is outside these counts.
-Cancellation leaves queued work charged until dequeue or shutdown drain, where canceled work
-does not execute. Empty principal queues are removed, bounding retained identity state by queued
-items. The TLS-bound identity is used for reads, mutations and both session operations and survives
-credential-generation changes; it is never a metric label.
+and take one turn each in round-robin order. A new or returning principal joins the rotation's
+tail. Queue counts release on dequeue; a separate operation reservation retains the charge
+through queued, executing and pending consensus work. Each authenticated principal holds at most
+eight operations/4 MiB within the shared 128-operation/16-MiB client budget. Trusted local
+Propose/Read test calls share one FIFO and the global budget without the external-principal cap.
+The TLS-bound identity selects the same budget for reads, mutations and both session operations
+across credential generations; it is never a metric label.
+
+Caller cancellation, disconnect or physical timeout cannot refund retained actor work. Canceled
+queued actions release when dequeued without executing; pending charges release on a terminal
+Raft completion or actual owner stop/fault drain. A terminal uncertain completion ends the wait's
+reservation and does not prove rollback: log and replay state have separate lifetimes and limits.
+Admission stops before cancellation is signaled. Failed queue insertion releases its reservation;
+shutdown clears pending completions and releases each charge once. Empty identity accounting is
+removed on release and bounded by at most 128 held operations. Encoded charges include requested
+keys (including trusted single-key reads), or canonical committed commands, plus 128 bytes of
+submission overhead. They exclude response/log/replay state, copies and managed heap overhead.
 
 Portable tests cover concurrent producers, byte/item saturation, principal churn and exact turn
 ordering. Linux wire cases verify definite per-principal refusal and another principal's queue
-admission during blocked persistence, alongside full-lane fault/shutdown cleanup. This scheduling
+admission during blocked persistence, alongside full-lane fault/shutdown cleanup. Further cases
+retain a principal's share after canceled pending reads, reject all four request kinds over TLS,
+allow a second principal and reuse the share after quorum recovery or a higher term. Blocked-WAL
+cases distinguish caller timeout from actual operation release on recovery, stop or storage fault.
+The anonymous `runtime.admission.active`/`runtime.admission.bytes` meter series observe retained
+charges; queue series still count only waiting work and `runtime.operations.active` counts callers.
+These overlapping boundaries must not be summed as independent operations or heap bytes. Zero
+operation reservations do not establish completed transport/storage cleanup or expired replay state. This scheduling
 rule does not guarantee fair socket/handshake admission, end-to-end completion or CPU time;
 global request/pending limits, OS I/O and quorum availability still constrain progress. These
 prototype budgets establish no production memory or workload capacity.
