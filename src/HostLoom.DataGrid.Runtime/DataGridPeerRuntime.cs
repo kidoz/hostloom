@@ -57,10 +57,15 @@ internal sealed class DataGridPeerRuntime
         Justification = "RunOwned finally disposes the drained queue independently of the bounded disposal wait; Completion joins actual cleanup."
     )]
     private readonly DataGridRuntimeQueue _queue = new();
+    private readonly DataGridRuntimeOperationBudget _operations = new();
     private readonly object _admission = new();
     private readonly Dictionary<
         Guid,
-        (TaskCompletionSource<RaftCompletion> Result, bool Read)
+        (
+            TaskCompletionSource<RaftCompletion> Result,
+            bool Read,
+            DataGridRuntimeOperationBudget.Lease Reservation
+        )
     > _pending = [];
     private readonly Dictionary<RaftToken, (CancellationTokenSource Cancel, Task Task)> _timers =
     [];
@@ -241,37 +246,57 @@ internal sealed class DataGridPeerRuntime
         );
         var id = Guid.NewGuid();
         var bytes = command is null
-            ? 128 + (keys?.Sum(key => key.ByteCount + 2) ?? 0)
+            ? 128 + (keys?.Sum(item => item.ByteCount + 2) ?? (key is null ? 0 : key.ByteCount + 2))
             : DataGridCommittedCommandCodec.Encode(command).Length + 128;
-        var work = new DataGridRuntimeWork(
-            () =>
+        DataGridRuntimeOperationBudget.Lease? acquired =
+            _operations.TryAcquire(principal, bytes, out var failure, _stop.IsCancellationRequested)
+            ?? throw new DataGridRuntimeAdmissionException(failure);
+        try
+        {
+            var reservation = acquired;
+            var work = new DataGridRuntimeWork(
+                () =>
+                {
+                    if (token.IsCancellationRequested)
+                    {
+                        reservation.Dispose();
+                        result.TrySetCanceled(token);
+                        return;
+                    }
+                    if (_pending.Count >= 128)
+                    {
+                        reservation.Dispose();
+                        result.TrySetResult(new(id, RaftCompletionKind.Busy));
+                        return;
+                    }
+                    _pending.Add(id, (result, command is null, reservation));
+                    Apply(
+                        command is null
+                            ? keys is null
+                                ? _node.Read(id, map!.Value, key!, Now())
+                                : _node.ReadMany(id, map!.Value, keys, Now())
+                            : _node.Propose(id, command)
+                    );
+                },
+                exception =>
+                {
+                    reservation.Dispose();
+                    result.TrySetException(exception);
+                },
+                bytes,
+                Control: false,
+                Principal: principal
+            );
+            if (!_queue.TryWrite(work, out failure, _stop.IsCancellationRequested))
             {
-                if (token.IsCancellationRequested)
-                {
-                    result.TrySetCanceled(token);
-                    return;
-                }
-                if (_pending.Count >= 128)
-                {
-                    result.TrySetResult(new(id, RaftCompletionKind.Busy));
-                    return;
-                }
-                _pending.Add(id, (result, command is null));
-                Apply(
-                    command is null
-                        ? keys is null
-                            ? _node.Read(id, map!.Value, key!, Now())
-                            : _node.ReadMany(id, map!.Value, keys, Now())
-                        : _node.Propose(id, command)
-                );
-            },
-            exception => result.TrySetException(exception),
-            bytes,
-            Control: false,
-            Principal: principal
-        );
-        if (!_queue.TryWrite(work, out var failure, _stop.IsCancellationRequested))
-            throw new DataGridRuntimeAdmissionException(failure);
+                throw new DataGridRuntimeAdmissionException(failure);
+            }
+            acquired = null; // Queue/pending completion now owns the charge.
+        }
+        finally
+        {
+            acquired?.Dispose();
+        }
         // Cancellation after posting may leave an admitted mutation; logical identity stays caller-owned.
         try
         {
@@ -523,7 +548,10 @@ internal sealed class DataGridPeerRuntime
     private Task StopAsync()
     {
         lock (_admission)
+        {
+            _operations.Complete();
             return _cancellation ??= _stop.CancelAsync();
+        }
     }
 
     private async Task RunOwned()
@@ -583,9 +611,12 @@ internal sealed class DataGridPeerRuntime
                 "Runtime stopped; admitted mutations may have committed.",
                 Failure
             );
+            _operations.Complete();
             foreach (var work in _queue.Complete())
                 work.Reject(error);
             foreach (var pending in _pending)
+            {
+                pending.Value.Reservation.Dispose();
                 pending.Value.Result.TrySetResult(
                     new(
                         pending.Key,
@@ -594,6 +625,8 @@ internal sealed class DataGridPeerRuntime
                             : RaftCompletionKind.OutcomeUnknown
                     )
                 );
+            }
+            _pending.Clear();
             foreach (var watcher in _watchers)
                 watcher.Completion.TrySetException(error);
             var tasks = _timers
@@ -698,7 +731,10 @@ internal sealed class DataGridPeerRuntime
                         _lastReadBarrierTerm = _node.CurrentTerm;
                     }
                     if (_pending.Remove(completion.RequestId, out var result))
+                    {
+                        result.Reservation.Dispose();
                         result.Result.TrySetResult(completion);
+                    }
                     break;
                 case RaftFault:
                     break;
