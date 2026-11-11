@@ -180,7 +180,8 @@ internal sealed class DataGridPeerRuntime
         Guid? map,
         DataGridKey? key,
         CancellationToken token,
-        IReadOnlyList<DataGridKey>? keys = null
+        IReadOnlyList<DataGridKey>? keys = null,
+        Guid principal = default
     )
     {
         token.ThrowIfCancellationRequested();
@@ -190,7 +191,8 @@ internal sealed class DataGridPeerRuntime
         DataGridRuntimeDiagnostics.Begin(operation);
         try
         {
-            var result = await SubmitCore(command, map, key, token, keys).ConfigureAwait(false);
+            var result = await SubmitCore(command, map, key, token, keys, principal)
+                .ConfigureAwait(false);
             outcome = DataGridRuntimeDiagnostics.Outcome(result.Kind);
             return result;
         }
@@ -222,7 +224,8 @@ internal sealed class DataGridPeerRuntime
         Guid? map,
         DataGridKey? key,
         CancellationToken token,
-        IReadOnlyList<DataGridKey>? keys = null
+        IReadOnlyList<DataGridKey>? keys = null,
+        Guid principal = default
     )
     {
         token.ThrowIfCancellationRequested();
@@ -264,7 +267,8 @@ internal sealed class DataGridPeerRuntime
             },
             exception => result.TrySetException(exception),
             bytes,
-            Control: false
+            Control: false,
+            Principal: principal
         );
         if (!_queue.TryWrite(work, out var failure, _stop.IsCancellationRequested))
             throw new DataGridRuntimeAdmissionException(failure);
@@ -289,44 +293,43 @@ internal sealed class DataGridPeerRuntime
         CancellationToken cancellationToken
     )
     {
+        if (principal == Guid.Empty)
+            throw new ArgumentException("Authenticated principal required.", nameof(principal));
+        ArgumentNullException.ThrowIfNull(request);
         RaftCompletion completion;
         try
         {
-            completion = request.Kind switch
+            var command = request.Kind switch
             {
-                DataGridMessageKind.Read => await ReadManyAsync(
-                        request.MapId,
-                        request.Keys,
-                        cancellationToken
-                    )
-                    .ConfigureAwait(false),
-                DataGridMessageKind.Mutation => await ProposeAsync(
-                        DataGridCommittedCommand.Mutate(principal, request.Mutation!, Now()),
-                        cancellationToken
-                    )
-                    .ConfigureAwait(false),
-                DataGridMessageKind.OpenSession => await ProposeAsync(
-                        DataGridCommittedCommand.OpenSession(
-                            principal,
-                            request.OpenNonce,
-                            request.OpenNotAfter,
-                            Now()
-                        ),
-                        cancellationToken
-                    )
-                    .ConfigureAwait(false),
-                DataGridMessageKind.CloseSession => await ProposeAsync(
-                        DataGridCommittedCommand.CloseSession(
-                            principal,
-                            request.SessionNumber,
-                            request.RequestNumber,
-                            Now()
-                        ),
-                        cancellationToken
-                    )
-                    .ConfigureAwait(false),
+                DataGridMessageKind.Read => null,
+                DataGridMessageKind.Mutation => DataGridCommittedCommand.Mutate(
+                    principal,
+                    request.Mutation!,
+                    Now()
+                ),
+                DataGridMessageKind.OpenSession => DataGridCommittedCommand.OpenSession(
+                    principal,
+                    request.OpenNonce,
+                    request.OpenNotAfter,
+                    Now()
+                ),
+                DataGridMessageKind.CloseSession => DataGridCommittedCommand.CloseSession(
+                    principal,
+                    request.SessionNumber,
+                    request.RequestNumber,
+                    Now()
+                ),
                 _ => throw new InvalidDataException("Invalid client operation."),
             };
+            completion = await Submit(
+                    command,
+                    request.MapId,
+                    null,
+                    cancellationToken,
+                    request.Kind == DataGridMessageKind.Read ? request.Keys : null,
+                    principal
+                )
+                .ConfigureAwait(false);
         }
         catch (DataGridRuntimeAdmissionException exception)
         {
