@@ -14,6 +14,152 @@ namespace HostLoom.Tests;
 [Collection(nameof(DataGridDiagnosticsTests))]
 public sealed class DataGridOverloadTlsTests
 {
+    [Theory(Timeout = 20000)]
+    [InlineData(DataGridMessageKind.Read)]
+    [InlineData(DataGridMessageKind.Mutation)]
+    [InlineData(DataGridMessageKind.OpenSession)]
+    [InlineData(DataGridMessageKind.CloseSession)]
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using 'IDisposable' instances complete before the instances are disposed",
+        Justification = "The intentionally concurrent TLS exchange is joined in finally before its stream and fixture leave scope."
+    )]
+    public async Task PrincipalActorShareRejectsWireExcessWhileAnotherPrincipalCanQueue(
+        DataGridMessageKind kind
+    )
+    {
+        RequireLinux();
+        using var timeout = Deadline(TestContext.Current.CancellationToken);
+        using var fixture = new DataGridPeerFixture();
+        using var capture = new DataGridMeterCapture();
+        await using var blocked = new BlockedRuntime(fixture, timeout.Token);
+        await blocked.Entered.Task.WaitAsync(timeout.Token);
+        var other = Guid.NewGuid();
+        var policy = new DataGridClientAccessPolicy(
+            fixture.Configuration,
+            fixture.Root,
+            [
+                new(
+                    DataGridPeerFixture.Principal,
+                    fixture.Fingerprints[0],
+                    true,
+                    [
+                        new(
+                            DataGridPeerFixture.Map,
+                            DataGridMapActions.Read | DataGridMapActions.Mutate
+                        ),
+                    ]
+                ),
+                new(
+                    other,
+                    fixture.Fingerprints[2],
+                    true,
+                    [new(DataGridPeerFixture.Map, DataGridMapActions.Read)]
+                ),
+            ]
+        );
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        await using var server = new DataGridClientServer(
+            fixture.Credentials(0),
+            policy,
+            listener,
+            blocked.Runtime
+        );
+        server.Start();
+        var request = kind switch
+        {
+            DataGridMessageKind.Read => Read(),
+            DataGridMessageKind.Mutation => DataGridClientRequest.Mutate(
+                DataGridClientCodecTests.Mutation(1)
+            ),
+            DataGridMessageKind.OpenSession => DataGridClientRequest.OpenSession(
+                Guid.NewGuid(),
+                DataGridTimestamp.FromUtc(DateTimeOffset.UtcNow.AddSeconds(4))
+            ),
+            _ => DataGridClientRequest.CloseSession(1, 1),
+        };
+        using var canceled = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        var waiting = Enumerable
+            .Range(0, 8)
+            .Select(index =>
+                blocked.Runtime.ExecuteAsync(
+                    DataGridPeerFixture.Principal,
+                    request,
+                    index == 0 ? canceled.Token : timeout.Token
+                )
+            )
+            .ToArray();
+        Assert.Equal(8, capture.Sum("runtime.queue.items", "client"));
+        await canceled.CancelAsync();
+        Assert.True((await waiting[0]).Failure!.MayHaveBeenAdmitted);
+        Assert.Equal(8, capture.Sum("runtime.queue.items", "client"));
+        using (var tcp = new TcpClient())
+        await using (
+            var tls = await DataGridTransportAdmissionTlsTests.ClientHello(
+                fixture,
+                tcp,
+                ((IPEndPoint)listener.LocalEndpoint).Port,
+                fixture.Certificates[0],
+                DataGridPeerFixture.Principal,
+                timeout.Token
+            )
+        )
+        {
+            var refused = await Exchange(
+                fixture,
+                tls,
+                request,
+                DataGridPeerFixture.Principal,
+                timeout.Token
+            );
+            Assert.Equal(DataGridClientFailureCode.CapacityExceeded, refused.Failure!.Code);
+            Assert.False(refused.Failure.MayHaveBeenAdmitted);
+        }
+        using (var tcp = new TcpClient())
+        await using (
+            var tls = await DataGridTransportAdmissionTlsTests.ClientHello(
+                fixture,
+                tcp,
+                ((IPEndPoint)listener.LocalEndpoint).Port,
+                fixture.Certificates[2],
+                other,
+                timeout.Token
+            )
+        )
+        {
+            var healthy = Exchange(fixture, tls, Read(), other, timeout.Token);
+            try
+            {
+                await capture.WaitFor(
+                    _ => capture.Sum("runtime.queue.items", "client") == 9,
+                    timeout.Token
+                );
+                var stopped = blocked.Runtime.DisposeAsync().AsTask();
+                blocked.Release();
+                await stopped;
+                var reply = await healthy;
+                Assert.Equal(DataGridClientFailureCode.QuorumUnavailable, reply.Failure!.Code);
+                Assert.True(reply.Failure.MayHaveBeenAdmitted);
+            }
+            finally
+            {
+                blocked.Release();
+                await healthy;
+            }
+        }
+        Assert.All(
+            await Task.WhenAll(waiting),
+            reply => Assert.True(reply.Failure!.MayHaveBeenAdmitted)
+        );
+        Assert.Equal(0, capture.Sum("runtime.queue.items", "client"));
+        using var recovered = DataGridFileStore.Open(blocked.Path, fixture.Configuration, 0);
+        Assert.Equal(0, recovered.RestoreApplication().SessionCount);
+        await server.DisposeAsync();
+        Assert.Null(server.FatalError);
+        capture.AssertBalanced();
+        capture.AssertPrivate();
+    }
+
     [Fact(Timeout = 30000)]
     public async Task TimedOutDisposeRetainsOwnershipUntilActualCleanupThenReleasesItExactlyOnce()
     {

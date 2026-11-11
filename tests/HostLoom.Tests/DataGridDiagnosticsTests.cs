@@ -458,7 +458,8 @@ internal sealed class DataGridMeterCapture : IDisposable
                             DataGridRuntimeDiagnostics.ReasonTag => value
                                 is "stopped"
                                     or "bytes"
-                                    or "items",
+                                    or "items"
+                                    or "principal",
                             DataGridRuntimeDiagnostics.OperationTag => value
                                 is "read"
                                     or "mutation"
