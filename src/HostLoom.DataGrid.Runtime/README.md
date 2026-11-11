@@ -20,10 +20,22 @@ latest pending request per peer; replacing work cancels the preceding exchange r
 building a chain of tasks. Correlation/term checks discard obsolete replies. Snapshot messages
 refer to bounded immutable images and are encoded as individual 64 KiB chunks at the transport.
 The shared queue component enforces both count and byte limits atomically and drains its
-reservations on shutdown/fault. Portable tests cover concurrent producers, byte saturation and
-control/client scheduling; live tests fill the client lane during blocked persistence and verify
-fault/shutdown cleanup. These limits do not prove production memory or fair scheduling among
-external principals.
+reservations on shutdown/fault. Within the client lane, authenticated principals have FIFO queues
+and take one turn each in round-robin order. Each principal can queue eight items and 4 MiB;
+the shared 128-item/16-MiB limits still apply. A new or returning principal joins the rotation's
+tail. Trusted local Propose/Read test calls share one FIFO without the external-principal cap.
+Dequeue releases queue budgets; executing and pending consensus work is outside these counts.
+Cancellation leaves queued work charged until dequeue or shutdown drain, where canceled work
+does not execute. Empty principal queues are removed, bounding retained identity state by queued
+items. The TLS-bound identity is used for reads, mutations and both session operations and survives
+credential-generation changes; it is never a metric label.
+
+Portable tests cover concurrent producers, byte/item saturation, principal churn and exact turn
+ordering. Linux wire cases verify definite per-principal refusal and another principal's queue
+admission during blocked persistence, alongside full-lane fault/shutdown cleanup. This scheduling
+rule does not guarantee fair socket/handshake admission, end-to-end completion or CPU time;
+global request/pending limits, OS I/O and quorum availability still constrain progress. These
+prototype budgets establish no production memory or workload capacity.
 
 Local operations have an independent five-second physical deadline. A timed-out mutation is
 OutcomeUnknown; a timed-out read is Unavailable. Caller cancellation after posting may also
@@ -79,7 +91,7 @@ registry or automatic health integration is added. Expired entries remain charge
 storage sizes describe the last successful publication, not current physical files after failure.
 
 
-Definite refusal before actor enqueue now returns `CapacityExceeded` (full item/byte budget) or
+Definite refusal before actor enqueue returns `CapacityExceeded` (full shared/principal item/byte budget) or
 `QuorumUnavailable` (stopped), with admission false. This applies to reads and side-effecting
 session/mutation requests. Work already queued or possibly submitted retains conservative
 uncertainty, and the SDK still accumulates uncertainty across attempts. No new wire code or

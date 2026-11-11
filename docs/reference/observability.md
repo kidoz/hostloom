@@ -350,7 +350,7 @@ for service identity. There is no grid activity source, trace propagation or exp
 | --- | --- | --- |
 | `hostloom.datagrid.runtime.queue.items` | up-down counter / `{item}` | Work waiting in control/client lanes; released on dequeue or shutdown drain |
 | `hostloom.datagrid.runtime.queue.bytes` | up-down counter / `By` | Encoded-byte reservations waiting in those lanes; excludes executing work and heap overhead |
-| `hostloom.datagrid.runtime.queue.rejected` | counter / `{item}` | Pre-queue refusals by lane and reason: `items`, `bytes`, or `stopped` |
+| `hostloom.datagrid.runtime.queue.rejected` | counter / `{item}` | Pre-queue refusals by lane and reason: `items`, `bytes`, `principal`, or `stopped` |
 | `hostloom.datagrid.runtime.operations` | counter / `{operation}` | Local submission completions, including rejection, uncertainty, cancellation and faults |
 | `hostloom.datagrid.runtime.operations.active` | up-down counter / `{operation}` | Local callers awaiting actor completion |
 | `hostloom.datagrid.runtime.operation.duration` | histogram / `s` | Local submission through caller completion, including queue, quorum and persistence waits |
@@ -397,8 +397,13 @@ establish device durability. Synchronous metric listeners are trusted diagnostic
 not block or throw; this slice does not isolate listener failures.
 
 Actor admission retains 256 control / 128 client queued items and 16 MiB per lane. A waiting
-client gets a turn after at most eight control turns; this does not promise fairness among
-external principals. Each SDK still reserves at most eight concurrent exchanges. The active
+client gets a turn after at most eight control turns. Authenticated principal FIFO queues rotate
+one client turn each, with eight items/4 MiB per principal inside the shared client budget. The
+fixed `principal` refusal reason combines its item/byte limits without exposing identity; shared
+limits and stopped state take precedence. Queue budgets exclude executing/pending consensus
+work and release on dequeue/drain; canceled queued work remains charged until then. Trusted local
+test entry points share a separate FIFO in the same rotation. These rules do not guarantee fair
+handshake/request admission, completion latency or CPU time. Each SDK still reserves at most eight concurrent exchanges. The active
 invocation metric includes brief decisions outside that reservation. The meters retain no
 per-owner registry or payload history. Queue/SDK boundary tests and Linux actor tests establish
 these measured paths, not collector delivery, full transport abuse isolation, all required
@@ -484,7 +489,7 @@ recovery-time acceptance. Per-map error rates, explicit source freshness/redistr
 full overload/fairness and device/shutdown qualification remain open.
 
 
-Definite queue refusal is now distinguished from admitted uncertainty: full actor item/byte
+Definite queue refusal is distinguished from admitted uncertainty: full actor shared/principal item/byte
 admission returns `CapacityExceeded` with admission false; a stopped owner returns
 `QuorumUnavailable` with admission false. Already queued or possibly submitted work remains
 conservative, and earlier SDK uncertainty cannot be erased by a later refusal. The local runtime
