@@ -1,7 +1,7 @@
 namespace HostLoom.DataGrid.Runtime;
 
 /// <summary>One charge from before enqueue through the owner's terminal completion, not caller cancellation.</summary>
-internal sealed class DataGridRuntimeOperationBudget
+internal sealed class DataGridRuntimeOperationBudget(bool control = false)
 {
     private readonly object _sync = new();
     private readonly Dictionary<Guid, Usage> _principals = [];
@@ -22,8 +22,11 @@ internal sealed class DataGridRuntimeOperationBudget
             var reason =
                 _completed || stopping ? "stopped"
                 : bytes < 0 || _bytes + bytes > DataGridRuntimeQueue.ByteLimit ? "bytes"
-                : _count == DataGridRuntimeQueue.ClientLimit ? "items"
-                : principal != Guid.Empty
+                : _count
+                == (control ? DataGridRuntimeQueue.ControlLimit : DataGridRuntimeQueue.ClientLimit)
+                    ? "items"
+                : !control
+                && principal != Guid.Empty
                 && (
                     usage.Count == DataGridRuntimeQueue.PrincipalLimit
                     || usage.Bytes + bytes > DataGridRuntimeQueue.PrincipalByteLimit
@@ -36,15 +39,15 @@ internal sealed class DataGridRuntimeOperationBudget
                     reason == "stopped"
                         ? DataGridRuntimeAdmissionFailure.Stopped
                         : DataGridRuntimeAdmissionFailure.Capacity;
-                DataGridRuntimeDiagnostics.Reject(false, reason);
+                DataGridRuntimeDiagnostics.Reject(control, reason);
                 return null;
             }
             failure = DataGridRuntimeAdmissionFailure.None;
             _principals[principal] = new(usage.Count + 1, usage.Bytes + bytes);
             _count++;
             _bytes += bytes;
-            DataGridRuntimeDiagnostics.AdmissionChange(1, bytes);
-            return new(this, principal, bytes);
+            DataGridRuntimeDiagnostics.AdmissionChange(control, 1, bytes);
+            return new(this, principal, bytes, control);
         }
     }
 
@@ -55,8 +58,12 @@ internal sealed class DataGridRuntimeOperationBudget
             _completed = true;
     }
 
-    internal sealed class Lease(DataGridRuntimeOperationBudget owner, Guid principal, int bytes)
-        : IDisposable
+    internal sealed class Lease(
+        DataGridRuntimeOperationBudget owner,
+        Guid principal,
+        int bytes,
+        bool control
+    ) : IDisposable
     {
         private DataGridRuntimeOperationBudget? _owner = owner;
 
@@ -74,7 +81,7 @@ internal sealed class DataGridRuntimeOperationBudget
                     held._principals[principal] = new(usage.Count - 1, usage.Bytes - bytes);
                 held._count--;
                 held._bytes -= bytes;
-                DataGridRuntimeDiagnostics.AdmissionChange(-1, -bytes);
+                DataGridRuntimeDiagnostics.AdmissionChange(control, -1, -bytes);
             }
         }
     }

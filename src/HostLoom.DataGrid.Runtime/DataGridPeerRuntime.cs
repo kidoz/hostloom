@@ -58,6 +58,7 @@ internal sealed class DataGridPeerRuntime
     )]
     private readonly DataGridRuntimeQueue _queue = new();
     private readonly DataGridRuntimeOperationBudget _operations = new();
+    private readonly DataGridRuntimeOperationBudget _control = new(control: true);
     private readonly object _admission = new();
     private readonly Dictionary<
         Guid,
@@ -542,15 +543,65 @@ internal sealed class DataGridPeerRuntime
             reject(new IOException("Runtime stopped or admission capacity exceeded."));
     }
 
-    private bool TryPost(DataGridRuntimeWork work) =>
-        _queue.TryWrite(work, _stop.IsCancellationRequested);
+    private bool TryPost(DataGridRuntimeWork work)
+    {
+        if (!work.Control)
+            return _queue.TryWrite(work, _stop.IsCancellationRequested);
+        DataGridRuntimeOperationBudget.Lease? acquired = _control.TryAcquire(
+            Guid.Empty,
+            work.Bytes,
+            out _,
+            _stop.IsCancellationRequested
+        );
+        try
+        {
+            if (acquired is null)
+                return false;
+            var reservation = acquired;
+            var retained = work with
+            {
+                Action = () =>
+                {
+                    try
+                    {
+                        work.Action();
+                    }
+                    finally
+                    {
+                        reservation.Dispose();
+                    }
+                },
+                Reject = exception =>
+                {
+                    try
+                    {
+                        work.Reject(exception);
+                    }
+                    finally
+                    {
+                        reservation.Dispose();
+                    }
+                },
+            };
+            if (!_queue.TryWrite(retained, _stop.IsCancellationRequested))
+                return false;
+            acquired = null; // Action completion or rejection now owns the charge.
+            return true;
+        }
+        finally
+        {
+            acquired?.Dispose();
+        }
+    }
 
     private Task StopAsync()
     {
         lock (_admission)
         {
             _operations.Complete();
-            return _cancellation ??= _stop.CancelAsync();
+            var cancellation = _cancellation ??= _stop.CancelAsync();
+            _control.Complete();
+            return cancellation;
         }
     }
 
@@ -657,6 +708,10 @@ internal sealed class DataGridPeerRuntime
                 {
                     foreach (var timer in _timers.Values)
                         timer.Cancel.Dispose();
+                    _timers.Clear();
+                    foreach (var send in _sends.Values)
+                        while (send.Queue.Reader.TryRead(out _)) { }
+                    _sends.Clear();
                     try
                     {
                         _store.Dispose();
@@ -872,6 +927,14 @@ internal sealed class DataGridPeerRuntime
         {
             Interlocked.CompareExchange(ref _failure, exception, null);
             await StopAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (slot.Sync)
+            {
+                while (slot.Queue.Reader.TryRead(out _)) { }
+                slot.Current = null;
+            }
         }
     }
 

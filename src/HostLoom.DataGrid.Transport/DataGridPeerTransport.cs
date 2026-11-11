@@ -36,6 +36,11 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
     private readonly SemaphoreSlim _transfer = new(1, 1);
     private readonly object _sync = new();
     private readonly Dictionary<long, Task> _sessions = [];
+    private readonly TaskCompletionSource _outgoingDrained = new(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    );
+    private readonly HashSet<Task> _outgoing = [];
+    private bool _stopping;
     private Task? _accept;
     private long _sessionId;
     private readonly DataGridHandshakeRate _rate = new(24, DataGridTransportRole.Peer);
@@ -138,14 +143,60 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
         _accept = AcceptAsync();
     }
 
-    internal async Task<RaftMessage> SendAsync(
+    internal Task<RaftMessage> SendAsync(RaftMessage message, CancellationToken cancellationToken)
+    {
+        lock (_sync)
+        {
+            var tracked = !_stopping && _outgoing.Count < 16;
+            var task = SendRecorded(message, atCapacity: !_stopping && !tracked, cancellationToken);
+            if (tracked)
+            {
+                _outgoing.Add(task);
+                _ = ObserveOutgoing(task);
+            }
+            return task;
+        }
+    }
+
+    private async Task ObserveOutgoing(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (Exception) { } // The caller receives the original task and its failure.
+        finally
+        {
+            lock (_sync)
+            {
+                _outgoing.Remove(task);
+                if (_stopping && _outgoing.Count == 0)
+                    _outgoingDrained.TrySetResult();
+            }
+        }
+    }
+
+    private async Task<RaftMessage> SendRecorded(
         RaftMessage message,
+        bool atCapacity,
         CancellationToken cancellationToken
     )
     {
         Exception? failure = null;
         try
         {
+            if (_stopping)
+                throw new IOException("Peer transport stopped.");
+            if (atCapacity)
+            {
+                DataGridTransportDiagnostics.Reject(
+                    DataGridTransportRole.Peer,
+                    DataGridTransportDirection.Outbound,
+                    DataGridTransportResource.Connection,
+                    DataGridTransportRejection.Capacity
+                );
+                throw new DataGridTransportAdmissionException();
+            }
             return await SendCore(message, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception)
@@ -467,6 +518,12 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
 
     private async Task ShutdownAsync()
     {
+        lock (_sync)
+        {
+            _stopping = true;
+            if (_outgoing.Count == 0)
+                _outgoingDrained.TrySetResult();
+        }
         await _stop.CancelAsync().ConfigureAwait(false);
         _listener.Stop();
         if (_accept is not null)
@@ -475,7 +532,7 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
         lock (_sync)
             sessions = _sessions.Values.ToArray();
         await Task.WhenAll(sessions).ConfigureAwait(false);
-        // Outgoing calls are owned and drained by the runtime before releasing this transport.
+        await _outgoingDrained.Task.ConfigureAwait(false);
         if (_ownsSecurity)
             await _security.DisposeAsync().ConfigureAwait(false);
         _stop.Dispose();

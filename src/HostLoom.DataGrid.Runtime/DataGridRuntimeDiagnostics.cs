@@ -79,6 +79,16 @@ public static partial class DataGridRuntimeDiagnostics
         "By",
         "Retained encoded submission charges across queued/executing/pending work; excludes response/log/replay state and heap overhead."
     );
+    private static readonly UpDownCounter<long> ControlActive = Meter.CreateUpDownCounter<long>(
+        "hostloom.datagrid.runtime.control.active",
+        "{item}",
+        "Control work reserved before enqueue through action completion or queue drain."
+    );
+    private static readonly UpDownCounter<long> ControlBytes = Meter.CreateUpDownCounter<long>(
+        "hostloom.datagrid.runtime.control.bytes",
+        "By",
+        "Retained encoded control work across queue and execution; excludes peer sender/transport copies and heap overhead."
+    );
     private static readonly Counter<long> Rejections = Meter.CreateCounter<long>(
         "hostloom.datagrid.runtime.queue.rejected",
         "{item}",
@@ -138,10 +148,10 @@ public static partial class DataGridRuntimeDiagnostics
     internal static void Reject(bool control, string reason) =>
         Rejections.Add(1, new(LaneTag, control ? "control" : "client"), new(ReasonTag, reason));
 
-    internal static void AdmissionChange(int operations, long bytes)
+    internal static void AdmissionChange(bool control, int operations, long bytes)
     {
-        AdmissionActive.Add(operations);
-        AdmissionBytes.Add(bytes);
+        (control ? ControlActive : AdmissionActive).Add(operations);
+        (control ? ControlBytes : AdmissionBytes).Add(bytes);
     }
 
     internal static string Operation(DataGridCommittedCommand? command) =>
