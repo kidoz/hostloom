@@ -405,7 +405,7 @@ public sealed class DataGridTransportAdmissionTlsTests
         }
     }
 
-    private static async Task<SslStream> ClientHello(
+    internal static async Task<SslStream> ClientHello(
         DataGridPeerFixture fixture,
         TcpClient tcp,
         int port,
@@ -467,7 +467,7 @@ public sealed class DataGridTransportAdmissionTlsTests
         }
     }
 
-    private static async Task Closed(Stream stream, CancellationToken token)
+    internal static async Task Closed(Stream stream, CancellationToken token)
     {
         try
         {

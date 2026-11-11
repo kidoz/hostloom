@@ -71,3 +71,11 @@ validation and constructor refusals, excludes bootstrap and subsequent actor rep
 emits no path, certificate, key/value, identity or exception-message labels. Measurements establish
 emission, not collector delivery or a recovery-time target. Synchronous listeners are trusted
 instrumentation code and must not throw or block.
+
+
+Runtime qualification also opens stores with lowered WAL/directory budgets or an unattainable
+free-space reserve. Refusal fences the actor, preserves the original WAL bytes and commit state,
+and releases directory ownership after actual cleanup. A deliberately blocked storage observer
+checks ownership retention through a runtime disposal timeout and successful reopen after release.
+These are declared-budget and deterministic blocking checks, not an actual disk-full, power-loss,
+filesystem/device-durability or uninterruptible native-I/O experiment.

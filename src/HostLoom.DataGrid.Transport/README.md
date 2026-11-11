@@ -88,3 +88,12 @@ limits and exact monotonic handshake burst/refill. Directed Linux tests cover st
 capacity/deadline/stop, bound-member overflow and recovery, unauthorized/unbound clients, malformed
 requests/lengths and snapshot disconnect/reuse without actor installation. These checks preserve
 existing TLS/hello/admission rules and do not complete the broader production abuse/resource gate.
+
+
+Additional controlled Linux cases fill all 12 request reservations with two authorized principals
+that send hello but withhold request bodies. The next request reservation is refused, peer
+control on the same security owner remains usable, and deadline/stop releases the 24-MiB encoded
+work reservation. After expiry a normal request can dispatch again. A separate non-reading client
+receives a near-limit response while later clients remain usable and managed reservations drain.
+That write can complete into OS buffers or terminate by deadline; these tests do not force every
+backpressure path or measure kernel socket memory, long-running churn or principal fairness.
