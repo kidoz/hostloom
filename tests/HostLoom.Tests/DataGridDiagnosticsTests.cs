@@ -2,6 +2,7 @@ using System.Diagnostics.Metrics;
 using HostLoom.DataGrid;
 using HostLoom.DataGrid.Client;
 using HostLoom.DataGrid.Runtime;
+using HostLoom.DataGrid.Storage;
 using HostLoom.DataGrid.Transport;
 using Xunit;
 using GridClient = HostLoom.DataGrid.Client.DataGridClient;
@@ -229,6 +230,7 @@ internal sealed class DataGridMeterCapture : IDisposable
                 is DataGridRuntimeDiagnostics.MeterName
                     or DataGridClientDiagnostics.MeterName
                     or DataGridTransportDiagnostics.MeterName
+                    or DataGridStorageDiagnostics.MeterName
             )
                 listener.EnableMeasurementEvents(instrument);
         };
@@ -363,6 +365,13 @@ internal sealed class DataGridMeterCapture : IDisposable
             DataGridTransportDiagnostics.ResourceTag,
             DataGridTransportDiagnostics.ReasonTag,
             DataGridTransportDiagnostics.OutcomeTag,
+            DataGridStorageDiagnostics.OutcomeTag,
+            DataGridRuntimeDiagnostics.MemberOrdinalTag,
+            DataGridRuntimeDiagnostics.MapOrdinalTag,
+            DataGridRuntimeDiagnostics.PeerOrdinalTag,
+            DataGridRuntimeDiagnostics.StateTag,
+            DataGridRuntimeDiagnostics.PositionTag,
+            DataGridRuntimeDiagnostics.MeasureTag,
         };
         foreach (var measurement in Measurements)
         {
@@ -378,11 +387,48 @@ internal sealed class DataGridMeterCapture : IDisposable
                             or DataGridClientDiagnostics.SubmittedTag
                     )
                         Assert.IsType<bool>(tag.Value);
+                    else if (
+                        tag.Key
+                        is DataGridRuntimeDiagnostics.MemberOrdinalTag
+                            or DataGridRuntimeDiagnostics.PeerOrdinalTag
+                            or DataGridRuntimeDiagnostics.MapOrdinalTag
+                    )
+                        Assert.InRange(
+                            Assert.IsType<int>(tag.Value),
+                            0,
+                            tag.Key == DataGridRuntimeDiagnostics.MapOrdinalTag ? 15 : 2
+                        );
                     else
                     {
                         var value = Assert.IsType<string>(tag.Value);
                         var valid = tag.Key switch
                         {
+                            DataGridStorageDiagnostics.OutcomeTag => value
+                                is "recovered"
+                                    or "failed",
+                            DataGridRuntimeDiagnostics.StateTag => value
+                                is "follower"
+                                    or "candidate"
+                                    or "leader"
+                                    or "faulted"
+                                    or "stopped"
+                                    or "local_ready_hint"
+                                    or "busy"
+                                    or "storage_faulted"
+                                    or "storage_closed",
+                            DataGridRuntimeDiagnostics.PositionTag => value
+                                is "term"
+                                    or "log_end"
+                                    or "committed"
+                                    or "applied"
+                                    or "snapshot"
+                                    or "last_read_barrier"
+                                    or "last_read_barrier_term",
+                            DataGridRuntimeDiagnostics.MeasureTag => value
+                                is "charged"
+                                    or "limit"
+                                    or "wal_published"
+                                    or "snapshot_published",
                             DataGridTransportDiagnostics.RoleTag => value is "peer" or "client",
                             DataGridTransportDiagnostics.DirectionTag => value
                                 is "inbound"

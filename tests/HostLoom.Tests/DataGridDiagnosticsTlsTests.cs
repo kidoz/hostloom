@@ -178,6 +178,10 @@ public sealed class DataGridDiagnosticsTlsTests
             try
             {
                 await entered.Task.WaitAsync(timeout.Token);
+                var cached = runtime.Diagnostics;
+                for (var observation = 0; observation < 100; observation++)
+                    Assert.Same(cached, runtime.Diagnostics);
+                Assert.False(cached.Storage.Closed);
                 queued = Enumerable
                     .Range(0, 128)
                     .Select(_ =>
@@ -208,6 +212,10 @@ public sealed class DataGridDiagnosticsTlsTests
                 else
                     await runtime.DisposeAsync();
                 Assert.True(runtime.Status.Stopped);
+                Assert.True(runtime.Diagnostics.Local.Stopped);
+                Assert.True(runtime.Diagnostics.Storage.Closed);
+                Assert.True(runtime.Diagnostics.Storage.Faulted);
+                Assert.False(runtime.Diagnostics.LocalReadyHint);
                 Assert.NotNull(
                     await Record.ExceptionAsync(() =>
                         runtime.ReadAsync(
