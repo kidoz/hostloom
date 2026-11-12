@@ -461,22 +461,25 @@ internal sealed class DataGridPeerRuntime
     private async Task Watch(long index, bool leader, CancellationToken token)
     {
         var result = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        await Invoke(
-                () =>
-                {
-                    _watchers.RemoveAll(watcher => watcher.Completion.Task.IsCompleted);
-                    if (_watchers.Count >= 64)
-                        throw new IOException("Runtime watcher capacity.");
-                    _watchers.Add(new(index, leader, result));
-                    Publish();
-                    return true;
-                },
-                128,
-                token
-            )
-            .ConfigureAwait(false);
         try
         {
+            var registered = await Invoke(
+                    () =>
+                    {
+                        _watchers.RemoveAll(watcher => watcher.Completion.Task.IsCompleted);
+                        if (_watchers.Count >= 64)
+                            return false;
+                        _watchers.Add(new(index, leader, result));
+                        Publish();
+                        return true;
+                    },
+                    128,
+                    token
+                )
+                .ConfigureAwait(false);
+            // Expected exhaustion belongs to this caller, not the actor's fault boundary.
+            if (!registered)
+                throw new IOException("Runtime watcher capacity.");
             await result.Task.WaitAsync(token).ConfigureAwait(false);
         }
         finally
@@ -680,6 +683,7 @@ internal sealed class DataGridPeerRuntime
             _pending.Clear();
             foreach (var watcher in _watchers)
                 watcher.Completion.TrySetException(error);
+            _watchers.Clear();
             var tasks = _timers
                 .Values.Select(item => item.Task)
                 .Concat(_sends.Values.Select(item => item.Task))
