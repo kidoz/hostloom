@@ -79,10 +79,18 @@ time-constraint branches, with at most 65 time variables for 32 operations. Pass
 history does not establish the actual fate of an uncertain call or prove consensus correctness.
 
 Opt-in [member-process tests](../../tests/HostLoom.DataGrid.ProcessProbe/README.md) exercise SDK
-histories during leader kill, committed reply loss, minority outage, full-group restart and a
-healed peer partition. Three independent member processes retain end-to-end TLS through six
+histories during leader kill, committed reply loss, minority outage, graceful and abrupt full-group
+restart, interrupted follower snapshot publication and a healed peer partition. Snapshot cases
+verify continued majority progress and retained replay after follower rejoin; abrupt group restart
+resolves an unknown CAS using the original identity. Stale SDK reads are rejected as negative controls.
+Three independent member processes retain end-to-end TLS through six
 bounded test-only directed proxies. Additional cases cover relative TTL/replay, close and session
-expiry with injected UTC time. Remaining work includes broader partition/fault schedules,
+expiry with injected UTC time. Two directed overlapping CAS/conditional-delete histories also
+remove and recreate the entry while the first committed reply is held. Dropping that reply
+exercises automatic SDK retries; original successful/rejected results survive subsequent leader
+failover, and stale reads or changed duplicate results are rejected as negative controls. These
+cases use separate sequential sessions and keep only their latest request identities live.
+Remaining work includes broader partition/fault schedules,
 multi-attempt semantic failure histories, coordinated rolling rotation, full resource/telemetry
 qualification, supported filesystem/device and shutdown evidence, workload targets, and any
 claimed Native AOT path.

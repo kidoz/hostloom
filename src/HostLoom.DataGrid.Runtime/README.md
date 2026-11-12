@@ -95,8 +95,16 @@ and its cleanup actually finishes. This does not establish a hard OS-I/O shutdow
 
 Tests cover live election/replication/reads, one-node leader restart, retained-result retry,
 whole-group restart, minority unavailability, uncertain write recovery and chunked snapshot
-catch-up. Separate live-actor tests cover atomic credential publication, revocation, expiry and
-root replacement; process tests currently exercise construction from the shared security owner.
+catch-up. Opt-in process cases kill a follower at three snapshot publication stages and verify
+selected-generation recovery, majority progress and rejoin. Another kills all three members after
+an applied CAS loses its reply, then checks the retained identity through the SDK after restart.
+These are local process crashes on a surviving filesystem. Separate live-actor tests cover atomic
+credential publication, revocation, expiry and root replacement; process tests currently exercise
+construction from the shared security owner.
+Directed process histories overlap committed CAS/delete replies with competing conditional
+operations and remove/recreate, then check automatic reply-loss retries and retained successful/
+rejected results after failover. The response pause is a test-only control; actor commands remain
+serialized and these cases do not cover arbitrary concurrent admission schedules.
 Broader fault/partition schedules, deployment hosting, rolling credential orchestration,
 telemetry, full resource/security qualification and workload feasibility remain required.
 

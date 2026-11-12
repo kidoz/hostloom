@@ -24,21 +24,46 @@ SIGKILL, graceful stop, restart, stdout/stderr draining, reaping and temporary-f
 Each test has a 75-second work deadline, 90-second test timeout and ten-second child cleanup waits;
 the child control loop has an independent three-minute deadline. Failed startup aborts the experiment.
 
-Only trusted parent stdin accepts status, fixed UTC clock, arm and stop controls. Output contains
+Only trusted parent stdin accepts status, fixed UTC clock, arm, lose, compact and stop controls. Output contains
 bounded control/status records, never values or mutation results. Arm pauses one completed mutation
 after durable actor application and before the TLS reply; the parent then disables the SDK and
-kills that exact member. This control is absent from production runtime/transport paths. Clock
+kills that exact member. Alternatively, lose releases the one held reply by throwing an expected
+I/O error before transmission, closing that exchange and exercising the SDK's automatic retry.
+The gate is bounded to one pending reply and clears after completion/cancellation. These controls
+are absent from production runtime/transport paths. Clock
 injection changes only the proposed grid UTC time; timers and certificate validity use real time.
+An optional startup argument pauses one snapshot publication at an existing storage observation
+seam, before the parent kills that exact follower. It accepts only snapshot flush, generation
+directory flush or anchor directory flush. Compact asks the actor to publish its current snapshot;
+status includes the snapshot index. No path or payload is accepted through these controls.
 Status is observed on a bounded polling timer; recovery is accepted through SDK results/history,
 not merely an internal leader diagnostic. Any runtime/listener fault aborts status checks.
 
-The seven scenarios cover acknowledged data and retained identity after leader kill/full-group
+The thirteen cases cover acknowledged data and retained identity after leader kill/full-group
 restart, unknown outcome after commit-before-reply kill, minority unavailability/recovery,
 absolute expiry after failover, a healed peer partition, relative TTL/replay with close, and
-session expiry without allocator number reuse. The full-group stop is graceful; the
-single-member kills are abrupt. TTL movement is explicitly injected, not a measurement of wall-clock
+session expiry without allocator number reuse. Three cases kill a catching-up follower at snapshot
+publication barriers, inspect the selected snapshot offline, then restart it and verify all-member
+application and SDK replay/read results. The healthy majority keeps serving while publication is
+held. Before rejoining the stale follower, both healthy members compact and gracefully restart
+from their original stores to discard captured pre-compaction append payloads and require a snapshot.
+That setup restart is outside the majority-progress check. Another case abruptly kills all members
+after a committed CAS loses its reply and all members have applied it; original directories and
+bootstrap identities recover the retained result. Earlier
+full-group restart coverage uses graceful stop. Each new history accepts the observed recovery and
+rejects a substituted stale SDK read. Internal positions coordinate the test and are excluded from
+the history checker. TTL movement is explicitly injected, not a measurement of wall-clock
 accuracy. All members share one container, host and filesystem; these tests do not establish
 independent-host redundancy, power-loss survival, arbitrary packet loss/reordering or production NFRs.
+
+Two cases hold a CAS or conditional-delete reply while another session executes the opposing
+conditional operation and a third removes/recreates the entry with PutIfAbsent. SDK operation
+intervals overlap, although the first mutation has already committed at the pause. After explicit
+reply loss the SDK retries with distinct physical attempts and returns the original logical result.
+A subsequent leader kill preserves both that result and the competing conditional rejection;
+the recreated value remains. Each history rejects stale-read and changed-duplicate-result negative
+controls. Separate sessions retain their latest request; this does not promise retention of every
+earlier request. This directed pair covers both orders, not arbitrary concurrent schedules.
 
 Peers bind private loopback backend addresses `127.0.0.2`–`127.0.0.4`. The parent owns six directed
 TCP links on source-specific `127.0.0.10`–`127.0.0.12` addresses and configured destination ports.
