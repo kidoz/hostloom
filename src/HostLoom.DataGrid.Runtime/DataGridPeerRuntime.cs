@@ -135,9 +135,17 @@ internal sealed class DataGridPeerRuntime
             }
             finally
             {
-                _store.Dispose();
-                _queue.Dispose();
-                _stop.Dispose();
+                try
+                {
+                    // Ownership transfers even when validation fails before transport construction.
+                    listener.Stop();
+                }
+                finally
+                {
+                    _store.Dispose();
+                    _queue.Dispose();
+                    _stop.Dispose();
+                }
             }
             throw;
         }
