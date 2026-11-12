@@ -10,9 +10,9 @@ using HostLoom.DataGrid.Runtime;
 using HostLoom.DataGrid.Storage;
 using HostLoom.DataGrid.Transport;
 
-if (!OperatingSystem.IsLinux() || args.Length != 9)
+if (!OperatingSystem.IsLinux() || args.Length is not (9 or 10))
     throw new InvalidOperationException(
-        "Owned Linux process-test harness requires nine arguments."
+        "Owned Linux process-test harness requires nine arguments and an optional storage pause."
     );
 var directory = args[0];
 var member = int.Parse(args[1], CultureInfo.InvariantCulture);
@@ -48,6 +48,21 @@ var credentials = new DataGridPeerCredentials(
     SHA256.HashData("hostloom-process-probe-v1"u8)
 );
 var output = new ProbeOutput();
+DataGridStorageStep? pauseStep =
+    args.Length == 10
+        ? (DataGridStorageStep)int.Parse(args[9], CultureInfo.InvariantCulture)
+        : null;
+if (
+    pauseStep
+    is not null
+        and not (
+            DataGridStorageStep.SnapshotFlushed
+            or DataGridStorageStep.GenerationDirectoryFlushed
+            or DataGridStorageStep.AnchorDirectoryFlushed
+        )
+)
+    throw new InvalidOperationException("Unsupported storage pause.");
+var storagePaused = 0;
 var policy = new DataGridClientAccessPolicy(
     config,
     root,
@@ -75,13 +90,21 @@ while (await Console.In.ReadLineAsync(token) is { } line)
             var status = runtime.Status;
             output.Write(
                 FormattableString.Invariant(
-                    $"STATUS {(int)status.Role} {status.Term} {status.CommitIndex} {status.AppliedIndex} {(runtime.Failure is null && server.FatalError is null ? 0 : 1)}"
+                    $"STATUS {(int)status.Role} {status.Term} {status.CommitIndex} {status.AppliedIndex} {(runtime.Failure is null && server.FatalError is null ? 0 : 1)} {status.SnapshotIndex}"
                 )
             );
             break;
         case "pause":
             receiver.Arm();
             output.Write("ARMED");
+            break;
+        case "lose":
+            receiver.LoseReply();
+            output.Write("LOST");
+            break;
+        case "compact":
+            await runtime.CompactAsync(token);
+            output.Write("COMPACTED");
             break;
         case "stop":
             return;
@@ -101,7 +124,20 @@ while (await Console.In.ReadLineAsync(token) is { } line)
 )]
 DataGridPeerRuntime OpenRuntime()
 {
-    var store = DataGridFileStore.Open(Path.Combine(directory, $"node-{member}"), config, member);
+    var store = DataGridFileStore.Open(
+        Path.Combine(directory, $"node-{member}"),
+        config,
+        member,
+        observe: step =>
+        {
+            if (step != pauseStep || Interlocked.Exchange(ref storagePaused, 1) != 0)
+                return;
+            output.Write(FormattableString.Invariant($"STORAGEPAUSED {(int)step}"));
+            // Only the owning parent kills this process; the lifetime bounds orphaned probes.
+            token.WaitHandle.WaitOne();
+            token.ThrowIfCancellationRequested();
+        }
+    );
     try
     {
         return new(
@@ -151,8 +187,21 @@ internal sealed class PausingReceiver(DataGridPeerRuntime runtime, ProbeOutput o
     : IDataGridClientReceiver
 {
     private int _armed;
+    private TaskCompletionSource? _replyLoss;
 
-    internal void Arm() => Interlocked.Exchange(ref _armed, 1);
+    internal void Arm()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (Interlocked.CompareExchange(ref _replyLoss, gate, null) is not null)
+            throw new InvalidOperationException("A reply pause is already armed.");
+        Interlocked.Exchange(ref _armed, 1);
+    }
+
+    internal void LoseReply()
+    {
+        if (Volatile.Read(ref _replyLoss)?.TrySetResult() != true)
+            throw new InvalidOperationException("No pending reply to lose.");
+    }
 
     public async Task<DataGridClientReply> ExecuteAsync(
         Guid principal,
@@ -168,10 +217,17 @@ internal sealed class PausingReceiver(DataGridPeerRuntime runtime, ProbeOutput o
             && Interlocked.Exchange(ref _armed, 0) == 1
         )
         {
+            var gate = Volatile.Read(ref _replyLoss)!;
             output.Write("PAUSED"); // Durable actor completion happened; no result is sent to the client.
-            await new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
-                .Task.WaitAsync(cancellationToken)
-                .ConfigureAwait(false);
+            try
+            {
+                await gate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                throw new IOException("Injected owned-test reply loss.");
+            }
+            finally
+            {
+                Interlocked.CompareExchange(ref _replyLoss, null, gate);
+            }
         }
         return result;
     }

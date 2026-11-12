@@ -18,6 +18,303 @@ namespace HostLoom.Tests;
 
 public sealed class DataGridProcessTests
 {
+    [Theory(Timeout = 90000)]
+    [InlineData(DataGridMutationKind.CompareExchange)]
+    [InlineData(DataGridMutationKind.CompareRemove)]
+    public async Task OverlappingConditionalsAndRecreationPreserveRetainedResultsAcrossReplyLossAndFailover(
+        DataGridMutationKind firstKind
+    )
+    {
+        RequireFixture();
+        using var timeout = Deadline(TestContext.Current.CancellationToken);
+        await using var cluster = new ProcessCluster();
+        await cluster.StartAll(timeout.Token);
+        var leader = await cluster.Leader(timeout.Token);
+        await using var opener = cluster.Client(leader);
+        var firstSession = await Open(cluster, opener, timeout.Token);
+        var competingSession = await Open(cluster, opener, timeout.Token);
+        var maintenanceSession = await Open(cluster, opener, timeout.Token);
+        var history = new DataGridClientHistory();
+        await using var first = cluster.Client(leader, history);
+        await using var competing = cluster.Client(leader, history);
+        await using var maintenance = cluster.Client(leader, history);
+        await using var observer = cluster.Client(leader, history);
+        var initial = Stored(
+            await first.ExecuteAsync(
+                DataGridClientRequest.Mutate(DataGridClientCodecTests.Mutation(firstSession)),
+                timeout.Token
+            )
+        );
+        var baseline = await observer.ExecuteAsync(Read(), timeout.Token);
+        var request = DataGridClientRequest.Mutate(
+            DataGridClientCodecTests.Mutation(firstSession, 2, firstKind, initial, 8)
+        );
+        var otherRequest = DataGridClientRequest.Mutate(
+            DataGridClientCodecTests.Mutation(
+                competingSession,
+                1,
+                firstKind == DataGridMutationKind.CompareExchange
+                    ? DataGridMutationKind.CompareRemove
+                    : DataGridMutationKind.CompareExchange,
+                initial,
+                6
+            )
+        );
+        await cluster.Nodes[leader]!.Arm(timeout.Token);
+        var pending = first.ExecuteAsync(request, timeout.Token);
+        await cluster.Nodes[leader]!.Paused.WaitAsync(timeout.Token);
+        var rejected = await competing.ExecuteAsync(otherRequest, timeout.Token);
+        Assert.Null(rejected.Reply.Failure);
+        Assert.Equal(
+            firstKind == DataGridMutationKind.CompareExchange
+                ? DataGridMutationStatus.VersionMismatch
+                : DataGridMutationStatus.Missing,
+            rejected.Reply.Result!.GetItem(0).Status
+        );
+        var during = await observer.ExecuteAsync(Read(), timeout.Token);
+        Assert.Null(during.Reply.Failure);
+        if (firstKind == DataGridMutationKind.CompareRemove)
+            Assert.Null(during.Reply.Read!.GetItem(0));
+        else
+            Assert.Equal(new byte[] { 8 }, during.Reply.Read!.GetItem(0)!.GetValue());
+        var removed = await maintenance.ExecuteAsync(
+            DataGridClientRequest.Mutate(
+                DataGridClientCodecTests.Mutation(
+                    maintenanceSession,
+                    1,
+                    DataGridMutationKind.Remove
+                )
+            ),
+            timeout.Token
+        );
+        Assert.Null(removed.Reply.Failure);
+        Assert.Equal(
+            firstKind == DataGridMutationKind.CompareExchange
+                ? DataGridMutationStatus.Removed
+                : DataGridMutationStatus.Missing,
+            removed.Reply.Result!.GetItem(0).Status
+        );
+        var recreated = Stored(
+            await maintenance.ExecuteAsync(
+                DataGridClientRequest.Mutate(
+                    DataGridClientCodecTests.Mutation(
+                        maintenanceSession,
+                        2,
+                        DataGridMutationKind.PutIfAbsent,
+                        value: 9
+                    )
+                ),
+                timeout.Token
+            )
+        );
+        Assert.True(recreated.LogIndex > initial.LogIndex);
+        var beforeLoss = await observer.ExecuteAsync(Read(), timeout.Token);
+        Assert.Equal(recreated, beforeLoss.Reply.Read!.GetItem(0)!.Version);
+        Assert.False(pending.IsCompleted);
+        Assert.Equal("LOST", await cluster.Nodes[leader]!.Command("lose", timeout.Token));
+        var replayed = await pending;
+        Assert.Null(replayed.Reply.Failure);
+        Assert.True(replayed.MayHaveBeenAdmitted);
+        Assert.InRange(replayed.Attempts.Count, 2, 3);
+        Assert.True(replayed.Attempts[0].RequestSubmitted);
+        Assert.True(replayed.Attempts[^1].RequestSubmitted);
+        Assert.Equal(
+            replayed.Attempts.Count,
+            replayed.Attempts.Select(attempt => attempt.AttemptId).Distinct().Count()
+        );
+        if (firstKind == DataGridMutationKind.CompareExchange)
+            Assert.Equal(during.Reply.Read!.GetItem(0)!.Version, Stored(replayed));
+        else
+            Assert.Equal(DataGridMutationStatus.Removed, replayed.Reply.Result!.GetItem(0).Status);
+        var overlap = history
+            .GetOperations()
+            .Single(operation => ReferenceEquals(operation.Request, request));
+        var competingOperation = history
+            .GetOperations()
+            .Single(operation => ReferenceEquals(operation.Request, otherRequest));
+        Assert.True(overlap.InvocationOrder < competingOperation.InvocationOrder);
+        Assert.True(competingOperation.CompletionOrder < overlap.CompletionOrder);
+        await cluster.AppliedEverywhere(recreated.LogIndex, timeout.Token);
+        await cluster.Kill(leader);
+        var replacement = await cluster.Leader(timeout.Token);
+        await using var after = cluster.Client(replacement, history);
+        var retained = await after.ExecuteAsync(request, timeout.Token);
+        Assert.Null(retained.Reply.Failure);
+        Assert.Equal(replayed.Reply.Result!.GetItem(0), retained.Reply.Result!.GetItem(0));
+        var retainedRejection = await after.ExecuteAsync(otherRequest, timeout.Token);
+        Assert.Null(retainedRejection.Reply.Failure);
+        Assert.Equal(rejected.Reply.Result.GetItem(0), retainedRejection.Reply.Result!.GetItem(0));
+        var final = await after.ExecuteAsync(Read(), timeout.Token);
+        Assert.Equal(recreated, final.Reply.Read!.GetItem(0)!.Version);
+        Assert.Equal(new byte[] { 9 }, final.Reply.Read.GetItem(0)!.GetValue());
+        AssertHistoryRejectsStaleRead(history, baseline.Reply.Read!.GetItem(0)!);
+        var negative = history.GetOperations().ToArray();
+        var duplicateIndex = Array.FindLastIndex(
+            negative,
+            operation => ReferenceEquals(operation.Request, request)
+        );
+        var duplicate = negative[duplicateIndex].Outcome!;
+        negative[duplicateIndex] = negative[duplicateIndex] with
+        {
+            Outcome = new(
+                DataGridClientReply.Completed(
+                    DataGridMessageKind.MutationResult,
+                    new(
+                        DataGridApplyStatus.Completed,
+                        [
+                            firstKind == DataGridMutationKind.CompareExchange
+                                ? new(DataGridMutationStatus.Stored, recreated)
+                                : new(DataGridMutationStatus.Missing),
+                        ]
+                    )
+                ),
+                duplicate.MayHaveBeenAdmitted,
+                duplicate.Attempts
+            ),
+        };
+        Assert.Equal(
+            DataGridHistoryStatus.Invalid,
+            DataGridClientHistoryChecker.Check(negative).Status
+        );
+        await cluster.Start(leader, timeout.Token);
+        await cluster.AppliedEverywhere(recreated.LogIndex, timeout.Token);
+    }
+
+    [Theory(Timeout = 90000)]
+    [InlineData((int)DataGridStorageStep.SnapshotFlushed)]
+    [InlineData((int)DataGridStorageStep.GenerationDirectoryFlushed)]
+    [InlineData((int)DataGridStorageStep.AnchorDirectoryFlushed)]
+    public async Task FollowerKilledDuringSnapshotPublicationRejoinsWithoutLosingClientHistory(
+        int step
+    )
+    {
+        RequireFixture();
+        using var timeout = Deadline(TestContext.Current.CancellationToken);
+        await using var cluster = new ProcessCluster();
+        await cluster.StartAll(timeout.Token);
+        var leader = await cluster.Leader(timeout.Token);
+        await using var opener = cluster.Client(leader);
+        var session = await Open(cluster, opener, timeout.Token);
+        var history = new DataGridClientHistory();
+        await using var client = cluster.Client(leader, history);
+        var first = Stored(
+            await client.ExecuteAsync(
+                DataGridClientRequest.Mutate(DataGridClientCodecTests.Mutation(session)),
+                timeout.Token
+            )
+        );
+        await cluster.AppliedEverywhere(first.LogIndex, timeout.Token);
+        var baseline = await client.ExecuteAsync(Read(), timeout.Token);
+        var follower = (leader + 1) % 3;
+        await cluster.Kill(follower);
+        var previous = cluster.RecoveredRoot(follower);
+        var beforeSnapshot = Stored(
+            await client.ExecuteAsync(
+                DataGridClientRequest.Mutate(
+                    DataGridClientCodecTests.Mutation(session, 2, value: 8)
+                ),
+                timeout.Token
+            )
+        );
+        await cluster.AppliedEverywhere(beforeSnapshot.LogIndex, timeout.Token);
+        var other = (leader + 2) % 3;
+        Assert.Equal("COMPACTED", await cluster.Nodes[leader]!.Command("compact", timeout.Token));
+        Assert.Equal("COMPACTED", await cluster.Nodes[other]!.Command("compact", timeout.Token));
+        // Drop pre-compaction sender payloads: otherwise the follower may legitimately catch
+        // up from an already captured append instead of taking the snapshot under test.
+        await cluster.StopAll(timeout.Token);
+        await cluster.Start(leader, timeout.Token);
+        await cluster.Start(other, timeout.Token);
+        leader = await cluster.Leader(timeout.Token);
+        var snapshot = (await cluster.Nodes[leader]!.Status(timeout.Token)).Snapshot;
+        Assert.True(snapshot >= beforeSnapshot.LogIndex);
+        await cluster.Start(follower, timeout.Token, (DataGridStorageStep)step);
+        Assert.Equal(step, await cluster.Nodes[follower]!.StoragePaused.WaitAsync(timeout.Token));
+        // The other two members still form a quorum while publication is blocked.
+        var request = DataGridClientRequest.Mutate(
+            DataGridClientCodecTests.Mutation(session, 3, value: 9)
+        );
+        var latest = Stored(await client.ExecuteAsync(request, timeout.Token));
+        Assert.Equal(
+            latest,
+            (await client.ExecuteAsync(Read(), timeout.Token)).Reply.Read!.GetItem(0)!.Version
+        );
+        await cluster.Kill(follower);
+        var recovered = cluster.RecoveredRoot(follower);
+        if (step == (int)DataGridStorageStep.AnchorDirectoryFlushed)
+        {
+            Assert.Equal(snapshot, recovered.Snapshot);
+            Assert.NotEqual(previous.Generation, recovered.Generation);
+        }
+        else
+            Assert.Equal(previous, recovered);
+        await cluster.Start(follower, timeout.Token);
+        await cluster.AppliedEverywhere(latest.LogIndex, timeout.Token);
+        await using var rejoined = cluster.Client(follower, history);
+        Assert.Equal(latest, Stored(await rejoined.ExecuteAsync(request, timeout.Token)));
+        var observed = await rejoined.ExecuteAsync(Read(), timeout.Token);
+        Assert.Equal(latest, observed.Reply.Read!.GetItem(0)!.Version);
+        Assert.Equal(new byte[] { 9 }, observed.Reply.Read.GetItem(0)!.GetValue());
+        AssertHistoryRejectsStaleRead(history, baseline.Reply.Read!.GetItem(0)!);
+    }
+
+    [Fact(Timeout = 90000)]
+    public async Task AbruptWholeGroupKillPreservesUnknownCasAndRetainedIdentity()
+    {
+        RequireFixture();
+        using var timeout = Deadline(TestContext.Current.CancellationToken);
+        await using var cluster = new ProcessCluster();
+        await cluster.StartAll(timeout.Token);
+        var leader = await cluster.Leader(timeout.Token);
+        await using var opener = cluster.Client(leader);
+        var session = await Open(cluster, opener, timeout.Token);
+        var history = new DataGridClientHistory();
+        await using var client = cluster.Client(leader, history);
+        var first = Stored(
+            await client.ExecuteAsync(
+                DataGridClientRequest.Mutate(DataGridClientCodecTests.Mutation(session)),
+                timeout.Token
+            )
+        );
+        var baseline = await client.ExecuteAsync(Read(), timeout.Token);
+        var request = DataGridClientRequest.Mutate(
+            DataGridClientCodecTests.Mutation(
+                session,
+                2,
+                DataGridMutationKind.CompareExchange,
+                first,
+                9
+            )
+        );
+        await cluster.Nodes[leader]!.Arm(timeout.Token);
+        var pending = client.ExecuteAsync(request, timeout.Token);
+        await cluster.Nodes[leader]!.Paused.WaitAsync(timeout.Token);
+        client.Disable();
+        var unknown = await pending;
+        Assert.Equal(DataGridClientFailureCode.OutcomeUnknown, unknown.Reply.Failure!.Code);
+        Assert.True(unknown.MayHaveBeenAdmitted);
+        // Internal progress is coordination only; the checker receives SDK observations.
+        await cluster.AppliedEverywhere(
+            (await cluster.Nodes[leader]!.Status(timeout.Token)).Commit,
+            timeout.Token
+        );
+        await Task.WhenAll(Enumerable.Range(0, 3).Select(cluster.Kill));
+        await cluster.StartAll(timeout.Token);
+        var replacement = await cluster.Leader(timeout.Token);
+        await using var restarted = cluster.Client(replacement, history);
+        var observed = await restarted.ExecuteAsync(Read(), timeout.Token);
+        var latest = observed.Reply.Read!.GetItem(0)!.Version;
+        Assert.True(latest.LogIndex > first.LogIndex);
+        Assert.Equal(new byte[] { 9 }, observed.Reply.Read.GetItem(0)!.GetValue());
+        Assert.Equal(latest, Stored(await restarted.ExecuteAsync(request, timeout.Token)));
+        Assert.Equal(
+            latest,
+            (await restarted.ExecuteAsync(Read(), timeout.Token)).Reply.Read!.GetItem(0)!.Version
+        );
+        await cluster.AppliedEverywhere(latest.LogIndex, timeout.Token);
+        AssertHistoryRejectsStaleRead(history, baseline.Reply.Read!.GetItem(0)!);
+    }
+
     [Fact(Timeout = 90000)]
     public async Task AcknowledgedStateAndRetainedIdentitySurviveLeaderKillAndWholeGroupRestart()
     {
@@ -387,6 +684,33 @@ public sealed class DataGridProcessTests
         await cluster.AppliedEverywhere(newVersion.LogIndex, timeout.Token);
     }
 
+    private static void AssertHistoryRejectsStaleRead(
+        DataGridClientHistory history,
+        DataGridLocalEntry stale
+    )
+    {
+        Assert.Equal(
+            DataGridHistoryStatus.Valid,
+            DataGridClientHistoryChecker.Check(history.GetOperations()).Status
+        );
+        var negative = history.GetOperations().ToArray();
+        negative[^1] = negative[^1] with
+        {
+            Outcome = new(
+                DataGridClientReply.Completed(
+                    DataGridMessageKind.ReadResult,
+                    read: new(negative[^1].Outcome!.Reply.Read!.CapturedAt, [stale])
+                ),
+                true,
+                []
+            ),
+        };
+        Assert.Equal(
+            DataGridHistoryStatus.Invalid,
+            DataGridClientHistoryChecker.Check(negative).Status
+        );
+    }
+
     private static void RequireFixture() =>
         Assert.SkipUnless(
             OperatingSystem.IsLinux()
@@ -515,7 +839,11 @@ public sealed class DataGridProcessTests
                 await Start(i, token);
         }
 
-        internal async Task Start(int member, CancellationToken token)
+        internal async Task Start(
+            int member,
+            CancellationToken token,
+            DataGridStorageStep? pause = null
+        )
         {
             Assert.Null(Nodes[member]);
             var node = new ProcessNode(
@@ -524,7 +852,8 @@ public sealed class DataGridProcessTests
                 ++_epochs[member],
                 _config,
                 _ports[member],
-                Clock
+                Clock,
+                pause
             );
             try
             {
@@ -543,6 +872,17 @@ public sealed class DataGridProcessTests
             var node = Nodes[member]!;
             await node.DisposeAsync();
             Nodes[member] = null;
+        }
+
+        internal (Guid Generation, long Snapshot) RecoveredRoot(int member)
+        {
+            Assert.Null(Nodes[member]);
+            using var store = DataGridFileStore.Open(
+                Path.Combine(_directory, $"node-{member}"),
+                _config,
+                member
+            );
+            return (store.GenerationId, store.Image.SnapshotIndex);
         }
 
         internal async Task StopAll(CancellationToken token)
@@ -649,7 +989,7 @@ public sealed class DataGridProcessTests
         }
     }
 
-    private sealed record NodeStatus(RaftRole Role, long Commit, long Applied);
+    private sealed record NodeStatus(RaftRole Role, long Commit, long Applied, long Snapshot);
 
     private sealed class ProcessNode : IAsyncDisposable
     {
@@ -665,9 +1005,13 @@ public sealed class DataGridProcessTests
         private TaskCompletionSource _paused = new(
             TaskCreationOptions.RunContinuationsAsynchronously
         );
+        private readonly TaskCompletionSource<int> _storagePaused = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
         private bool _disposed;
         internal Task Ready => _ready.Task;
         internal Task Paused => _paused.Task;
+        internal Task<int> StoragePaused => _storagePaused.Task;
 
         internal ProcessNode(
             string directory,
@@ -675,7 +1019,8 @@ public sealed class DataGridProcessTests
             long epoch,
             DataGridBootstrapConfiguration config,
             int clientPort,
-            long clock
+            long clock,
+            DataGridStorageStep? pause
         )
         {
             var start = new ProcessStartInfo("dotnet")
@@ -703,6 +1048,8 @@ public sealed class DataGridProcessTests
                 }
             )
                 start.ArgumentList.Add(argument);
+            if (pause is { } step)
+                start.ArgumentList.Add(((int)step).ToString(CultureInfo.InvariantCulture));
             _process = Process.Start(start)!;
             _errors = _process.StandardError.ReadToEndAsync(_io.Token);
             _reader = Pump();
@@ -719,6 +1066,10 @@ public sealed class DataGridProcessTests
                         _ready.TrySetResult();
                     else if (line == "PAUSED")
                         _paused.TrySetResult();
+                    else if (line.StartsWith("STORAGEPAUSED ", StringComparison.Ordinal))
+                        _storagePaused.TrySetResult(
+                            int.Parse(line.AsSpan(14), CultureInfo.InvariantCulture)
+                        );
                     else if (!_replies.Writer.TryWrite(line))
                         throw new InvalidOperationException("Probe control response capacity.");
                 }
@@ -735,6 +1086,7 @@ public sealed class DataGridProcessTests
                 {
                     _ready.TrySetException(failure);
                     _paused.TrySetException(failure);
+                    _storagePaused.TrySetException(failure);
                 }
                 _replies.Writer.TryComplete(failure);
             }
@@ -769,7 +1121,8 @@ public sealed class DataGridProcessTests
             return new(
                 (RaftRole)int.Parse(parts[1], CultureInfo.InvariantCulture),
                 long.Parse(parts[3], CultureInfo.InvariantCulture),
-                long.Parse(parts[4], CultureInfo.InvariantCulture)
+                long.Parse(parts[4], CultureInfo.InvariantCulture),
+                long.Parse(parts[6], CultureInfo.InvariantCulture)
             );
         }
 
