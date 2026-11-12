@@ -118,6 +118,15 @@ cached observations during blocked work. Stop preserves final metadata and clear
 observations. A local-ready hint and an old read barrier do not verify a currently reachable quorum.
 Replica lag reflects historical validated acknowledgements, not fresh liveness or peer application.
 
+Internal leader/applied-position waits share a separate 64-waiter ceiling. Excess registration
+returns IOException to that caller while the actor continues. Cancellation covers both queued/
+executing registration and the subsequent wait, so canceled registrations cannot consume a live
+slot indefinitely. The next owner publication/registration removes completed entries; stop/fault
+completes outstanding waits and clears their references. These waits do not reserve the retained
+client-operation pool and do not establish quorum availability. Directed Linux checks freeze
+election delivery and verify saturation/reuse, cancellation during publication and stop/fault
+drain, including timer disposal and reopening the original directory.
+
 Publication-driven gauges use bounded member/peer ordinals 0–2 and map ordinals 0–15. Equal ordinals
 from multiple groups in one process collide; use per-runtime snapshots for unambiguous observations
 or isolate group export resources. No group GUID, arbitrary map name, value/key label, callback
