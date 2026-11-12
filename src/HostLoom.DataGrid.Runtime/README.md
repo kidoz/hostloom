@@ -6,6 +6,15 @@ with the TLS-bound principal supplying session ownership. There is no dependency
 or production support claim. Internal Propose/Read calls are local test entry points. Both three-actor and opt-in three-process Linux tests communicate over actual loopback TLS
 and retain separate owned directories. The process runner is test infrastructure.
 
+Construction takes ownership of the supplied store and listener, including when startup fails
+before transport creation. Rollback stops that listener and releases the directory; a separate
+listener causing a bind conflict stays owned by its caller. An explicitly supplied shared security
+context remains externally owned on failure and after normal shutdown. Linux regression cases
+cover member/configuration mismatches, invalid routes and an occupied port, then retry from the
+same selected generation, authenticate over peer TLS and restart after repeated safe disposal.
+These checks establish local ownership/retry behavior, not deployment readiness or a hard startup
+or shutdown-time guarantee.
+
 The runtime serializes all actor/application/storage access. It consumes persistence effects
 through the file store, acknowledges their exact tokens after flush/publication, then sends
 dependent replies. A write failure faults the actor and leaves admitted mutations uncertain.
