@@ -39,7 +39,10 @@ failures may retry. There is no alternate backend or local successful read fallb
 
 Inspect `DataGridClientOutcome.MayHaveBeenAdmitted`, which accumulates across attempts. A later
 pre-admission denial cannot erase an earlier uncertain submission. `Attempts` records every
-exchange's UUID, member and whether request writing began. Timeout/cancellation after possible
+exchange's UUID, member and whether request writing began. Each attempt also retains its validated
+wire `Reply`; null means no validated response was observed and is distinct from a synthesized
+caller failure. With a shared history recorder, `InvocationOrder`/`CompletionOrder` locate each
+attempt within its logical call. These are event counters, not timestamps or server commit times. Timeout/cancellation after possible
 write admission returns OutcomeUnknown; reads return unavailable. Entry cancellation throws
 before admission. Authentication/protocol failures are terminal and retain cumulative uncertainty.
 `Disable` stops further attempts; disposal joins the bounded active calls and is idempotent.
@@ -72,9 +75,16 @@ var result = DataGridClientHistoryChecker.Check(
 
 This mode checks nonce/deadline agreement and open windows, allocation high-water, principal
 ownership, sequence retirement/mismatch/gaps, close, session expiry and delayed reopen rejection.
-A semantic failure after multiple physical attempts remains inconclusive because the recorder
-does not expose all prior attempt outcomes. Quotas, map policies, invalid-item vectors, arbitrary
-initial snapshots and exhausted search also remain outside the model. Search includes item and
+For a semantic failure after multiple physical attempts, complete recorder evidence expands that
+call into separately ordered attempts using the same immutable logical request. A submitted attempt
+with no observed reply remains uncertain and may execute or be omitted; a confirmed pre-admission
+refusal has no map effect. The final semantic response is checked independently of earlier
+uncertainty. Missing/inconsistent orders, reused identities, a reply before submission or an
+impossible retry after success remain Inconclusive. Older histories without attempt evidence
+retain that result. Expanded attempts count toward the same 32-operation/two-MiB search bounds;
+the witness identifies their attempt UUIDs alongside unexpanded operation UUIDs. No attempt count,
+search deadline or recorder limit is raised. Quotas, map policies, invalid-item vectors, arbitrary
+initial snapshots and exhausted search remain outside the model. Search includes item and
 time-constraint branches, with at most 65 time variables for 32 operations. Passing a bounded
 history does not establish the actual fate of an uncertain call or prove consensus correctness.
 
@@ -90,8 +100,13 @@ remove and recreate the entry while the first committed reply is held. Dropping 
 exercises automatic SDK retries; original successful/rejected results survive subsequent leader
 failover, and stale reads or changed duplicate results are rejected as negative controls. These
 cases use separate sequential sessions and keep only their latest request identities live.
-Remaining work includes broader partition/fault schedules,
-multi-attempt semantic failure histories, coordinated rolling rotation, full resource/telemetry
+Additional Linux actor/TLS histories hold all competing requests at the receiver before actor
+admission, then release CAS/conditional-delete races and read/Put/PutIfAbsent races across
+removal/recreation. They check retained results and reject stale reads/changed duplicates. Two
+lost-reply cases exercise automatic retries ending in SessionExpired or RequestIdentityMismatch,
+using observed attempt evidence and rejecting altered identity/failure controls. These are directed
+local schedules, not exhaustive concurrency or independent-host qualification.
+Remaining work includes broader partition/fault schedules, coordinated rolling rotation, full resource/telemetry
 qualification, supported filesystem/device and shutdown evidence, workload targets, and any
 claimed Native AOT path.
 
