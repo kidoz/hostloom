@@ -19,6 +19,9 @@ internal enum DataGridStorageStep
     AnchorFlushed,
     AnchorRenamed,
     AnchorDirectoryFlushed,
+    ObsoleteFileDeleted,
+    ObsoleteDirectoryFlushed,
+    CollectionRootFlushed,
 }
 
 internal sealed record DataGridStorageLimits(
@@ -277,6 +280,69 @@ internal sealed partial class DataGridFileStore : IDisposable
         EnsureUsable();
         cancellationToken.ThrowIfCancellationRequested();
         Publish(_image, cancellationToken);
+    }
+
+    /// <summary>Deletes at most one bounded batch after validating the exclusively owned selected generation.</summary>
+    internal int CollectObsoleteFiles(CancellationToken cancellationToken = default)
+    {
+        EnsureUsable();
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            var anchor = DataGridCurrentAnchor.ReadFrom(
+                ReadBounded("CURRENT", DataGridCurrentAnchor.EncodedByteCount)
+            );
+            if (
+                anchor.IncarnationId != _configuration.IncarnationId
+                || anchor.MemberId != _member
+                || anchor.GenerationId != GenerationId
+            )
+                throw new InvalidDataException("Selected generation changed outside its owner.");
+            Inventory(validateIdentities: true);
+            var keepWal = GenerationName(GenerationId);
+            var keepSnapshot = _image.Snapshot is { } snapshot
+                ? SnapshotName(snapshot.Descriptor.SnapshotId)
+                : null;
+            var deleted = 0;
+            foreach (var path in Directory.EnumerateFileSystemEntries(_directory))
+            {
+                var name = Path.GetFileName(path);
+                if (name is "CURRENT" or "LOCK" || name == keepWal || name == keepSnapshot)
+                    continue;
+                if (
+                    !ParseName(name, "pending-", ".tmp", out _)
+                    && !ParseName(name, "generation-", ".wal", out _)
+                    && !ParseName(name, "snapshot-", ".bin", out _)
+                )
+                    throw new InvalidDataException("Foreign file in owned storage directory.");
+                cancellationToken.ThrowIfCancellationRequested();
+                CheckPath(path);
+                if (deleted == 0)
+                {
+                    // Recovery can select a visible CURRENT rename interrupted before its directory flush.
+                    // Seal that selection and its recovered WAL before any older root can be removed.
+                    _wal!.Flush(flushToDisk: true);
+                    FlushDirectory();
+                    Reached(DataGridStorageStep.CollectionRootFlushed, cancellationToken);
+                }
+                File.Delete(path);
+                deleted++;
+                Reached(DataGridStorageStep.ObsoleteFileDeleted, cancellationToken);
+                if (deleted == 32)
+                    break;
+            }
+            if (deleted > 0)
+            {
+                FlushDirectory();
+                Reached(DataGridStorageStep.ObsoleteDirectoryFlushed, cancellationToken);
+            }
+            return deleted;
+        }
+        catch
+        {
+            IsFaulted = true;
+            throw;
+        }
     }
 
     private void Publish(RaftDurableImage target, CancellationToken cancellationToken)
