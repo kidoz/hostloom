@@ -593,7 +593,7 @@ public sealed class DataGridCredentialTlsTests
         }
     }
 
-    private sealed class Lab : IAsyncDisposable
+    internal sealed class Lab : IAsyncDisposable
     {
         internal DataGridPeerFixture Peer { get; } = new();
         internal X509Certificate2 Certificate { get; }
@@ -622,20 +622,16 @@ public sealed class DataGridCredentialTlsTests
                 .Range(0, 3)
                 .Select(_ => new TcpListener(IPAddress.Loopback, 0))
                 .ToArray();
-            Servers = Enumerable
-                .Range(0, 3)
-                .Select(i => new DataGridClientServer(
-                    Security[i],
-                    listeners[i],
-                    new Receiver(this, i)
-                ))
-                .ToArray();
+            Servers = Enumerable.Range(0, 3).Select(i => CreateServer(i, listeners[i])).ToArray();
             foreach (var server in Servers)
                 server.Start();
             Ports = listeners
                 .Select(listener => ((IPEndPoint)listener.LocalEndpoint).Port)
                 .ToArray();
         }
+
+        internal DataGridClientServer CreateServer(int member, TcpListener listener) =>
+            new(Security[member], listener, new Receiver(this, member));
 
         internal DataGridClientAccessPolicy Policy(
             bool denied = false,
