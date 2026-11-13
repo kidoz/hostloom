@@ -31,8 +31,15 @@ and flush the directory; write/flush a temporary CURRENT, atomically replace CUR
 the directory again. Only then does the owner switch WALs and complete the effect. Local term/vote
 and a matching uncommitted suffix survive publication. Known application prefixes are checked
 against the proposed snapshot. Old generations/images and incomplete temporaries remain charged
-to the directory budget. This slice has no automatic garbage collector; eventual capacity
-requires a separately designed owned-file cleanup workflow.
+to the directory budget until collected. Internal CollectObsoleteFiles validates the current
+anchor/ownership and the bounded inventory, then removes at most 32 known obsolete files per
+call. It keeps CURRENT, LOCK, the selected WAL and its referenced snapshot. Before the first
+deletion it flushes the recovered WAL and directory, sealing a CURRENT selection recovered
+after an interrupted rename; it flushes the directory again after deletion. No active publication
+runs concurrently on this serialized owner. Unknown files, changed roots or I/O failures fence
+the collector; there is no fallback, truncation or silent repair. Runtime startup, periodic
+maintenance and compaction preparation drive collection. A full batch defers compaction to a
+later turn. Inventories already outside the startup limits still require explicit recovery.
 
 The prototype permits Linux/macOS x64 and arm64. Directory handles use native `open` with
 directory/no-follow/close-on-exec flags, and `RandomAccess.FlushToDisk` supplies directory flushing.
@@ -46,7 +53,9 @@ its architecture-specific directory-open flags, distinct from x64.
 Limits are 1 GiB per WAL, 4 GiB total owned file bytes, 1 GiB reserved free space and 4096 files.
 Publication reserves new files while retaining all old files' charge. Tests can lower limits or
 raise the free-space reserve. The internal Raft prototype still restricts retained logs to
-4096 entries/16 MiB and snapshots to 8 MiB; recovery also caps a generation at one million records.
+4096 entries/16 MiB and snapshots to the shared 512-MiB format ceiling; recovery also caps a
+generation at one million records. Current group quotas bound encoded state below that ceiling;
+larger allocations/transfers are not a measured production resource guarantee.
 These are bounded prototype settings. They do not establish production memory, disk or recovery
 time acceptance. RollGeneration can reset physical record inventory without resetting logical
 positions; it requires space for the old and new generation together.

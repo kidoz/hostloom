@@ -22,6 +22,38 @@ Only a current-term quorum commit can complete an operation. Reads append fresh 
 barriers. Batch reads capture the ordered vector and grid time before the actor advances to the
 next committed command; oversized responses fail with capacity instead of faulting the actor. A Ready diagnostic alone is not evidence that a quorum is currently reachable.
 
+## Automatic maintenance
+
+The owner checks compaction after each serialized action, at 1024 retained entries or 4 MiB of
+encoded commands. Compaction captures only the committed prefix and preserves the uncommitted
+suffix and local term/vote. Client admission reserves 128 entries and one maximum encoded
+command below the hard 4096-entry/16-MiB log bounds. This permits bounded maintenance while
+client admission is full; it does not guarantee progress without a majority.
+
+At most once per second of monotonic owner time, the leader proposes two existing v1 commands:
+time advancement, retiring at most 128 due sessions, and reclamation, inspecting at most 128
+entries in the next map. The replicated map/cursor selection rotates across configured maps.
+Normal Raft timer deliveries provide idle owner turns. Expired values remain charged until
+reclaimed; live entries are never evicted. No session renewal or physical TTL accuracy is added.
+
+Startup, periodic maintenance and compaction preparation collect batches of at most 32 obsolete
+owned files through the store. A full batch defers compaction with Busy so cleanup can continue
+on later turns. Publication leaves older files charged until a later collection. Each automatic
+owner pass runs at most one collection batch; no separate task chain or cleanup queue is added.
+Internal CompactAsync reports Published, Unchanged, Busy or TooLarge rather than silently
+claiming publication; stopped/faulted owners fail the call. An oversized automatic image or storage failure stops the owner;
+already admitted operations retain their uncertainty. File flush/deletion can block in the OS,
+so the existing disposal wait does not become a hard cleanup deadline.
+
+Snapshots share the existing 512-MiB v1 format ceiling across consensus, storage and transport.
+The configured group quotas imply a conservative maximum encoded state of 291016890 bytes,
+including map metadata/cursors, entries and all retained result vectors. This resolves the
+former 8-MiB snapshot mismatch; it is not a measured heap, supported-capacity or latency claim.
+Members must use matching builds. Do not mix these prototype limits with older 8-MiB members;
+deployment, downgrade and production resource qualification remain separate work.
+
+## Admission and lifecycle
+
 Separate control/client queues reserve 256/128 items and 16 MiB each. Control receives at most
 eight consecutive turns before an available local client gets a turn. Up to 128 local operations,
 256 active timers and 64 diagnostic waiters are admitted. There is one sender worker and one

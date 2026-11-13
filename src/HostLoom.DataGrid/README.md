@@ -110,8 +110,13 @@ logical identity for retry; connection loss does not create a new session or req
 Compaction retains uncommitted suffixes and local term/vote. Snapshot catch-up validates an owned
 application image, retains a matching suffix and preserves the receiver's hard state. The model transfer
 uses one typed in-memory image; the separate live peer layer uses bounded chunks. Fixture limits
-are 4096 log entries/16 MiB log bytes and 8 MiB snapshot bytes. They bound experiments and do not
-replace the larger storage-format limits or decided production resource budgets. The separate
+are 4096 log entries/16 MiB encoded log bytes and the shared 512-MiB v1 snapshot ceiling.
+Client admission reserves 128 entries and one maximum encoded command for internal work.
+Configured state has a conservative encoded upper bound of 291016890 bytes, including metadata
+and retained results. These bounds do not establish supported heap usage or production capacity.
+The runtime schedules replicated cleanup and proactive compaction; a standalone model driver
+must explicitly drive those effects. Compaction preparation distinguishes busy, unchanged and
+oversized requests. The separate
 [storage layer](../HostLoom.DataGrid.Storage/README.md) now implements WAL/publication effects
 with local-file and killed-process tests. Separate [TLS peers](../HostLoom.DataGrid.Transport/README.md)
 and an [actor runtime](../HostLoom.DataGrid.Runtime/README.md) now integrate the effects in Linux

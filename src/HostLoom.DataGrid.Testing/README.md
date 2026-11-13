@@ -52,5 +52,8 @@ network client or an independent proof of the Raft algorithm.
 Raft fixtures bound live events to 4096/32 MiB packet bytes, request history to 8192, committed
 and election histories to 65536 positions/terms, and retained request+command bytes to 64 MiB.
 The trace retains 8192 records/4 MiB ASCII characters and marks gaps. Raft log/image limits are
-4096 entries/16 MiB and 8 MiB. Capacity exhaustion fails the experiment. These limits and atomic
+4096 entries/16 MiB and the shared 512-MiB snapshot envelope. Client admission reserves 128
+entries and one maximum encoded command below the hard log limits. The simulation driver still
+drives maintenance explicitly; the separate runtime schedules it automatically. Capacity
+exhaustion fails the experiment. These limits and atomic
 memory writes are explicit model assumptions; no actual WAL, snapshot chunks, TLS or fsync runs.

@@ -30,7 +30,8 @@ four-byte length before allocating the bounded frame. Client/admin/read-barrier 
 implemented by this peer listener. Reads in the runtime use committed log barriers.
 
 Snapshots use Start, sequential chunks of at most 64 KiB, and correlated progress replies.
-One transfer per receiver reserves at most the current 8 MiB prototype image limit for 60 seconds.
+One transfer per receiver reserves at most the shared 512-MiB v1 image ceiling for 60 seconds.
+This is an allocation/format bound, not a measured supported transfer size or recovery-time claim.
 Duplicate chunks compare already received bytes; gaps, changed retries, foreign IDs and overflow
 reject. Authenticated progress observes/persists the leader term and refreshes its election timer
 before installation. Complete length/hash/application validation precedes actor dispatch.
