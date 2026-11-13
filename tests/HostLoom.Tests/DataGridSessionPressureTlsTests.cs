@@ -141,8 +141,9 @@ public sealed class DataGridSessionPressureTlsTests
         var leader = await lab.Cluster.Leader(token);
         var clients = Enumerable.Range(0, 65).Select(i => lab.Client(i, leader)).ToArray();
         var sessions = new HashSet<long>();
-        long first = 0,
-            closed = 0;
+        long closed = 0;
+        DataGridClientRequest? request = null;
+        DataGridMutationResult original = default;
         for (var round = 0; round < 64; round++)
         {
             for (var principal = 0; principal < 64; principal++)
@@ -150,29 +151,36 @@ public sealed class DataGridSessionPressureTlsTests
                 var session = await lab.Open(clients[principal], token);
                 Assert.True(sessions.Add(session));
                 if (round == 0 && principal == 0)
-                    first = session;
+                {
+                    request = Mutation(session);
+                    original = Item(await lab.Send(clients[principal], request, token));
+                }
                 if (round == 1 && principal == 0)
                     closed = session;
             }
             if ((round + 1) % 8 == 0)
             {
-                await lab.Compact(token);
                 TestContext.Current.TestOutputHelper!.WriteLine(
                     FormattableString.Invariant(
-                        $"Opened and compacted {sessions.Count} authenticated sessions."
+                        $"Opened {sessions.Count} sessions with automatic maintenance."
                     )
                 );
             }
         }
         Assert.Equal(4096, sessions.Count);
         Assert.Equal(4096, sessions.Max());
+        Assert.NotNull(request);
+        await lab.WaitFor(
+            () => lab.Cluster.Nodes.All(node => node!.Status.SnapshotIndex >= 3072),
+            token
+        );
+        Assert.All(lab.Cluster.Nodes, node => Assert.True(node!.Status.AppliedIndex > 4096));
         // Principal 65 has no sessions: this distinguishes the group ceiling from a principal ceiling.
         Failure(
             await lab.Send(clients[64], lab.OpenRequest(), token),
             DataGridClientFailureCode.CapacityExceeded
         );
-        var request = Mutation(first);
-        var original = Item(await lab.Send(clients[0], request, token));
+        Assert.Equal(original, Item(await lab.Send(clients[0], request, token)));
         Assert.Equal(DataGridMutationStatus.Stored, original.Status);
         await lab.AssertRead(clients[64], original.Version, 7, token);
         Assert.Equal(
@@ -185,7 +193,11 @@ public sealed class DataGridSessionPressureTlsTests
             await lab.Send(clients[64], lab.OpenRequest(), token),
             DataGridClientFailureCode.CapacityExceeded
         );
-        await lab.Compact(token);
+        await lab.AppliedEverywhere(lab.Cluster.Nodes[leader]!.Status.AppliedIndex, token);
+        await lab.WaitFor(
+            () => lab.Cluster.Paths.All(path => Directory.GetFiles(path).Length <= 4),
+            token
+        );
         await lab.StopAll();
         lab.AssertRecoveredSessions(4096);
         lab.Cluster.StartAll();
@@ -237,7 +249,7 @@ public sealed class DataGridSessionPressureTlsTests
         Assert.Contains(outcome.Attempts, attempt => attempt.RequestSubmitted);
     }
 
-    private sealed class LogicalClock : TimeProvider
+    internal sealed class LogicalClock : TimeProvider
     {
         private long _ticks = DateTimeOffset.UtcNow.Ticks;
 
@@ -247,7 +259,7 @@ public sealed class DataGridSessionPressureTlsTests
         internal void Advance(TimeSpan delta) => Interlocked.Add(ref _ticks, delta.Ticks);
     }
 
-    private sealed class Lab : IAsyncDisposable
+    internal sealed class Lab : IAsyncDisposable
     {
         // Pace real connections below the listener's eight starts/s without changing any production limit.
         private readonly PeriodicTimer _pacing = new(TimeSpan.FromMilliseconds(150));
@@ -258,12 +270,13 @@ public sealed class DataGridSessionPressureTlsTests
         private readonly DataGridClientServer[] _servers;
         private readonly int[] _ports;
 
-        internal DataGridPeerFixture Peer { get; } = new();
+        internal DataGridPeerFixture Peer { get; }
         internal LogicalClock Clock { get; } = new();
         internal DataGridPeerTlsTests.LiveCluster Cluster { get; }
 
-        internal Lab(int principalCount)
+        internal Lab(int principalCount, int mapKeys = 1000, long mapBytes = 1048576)
         {
+            Peer = new(mapKeys, mapBytes);
             _certificates = Enumerable
                 .Range(0, principalCount)
                 .Select(i =>
@@ -408,6 +421,20 @@ public sealed class DataGridSessionPressureTlsTests
         {
             for (var i = 0; i < 3; i++)
                 await Cluster.Stop(i);
+        }
+
+        internal async Task WaitFor(Func<bool> condition, CancellationToken token)
+        {
+            using var poll = new PeriodicTimer(TimeSpan.FromMilliseconds(25));
+            while (!condition())
+            {
+                Assert.All(_servers, server => Assert.Null(server.FatalError));
+                Assert.All(
+                    Cluster.Nodes.Where(node => node is not null),
+                    node => Assert.Null(node!.Failure)
+                );
+                Assert.True(await poll.WaitForNextTickAsync(token));
+            }
         }
 
         internal void AssertRecoveredSessions(int count)

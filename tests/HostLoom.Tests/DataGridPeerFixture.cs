@@ -16,7 +16,7 @@ internal sealed class DataGridPeerFixture : IDisposable
     internal static readonly Guid Nonce = new("40112233-4455-6677-8899-aabbccddeeff");
     internal static readonly DataGridKey Key = DataGridKey.FromUtf8("catalog:eu");
 
-    internal DataGridPeerFixture()
+    internal DataGridPeerFixture(int mapKeys = 1000, long mapBytes = 1048576)
     {
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var request = new CertificateRequest(
@@ -62,8 +62,8 @@ internal sealed class DataGridPeerFixture : IDisposable
                     DataGridMapOwnership.Derived,
                     "catalog-service",
                     "catalog-loader",
-                    1000,
-                    1048576,
+                    mapKeys,
+                    mapBytes,
                     new(1, 1, 2, 1, 1)
                 ),
             ]

@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using HostLoom.DataGrid;
+using HostLoom.DataGrid.Consensus;
 using HostLoom.DataGrid.ProcessProbe;
 using HostLoom.DataGrid.Runtime;
 using HostLoom.DataGrid.Storage;
@@ -103,8 +104,12 @@ while (await Console.In.ReadLineAsync(token) is { } line)
             output.Write("LOST");
             break;
         case "compact":
-            await runtime.CompactAsync(token);
-            output.Write("COMPACTED");
+            var compacted = await runtime.CompactAsync(token);
+            output.Write(
+                compacted is RaftCompactionStatus.Published or RaftCompactionStatus.Unchanged
+                    ? "COMPACTED"
+                    : "COMPACTION_REFUSED " + compacted
+            );
             break;
         case "stop":
             return;
