@@ -43,6 +43,7 @@ internal sealed class DataGridPeerRuntime
     )]
     private readonly DataGridPeerTransport _transport;
     private readonly TimeProvider _time;
+    private long _lastMaintenance;
 
     [SuppressMessage(
         "Usage",
@@ -97,6 +98,7 @@ internal sealed class DataGridPeerRuntime
         _configuration = credentials.Configuration;
         _memberOrdinal = credentials.LocalMember;
         _time = timeProvider ?? TimeProvider.System;
+        _lastMaintenance = _time.GetTimestamp();
         DataGridPeerTransport? transport = null;
         try
         {
@@ -450,16 +452,43 @@ internal sealed class DataGridPeerRuntime
         );
     }
 
-    internal Task CompactAsync(CancellationToken token) =>
-        Invoke(
-            () =>
-            {
-                Apply(_node.Compact(Guid.NewGuid()));
-                return true;
-            },
-            128,
-            token
-        );
+    internal Task<RaftCompactionStatus> CompactAsync(CancellationToken token) =>
+        Invoke(CompactOwned, 128, token);
+
+    private RaftCompactionStatus CompactOwned()
+    {
+        if (_store.CollectObsoleteFiles(_stop.Token) == 32)
+            return RaftCompactionStatus.Busy;
+        var compaction = _node.PrepareCompaction(Guid.NewGuid());
+        Apply(compaction.Effects);
+        if (_node.Role == RaftRole.Faulted)
+            throw new IOException("Snapshot publication failed.", Failure);
+        if (compaction.Status != RaftCompactionStatus.Prepared)
+            return compaction.Status;
+        return RaftCompactionStatus.Published;
+    }
+
+    private void MaintainOwned()
+    {
+        if (_node.Role == RaftRole.Faulted || _stop.IsCancellationRequested)
+            return;
+        var compactDue =
+            _node.Durable.Entries.Count >= RaftDurableImage.CompactEntryThreshold
+            || _node.Durable.Entries.Sum(entry => (long)entry.ByteCount)
+                >= RaftDurableImage.CompactByteThreshold;
+        if (compactDue)
+        {
+            if (CompactOwned() == RaftCompactionStatus.TooLarge)
+                throw new IOException("Configured state exceeds snapshot capacity.");
+        }
+        var now = _time.GetTimestamp();
+        if (_time.GetElapsedTime(_lastMaintenance, now) < TimeSpan.FromSeconds(1))
+            return;
+        _lastMaintenance = now;
+        if (!compactDue)
+            _store.CollectObsoleteFiles(_stop.Token);
+        Apply(_node.Maintain(Now()));
+    }
 
     internal Task WaitForLeaderAsync(CancellationToken token) => Watch(0, leader: true, token);
 
@@ -647,12 +676,14 @@ internal sealed class DataGridPeerRuntime
     {
         try
         {
+            _store.CollectObsoleteFiles(_stop.Token);
             Apply(_node.Start());
             Publish();
             while (!_stop.IsCancellationRequested)
             {
                 var work = await _queue.ReadAsync(_stop.Token).ConfigureAwait(false);
                 work.Action();
+                MaintainOwned();
                 Publish();
                 if (_node.Role == RaftRole.Faulted)
                     throw new IOException("Raft owner faulted.");

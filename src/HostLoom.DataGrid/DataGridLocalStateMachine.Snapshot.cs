@@ -19,6 +19,14 @@ public sealed class DataGridLocalSnapshot
 
 public sealed partial class DataGridLocalStateMachine
 {
+    // V1 field widths: fixed envelopes/sections, map names/cursors, entries and retained vectors.
+    internal const long MaximumEncodedSnapshotBytes =
+        154
+        + 16L * (16 + 2 + 128 + 2 + DataGridKey.MaxByteCount)
+        + DataGridMapConfiguration.GroupMaxDataByteCount
+        + 59L * DataGridMapConfiguration.GroupMaxKeyCount
+        + MaxSessionCount * (100L + 31L * DataGridMutationCommand.MaxItemCount);
+
     /// <summary>Captures local application state only. The supplied term is not an election vote.</summary>
     public DataGridLocalSnapshot SaveSnapshot(Guid snapshotId, long includedTerm)
     {

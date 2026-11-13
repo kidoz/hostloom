@@ -42,6 +42,21 @@ internal enum RaftCompletionKind
 
 internal readonly record struct RaftToken(long Epoch, long Sequence);
 
+internal enum RaftCompactionStatus
+{
+    Unavailable,
+    Busy,
+    Unchanged,
+    TooLarge,
+    Prepared,
+    Published,
+}
+
+internal sealed record RaftCompactionResult(
+    RaftCompactionStatus Status,
+    IReadOnlyList<RaftEffect> Effects
+);
+
 internal sealed class RaftEntry
 {
     private readonly byte[] _command;
@@ -73,7 +88,12 @@ internal sealed class RaftDurableImage
 {
     internal const int MaxEntries = 4096;
     internal const int MaxLogBytes = 16 * 1024 * 1024;
-    internal const int MaxImageBytes = 8 * 1024 * 1024;
+    internal const int MaxImageBytes = (int)DataGridSnapshotDescriptor.MaxSnapshotByteCount;
+    internal const int ClientEntryLimit = MaxEntries - 128;
+    internal const int ClientLogByteLimit =
+        MaxLogBytes - DataGridCommittedCommandCodec.MaxEncodedByteCount;
+    internal const int CompactEntryThreshold = 1024;
+    internal const int CompactByteThreshold = 4 * 1024 * 1024;
 
     internal RaftDurableImage(
         DataGridBootstrapConfiguration configuration,

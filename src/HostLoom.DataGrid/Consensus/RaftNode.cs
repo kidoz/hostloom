@@ -229,13 +229,38 @@ internal sealed class RaftNode
         });
 
     internal IReadOnlyList<RaftEffect> Compact(Guid snapshotId) =>
-        Run(() =>
+        PrepareCompaction(snapshotId).Effects;
+
+    internal RaftCompactionResult PrepareCompaction(
+        Guid snapshotId,
+        int maxImageBytes = RaftDurableImage.MaxImageBytes
+    )
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxImageBytes);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(
+            maxImageBytes,
+            RaftDurableImage.MaxImageBytes
+        );
+        var status = RaftCompactionStatus.Unavailable;
+        var effects = Run(() =>
         {
-            if (IsBusy || _durable.CommitIndex == _durable.SnapshotIndex)
+            if (IsBusy)
+            {
+                status = RaftCompactionStatus.Busy;
                 return;
+            }
+            if (_durable.CommitIndex == _durable.SnapshotIndex)
+            {
+                status = RaftCompactionStatus.Unchanged;
+                return;
+            }
             var image = _machine.SaveSnapshot(snapshotId, _durable.TermAt(_durable.CommitIndex));
-            if (image.Descriptor.ByteCount > RaftDurableImage.MaxImageBytes)
+            if (image.Descriptor.ByteCount > maxImageBytes)
+            {
+                status = RaftCompactionStatus.TooLarge;
                 return;
+            }
+            status = RaftCompactionStatus.Prepared;
             Persist(
                 new(
                     _configuration,
@@ -249,6 +274,55 @@ internal sealed class RaftNode
                 {
                     if (Role == RaftRole.Leader)
                         Replicate();
+                }
+            );
+        });
+        return new(status, effects);
+    }
+
+    internal IReadOnlyList<RaftEffect> Maintain(DataGridTimestamp time) =>
+        Run(() =>
+        {
+            if (
+                Role != RaftRole.Leader
+                || IsBusy
+                || _durable.LastIndex > long.MaxValue - 2
+                || _durable.LastIndex - _durable.CommitIndex > 126
+                || _durable.Entries.Count > RaftDurableImage.MaxEntries - 2
+            )
+                return;
+            var advance = DataGridCommittedCommandCodec.Encode(
+                DataGridCommittedCommand.AdvanceTime(time)
+            );
+            var reclaim = DataGridCommittedCommandCodec.Encode(
+                DataGridCommittedCommand.Reclaim(_machine.NextMaintenanceMapId, time)
+            );
+            if (
+                _durable.Entries.Sum(entry => (long)entry.ByteCount)
+                    + advance.Length
+                    + reclaim.Length
+                > RaftDurableImage.MaxLogBytes
+            )
+                return;
+            var entries = new[]
+            {
+                new RaftEntry(_durable.LastIndex + 1, CurrentTerm, advance),
+                new RaftEntry(_durable.LastIndex + 2, CurrentTerm, reclaim),
+            };
+            Persist(
+                new(
+                    _configuration,
+                    CurrentTerm,
+                    _durable.Vote,
+                    _durable.Entries.Concat(entries),
+                    _durable.CommitIndex,
+                    _durable.Snapshot
+                ),
+                () =>
+                {
+                    _matched[_id] = _durable.LastIndex;
+                    Replicate();
+                    TryCommit();
                 }
             );
         });
@@ -311,9 +385,9 @@ internal sealed class RaftNode
             || _clients.Count >= 128
             || _durable.LastIndex == long.MaxValue
             || _durable.LastIndex - _durable.CommitIndex >= 128
-            || _durable.Entries.Count >= RaftDurableImage.MaxEntries
+            || _durable.Entries.Count >= RaftDurableImage.ClientEntryLimit
             || _durable.Entries.Sum(entry => (long)entry.ByteCount) + bytes.Length
-                > RaftDurableImage.MaxLogBytes
+                > RaftDurableImage.ClientLogByteLimit
         )
         {
             _effects.Add(new RaftCompletion(requestId, RaftCompletionKind.Busy));
