@@ -144,11 +144,20 @@ public sealed class DataGridClient : IAsyncDisposable
         var submitted = false;
         var recorded = true;
         var replyValidated = false;
+        DataGridClientReply? observedReply = null;
+        long? attemptStarted = null;
         void RecordAttempt()
         {
             if (!recorded)
             {
-                attempts.Add(new(currentAttempt, currentMember, submitted));
+                attempts.Add(
+                    new(currentAttempt, currentMember, submitted)
+                    {
+                        Reply = observedReply,
+                        InvocationOrder = attemptStarted,
+                        CompletionOrder = _history?.AttemptEvent(),
+                    }
+                );
                 DataGridClientDiagnostics.Attempt(
                     DataGridClientDiagnostics.Operation(request.Kind),
                     submitted
@@ -208,6 +217,8 @@ public sealed class DataGridClient : IAsyncDisposable
                 submitted = false;
                 recorded = false;
                 replyValidated = false;
+                observedReply = null;
+                attemptStarted = _history?.AttemptEvent();
                 try
                 {
                     await WaitForReconnect(token).ConfigureAwait(false);
@@ -305,6 +316,7 @@ public sealed class DataGridClient : IAsyncDisposable
                         options.Configuration
                     );
                     replyValidated = true;
+                    observedReply = reply;
                     if (reply.Failure is not { } failure)
                     {
                         mayHaveBeenAdmitted = true;

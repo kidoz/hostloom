@@ -4,7 +4,15 @@ using System.Runtime.CompilerServices;
 
 namespace HostLoom.DataGrid.Client;
 
-public sealed record DataGridClientAttempt(Guid AttemptId, Guid MemberId, bool RequestSubmitted);
+public sealed record DataGridClientAttempt(Guid AttemptId, Guid MemberId, bool RequestSubmitted)
+{
+    /// <summary>Validated wire reply, or null when no reply was observed. Local synthetic failures are excluded.</summary>
+    public DataGridClientReply? Reply { get; init; }
+
+    /// <summary>Shared recorder event order; null when no history recorder was supplied.</summary>
+    public long? InvocationOrder { get; init; }
+    public long? CompletionOrder { get; init; }
+}
 
 public sealed record DataGridClientHistoryOperation(
     Guid OperationId,
@@ -27,6 +35,12 @@ public sealed class DataGridClientHistory
     {
         lock (_sync)
             return _operations.Values.OrderBy(operation => operation.InvocationOrder).ToArray();
+    }
+
+    internal long AttemptEvent()
+    {
+        lock (_sync)
+            return ++_order;
     }
 
     internal Guid Begin(Guid incarnation, Guid principal, DataGridClientRequest request)
@@ -61,6 +75,11 @@ public sealed class DataGridClientHistory
             if (_bytes + size > 64L * 1024 * 1024)
                 throw new InvalidOperationException(
                     "History response capacity exceeded; experiment is inconclusive."
+                );
+            size += outcome.Attempts.Count * 128L;
+            if (_bytes + size > 64L * 1024 * 1024)
+                throw new InvalidOperationException(
+                    "History attempt capacity exceeded; experiment is inconclusive."
                 );
             _bytes += size;
             _operations[id] = operation with { CompletionOrder = ++_order, Outcome = outcome };

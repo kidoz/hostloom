@@ -35,6 +35,7 @@ public static partial class DataGridClientHistoryChecker
         var events = new HashSet<long>();
         var ids = new HashSet<Guid>();
         long bytes = 0;
+        var expandAttempts = false;
         foreach (var operation in history)
         {
             if (
@@ -64,10 +65,7 @@ public static partial class DataGridClientHistoryChecker
                 {
                     if (!startsWithEmptySessions)
                         return Inconclusive("Applied session failures require empty-session mode.");
-                    if (outcome.Attempts.Count > 1)
-                        return Inconclusive(
-                            "Semantic failure after multiple attempts has unobserved earlier outcomes."
-                        );
+                    expandAttempts |= outcome.Attempts.Count > 1;
                 }
                 else if (
                     failure.Code
@@ -126,6 +124,13 @@ public static partial class DataGridClientHistoryChecker
             }
             else
                 return Inconclusive("Unsupported request.");
+        }
+        if (expandAttempts)
+        {
+            var expanded = ExpandAttempts(history, events, ids);
+            return expanded is null
+                ? Inconclusive("Incomplete or inconsistent physical-attempt evidence.")
+                : Check(expanded, maxStates, startsWithEmptySessions);
         }
         if (bytes > 2 * 1024 * 1024)
             return Inconclusive("History exceeds two MiB checker budget.");
