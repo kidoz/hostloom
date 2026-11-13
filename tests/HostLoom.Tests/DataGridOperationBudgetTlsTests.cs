@@ -36,6 +36,8 @@ public sealed class DataGridOperationBudgetTlsTests
                     && capture.Sum("runtime.admission.active") == 8,
                 timeout.Token
             );
+            // Queue charges end at dequeue; join the executing action before canceling its caller.
+            await runtime.ObserveLeaderAsync(0, timeout.Token);
             await caller.CancelAsync();
             Assert.All(
                 await Task.WhenAll(waiting),
