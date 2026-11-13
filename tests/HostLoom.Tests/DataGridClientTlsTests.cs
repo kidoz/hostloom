@@ -588,12 +588,15 @@ public sealed class DataGridClientTlsTests
             Task<DataGridClientReply>
         >? Override { get; set; }
 
-        internal ClientCluster(Action<int, DataGridStorageStep>? observe = null)
+        internal ClientCluster(
+            Action<int, DataGridStorageStep>? observe = null,
+            TimeProvider? timeProvider = null
+        )
         {
             _writer = Peer.Issue("catalog-writer.example", clientOnly: true);
             _reader = Peer.Issue("catalog-reader.example", clientOnly: true);
             _otherWriter = Peer.Issue("catalog-editor.example", clientOnly: true);
-            Cluster = new(Peer, observe: observe);
+            Cluster = new(Peer, observe: observe, timeProvider: timeProvider);
             Cluster.StartAll();
             _listeners = Enumerable
                 .Range(0, 3)
