@@ -217,6 +217,7 @@ public sealed partial class DataGridLocalStateMachine
             }
             entries.End();
             var sessions = body.Section(4, MaxSessionCount, out count);
+            var sessionNonces = new SortedDictionary<Guid, SortedSet<Guid>>();
             long previous = 0;
             for (var i = 0; i < count; i++)
             {
@@ -231,6 +232,11 @@ public sealed partial class DataGridLocalStateMachine
                 var fingerprint = sessions.Take(32).ToArray();
                 var results = sessions.Count(2, 128);
                 var opened = expires.UtcTicks - TimeSpan.FromMinutes(10).Ticks;
+                if (!sessionNonces.TryGetValue(principal, out var principalNonces))
+                {
+                    principalNonces = [];
+                    sessionNonces.Add(principal, principalNonces);
+                }
                 if (
                     number <= previous
                     || number > state._sessionHighWater
@@ -239,11 +245,8 @@ public sealed partial class DataGridLocalStateMachine
                     || opened > time.UtcTicks
                     || notAfter.UtcTicks <= opened
                     || notAfter.UtcTicks - opened > TimeSpan.FromSeconds(5).Ticks
-                    || state._sessions.Values.Count(session => session.Principal == principal)
-                        >= MaxSessionsPerPrincipal
-                    || state._sessions.Values.Any(session =>
-                        session.Principal == principal && session.Nonce == nonce
-                    )
+                    || principalNonces.Count >= MaxSessionsPerPrincipal
+                    || !principalNonces.Add(nonce)
                 )
                     throw new InvalidDataException("Invalid snapshot session.");
                 previous = number;

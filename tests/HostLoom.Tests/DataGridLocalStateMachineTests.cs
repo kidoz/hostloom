@@ -580,6 +580,49 @@ public sealed class DataGridLocalStateMachineTests
         Assert.Equal(4097, opened.SessionNumber);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FullSessionSnapshotPreservesPrincipalScopedNoncesAndRejectsInvalidIndexes(
+        bool excess
+    )
+    {
+        var configuration = Configuration();
+        var state = new DataGridLocalStateMachine(configuration);
+        for (var principal = 0; principal < 64; principal++)
+        for (var nonce = 0; nonce < 64; nonce++)
+            Apply(state, Open(NumberId(10000 + principal), NumberId(20000 + nonce)));
+        var snapshot = state.SaveSnapshot(SnapshotId, 1);
+        var bytes = snapshot.GetContent();
+        var restored = DataGridLocalStateMachine.Restore(configuration, snapshot.Descriptor, bytes);
+        Assert.Equal(4096, restored.SessionCount);
+        Assert.Equal(4096, restored.SessionHighWater);
+        Assert.Equal(bytes, restored.SaveSnapshot(SnapshotId, 1).GetContent());
+        // Nonces are scoped to the principal: every principal legitimately reuses these 64 nonces.
+        Assert.Equal(1, Apply(restored, Open(NumberId(10000), NumberId(20000))).SessionNumber);
+        Assert.Equal(65, Apply(restored, Open(NumberId(10001), NumberId(20000))).SessionNumber);
+
+        var sessions = FindSection(bytes, 4);
+        const int emptySessionBytes = 100;
+        if (excess)
+        {
+            // Give the first principal a 65th record with a distinct nonce, isolating its count limit.
+            var target = sessions + 64 * emptySessionBytes;
+            bytes.AsSpan(sessions + 8, 16).CopyTo(bytes.AsSpan(target + 8));
+            bytes.AsSpan(sessions + 8, 16).CopyTo(bytes.AsSpan(target + 24));
+        }
+        else
+        {
+            // The second record belongs to the same principal; a duplicate nonce is invalid even rehashed.
+            bytes
+                .AsSpan(sessions + 24, 16)
+                .CopyTo(bytes.AsSpan(sessions + emptySessionBytes + 24));
+        }
+        Assert.Throws<InvalidDataException>(() =>
+            RestoreRehashed(configuration, snapshot.Descriptor, bytes)
+        );
+    }
+
     [Fact]
     public void LocalReadVectorRejectsDuplicatesAndOversizedResponsesWithoutMutatingState()
     {
