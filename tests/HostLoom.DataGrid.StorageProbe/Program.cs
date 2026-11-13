@@ -54,6 +54,8 @@ else if (args[1] == "append")
     );
     store.Persist(new(config, 4, 0, store.Image.Entries.Append(entry), 5));
 }
+else if (args[1] == "collect")
+    store.CollectObsoleteFiles();
 else
     throw new InvalidOperationException("Unknown storage probe operation.");
 

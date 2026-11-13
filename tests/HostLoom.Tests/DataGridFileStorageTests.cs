@@ -793,6 +793,124 @@ public sealed class DataGridFileStorageTests
         Assert.Equal(0, recovered.Image.CommitIndex);
     }
 
+    [Fact]
+    public void ObsoleteCollectionIsBoundedAndPreservesTheSelectedRecoveryRoot()
+    {
+        var token = TestContext.Current.CancellationToken;
+        using var directory = new OwnedDirectory();
+        var config = Configuration();
+        Guid generation;
+        byte[] anchor;
+        using (var store = DataGridFileStore.Bootstrap(directory.Path, config, 0))
+        {
+            store.Persist(Image(config, 2), token);
+            var snapshot = store.RestoreApplication().SaveSnapshot(Nonce, 1);
+            store.Persist(new(config, 3, 2, store.Image.Entries.Skip(2), 2, snapshot), token);
+            for (var i = 0; i < 40; i++)
+                store.RollGeneration(token);
+            File.WriteAllBytes(
+                System.IO.Path.Combine(directory.Path, $"pending-{Guid.NewGuid():N}.tmp"),
+                [1]
+            );
+            generation = store.GenerationId;
+            anchor = File.ReadAllBytes(System.IO.Path.Combine(directory.Path, "CURRENT"));
+            Assert.Equal(32, store.CollectObsoleteFiles(token));
+            Assert.InRange(store.CollectObsoleteFiles(token), 1, 32);
+            Assert.Equal(0, store.CollectObsoleteFiles(token));
+            Assert.Equal(4, Directory.GetFiles(directory.Path).Length);
+            Assert.Equal(
+                anchor,
+                File.ReadAllBytes(System.IO.Path.Combine(directory.Path, "CURRENT"))
+            );
+        }
+        using var recovered = DataGridFileStore.Open(directory.Path, config, 0);
+        Assert.Equal(generation, recovered.GenerationId);
+        Assert.Equal(2, recovered.Image.CommitIndex);
+        Assert.Equal(4, recovered.Image.LastIndex);
+        Assert.Equal(2, recovered.Image.Vote);
+        Assert.Equal(new byte[] { 1 }, recovered.RestoreApplication().Read(Map, Key)!.GetValue());
+    }
+
+    [Theory(Timeout = 30000)]
+    [InlineData((int)DataGridStorageStep.ObsoleteFileDeleted)]
+    [InlineData((int)DataGridStorageStep.ObsoleteDirectoryFlushed)]
+    [InlineData((int)DataGridStorageStep.CollectionRootFlushed)]
+    public async Task KilledCollectorRetainsCurrentSnapshotHardStateAndReplay(int stage)
+    {
+        var token = TestContext.Current.CancellationToken;
+        using var directory = new OwnedDirectory();
+        var config = Configuration();
+        Guid selected;
+        byte[] anchor;
+        using (var store = DataGridFileStore.Bootstrap(directory.Path, config, 0))
+        {
+            store.Persist(Image(config, 2), token);
+            var snapshot = store.RestoreApplication().SaveSnapshot(Nonce, 1);
+            store.Persist(new(config, 3, 2, store.Image.Entries.Skip(2), 2, snapshot), token);
+            store.RollGeneration(token);
+            selected = store.GenerationId;
+            anchor = await File.ReadAllBytesAsync(
+                System.IO.Path.Combine(directory.Path, "CURRENT"),
+                token
+            );
+        }
+        await KillProbe(
+            directory.Path,
+            "collect",
+            stage,
+            () =>
+                Assert.Throws<IOException>(() => DataGridFileStore.Open(directory.Path, config, 0)),
+            TestContext.Current.CancellationToken
+        );
+        using var recovered = DataGridFileStore.Open(directory.Path, config, 0);
+        Assert.Equal(
+            anchor,
+            await File.ReadAllBytesAsync(System.IO.Path.Combine(directory.Path, "CURRENT"), token)
+        );
+        Assert.Equal(selected, recovered.GenerationId);
+        Assert.Equal(3, recovered.Image.Term);
+        Assert.Equal(2, recovered.Image.Vote);
+        Assert.Equal(2, recovered.Image.CommitIndex);
+        Assert.Equal(4, recovered.Image.LastIndex);
+        var application = recovered.RestoreApplication();
+        Assert.Equal(new byte[] { 1 }, application.Read(Map, Key)!.GetValue());
+        var replay = application.Apply(3, Mutation(1, [1]));
+        Assert.Equal(new DataGridEntryVersion(Cluster, 2), replay.GetItem(0).Version);
+        _ = recovered.CollectObsoleteFiles(token);
+        Assert.Equal(4, Directory.GetFiles(directory.Path).Length);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CollectorRefusesForeignFilesOrChangedCurrentBeforeDeletingAnything(
+        bool changedCurrent
+    )
+    {
+        using var directory = new OwnedDirectory();
+        var token = TestContext.Current.CancellationToken;
+        using var store = DataGridFileStore.Bootstrap(directory.Path, Configuration(), 0);
+        store.RollGeneration(token);
+        var anchorPath = System.IO.Path.Combine(directory.Path, "CURRENT");
+        var bytes = File.ReadAllBytes(anchorPath);
+        if (changedCurrent)
+            File.WriteAllBytes(
+                anchorPath,
+                new DataGridCurrentAnchor(Guid.NewGuid(), Member(0), store.GenerationId).Encode()
+            );
+        else
+            File.WriteAllBytes(System.IO.Path.Combine(directory.Path, "notes.txt"), [1]);
+        var inventory = Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal).ToArray();
+        Assert.Throws<InvalidDataException>(() => store.CollectObsoleteFiles(token));
+        Assert.True(store.IsFaulted);
+        Assert.Equal(
+            inventory,
+            Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal).ToArray()
+        );
+        if (!changedCurrent)
+            Assert.Equal(bytes, File.ReadAllBytes(anchorPath));
+    }
+
     private static async Task KillProbe(
         string directory,
         string operation,
