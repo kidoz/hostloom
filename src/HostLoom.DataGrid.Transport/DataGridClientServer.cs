@@ -98,10 +98,14 @@ internal sealed class DataGridClientServer : IAsyncDisposable
 
     internal void Start()
     {
-        if (_accept is not null)
-            throw new InvalidOperationException("Client listener already started.");
-        _listener.Start(112);
-        _accept = Accept();
+        lock (_sync)
+        {
+            ObjectDisposedException.ThrowIf(_shutdown is not null, this);
+            if (_accept is not null)
+                throw new InvalidOperationException("Client listener already started.");
+            _listener.Start(112);
+            _accept = Accept();
+        }
     }
 
     private bool StartHandshake() => _rate.TryAcquire(DataGridTransportDirection.Inbound);
