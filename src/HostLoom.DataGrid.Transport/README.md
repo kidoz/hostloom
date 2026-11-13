@@ -63,6 +63,18 @@ member, logical session/request and physical attempt. Unknown directions, counts
 versions, trailing bytes and unsupported hellos reject before dispatch. Client builds may differ;
 protocol/command/configuration must match. Client request/handshake deadlines are five seconds.
 
+Client-listener Start and disposal share one lifecycle lock. A bind failure leaves the unstarted
+instance available for retry after the conflict is removed; its owner still disposes it if retry
+is abandoned. Once disposal begins, Start throws ObjectDisposedException even if the listener
+never started. Starting an already running listener remains invalid.
+
+Client-listener shutdown cancels and joins its accepted sessions while externally supplied shared
+security and peer runtimes remain usable. A receiver that ignores cancellation retains its request
+reservation and keeps shutdown pending until it returns; stopping a listener does not prove remote
+rollback or provide a hard shutdown bound. Directed Linux cases cover failed bind/retry, terminal
+Start rejection, cooperative/held-receiver drain, quorum reads through the shared peer owner and
+SDK recovery of an uncertain mutation through a replacement listener on the same port.
+
 Linux container tests exercise certificate/build/member rejection, TLS-version refusal,
 malformed authenticated frames, encrypted-record tampering, handshake saturation and snapshot
 completion, live credential replacement, failed-replacement isolation, revocation and expiry.
