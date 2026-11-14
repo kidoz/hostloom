@@ -62,10 +62,9 @@ positions; it requires space for the old and new generation together.
 
 `DataGridFileStorageTests` uses owned temporary directories, injected I/O-boundary interruptions,
 every torn prefix of an uncommitted record, rehashed-invalid transitions and killed child writers.
-`HostLoom.DataGrid.StorageProbe` exists only for those process tests. There is no three-process
-deployment or public-client linearizability, real disk-full experiment,
-bounded OS-I/O shutdown, full operational telemetry or Native AOT evidence yet. The separate transport/runtime
-projects now exercise actual Linux loopback TLS and file-backed consensus.
+`HostLoom.DataGrid.StorageProbe` exists only for those process tests. Separate runtime tests cover three local member processes, public-client histories and Linux
+loopback TLS. These experiments do not establish independent-host isolation, bounded native-I/O
+shutdown, supported-device durability or Native AOT.
 
 
 Internal `Progress` exposes cached WAL/snapshot bytes, current-generation record count and commit
@@ -100,3 +99,42 @@ and exception messages are excluded. See the [signal inventory](../../docs/refer
 The [effective resource inventory](../HostLoom.DataGrid.Runtime/RESOURCE_LIMITS.md) records each owner/scope, tighter admission
 limits, refusal/release behavior, derived retained-result bounds and executable boundary checks.
 These implementation ceilings are not process-memory, performance or recovery-time guarantees.
+
+
+## Reproduce bounded disk exhaustion
+
+Run `bash scripts/test-data-grid-disk-full.sh` from the repository root after restoring the solution.
+It requires Docker, the local .NET SDK/NuGet cache and `uuidgen`. The runner uses a pinned Linux ARM64
+SDK image, read-only source/cache mounts, a private build copy, a two-GiB container memory limit
+and three private 32-MiB tmpfs mounts. It fills only a random owned directory on those mounts,
+checks owner markers and mount type/capacity, and removes its exact container on exit. It has a
+fifteen-minute overall timeout; each fill has a five-second/32-MiB bound. It does not select an
+external path or fill the host filesystem. Set `HOSTLOOM_DATA_GRID_FULL_TESTS=1` to include the
+broader grid suite and local-process experiments. The separate long session-capacity opt-in
+remains disabled. Normal solution tests skip the nine disk-full cases.
+
+The test-only free-space reserve is zero because the bounded filesystem is smaller than the
+normal one-GiB reserve. The WAL/directory/file ceilings and production defaults are unchanged.
+A separate one-MiB reserve case demonstrates pre-I/O refusal. Observation points fill tmpfs
+after successful reservation; normal FileStream writes/flushes must then report errno 28.
+A small write can still fit an already allocated final page; the TLS experiment releases space
+after any successful flush and repeats the bounded fill before the next write.
+
+The directed tests cover zero-byte and partial WAL appends, snapshot/seeded-generation/CURRENT
+publication, retained immutable request identities, and corrupt/torn selected-root refusal.
+Publication failure preserves the old CURRENT and selected WAL, allowing restart and replay
+after space release. A clean append failure can also restart. **A partial selected-WAL append
+leaves a torn tail: freeing space alone does not make that member restartable.** Startup preserves
+its files and refuses; no automatic repair, truncation, older-generation fallback or member reseed
+is implemented. Keep that member stopped and preserve the directory for diagnosis. A healthy
+two-member majority can recover its acknowledged requests and resolve the original unknown
+request identity, but this does not restore the third member. A safe member recovery/rejoin
+procedure remains an open implementation requirement. Never delete CURRENT or truncate the WAL
+as an implicit recovery step.
+
+Tmpfs exercises real allocation/write ENOSPC and buffered flush failure. The observed seeded-WAL
+and anchor exceptions surface from disposal retrying buffered output during unwind; they do not
+prove that the fsync syscall itself returned ENOSPC. The first flush error is not separately
+retained. This experiment does not establish
+block-device delayed allocation, fsync/device failure, storage persistence across container
+removal, host/power-loss durability, recovery time or workload capacity.
