@@ -684,6 +684,34 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
                 AbortUnlessClosing();
             }
         }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                WebSocketEvents.OperationFailed,
+                exception,
+                "WebSocket request response failed for session {SessionId}.",
+                Id
+            );
+            try
+            {
+                if (
+                    !_stop.IsCancellationRequested
+                    && !TryQueue(
+                        WebSocketRequestRouter.Fault(
+                            frame.StreamId,
+                            HubFaultCodes.RequestFailed,
+                            "The response could not be encoded."
+                        )
+                    )
+                )
+                    AbortUnlessClosing();
+            }
+            catch (Exception)
+            {
+                AbortUnlessClosing();
+            }
+        }
         finally
         {
             // Releasing here, rather than at session end, is what keeps a long-lived connection's
@@ -1183,6 +1211,11 @@ internal sealed class WebSocketSession : IWebSocketSessionHandle
         }
         catch (WebSocketException)
         {
+            Abort();
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(exception, "WebSocket writer failed for session {SessionId}.", Id);
             Abort();
         }
     }

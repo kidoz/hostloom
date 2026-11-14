@@ -3042,6 +3042,7 @@ public sealed partial class WebSocketGatewayTests
             TaskCreationOptions.RunContinuationsAsynchronously
         );
         private int _blockSends;
+        public Exception? SendFailure { get; set; }
 
         public override WebSocketCloseStatus? CloseStatus => _closeStatus;
 
@@ -3079,6 +3080,14 @@ public sealed partial class WebSocketGatewayTests
         {
             _state = WebSocketState.Aborted;
             _releaseSends.TrySetResult();
+            _inbound.Writer.TryWrite(
+                new Inbound(
+                    [],
+                    WebSocketMessageType.Binary,
+                    null,
+                    new WebSocketException("aborted")
+                )
+            );
         }
 
         public override Task CloseAsync(
@@ -3155,6 +3164,8 @@ public sealed partial class WebSocketGatewayTests
             CancellationToken cancellationToken
         )
         {
+            if (SendFailure is { } failure)
+                throw failure;
             if (Volatile.Read(ref _blockSends) != 0)
             {
                 _sendBlocked.TrySetResult();
