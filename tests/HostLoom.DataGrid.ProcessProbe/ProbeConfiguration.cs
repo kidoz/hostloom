@@ -1,5 +1,36 @@
 namespace HostLoom.DataGrid.ProcessProbe;
 
+internal sealed record ProbeMemorySnapshot(
+    long ManagedBytes,
+    long TotalAllocatedBytes,
+    long HeapBytes,
+    long CommittedBytes,
+    long FragmentedBytes,
+    long MemoryLoadBytes,
+    long TotalAvailableMemoryBytes,
+    int Gen0Collections,
+    int Gen1Collections,
+    int Gen2Collections
+)
+{
+    internal static ProbeMemorySnapshot Capture()
+    {
+        var info = GC.GetGCMemoryInfo();
+        return new(
+            GC.GetTotalMemory(false),
+            GC.GetTotalAllocatedBytes(false),
+            info.HeapSizeBytes,
+            info.TotalCommittedBytes,
+            info.FragmentedBytes,
+            info.MemoryLoadBytes,
+            info.TotalAvailableMemoryBytes,
+            GC.CollectionCount(0),
+            GC.CollectionCount(1),
+            GC.CollectionCount(2)
+        );
+    }
+}
+
 // Shared only by the child-process harness and its owning tests, not deployment configuration.
 internal static class ProbeConfiguration
 {

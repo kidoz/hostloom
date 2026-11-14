@@ -638,7 +638,8 @@ public sealed class DataGridFeasibilityTests
                 {
                     try
                     {
-                        var pid = i < 0 ? Environment.ProcessId : cluster.Nodes[i]?.ProcessId;
+                        var node = i < 0 ? null : cluster.Nodes[i];
+                        var pid = i < 0 ? Environment.ProcessId : node?.ProcessId;
                         if (pid is null)
                         {
                             members.Add(new { Member = i, State = "stopped" });
@@ -665,6 +666,11 @@ public sealed class DataGridFeasibilityTests
                                 Pid = pid,
                                 RssBytes = process.WorkingSet64,
                                 CpuSeconds = process.TotalProcessorTime.TotalSeconds,
+                                Managed = i < 0
+                                    ? ProbeMemorySnapshot.Capture()
+                                    : JsonSerializer.Deserialize<ProbeMemorySnapshot>(
+                                        await node!.Command("memory", token)
+                                    ),
                                 Io = io,
                                 OwnedFileBytes = files.Sum(path => new FileInfo(path).Length),
                                 Files = files.Length,
@@ -719,6 +725,10 @@ public sealed class DataGridFeasibilityTests
                             CultureInfo.InvariantCulture
                         ),
                         MemoryEvents = memoryEvents,
+                        MemoryStat = await File.ReadAllTextAsync(
+                            "/sys/fs/cgroup/memory.stat",
+                            token
+                        ),
                     };
                 }
                 catch (IOException error)

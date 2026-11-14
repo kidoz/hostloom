@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
 using HostLoom.DataGrid;
 using HostLoom.DataGrid.Consensus;
 using HostLoom.DataGrid.ProcessProbe;
@@ -100,6 +101,9 @@ while (await Console.In.ReadLineAsync(token) is { } line)
 {
     switch (line)
     {
+        case "memory":
+            output.Write(JsonSerializer.Serialize(ProbeMemorySnapshot.Capture()));
+            break;
         case "status":
             var status = runtime.Status;
             output.Write(
