@@ -219,6 +219,20 @@ public sealed class DataGridDiagnosticsTlsTests
                 Assert.True(runtime.Diagnostics.Storage.Closed);
                 Assert.True(runtime.Diagnostics.Storage.Faulted);
                 Assert.False(runtime.Diagnostics.LocalReadyHint);
+                Assert.Contains(
+                    capture.Measurements,
+                    m =>
+                        m.Name == "hostloom.datagrid.runtime.map.state"
+                        && m.Tags[DataGridRuntimeDiagnostics.StateTag] is "faulted"
+                        && m.Value == 1
+                );
+                Assert.Contains(
+                    capture.Measurements,
+                    m =>
+                        m.Name == "hostloom.datagrid.runtime.map.state"
+                        && m.Tags[DataGridRuntimeDiagnostics.StateTag] is "stopped"
+                        && m.Value == 1
+                );
                 Assert.NotNull(
                     await Record.ExceptionAsync(() =>
                         runtime.ReadAsync(

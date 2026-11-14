@@ -20,7 +20,11 @@ public sealed class HistogramAdviceTests
             .Where(IsHistogram)
             .ToList();
 
-        Assert.Equal(22, histograms.Count);
+        Assert.Equal(23, histograms.Count);
+        Assert.Contains(
+            histograms,
+            histogram => histogram.Name == "hostloom.datagrid.storage.map.recovery.duration"
+        );
         Assert.All(
             histograms,
             histogram =>

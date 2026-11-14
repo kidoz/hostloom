@@ -186,6 +186,7 @@ public sealed class DataGridDiagnosticsTests
         var results = await Task.WhenAll(pending);
         Assert.All(results, result => Assert.False(result.MayHaveBeenAdmitted));
         Assert.Equal(9, capture.Sum("client.calls"));
+        Assert.Equal(0, capture.Sum("client.timeouts"));
         Assert.Equal(8, capture.Sum("client.attempts"));
         Assert.Equal(
             9,
@@ -242,6 +243,8 @@ internal sealed class DataGridMeterCapture : IDisposable
         );
         _listener.Start();
     }
+
+    internal void Poll() => _listener.RecordObservableInstruments();
 
     private void Add(
         Instrument instrument,
@@ -374,6 +377,7 @@ internal sealed class DataGridMeterCapture : IDisposable
             DataGridRuntimeDiagnostics.StateTag,
             DataGridRuntimeDiagnostics.PositionTag,
             DataGridRuntimeDiagnostics.MeasureTag,
+            DataGridRuntimeDiagnostics.ResourceTag,
         };
         foreach (var measurement in Measurements)
         {
@@ -406,7 +410,8 @@ internal sealed class DataGridMeterCapture : IDisposable
                         var valid = tag.Key switch
                         {
                             DataGridStorageDiagnostics.OutcomeTag => value
-                                is "recovered"
+                                is "started"
+                                    or "recovered"
                                     or "failed",
                             DataGridRuntimeDiagnostics.StateTag => value
                                 is "follower"
@@ -430,7 +435,16 @@ internal sealed class DataGridMeterCapture : IDisposable
                                 is "charged"
                                     or "limit"
                                     or "wal_published"
-                                    or "snapshot_published",
+                                    or "snapshot_published"
+                                    or "managed_estimate"
+                                    or "working_set",
+                            DataGridRuntimeDiagnostics.ResourceTag => value
+                                is "log_entries"
+                                    or "client_log_entries"
+                                    or "sessions"
+                                    or "log"
+                                    or "client_log"
+                                    or "retained_results",
                             DataGridTransportDiagnostics.RoleTag => value is "peer" or "client",
                             DataGridTransportDiagnostics.DirectionTag => value
                                 is "inbound"
@@ -471,7 +485,13 @@ internal sealed class DataGridMeterCapture : IDisposable
                                     or "reclaim"
                                     or "other",
                             _ => value
-                                is "success"
+                                is "completed"
+                                    or "stored"
+                                    or "removed"
+                                    or "missing"
+                                    or "version_mismatch"
+                                    or "already_exists"
+                                    or "success"
                                     or "applied"
                                     or "read"
                                     or "not_leader"
