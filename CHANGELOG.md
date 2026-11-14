@@ -12,6 +12,27 @@ are derived from release tags at publish time.
 
 - Add `AddHub` as a protocol-compatible WebSocket registration facade for prefixed typed requests
   and keyed snapshot-plus-live channels, with existing authorization, credit, and cleanup behavior.
+- Add opt-in strict cache removal and routine pull-request/main .NET verification with required
+  brokers and execution of all six Native AOT samples. Release checks also execute packed
+  composition consumers natively.
+
+### Fixed
+
+- Conditional cache encoding and size failures now throw `CacheUnavailableException` instead of
+  reporting a duplicate, including under `ReturnFalse`. Explicit writes supersede older local
+  factory results, and large bulk removals publish bounded invalidations.
+- Kafka retries failed rewinds and receive-pause transitions; RabbitMQ pause recovery uses the
+  retrying restoration path and retires replaced channels. In-memory disposal settles pending
+  publications, and early stream disposal cancels the handler token.
+- Lock ownership checks and heartbeat retries use monotonic lease deadlines. Early expiry timers
+  rearm, and ambiguous Valkey acquisitions receive owner-checked orphan cleanup.
+- Browser control pacing budgets each frame, reentrant connection callbacks await a fresh
+  session, and JSON decoding rejects duplicate properties. Dispatcher responses and faults obey
+  frame limits; gateway encoding and writer failures produce a fault or terminate the session.
+- Correct wildcard-step cron day matching, indirect async-blocking and factory-method analysis,
+  mapping deconstruction assignments, numeric `LogFast` fields, and bootstrap flush failure policy.
+- Clarify lease-based schedule exclusivity, inbox release limitations, application-owned per-item
+  pipeline outcomes, broker identities, and Native AOT coverage. DataGrid capacity remains unqualified.
 
 ## [0.20.0] - 2026-10-31
 
