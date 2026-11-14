@@ -196,3 +196,19 @@ cleanup after blocked work returns. A cached disposal timeout stays the result o
 it does not prevent eventual cleanup. Stopped/faulted owners can be disposed after completion
 without touching a disposed cancellation source. This does not interrupt arbitrary OS I/O or
 establish a hard wall-clock shutdown guarantee.
+
+
+## Operational telemetry
+
+The [supported signal inventory](../../docs/reference/observability.md#experimental-native-grid-instruments)
+describes the runtime, client, transport and storage meters. Added observations cover applied
+result/item statuses, explicit SDK/submission/Raft deadlines, cached log/session/result charges,
+map projections of group state/progress/recovery, physical expiry cleanup and polled process memory.
+Labels use fixed outcomes and bounded configuration ordinals; payloads, map names, directories,
+credentials and caller identities are excluded. Collect before construction for complete deltas.
+
+Map recovery belongs to the whole group, and a local-ready hint is historical. Only a fresh strong
+read establishes its own quorum result. The expiry gauge resets on application restore and can
+include replay; it does not count all logically expired keys. Process memory covers the whole
+process and is queried only at metric collection, while actor Diagnostics remains passive/cached.
+Emission checks do not establish exporter delivery, resource budgets or production readiness.

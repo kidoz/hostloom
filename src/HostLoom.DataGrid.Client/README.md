@@ -119,3 +119,11 @@ invocation count includes those brief decisions outside the eight-exchange reser
 attempt can be canceled before it connects or writes. Entry cancellation precedes metric admission.
 Collect before client construction for a complete up-down baseline. No key/value/map/endpoint/
 principal/exception labels, payload history, exporter or grid trace propagation is added.
+
+
+The `hostloom.datagrid.client.timeouts` counter distinguishes SDK deadline termination from
+caller cancellation, disable and credential retirement. Its Boolean admission tag remains
+cumulative across attempts. Runtime deadline counters describe a different boundary and must
+not be added to SDK counts as unique requests. Timeout does not prove mutation rollback.
+The [signal inventory](../../docs/reference/observability.md#experimental-native-grid-instruments)
+records supported outcomes, capacity/recovery observations and unqualified collector behavior.

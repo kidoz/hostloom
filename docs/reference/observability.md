@@ -378,6 +378,19 @@ for service identity. There is no grid activity source, trace propagation or exp
 | `hostloom.datagrid.runtime.storage.records` | gauge / `{record}` | Record count in the last successfully published WAL generation |
 | `hostloom.datagrid.storage.recoveries` | counter / `{recovery}` | Explicit file-store Open calls, including failed attempts; excludes bootstrap |
 | `hostloom.datagrid.storage.recovery.duration` | histogram / `s` | Synchronous ownership, inventory and WAL/snapshot validation; excludes subsequent actor replay/startup |
+| `hostloom.datagrid.runtime.results` | counter / `{result}` | Applied local-call result status, including session failures and retained replies |
+| `hostloom.datagrid.runtime.map.mutation.items` | counter / `{item}` | Mutation item replies by map ordinal and result, including conditional/capacity rejection and replay |
+| `hostloom.datagrid.runtime.timeouts` | counter / `{operation}` | Caller completions caused by the local submission deadline or Raft client deadline |
+| `hostloom.datagrid.client.timeouts` | counter / `{call}` | SDK deadline termination, with cumulative admission; excludes caller-only cancellation, disable and credential retirement |
+| `hostloom.datagrid.runtime.map.state` | gauge / `{state}` | Group local-ready/faulted/stopped flags repeated for each configured map |
+| `hostloom.datagrid.runtime.map.position` | gauge / `{position}` | Group committed/applied/snapshot positions repeated for each map |
+| `hostloom.datagrid.runtime.map.expired.reclaimed` | gauge / `{entry}` | Expired physical versions removed by reclaim or overwrite in the current application instance, including replay; resets on restore |
+| `hostloom.datagrid.runtime.capacity.items` | gauge / `{item}` | Cached log/session charges and hard/client admission limits |
+| `hostloom.datagrid.runtime.capacity.bytes` | gauge / `By` | Cached encoded log/retained-result charges and limits, excluding heap overhead |
+| `hostloom.datagrid.process.memory` | observable gauge / `By` | Process-wide working set and `GC.GetTotalMemory(false)` estimate when collected; no per-member/grid attribution |
+| `hostloom.datagrid.storage.map.recovery.events` | counter / `{event}` | Group Open phases (`started`, `recovered`, `failed`) for every configured map, including ownership/inventory refusal |
+| `hostloom.datagrid.storage.map.recovery.duration` | histogram / `s` | Group Open duration repeated for every configured map; excludes subsequent runtime construction/replay |
+
 
 
 
@@ -444,7 +457,7 @@ reservation-active counters still count gate leases. Local snapshot cancellation
 finish while a remote receiver still owns the image. Directed Linux cases cover these distinctions
 and blocked control work through recovery, a cached disposal timeout and storage fault. They do
 not establish remote rollback, full cleanup from a zero counter, hard OS-I/O shutdown or numerical
-workload acceptance. The grid inventory is now 30 instruments; no identity labels are added.
+workload acceptance. The grid inventory is now 42 instruments; no identity labels are added.
 
 
 Transport labels are `hostloom.datagrid.transport.role` (`peer`/`client`),
@@ -490,7 +503,14 @@ Additional fixed tags are `hostloom.datagrid.state`, `hostloom.datagrid.position
 `candidate`, `leader`, `faulted`, `stopped`, `local_ready_hint`, `busy`, `storage_faulted`,
 `storage_closed`. Position names are `term`, `log_end`, `committed`, `applied`, `snapshot`,
 `last_read_barrier`, `last_read_barrier_term`. Map measures are `charged`/`limit`; storage byte
-measures are `wal_published`/`snapshot_published`. Recovery outcomes are `recovered`/`failed`.
+measures are `wal_published`/`snapshot_published`. Process measures are `working_set` and
+`managed_estimate`. Group Open outcomes are `recovered`/`failed`; per-map recovery events also
+include `started`. Applied-result outcomes are `completed`, `session_expired`, `request_retired`,
+`request_identity_mismatch`, `capacity_exceeded`, `missing_map` or `invalid_request`. Mutation item
+outcomes are `stored`, `removed`, `missing`, `version_mismatch`, `already_exists`,
+`capacity_exceeded` or `invalid_request`. The added `hostloom.datagrid.resource` tag is limited to
+`log_entries`, `client_log_entries`, `sessions`, `log`, `client_log` and `retained_results`;
+capacity measures reuse `charged`/`limit`.
 
 Internal runtime `Diagnostics` returns the last immutable owner-thread snapshot without posting
 to the actor, reading files, probing peers, or changing application state. Its bounded read-only
@@ -499,7 +519,11 @@ blocked persistence and after stop. `CapturedTimestamp` uses the process monoton
 `CapturedUnixMilliseconds` and the observation-time gauge use physical UTC, independent of the
 injected logical grid clock. Publications occur after owner work and final cleanup; observations
 can become stale during blocked work. UTC clocks can jump, and scrape/export delays are not bounded.
-Gauges are recorded publication events; there is no observable callback or owner registry.
+Actor-state gauges are recorded publication events with no callback or owner registry. The
+process-memory instrument is the exception: collection queries the OS process working set and
+managed live-byte estimate without forcing GC. It retains no process handle or owner registry;
+an unavailable OS reading is omitted, not reported as zero. This does not change the passive
+`Diagnostics` getter or access grid files/peers on a metric scrape.
 
 The local-ready hint means the node is locally a leader with a committed current-term prefix and
 no observed fault/busy/stop condition at publication. It can remain true after losing the majority.
@@ -522,8 +546,43 @@ is inferred. Storage progress uses cached last-successful publication sizes/reco
 writes can change physical file sizes while leaving these cached numbers unchanged; fault/closed
 flags qualify them. Record count can fall when a generation rolls. Recovery duration covers
 validation in Open, not all runtime startup, supported device durability, progress percentage or
-recovery-time acceptance. Per-map error rates, explicit source freshness/redistribution policy,
-full overload/fairness and device/shutdown qualification remain open.
+recovery-time acceptance. Per-map mutation response counts now expose conditional/capacity
+rejection; these count replies, including retained retries, rather than unique mutations.
+Independent map recovery, external source freshness/redistribution policy, full overload/fairness
+and device/shutdown qualification remain unsupported or unqualified.
+
+
+### Supported operational signal inventory
+
+| Need | Supported observation | Executable coverage / limit |
+| --- | --- | --- |
+| Expiration and rejection | Physical expiry cleanup by map, item result/rejection counts and session failure results | `DataGridOperationalTelemetryTests` checks logical absence, overwrite/reclaim, retained replay and reset without changing snapshot bytes; `DataGridOperationalTelemetryTlsTests` checks TTL quota release, retained refusal, conditional rejection and session expiry. There is no exact logical expired-key population gauge. |
+| Per-map recovery/readiness/progress/failure | Configured maps covered by group Open phases/duration, shared group positions and local-ready/fault/stop flags | Two-map successful/corrupt-CURRENT Open tests; live state/position and existing blocked-storage fault/stop tests. Maps do not recover independently; startup/application replay duration and source-loading percentages are not exposed. |
+| Process memory and capacity | Poll-time working set/managed estimate; cached log/session/result and map/queue/transport charges and limits | Process poll and live quota/capacity tests. Memory includes every actor, TLS buffer and other allocation in the process. Encoded charges do not measure heap. Published storage sizes do not measure total directory use or free disk. |
+| Counts, latency, timeout and unknown outcome | Existing SDK/local operation counters and duration histograms plus explicit deadline counters | Live quorum loss yields unavailable reads and unknown mutations; held replies exercise SDK expiry; caller cancellation/disable do not increment deadline counts. Raft deadline provenance is explicit, rather than inferred from unavailable results. |
+| Quorum/refusal/replication lag | Successful read-barrier history, operation refusals, acknowledged replica positions and observed/lag pair | Existing progress tests plus the live quorum-loss case keep a historical ready hint/barrier while a fresh read fails. No current-quorum health gauge or availability percentage is claimed. |
+| Storage and recovery | Persist outcome/duration, cached published sizes, Open counts/phases/duration and fault/closed flags | Successful and corrupt-CURRENT recovery; controlled failed/canceled persistence with terminal map state. No repair, disk-full, host/device durability or RTO is inferred. |
+
+All maps share one replicated group. A group Open failure affects all configured maps; the map
+ordinal identifies coverage, not an independently diagnosed failing map. These counters report
+attempts even when ownership was refused, so a failed Open does not assert that another owner
+stopped. Runtime result counts represent callers receiving an applied result; canceled callers
+can miss later application. Runtime and SDK timeout counters describe different boundaries and
+must not be summed as distinct requests. An actual timeout cause can coexist with an unknown
+mutation outcome; it never proves rollback or releases retained work early.
+
+The expiry gauge counts physically removed versions, not TTL deadlines or unique user keys.
+It saturates at Int64.MaxValue and resets whenever a new application instance is restored,
+including snapshot installation. Log replay may reconstruct a partial count; do not treat this
+gauge as a durable cluster-wide cumulative counter. Retained replies never recreate entries.
+Capacity's client-log resources show the same total retained log against the lower client
+admission thresholds; internal maintenance may cross those thresholds while remaining within the
+hard limits. Observation age/fault/stop flags qualify all cached actor measurements.
+
+The inventory excludes source freshness, ingestion/loading, redistribution, live-entry eviction,
+queries and subscription watermarks. No synthetic healthy zero series is emitted for them.
+Listener tests establish local emission and bounded labels; exporter delivery, alert/detection
+latency, memory/latency budgets and collector behavior need separately decided measurements.
 
 
 Definite queue refusal is distinguished from admitted uncertainty: full actor shared/principal item/byte

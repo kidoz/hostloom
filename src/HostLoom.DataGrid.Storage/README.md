@@ -88,3 +88,10 @@ and releases directory ownership after actual cleanup. A deliberately blocked st
 checks ownership retention through a runtime disposal timeout and successful reopen after release.
 These are declared-budget and deterministic blocking checks, not an actual disk-full, power-loss,
 filesystem/device-durability or uninterruptible native-I/O experiment.
+
+
+Recovery telemetry reports each explicit Open and the configured maps covered by its group-wide
+started/recovered/failed phases. Durations are group Open time repeated for each map, excluding
+subsequent runtime construction/replay. A refusal before ownership is an attempted Open failure,
+not a claim that another owner stopped. Only bounded ordinals/fixed outcomes are labels; paths
+and exception messages are excluded. See the [signal inventory](../../docs/reference/observability.md#experimental-native-grid-instruments).
