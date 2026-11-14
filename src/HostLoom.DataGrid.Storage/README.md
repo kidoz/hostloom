@@ -95,3 +95,8 @@ started/recovered/failed phases. Durations are group Open time repeated for each
 subsequent runtime construction/replay. A refusal before ownership is an attempted Open failure,
 not a claim that another owner stopped. Only bounded ordinals/fixed outcomes are labels; paths
 and exception messages are excluded. See the [signal inventory](../../docs/reference/observability.md#experimental-native-grid-instruments).
+
+
+The [effective resource inventory](../HostLoom.DataGrid.Runtime/RESOURCE_LIMITS.md) records each owner/scope, tighter admission
+limits, refusal/release behavior, derived retained-result bounds and executable boundary checks.
+These implementation ceilings are not process-memory, performance or recovery-time guarantees.

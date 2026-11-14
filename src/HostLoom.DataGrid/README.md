@@ -125,3 +125,8 @@ adds authenticated unary calls and bounded history checks including pending/unce
 and absolute expiry. Opt-in process tests cover leader kill, minority recovery and full-group
 restart. Extended histories, deployment and production filesystem qualification remain pending. The kernel itself
 performs no I/O.
+
+
+The [effective resource inventory](../HostLoom.DataGrid.Runtime/RESOURCE_LIMITS.md) records each owner/scope, tighter admission
+limits, refusal/release behavior, derived retained-result bounds and executable boundary checks.
+These implementation ceilings are not process-memory, performance or recovery-time guarantees.

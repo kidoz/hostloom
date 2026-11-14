@@ -212,3 +212,8 @@ read establishes its own quorum result. The expiry gauge resets on application r
 include replay; it does not count all logically expired keys. Process memory covers the whole
 process and is queried only at metric collection, while actor Diagnostics remains passive/cached.
 Emission checks do not establish exporter delivery, resource budgets or production readiness.
+
+
+The [effective resource inventory](RESOURCE_LIMITS.md) records each owner/scope, tighter admission
+limits, refusal/release behavior, derived retained-result bounds and executable boundary checks.
+These implementation ceilings are not process-memory, performance or recovery-time guarantees.

@@ -127,3 +127,8 @@ cumulative across attempts. Runtime deadline counters describe a different bound
 not be added to SDK counts as unique requests. Timeout does not prove mutation rollback.
 The [signal inventory](../../docs/reference/observability.md#experimental-native-grid-instruments)
 records supported outcomes, capacity/recovery observations and unqualified collector behavior.
+
+
+The [effective resource inventory](../HostLoom.DataGrid.Runtime/RESOURCE_LIMITS.md) records each owner/scope, tighter admission
+limits, refusal/release behavior, derived retained-result bounds and executable boundary checks.
+These implementation ceilings are not process-memory, performance or recovery-time guarantees.
