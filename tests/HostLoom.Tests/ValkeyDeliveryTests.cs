@@ -44,7 +44,7 @@ public sealed class ValkeyDeliveryTests
                         .TryAcquireAsync("catalog", "owner", TimeSpan.FromSeconds(10), token)
                         .AsTask()
             );
-            Assert.Equal(LockFailureKind.Unavailable, failure.Kind);
+            Assert.Equal(LockFailureKind.Other, failure.Kind);
             Assert.Equal(
                 ValkeyCommandDeliveryStatus.MayHaveBeenSent,
                 Assert
@@ -80,6 +80,72 @@ public sealed class ValkeyDeliveryTests
             var command = await ReadCommandAsync(recovered, token);
             Assert.Equal("PING", Assert.Single(command));
             await recovered.WriteAsync("+PONG\r\n"u8.ToArray(), token);
+        }
+    }
+
+    [Fact]
+    public async Task An_ambiguous_acquisition_is_followed_by_one_owner_checked_release()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken
+        );
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        var token = deadline.Token;
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var serving = ServeAsync();
+        await using var connection = new ValkeyConnection(
+            new ValkeyOptions
+            {
+                Connection = new ValkeyClientOptions { Host = "127.0.0.1", Port = port },
+            }
+        );
+        await using var locks = new DistributedLock(
+            new LockingOptions { Namespace = "orphan" },
+            new ValkeyLockProvider(connection)
+        );
+        try
+        {
+            var failure = await Assert.ThrowsAsync<LockProviderUnavailableException>(async () =>
+                await locks.TryAcquireAsync(
+                    "catalog",
+                    new LockOptions { Lease = TimeSpan.FromSeconds(30) },
+                    token
+                )
+            );
+            Assert.Equal(LockFailureKind.Other, failure.Kind);
+            await serving.WaitAsync(TimeSpan.FromSeconds(10), token);
+        }
+        finally
+        {
+            await deadline.CancelAsync();
+            try
+            {
+                await serving;
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        }
+
+        async Task ServeAsync()
+        {
+            string[] acquisition;
+            using (var first = await listener.AcceptTcpClientAsync(token))
+            {
+                var stream = first.GetStream();
+                await HandshakeAsync(stream, token);
+                acquisition = await ReadCommandAsync(stream, token);
+                Assert.Equal("SET", acquisition[0]);
+            }
+            using var second = await listener.AcceptTcpClientAsync(token);
+            var recovered = second.GetStream();
+            await HandshakeAsync(recovered, token);
+            var release = await ReadCommandAsync(recovered, token);
+            Assert.Equal("EVALSHA", release[0]);
+            Assert.Equal("1", release[2]);
+            Assert.Equal(acquisition[1], release[3]);
+            Assert.Equal(acquisition[2], release[4]);
+            await recovered.WriteAsync(":1\r\n"u8.ToArray(), token);
         }
     }
 
