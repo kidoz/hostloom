@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using HostLoom.DataGrid.Consensus;
 using Microsoft.Win32.SafeHandles;
 
@@ -46,6 +48,9 @@ internal sealed partial class DataGridFileStore : IDisposable
     private readonly FileStream _ownership;
     private readonly SafeFileHandle _directoryHandle;
     private FileStream? _wal;
+    private IncrementalHash? _walHash;
+    private byte[] _anchorBytes = [];
+    private bool _appendable;
     private RaftDurableImage _image;
     private long _lastNumber;
     private long _publishedWalBytes;
@@ -218,9 +223,8 @@ internal sealed partial class DataGridFileStore : IDisposable
         try
         {
             store.Inventory(validateIdentities: true);
-            var anchor = DataGridCurrentAnchor.ReadFrom(
-                store.ReadBounded("CURRENT", DataGridCurrentAnchor.EncodedByteCount)
-            );
+            store._anchorBytes = store.ReadAnchorBytes();
+            var anchor = DataGridCurrentAnchor.ReadFrom(store._anchorBytes);
             if (
                 anchor.IncarnationId != configuration.IncarnationId
                 || anchor.MemberId != store._member
@@ -228,15 +232,39 @@ internal sealed partial class DataGridFileStore : IDisposable
                 throw new InvalidDataException("CURRENT belongs to another cluster/member.");
             store.GenerationId = anchor.GenerationId;
             store._wal = store.OpenWal(GenerationName(anchor.GenerationId));
-            (store._image, store._lastNumber) = DataGridWalRecovery.Read(
-                store._wal,
-                configuration,
-                store._member,
-                anchor.GenerationId,
-                store.ReadSnapshot
-            );
-            store._publishedWalBytes = store._wal.Length;
-            store._wal.Position = store._publishedWalBytes;
+            var length = anchor.PublishedWalBytes ?? store._wal.Length;
+            if (store._wal.Length < length)
+                throw new InvalidDataException("Published WAL prefix is missing.");
+            store._walHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            using (var prefix = new DataGridWalPrefixStream(store._wal, length, store._walHash))
+            {
+                (store._image, store._lastNumber) = DataGridWalRecovery.Read(
+                    prefix,
+                    configuration,
+                    store._member,
+                    anchor.GenerationId,
+                    store.ReadSnapshot
+                );
+                if (
+                    prefix.Position != length
+                    || (
+                        anchor.FormatVersion == 2
+                        && (
+                            store._lastNumber != anchor.PublishedRecordCount
+                            || !CryptographicOperations.FixedTimeEquals(
+                                store._walHash.GetCurrentHash(),
+                                anchor.GetWalDigest()
+                            )
+                        )
+                    )
+                )
+                    throw new InvalidDataException(
+                        "Published WAL frontier does not match its prefix."
+                    );
+            }
+            store._publishedWalBytes = length;
+            store._appendable = anchor.FormatVersion == 2 && store._wal.Length == length;
+            store._wal.Position = length;
             return store;
         }
         catch
@@ -253,7 +281,7 @@ internal sealed partial class DataGridFileStore : IDisposable
         ArgumentNullException.ThrowIfNull(target);
         cancellationToken.ThrowIfCancellationRequested();
         ValidateTransition(target);
-        if (!SameSnapshot(_image.Snapshot, target.Snapshot))
+        if (!SameSnapshot(_image.Snapshot, target.Snapshot) || !_appendable)
         {
             Publish(target, cancellationToken);
             return;
@@ -264,7 +292,7 @@ internal sealed partial class DataGridFileStore : IDisposable
         if (_lastNumber + records.Count > DataGridWalRecovery.MaxRecordCount)
             throw new IOException("WAL record capacity requires a new generation.");
         var bytes = records.Sum(record => (long)record.Length);
-        Reserve(bytes, 0);
+        Reserve(checked(bytes + DataGridCurrentAnchor.FrontierEncodedByteCount), 1);
         var walBytes = _wal!.Length;
         if (walBytes + bytes > _limits.WalBytes)
             throw new IOException("WAL capacity requires a new generation.");
@@ -272,10 +300,24 @@ internal sealed partial class DataGridFileStore : IDisposable
         {
             Reached(DataGridStorageStep.WalWriteStarting, cancellationToken);
             foreach (var record in records)
+            {
                 _wal.Write(record);
+                _walHash!.AppendData(record);
+            }
             Reached(DataGridStorageStep.WalWritten, cancellationToken);
             _wal.Flush(flushToDisk: true);
             Reached(DataGridStorageStep.WalFlushed, cancellationToken);
+            PublishAnchor(
+                new DataGridCurrentAnchor(
+                    _configuration.IncarnationId,
+                    _member,
+                    GenerationId,
+                    walBytes + bytes,
+                    _lastNumber + records.Count,
+                    _walHash!.GetCurrentHash()
+                ).Encode(),
+                cancellationToken
+            );
             _lastNumber += records.Count;
             _image = target;
             _publishedWalBytes = walBytes + bytes;
@@ -301,13 +343,13 @@ internal sealed partial class DataGridFileStore : IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            var anchor = DataGridCurrentAnchor.ReadFrom(
-                ReadBounded("CURRENT", DataGridCurrentAnchor.EncodedByteCount)
-            );
+            var bytes = ReadAnchorBytes();
+            var anchor = DataGridCurrentAnchor.ReadFrom(bytes);
             if (
                 anchor.IncarnationId != _configuration.IncarnationId
                 || anchor.MemberId != _member
                 || anchor.GenerationId != GenerationId
+                || !bytes.AsSpan().SequenceEqual(_anchorBytes)
             )
                 throw new InvalidDataException("Selected generation changed outside its owner.");
             Inventory(validateIdentities: true);
@@ -357,6 +399,11 @@ internal sealed partial class DataGridFileStore : IDisposable
         }
     }
 
+    [SuppressMessage(
+        "Maintainability",
+        "CA1508:Avoid dead conditional code",
+        Justification = "The pending WAL/hash remain owned on exceptional paths; only successful publication transfers and nulls them before finally."
+    )]
     private void Publish(RaftDurableImage target, CancellationToken cancellationToken)
     {
         var generation = Guid.NewGuid();
@@ -377,12 +424,13 @@ internal sealed partial class DataGridFileStore : IDisposable
         Reserve(
             checked(
                 seedBytes
-                + DataGridCurrentAnchor.EncodedByteCount
+                + DataGridCurrentAnchor.FrontierEncodedByteCount
                 + (needsImage ? snapshot!.Descriptor.ByteCount : 0)
             ),
             needsImage ? 3 : 2
         );
         FileStream? nextWal = null;
+        IncrementalHash? nextHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         try
         {
             if (needsImage)
@@ -416,7 +464,10 @@ internal sealed partial class DataGridFileStore : IDisposable
             )
             {
                 foreach (var record in records)
+                {
                     seed.Write(record);
+                    nextHash.AppendData(record);
+                }
                 seed.Position = 0;
                 DataGridWalRecovery.Read(seed, _configuration, _member, generation, ReadSnapshot);
                 seed.Flush(flushToDisk: true);
@@ -428,24 +479,24 @@ internal sealed partial class DataGridFileStore : IDisposable
             Reached(DataGridStorageStep.GenerationDirectoryFlushed, cancellationToken);
             nextWal = OpenWal(GenerationName(generation));
             nextWal.Position = nextWal.Length;
-            var anchorTemp = TemporaryName();
-            Reached(DataGridStorageStep.AnchorWriteStarting, cancellationToken);
-            WriteFlushed(
-                anchorTemp,
+            PublishAnchor(
                 new DataGridCurrentAnchor(
                     _configuration.IncarnationId,
                     _member,
-                    generation
-                ).Encode()
+                    generation,
+                    seedBytes,
+                    records.Count,
+                    nextHash.GetCurrentHash()
+                ).Encode(),
+                cancellationToken
             );
-            Reached(DataGridStorageStep.AnchorFlushed, cancellationToken);
-            File.Move(FilePath(anchorTemp), FilePath("CURRENT"), overwrite: true);
-            Reached(DataGridStorageStep.AnchorRenamed, cancellationToken);
-            FlushDirectory();
-            Reached(DataGridStorageStep.AnchorDirectoryFlushed, cancellationToken);
             _wal?.Dispose();
             _wal = nextWal;
             nextWal = null;
+            _walHash?.Dispose();
+            _walHash = nextHash;
+            nextHash = null;
+            _appendable = true;
             _image = target;
             GenerationId = generation;
             _lastNumber = records.Count;
@@ -458,8 +509,42 @@ internal sealed partial class DataGridFileStore : IDisposable
         }
         finally
         {
-            nextWal?.Dispose();
+            try
+            {
+                nextWal?.Dispose();
+            }
+            finally
+            {
+                nextHash?.Dispose();
+            }
         }
+    }
+
+    private byte[] ReadAnchorBytes()
+    {
+        var length = new FileInfo(FilePath("CURRENT")).Length;
+        if (
+            length
+            is not (
+                DataGridCurrentAnchor.EncodedByteCount
+                or DataGridCurrentAnchor.FrontierEncodedByteCount
+            )
+        )
+            throw new InvalidDataException("Invalid CURRENT length.");
+        return ReadBounded("CURRENT", (int)length);
+    }
+
+    private void PublishAnchor(byte[] bytes, CancellationToken cancellationToken)
+    {
+        var temporary = TemporaryName();
+        Reached(DataGridStorageStep.AnchorWriteStarting, cancellationToken);
+        WriteFlushed(temporary, bytes);
+        Reached(DataGridStorageStep.AnchorFlushed, cancellationToken);
+        File.Move(FilePath(temporary), FilePath("CURRENT"), overwrite: true);
+        Reached(DataGridStorageStep.AnchorRenamed, cancellationToken);
+        FlushDirectory();
+        Reached(DataGridStorageStep.AnchorDirectoryFlushed, cancellationToken);
+        _anchorBytes = bytes;
     }
 
     private void ValidateTransition(RaftDurableImage target)
@@ -790,11 +875,18 @@ internal sealed partial class DataGridFileStore : IDisposable
         {
             try
             {
-                _ownership.Dispose();
+                _walHash?.Dispose();
             }
             finally
             {
-                _directoryHandle.Dispose();
+                try
+                {
+                    _ownership.Dispose();
+                }
+                finally
+                {
+                    _directoryHandle.Dispose();
+                }
             }
         }
     }
