@@ -835,31 +835,42 @@ public sealed class DataGridPeerTlsTests
         private readonly Action<int, DataGridStorageStep>? _observe;
         private readonly TimeProvider? _timeProvider;
         private readonly long[] _epochs = new long[3];
+        private readonly DataGridStorageLimits? _storageLimits;
 
         internal LiveCluster(
             DataGridPeerFixture fixture,
             IReadOnlyList<DataGridSecurityContext>? security = null,
             Action<int, DataGridStorageStep>? observe = null,
-            TimeProvider? timeProvider = null
+            TimeProvider? timeProvider = null,
+            string[]? paths = null,
+            DataGridStorageLimits? storageLimits = null
         )
         {
+            _storageLimits = storageLimits;
             _fixture = fixture;
             _security = security;
             _observe = observe;
             _timeProvider = timeProvider;
-            Paths = Enumerable
-                .Range(0, 3)
-                .Select(_ =>
-                    Path.Combine(
-                        Path.GetTempPath(),
-                        "hostloom-peer-" + Guid.NewGuid().ToString("N")
+            Paths =
+                paths
+                ?? Enumerable
+                    .Range(0, 3)
+                    .Select(_ =>
+                        Path.Combine(
+                            Path.GetTempPath(),
+                            "hostloom-peer-" + Guid.NewGuid().ToString("N")
+                        )
                     )
-                )
-                .ToArray();
+                    .ToArray();
             for (var i = 0; i < 3; i++)
             {
                 Directory.CreateDirectory(Paths[i]);
-                using var store = DataGridFileStore.Bootstrap(Paths[i], fixture.Configuration, i);
+                using var store = DataGridFileStore.Bootstrap(
+                    Paths[i],
+                    fixture.Configuration,
+                    i,
+                    _storageLimits
+                );
             }
         }
 
@@ -890,6 +901,7 @@ public sealed class DataGridPeerTlsTests
                 Paths[node],
                 _fixture.Configuration,
                 node,
+                _storageLimits,
                 observe: _observe is null ? null : step => _observe(node, step)
             );
             try

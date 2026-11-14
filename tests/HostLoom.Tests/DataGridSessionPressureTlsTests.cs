@@ -274,7 +274,14 @@ public sealed class DataGridSessionPressureTlsTests
         internal LogicalClock Clock { get; } = new();
         internal DataGridPeerTlsTests.LiveCluster Cluster { get; }
 
-        internal Lab(int principalCount, int mapKeys = 1000, long mapBytes = 1048576)
+        internal Lab(
+            int principalCount,
+            int mapKeys = 1000,
+            long mapBytes = 1048576,
+            Action<int, DataGridStorageStep>? observe = null,
+            string[]? paths = null,
+            DataGridStorageLimits? storageLimits = null
+        )
         {
             Peer = new(mapKeys, mapBytes);
             _certificates = Enumerable
@@ -312,7 +319,7 @@ public sealed class DataGridSessionPressureTlsTests
                 .Range(0, 3)
                 .Select(i => new DataGridSecurityContext(Peer.Credentials(i), policy))
                 .ToArray();
-            Cluster = new(Peer, _security, timeProvider: Clock);
+            Cluster = new(Peer, _security, observe, Clock, paths, storageLimits);
             Cluster.StartAll();
             var listeners = Enumerable
                 .Range(0, 3)
@@ -473,7 +480,14 @@ public sealed class DataGridSessionPressureTlsTests
                 Guid principal,
                 DataGridClientRequest request,
                 CancellationToken cancellationToken
-            ) => lab.Cluster.Nodes[member]!.ExecuteAsync(principal, request, cancellationToken);
+            ) =>
+                lab.Cluster.Nodes[member] is { } runtime
+                    ? runtime.ExecuteAsync(principal, request, cancellationToken)
+                    : Task.FromResult(
+                        DataGridClientReply.Failed(
+                            new(DataGridClientFailureCode.QuorumUnavailable, false)
+                        )
+                    );
         }
     }
 }
