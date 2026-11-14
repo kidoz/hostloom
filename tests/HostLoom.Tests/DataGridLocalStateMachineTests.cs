@@ -174,6 +174,7 @@ public sealed class DataGridLocalStateMachineTests
         var snapshot = state.SaveSnapshot(SnapshotId, 1);
         var bytes = snapshot.GetContent();
         var restored = DataGridLocalStateMachine.Restore(config, snapshot.Descriptor, bytes);
+        restored.VerifyCanonicalSnapshot(snapshot);
         bytes[0] = 0;
         Assert.Equal(
             TimeSpan.FromTicks(5),
@@ -319,6 +320,7 @@ public sealed class DataGridLocalStateMachineTests
             snapshot.Descriptor,
             snapshot.GetContent()
         );
+        state.VerifyCanonicalSnapshot(snapshot);
         Apply(
             state,
             Mutation(1, 4, DataGridMutationKind.Put, "catalog:000", [2], ttl: 100, time: 1)
@@ -501,6 +503,7 @@ public sealed class DataGridLocalStateMachineTests
         );
         var image = state.SaveSnapshot(SnapshotId, 1);
         // Independent Python struct/uuid/hashlib encoding of HLGF, HLGB and HLGS.
+        state.VerifyCanonicalSnapshot(image);
         Assert.Equal(181, image.Descriptor.ByteCount);
         Assert.Equal(
             "8EB50F45DDDCF1A4C478771B98053BD24738D791800901DEDA169024E78BF089",
@@ -595,6 +598,7 @@ public sealed class DataGridLocalStateMachineTests
         var snapshot = state.SaveSnapshot(SnapshotId, 1);
         var bytes = snapshot.GetContent();
         var restored = DataGridLocalStateMachine.Restore(configuration, snapshot.Descriptor, bytes);
+        restored.VerifyCanonicalSnapshot(snapshot);
         Assert.Equal(4096, restored.SessionCount);
         Assert.Equal(4096, restored.SessionHighWater);
         Assert.Equal(bytes, restored.SaveSnapshot(SnapshotId, 1).GetContent());
@@ -710,6 +714,7 @@ public sealed class DataGridLocalStateMachineTests
         );
         var image = state.SaveSnapshot(SnapshotId, 1);
         state = DataGridLocalStateMachine.Restore(config, image.Descriptor, image.GetContent());
+        state.VerifyCanonicalSnapshot(image);
         Assert.Equal(2, state.StoredKeyCount);
         Assert.Equal(4, state.StoredDataByteCount);
         Assert.Equal(new byte[] { 1 }, state.Read(Map, Key("k"))!.GetValue());

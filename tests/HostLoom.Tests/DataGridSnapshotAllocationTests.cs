@@ -8,6 +8,79 @@ namespace HostLoom.Tests;
 
 public sealed class DataGridSnapshotAllocationTests
 {
+    [Fact]
+    public void ComparisonWriterChecksEveryByteAndCompletionWithoutChangingBorrowedInput()
+    {
+        var expected = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
+        var original = (byte[])expected.Clone();
+        using (var exact = GridWriter.Comparing(expected))
+        {
+            exact.Raw(expected.AsSpan(0, 7));
+            exact.Raw(expected.AsSpan(7));
+            exact.CompleteComparison();
+            Assert.Throws<InvalidOperationException>(() => exact.ToArray());
+            Assert.Throws<InvalidOperationException>(() => exact.DetachExactContent());
+        }
+        for (var i = 0; i < expected.Length; i++)
+        {
+            var changed = (byte[])expected.Clone();
+            changed[i] ^= 1;
+            using var comparison = GridWriter.Comparing(expected);
+            Assert.Throws<InvalidDataException>(() =>
+            {
+                comparison.Raw(changed.AsSpan(0, 7));
+                comparison.Raw(changed.AsSpan(7));
+                comparison.CompleteComparison();
+            });
+        }
+        using (var incomplete = GridWriter.Comparing(expected))
+        {
+            incomplete.Raw(expected.AsSpan(0, 31));
+            Assert.Throws<InvalidDataException>(() => incomplete.CompleteComparison());
+        }
+        Assert.Equal(original, expected);
+    }
+
+    [Fact]
+    public void KnownPrefixComparisonDoesNotAllocateAnotherFullEncodedImage()
+    {
+        var token = TestContext.Current.CancellationToken;
+        using var directory = new DataGridFileStorageTests.OwnedDirectory();
+        using var fixture = new DataGridPeerFixture(10000, 16 * 1024 * 1024);
+        var config = fixture.Configuration;
+        var machine = Populate(config, DataGridFeasibilityCase.Key);
+        var oldSnapshot = machine.SaveSnapshot(Guid.NewGuid(), 1);
+        var nextSnapshot = machine.SaveSnapshot(Guid.NewGuid(), 1);
+        var target = new RaftDurableImage(
+            config,
+            1,
+            commitIndex: machine.LastAppliedIndex,
+            snapshot: nextSnapshot
+        );
+        using var store = DataGridFileStore.Bootstrap(directory.Path, config, 0);
+        store.Persist(
+            new(config, 1, commitIndex: machine.LastAppliedIndex, snapshot: oldSnapshot),
+            token
+        );
+        _ = store.RestoreApplication();
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var independent = store.RestoreApplication();
+        var reconstruction = GC.GetAllocatedBytesForCurrentThread() - before;
+        before = GC.GetAllocatedBytesForCurrentThread();
+        store.Persist(target, token);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        GC.KeepAlive(independent);
+        TestContext.Current.TestOutputHelper!.WriteLine(
+            $"Known prefix: {allocated} allocated bytes, reconstruction {reconstruction} bytes; snapshot {nextSnapshot.Descriptor.ByteCount} bytes."
+        );
+        // Independent reconstruction is required. Its canonical comparison must not add an image-sized output buffer.
+        Assert.True(allocated - reconstruction < nextSnapshot.Descriptor.ByteCount);
+        Assert.Equal(
+            nextSnapshot.Descriptor.SnapshotId,
+            store.Image.Snapshot!.Descriptor.SnapshotId
+        );
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
