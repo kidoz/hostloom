@@ -124,3 +124,14 @@ dependencies.
 | `RecordingFilter<TContext>` | ctor `(string name, ExecutionLog log)`; records pass-through order |
 | `ExecutionLog` | `Entries`, `Record(string)` — shared log for recording filters |
 | `FaultFilter<TContext>` | ctor `(int failures, Func<Exception>? exceptionFactory = null)`; fails the first *n* sends, counts `Sends` |
+
+## Application-owned batch outcomes
+
+`IPipelineRunner<TContext>.RunAsync` returns a `ValueTask`: completion or an exception describes
+the run as a whole. The application owns the typed per-item result model on its context,
+including each stage's succeeded, failed, and skipped outcomes and isolated persistence errors.
+Filters that handle per-item failures must record those outcomes before continuing; a
+successfully completed runner cannot infer them from logs. Use explicit item identities and a
+thread-safe result collection when processing items concurrently, and assert those results in
+the pipeline harness. The framework owns filter/run instrumentation and exception propagation;
+it does not supply domain-specific attribute or scoring result types.
