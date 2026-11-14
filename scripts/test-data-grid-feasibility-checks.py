@@ -41,10 +41,36 @@ RUNNER = cast(Runner, MODULE)
 XML = '<assemblies><assembly total="1" passed="1" failed="0" skipped="0" errors="0"><collection><test type="HostLoom.Tests.DataGridFeasibilityTests" result="Pass" /></collection></assembly></assemblies>'
 
 
+def resource_rows() -> dict[str, Any]:
+    return {
+        "members": [
+            {
+                "member": i,
+                "managed": {
+                    "total_available_memory_bytes": 448 * 1024**2,
+                    "total_pause_milliseconds": 0,
+                    "gc_index": 0,
+                    "pause_time_percentage": 0,
+                    "last_pause0_milliseconds": 0,
+                    "last_pause1_milliseconds": 0,
+                },
+                "diagnostic": {
+                    "role": "Follower",
+                    "term": 1,
+                    "commit_index": 1,
+                    "applied_index": 1,
+                    "snapshot_index": 0,
+                },
+            }
+            for i in range(3)
+        ]
+    }
+
+
 def files(directory: Path) -> dict[str, int]:
     spec = RUNNER.scenario(1, 1, 17, smoke=True)
     location = directory / "feasibility"
-    location.mkdir()
+    location.mkdir(exist_ok=True)
     row = {
         "worker": 0,
         "request_number": 1,
@@ -81,6 +107,9 @@ def files(directory: Path) -> dict[str, int]:
     }
     report = {
         "case": spec,
+        "diagnostics_version": 1,
+        "resolution_journal_records": 1,
+        "elapsed_seconds": 10,
         "is_p0": False,
         "status": "completed",
         "process_memory_profile": RUNNER.memory_profile(False),
@@ -89,6 +118,23 @@ def files(directory: Path) -> dict[str, int]:
         "warmup": summary,
         "sample": {**summary, "request_throughput": 0.2},
     }
+    (location / "resolutions.jsonl").write_text(
+        json.dumps(
+            {
+                "logical": 1,
+                "kind": "Read",
+                "session": None,
+                "request_number": None,
+                "digest": None,
+                "started_seconds": 1,
+                "finished_seconds": 2,
+                "outcome": "completed",
+                "attempts": [],
+            }
+        )
+        + "\n"
+    )
+    (location / "resources.jsonl").write_text(json.dumps(resource_rows()) + "\n")
     (location / "case.json").write_text(json.dumps(report))
     for phase in ["warmup", "sample"]:
         (location / f"{phase}-calls.jsonl").write_text(json.dumps(row) + "\n")
@@ -113,12 +159,7 @@ class FeasibilityEvidenceTests(unittest.TestCase):
             report["runtime"] = {"total_available_memory_bytes": 192 * 1024**2}
             path.write_text(json.dumps(report))
             resources = directory / "feasibility/resources.jsonl"
-            rows: dict[str, Any] = {
-                "members": [
-                    {"member": i, "managed": {"total_available_memory_bytes": 448 * 1024**2}}
-                    for i in range(3)
-                ]
-            }
+            rows = resource_rows()
             resources.write_text(json.dumps(rows) + "\n")
             self.assertEqual(
                 "completed",
@@ -134,15 +175,49 @@ class FeasibilityEvidenceTests(unittest.TestCase):
                 RUNNER.validate_measurement(directory, spec, XML, 0, bounded_memory=True)
             report["runtime"] = {"total_available_memory_bytes": 192 * 1024**2}
             path.write_text(json.dumps(report))
-            rows["members"][1]["managed"] = {"total_available_memory_bytes": 1536 * 1024**2}
+            rows["members"][1]["managed"]["total_available_memory_bytes"] = 1536 * 1024**2
             resources.write_text(json.dumps(rows) + "\n")
             with self.assertRaises(RuntimeError):
                 RUNNER.validate_measurement(directory, spec, XML, 0, bounded_memory=True)
-            rows["members"][1]["managed"] = {"total_available_memory_bytes": 448 * 1024**2}
+            rows["members"][1]["managed"]["total_available_memory_bytes"] = 448 * 1024**2
             rows["members"].pop()
             resources.write_text(json.dumps(rows) + "\n")
             with self.assertRaises(RuntimeError):
                 RUNNER.validate_measurement(directory, spec, XML, 0, bounded_memory=True)
+
+    def test_resolution_provenance_rejects_identity_changes_and_missing_member_or_pause_data(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = files(directory)
+            path = directory / "feasibility/resolutions.jsonl"
+            row = json.loads(path.read_text())
+            path.write_text(json.dumps({**row, "finished_seconds": 0}) + "\n")
+            with self.assertRaises(RuntimeError):
+                RUNNER.validate_measurement(directory, spec, XML, 0)
+            files(directory)
+            observation = resource_rows()
+            observation["members"][0]["managed"]["total_pause_milliseconds"] = -1
+            resource = directory / "feasibility/resources.jsonl"
+            resource.write_text(json.dumps(observation) + "\n")
+            with self.assertRaises(RuntimeError):
+                RUNNER.validate_measurement(directory, spec, XML, 0)
+            observation = resource_rows()
+            observation["members"][0]["diagnostic"] = None
+            resource.write_text(json.dumps(observation) + "\n")
+            with self.assertRaises(RuntimeError):
+                RUNNER.validate_measurement(directory, spec, XML, 0)
+            files(directory)
+            path.write_text(
+                json.dumps(row) + "\n" + json.dumps({**row, "digest": "changed"}) + "\n"
+            )
+            case = directory / "feasibility/case.json"
+            report = json.loads(case.read_text())
+            report["resolution_journal_records"] = 2
+            case.write_text(json.dumps(report))
+            with self.assertRaises(RuntimeError):
+                RUNNER.validate_measurement(directory, spec, XML, 0)
 
     def test_full_plan_has_27_distinct_coordinates_and_three_seeds(self) -> None:
         plan = [

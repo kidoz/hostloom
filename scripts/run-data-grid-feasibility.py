@@ -73,6 +73,75 @@ def nearest_rank(values: list[float], percentile: float) -> float | None:
     return sorted(values)[max(0, math.ceil(percentile * len(values)) - 1)]
 
 
+def validate_diagnostics(directory: Path, result: dict[str, Any]) -> None:
+    if result.get("diagnostics_version") != 1:
+        raise RuntimeError("Missing quorum diagnostic schema.")
+    rows = [
+        json.loads(line)
+        for line in (directory / "feasibility/resolutions.jsonl").read_text().splitlines()
+    ]
+    if len(rows) > 10000 or len(rows) != result.get("resolution_journal_records"):
+        raise RuntimeError("Resolution journal count mismatch or overflow.")
+    if result["status"] == "completed" and not rows:
+        raise RuntimeError("Completed case lost resolution provenance.")
+    identities: dict[tuple[int, int], str] = {}
+    logical: dict[int, tuple[Any, ...]] = {}
+    for row in rows:
+        if not 0 <= row["started_seconds"] <= row["finished_seconds"] <= result["elapsed_seconds"]:
+            raise RuntimeError("Invalid resolution interval.")
+        identity = row["kind"], row["session"], row["request_number"], row["digest"]
+        if row["logical"] in logical and logical[row["logical"]] != identity:
+            raise RuntimeError("Logical resolution identity changed across retries.")
+        logical[row["logical"]] = identity
+        if row["digest"] is not None:
+            key = row["session"], row["request_number"]
+            if key in identities and identities[key] != row["digest"]:
+                raise RuntimeError("Mutation identity changed in the resolution journal.")
+            identities[key] = row["digest"]
+        attempts = row["attempts"]
+        if attempts is None:
+            if row["outcome"] != "cancelled":
+                raise RuntimeError("Missing returned SDK attempts.")
+        elif len(attempts) > 3 or any(
+            not isinstance(a["request_submitted"], bool)
+            or not isinstance(a["wire_reply_observed"], bool)
+            or uuid.UUID(a["attempt_id"]).int == 0
+            or uuid.UUID(a["member_id"]).int == 0
+            for a in attempts
+        ):
+            raise RuntimeError("Invalid physical SDK attempt provenance.")
+    members = set()
+    for line in (directory / "feasibility/resources.jsonl").read_text().splitlines():
+        for member in json.loads(line)["members"]:
+            if "managed" not in member:
+                continue
+            memory = member["managed"]
+            for key in [
+                "total_pause_milliseconds",
+                "gc_index",
+                "pause_time_percentage",
+                "last_pause0_milliseconds",
+                "last_pause1_milliseconds",
+            ]:
+                value = memory[key]
+                if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                    raise RuntimeError("Invalid GC pause observation.")
+            if member["member"] >= 0:
+                diagnostic = member["diagnostic"]
+                if (
+                    not diagnostic
+                    or not diagnostic["role"]
+                    or any(
+                        diagnostic[key] < 0
+                        for key in ["term", "commit_index", "applied_index", "snapshot_index"]
+                    )
+                ):
+                    raise RuntimeError("Missing member role/progress diagnostics.")
+                members.add(member["member"])
+    if result["status"] == "completed" and members != {0, 1, 2}:
+        raise RuntimeError("Completed case lost member diagnostics.")
+
+
 def validate_measurement(
     directory: Path, expected: dict[str, int], xml: str, code: int, *, bounded_memory: bool = False
 ) -> dict[str, Any]:
@@ -123,6 +192,7 @@ def validate_measurement(
         raise RuntimeError("Case parameters or P0/smoke label mismatch.")
     if result["status"] not in {"completed", "infeasible", "incomplete_budget"}:
         raise RuntimeError("Missing or failed feasibility execution.")
+    validate_diagnostics(directory, result)
     identities: dict[tuple[int, int], str] = {}
     for phase in ["warmup", "sample"]:
         path = directory / f"feasibility/{phase}-calls.jsonl"
