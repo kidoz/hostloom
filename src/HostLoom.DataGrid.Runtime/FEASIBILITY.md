@@ -36,6 +36,32 @@ Use a new report directory for every execution. For runner validation, add `--sm
 never be reported as the full workload. The runner accepts no external endpoints or existing
 containers. It verifies ownership and removes only its exact container on exit/interruption.
 
+## Optional process GC budgets
+
+Add `--bounded-memory` to select the experimental `shared-2g-bounded-gc-v1` profile. The
+container still has two GiB/no swap and two CPU quota. Only the load driver and member runtimes
+receive explicit GC heap hard limits; restore/build processes use their normal configuration:
+
+| Process | GC heap hard limit |
+| --- | --- |
+| Load driver | 192 MiB |
+| Each of three members, including restarted members | 448 MiB |
+| Sum of the four limits | 1536 MiB |
+| Remaining container budget, unassigned | 512 MiB |
+
+The runner sets `DOTNET_GCHeapHardLimit` with hexadecimal byte values (`C000000` and `1C000000`).
+A [GC heap hard limit](https://learn.microsoft.com/en-us/dotnet/core/runtime-config/garbage-collector#heap-hard-limit)
+bounds GC heap/bookkeeping commit, not process RSS or total container memory. The remaining
+512 MiB is not a reservation: native allocation, JIT, stacks, TLS, file cache and kernel charges
+also consume the container budget. Earlier/more frequent collection can reduce throughput or
+still fail to accommodate live/transient objects. This is an experiment, not a production GC
+policy, a service NFR or established 100000-key capacity.
+
+Without the flag, the profile is `runtime_defaults`. Reports record the selected profile and
+effective runtime budgets. The validator requires the expected driver budget and observations
+from all three correctly budgeted members before accepting bounded-profile evidence. Keep
+profiles separate when comparing results; do not combine their measurements into one matrix.
+
 ## Workload and limits
 
 All keys are 32 bytes, all values 1024 bytes with a self-checking SHA-256 payload. The fixed
@@ -117,7 +143,7 @@ and exact-container cleanup result. Additional files are:
 
 | File | Contents |
 | --- | --- |
-| `plan.json` | Coordinate, smoke/full label, entrypoint hash and repeat seeds |
+| `plan.json` | Coordinate, smoke/full label, process memory profile, entrypoint hash and repeat seeds |
 | `feasibility/case.json` | Effective limits, timing rules, phase summaries, rates, population/recovery results and case status |
 | `feasibility/warmup-calls.jsonl`, `sample-calls.jsonl` | Per-invocation timings, outcomes, batch items, mutation sequence/digest and cross-phase resolution flags |
 | `feasibility/resources.jsonl` | One-second process and directory observations by phase |
@@ -127,7 +153,11 @@ and rejects identity changes, missing evidence and false smoke/full labels. Its 
 may execute successfully while the case is `infeasible` or `incomplete_budget`; inspect both
 statuses in `report.json`. A completed case requires resolved writes and verified recovery.
 Checksum/identity corruption, unexpected exceptions, failed/skipped driver, lost raw observations,
-or failed ownership/cleanup fail execution. Population is bounded to 300 seconds, identity drain
+or failed ownership/cleanup fail execution. Partial population acknowledgements and the stopping phase are retained on failure. An interrupted
+setup mutation may have been admitted; acknowledged progress is not rollback evidence.
+`unresolved_mutations` counts timed workers, which have not started during population. Resolving
+one immutable identity is bounded to 45 seconds; an expired resolution reports the last returned
+failure separately from an enclosing deadline. Population is bounded to 300 seconds, identity drain
 to 45 seconds, the case to 840 seconds and the container command to 900 seconds. Each phase
 permits at most 100000 invocation records; reaching that bound stops rather than truncates.
 No numerical latency/throughput stop-go threshold is invented. A full 27-case campaign and
@@ -142,5 +172,11 @@ capacity remains unqualified. Diagnose process memory and transient allocation p
 collecting the full campaign; a completed smoke does not resolve that constraint.
 Validation reuse, exact-buffer encoding and removal of full-image read/send copies reduce known
 allocation amplification. The full population still hits this fixture's limit. Aggregate
-transient/in-flight snapshot and process memory must be attributed and bounded before retrying
-the full-size coordinate and remaining campaign.
+transient/in-flight snapshot and process memory remains a qualification concern.
+Separate bounded-GC full-size attempts also stopped during population without an observed
+cgroup OOM kill. The repeat acknowledged 56656 keys, then exceeded the 45-second immutable-request
+resolution budget with `QuorumUnavailable` at about 199 seconds. Warmup, sampling and full-size
+recovery were not executed. Both profiles remain unqualified for this workload. Heap ownership
+captures and explicit process budgets are diagnostic evidence, not proof that GC caps make this
+composition feasible. Member role/progress/fault and GC-pause evidence around lost quorum is the
+next diagnostic before choosing a further allocation or coordination change.

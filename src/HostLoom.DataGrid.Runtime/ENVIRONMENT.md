@@ -30,6 +30,11 @@ server and member-process cases are not deployment evidence. Linux x64, Windows,
 deployment, other distributions/filesystems, network/shared filesystems, independent hosts and
 container orchestration are outside this selected baseline until explicitly selected and tested.
 
+The [feasibility runner](FEASIBILITY.md#optional-process-gc-budgets) also offers an opt-in
+process GC budget profile within these unchanged container controls. It is separate from the
+ordinary qualification matrix and runtime-default feasibility results. No host-wide GC setting
+or production library default changes. Neither process profile establishes full-size capacity.
+
 ## Storage and authority
 
 WAL file flush, temporary CURRENT flush, atomic same-filesystem rename and directory flush must
