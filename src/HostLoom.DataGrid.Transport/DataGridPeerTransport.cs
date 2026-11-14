@@ -577,7 +577,7 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
             return SnapshotReply(message, result.Term, false);
         if (result.Installed || result.Offset != 0)
             throw new InvalidDataException("Invalid snapshot start acknowledgement.");
-        var bytes = snapshot.GetContent();
+        var bytes = snapshot.ContentMemory;
         for (var offset = 0; offset < bytes.Length; )
         {
             security.Check();
@@ -586,7 +586,7 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
             chunk.Id(snapshot.Descriptor.SnapshotId);
             chunk.Number((ulong)offset, 8);
             chunk.Number((ulong)count, 4);
-            chunk.Raw(bytes.AsSpan(offset, count));
+            chunk.Raw(bytes.Span.Slice(offset, count));
             await Write(
                     tls,
                     DataGridPeerCodec.Frame(
@@ -682,7 +682,8 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
                     .ConfigureAwait(false);
                 continue;
             }
-            DataGridLocalStateMachine.Restore(_config, descriptor, bytes);
+            var snapshot = new DataGridLocalSnapshot(descriptor, bytes);
+            snapshot.Validate(_config);
             var request = new RaftMessage(
                 RaftMessageKind.SnapshotRequest,
                 remote,
@@ -691,7 +692,7 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
                 DataGridPeerCodec.Token(attempt),
                 _config.IncarnationId,
                 _config.ComputeDigest(),
-                snapshot: new(descriptor, bytes)
+                snapshot: snapshot
             );
             security.Check();
             var reply = await _receiver.ReceiveAsync(request, token).ConfigureAwait(false);

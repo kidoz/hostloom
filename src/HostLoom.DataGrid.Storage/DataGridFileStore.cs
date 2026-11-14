@@ -418,7 +418,7 @@ internal sealed partial class DataGridFileStore : IDisposable
         if (snapshot is not null && !needsImage)
         {
             var existing = ReadSnapshot(snapshot.Descriptor);
-            if (!existing.GetContent().AsSpan().SequenceEqual(snapshot.GetContent()))
+            if (!existing.Content.SequenceEqual(snapshot.Content))
                 throw new InvalidDataException("Snapshot identity cannot be overwritten.");
         }
         Reserve(
@@ -437,7 +437,7 @@ internal sealed partial class DataGridFileStore : IDisposable
             {
                 var imageTemp = TemporaryName();
                 Reached(DataGridStorageStep.SnapshotWriteStarting, cancellationToken);
-                WriteFlushed(imageTemp, snapshot!.GetContent());
+                WriteFlushed(imageTemp, snapshot!.Content);
                 DataGridLocalStateMachine.Restore(
                     _configuration,
                     snapshot.Descriptor,
@@ -600,7 +600,7 @@ internal sealed partial class DataGridFileStore : IDisposable
                 target.Snapshot.Descriptor.SnapshotId,
                 target.Snapshot.Descriptor.LastIncludedTerm
             );
-            if (!expected.GetContent().AsSpan().SequenceEqual(target.Snapshot.GetContent()))
+            if (!expected.Content.SequenceEqual(target.Snapshot.Content))
                 throw new InvalidDataException("Snapshot disagrees with the known log prefix.");
         }
     }
@@ -666,7 +666,7 @@ internal sealed partial class DataGridFileStore : IDisposable
             ? DataGridLocalStateMachine.Restore(
                 _configuration,
                 snapshot.Descriptor,
-                snapshot.GetContent()
+                snapshot.Content
             )
             : new(_configuration);
         while (application.LastAppliedIndex < image.CommitIndex)
@@ -688,8 +688,9 @@ internal sealed partial class DataGridFileStore : IDisposable
             SnapshotName(descriptor.SnapshotId),
             checked((int)descriptor.ByteCount)
         );
-        DataGridLocalStateMachine.Restore(_configuration, descriptor, bytes);
-        return new(descriptor, bytes);
+        var snapshot = new DataGridLocalSnapshot(descriptor, bytes);
+        snapshot.Validate(_configuration);
+        return snapshot;
     }
 
     private (long Bytes, int Count) Inventory(bool validateIdentities = false)
@@ -795,7 +796,7 @@ internal sealed partial class DataGridFileStore : IDisposable
         return new(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
     }
 
-    private void WriteFlushed(string name, byte[] bytes)
+    private void WriteFlushed(string name, ReadOnlySpan<byte> bytes)
     {
         using var stream = new FileStream(
             FilePath(name),

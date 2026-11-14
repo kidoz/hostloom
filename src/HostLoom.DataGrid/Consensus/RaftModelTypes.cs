@@ -118,11 +118,7 @@ internal sealed class RaftDurableImage
         {
             if (snapshot.Descriptor.ByteCount > MaxImageBytes)
                 throw new InvalidDataException("Modeled snapshot capacity exceeded.");
-            DataGridLocalStateMachine.Restore(
-                configuration,
-                snapshot.Descriptor,
-                snapshot.GetContent()
-            );
+            snapshot.Validate(configuration);
         }
         foreach (var entry in log)
         {

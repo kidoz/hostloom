@@ -1,11 +1,16 @@
 using System.Security.Cryptography;
+using System.Text;
 
 namespace HostLoom.DataGrid;
 
 public sealed class DataGridLocalSnapshot
 {
     private readonly byte[] _content;
+    private readonly object _validationGate = new();
+    private DataGridBootstrapConfiguration? _validatedConfiguration;
 
+    // Internal producers transfer exclusive ownership of these bytes. Public readers receive
+    // copies; the immutable content and configuration make successful validation reusable.
     internal DataGridLocalSnapshot(DataGridSnapshotDescriptor descriptor, byte[] content)
     {
         Descriptor = descriptor;
@@ -15,6 +20,26 @@ public sealed class DataGridLocalSnapshot
     public DataGridSnapshotDescriptor Descriptor { get; }
 
     public byte[] GetContent() => (byte[])_content.Clone();
+
+    // Borrowed only by synchronous trusted readers; public callers retain copy isolation.
+    internal ReadOnlySpan<byte> Content => _content;
+
+    // Async transfers retain this immutable array through the memory value until completion.
+    internal ReadOnlyMemory<byte> ContentMemory => _content;
+
+    internal void Validate(DataGridBootstrapConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        lock (_validationGate)
+        {
+            if (ReferenceEquals(_validatedConfiguration, configuration))
+                return;
+            _ = DataGridLocalStateMachine.Restore(configuration, Descriptor, _content);
+            // Cache only success, on this snapshot and one exact immutable configuration.
+            // A new snapshot/configuration still receives complete semantic/digest validation.
+            _validatedConfiguration = configuration;
+        }
+    }
 }
 
 public sealed partial class DataGridLocalStateMachine
@@ -34,7 +59,32 @@ public sealed partial class DataGridLocalStateMachine
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(includedTerm);
         if (snapshotId == Guid.Empty)
             throw new ArgumentException("A snapshot identity is required.", nameof(snapshotId));
-        using var body = new GridWriter((int)DataGridSnapshotDescriptor.MaxSnapshotByteCount - 88);
+        // V1 fixed envelopes/sections plus charged key/value bytes and per-entry/session fields.
+        // Exact capacity is checked again when ownership of the completed buffer is detached.
+        var encodedBytes = 154L + StoredDataByteCount + 59L * StoredKeyCount;
+        foreach (var map in _maps)
+            encodedBytes +=
+                20
+                + Encoding.UTF8.GetByteCount(map.Configuration.Name)
+                + (map.Cursor?.ByteCount ?? 0);
+        foreach (var session in _sessions.Values)
+            encodedBytes += 100 + 31L * (session.Result?.ItemCount ?? 0);
+        using var image = new GridWriter(
+            (int)DataGridSnapshotDescriptor.MaxSnapshotByteCount,
+            checked((int)encodedBytes)
+        );
+        image.Raw("HLGS"u8);
+        image.Number(1, 2);
+        image.Number(0, 2);
+        image.Id(_configuration.IncarnationId);
+        image.Raw(_configuration.ComputeDigest());
+        image.Number((ulong)LastAppliedIndex, 8);
+        image.Number((ulong)includedTerm, 8);
+        image.Number((ulong)AppliedTime.UtcTicks, 8);
+        var lengthPosition = image.Length;
+        image.Number(0, 8);
+        var bodyStart = image.Length;
+        var body = image;
         body.Raw("HLGB"u8);
         body.Number(1, 2);
         body.Number(4, 2);
@@ -89,18 +139,8 @@ public sealed partial class DataGridLocalStateMachine
                 }
         }
         body.EndSection(section);
-        using var image = new GridWriter((int)DataGridSnapshotDescriptor.MaxSnapshotByteCount);
-        image.Raw("HLGS"u8);
-        image.Number(1, 2);
-        image.Number(0, 2);
-        image.Id(_configuration.IncarnationId);
-        image.Raw(_configuration.ComputeDigest());
-        image.Number((ulong)LastAppliedIndex, 8);
-        image.Number((ulong)includedTerm, 8);
-        image.Number((ulong)AppliedTime.UtcTicks, 8);
-        image.Number((ulong)body.Length, 8);
-        image.Raw(body.ToArray());
-        var bytes = image.ToArray();
+        image.NumberAt(lengthPosition, (ulong)(image.Length - bodyStart), 8);
+        var bytes = image.DetachExactContent();
         return new(
             new(snapshotId, LastAppliedIndex, includedTerm, bytes.Length, SHA256.HashData(bytes)),
             bytes

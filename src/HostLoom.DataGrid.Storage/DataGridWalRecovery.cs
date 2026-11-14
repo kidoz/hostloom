@@ -145,11 +145,7 @@ internal static class DataGridWalRecovery
                         throw new InvalidDataException(
                             "Snapshot reader returned a different image."
                         );
-                    DataGridLocalStateMachine.Restore(
-                        configuration,
-                        descriptor,
-                        snapshot.GetContent()
-                    );
+                    snapshot.Validate(configuration);
                     break;
                 default:
                     throw new InvalidDataException("Unexpected WAL identity/kind.");

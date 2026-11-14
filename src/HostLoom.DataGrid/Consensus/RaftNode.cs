@@ -38,7 +38,7 @@ internal sealed class RaftNode
         _durable = durable;
         CurrentTerm = durable.Term;
         _machine = durable.Snapshot is { } image
-            ? DataGridLocalStateMachine.Restore(configuration, image.Descriptor, image.GetContent())
+            ? DataGridLocalStateMachine.Restore(configuration, image.Descriptor, image.Content)
             : new(configuration);
         ApplyCommitted();
         _effects.Clear();
@@ -614,11 +614,7 @@ internal sealed class RaftNode
         LeaderId = message.From;
         if (snapshot.Descriptor.ByteCount > RaftDurableImage.MaxImageBytes)
             throw new InvalidDataException("Modeled snapshot capacity exceeded.");
-        DataGridLocalStateMachine.Restore(
-            _configuration,
-            snapshot.Descriptor,
-            snapshot.GetContent()
-        );
+        snapshot.Validate(_configuration);
         var index = snapshot.Descriptor.LastIncludedIndex;
         if (index <= _durable.CommitIndex)
         {
@@ -770,7 +766,7 @@ internal sealed class RaftNode
             _machine = DataGridLocalStateMachine.Restore(
                 _configuration,
                 snapshot.Descriptor,
-                snapshot.GetContent()
+                snapshot.Content
             );
         }
         while (_machine.LastAppliedIndex < _durable.CommitIndex)

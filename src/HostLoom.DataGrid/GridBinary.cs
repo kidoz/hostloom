@@ -3,14 +3,24 @@ using System.Text;
 
 namespace HostLoom.DataGrid;
 
-internal sealed class GridWriter(int limit) : IDisposable
+internal sealed class GridWriter : IDisposable
 {
-    private readonly MemoryStream _stream = new();
+    private readonly int _limit;
+    private readonly MemoryStream _stream;
+
+    internal GridWriter(int limit, int initialCapacity = 0)
+    {
+        if (initialCapacity < 0 || initialCapacity > limit)
+            throw new ArgumentOutOfRangeException(nameof(initialCapacity));
+        _limit = limit;
+        _stream = new(initialCapacity);
+    }
+
     internal int Length => checked((int)_stream.Length);
 
     internal void Raw(ReadOnlySpan<byte> bytes)
     {
-        if (bytes.Length > limit - _stream.Position)
+        if (bytes.Length > _limit - _stream.Position)
             throw new InvalidOperationException("Encoded capacity exceeded.");
         _stream.Write(bytes);
     }
@@ -62,6 +72,28 @@ internal sealed class GridWriter(int limit) : IDisposable
     }
 
     internal byte[] ToArray() => _stream.ToArray();
+
+    internal byte[] DetachExactContent()
+    {
+        if (_stream.Length != _stream.Capacity)
+            throw new InvalidOperationException("Exact snapshot size disagrees with its encoding.");
+        var bytes = _stream.GetBuffer();
+        // The closed writer cannot modify the transferred array; other codecs keep ToArray.
+        _stream.Dispose();
+        return bytes;
+    }
+
+    internal void NumberAt(int position, ulong value, int width)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(width, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(width, 8);
+        if (position < 0 || position > Length - width)
+            throw new ArgumentOutOfRangeException(nameof(position));
+        var end = _stream.Position;
+        _stream.Position = position;
+        Number(value, width);
+        _stream.Position = end;
+    }
 
     public void Dispose() => _stream.Dispose();
 }
