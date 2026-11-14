@@ -45,6 +45,15 @@ ENV = cast(Environment, MODULE)
 SEEDS = [17, 29, 43]
 
 
+def memory_profile(bounded: bool) -> dict[str, str | int | None]:
+    return {
+        "name": "shared-2g-bounded-gc-v1" if bounded else "runtime_defaults",
+        "driver_heap_limit_bytes": 192 * 1024**2 if bounded else None,
+        "member_heap_limit_bytes": 448 * 1024**2 if bounded else None,
+        "remaining_container_bytes": 512 * 1024**2 if bounded else None,
+    }
+
+
 def scenario(batch: int, concurrency: int, seed: int, *, smoke: bool) -> dict[str, int]:
     if batch not in [1, 32, 128] or concurrency not in [1, 16, 64] or seed not in SEEDS:
         raise ValueError("Unsupported matrix coordinates")
@@ -65,7 +74,7 @@ def nearest_rank(values: list[float], percentile: float) -> float | None:
 
 
 def validate_measurement(
-    directory: Path, expected: dict[str, int], xml: str, code: int
+    directory: Path, expected: dict[str, int], xml: str, code: int, *, bounded_memory: bool = False
 ) -> dict[str, Any]:
     root = ET.fromstring(xml)
     tests = root.findall(".//test")
@@ -92,6 +101,24 @@ def validate_measurement(
             "Feasibility requires one executed driver with no infrastructure errors/skips."
         )
     result = json.loads((directory / "feasibility/case.json").read_text())
+    if result.get("process_memory_profile") != memory_profile(bounded_memory):
+        raise RuntimeError(
+            "Process memory profile mismatch; default and bounded runs are separate evidence."
+        )
+    if bounded_memory:
+        if result["runtime"]["total_available_memory_bytes"] != 192 * 1024**2:
+            raise RuntimeError("Driver GC budget was not applied.")
+        samples = (directory / "feasibility/resources.jsonl").read_text().splitlines()
+        members = [
+            m
+            for line in samples
+            for m in json.loads(line)["members"]
+            if m["member"] >= 0 and "managed" in m
+        ]
+        if {m["member"] for m in members} != {0, 1, 2} or any(
+            m["managed"]["total_available_memory_bytes"] != 448 * 1024**2 for m in members
+        ):
+            raise RuntimeError("Member GC budgets were absent or inconsistent.")
     if result["case"] != expected or result["is_p0"] != (expected["key_count"] == 100000):
         raise RuntimeError("Case parameters or P0/smoke label mismatch.")
     if result["status"] not in {"completed", "infeasible", "incomplete_budget"}:
@@ -202,6 +229,11 @@ def main() -> int:
     parser.add_argument("--concurrency", type=int, choices=[1, 16, 64], default=1)
     parser.add_argument("--seed", type=int, choices=SEEDS, default=17)
     parser.add_argument("--report-dir", type=Path)
+    parser.add_argument(
+        "--bounded-memory",
+        action="store_true",
+        help="Use explicit 192-MiB driver/448-MiB member GC caps within the same two-GiB container.",
+    )
     args = parser.parse_args()
     if not args.execute:
         print(
@@ -209,6 +241,7 @@ def main() -> int:
                 {
                     "execution": False,
                     "acceptance": "targets_unset",
+                    "process_memory_profile": memory_profile(args.bounded_memory),
                     "cases": [
                         scenario(batch, concurrency, seed, smoke=False)
                         for batch in [1, 32, 128]
@@ -234,6 +267,7 @@ def main() -> int:
                 "entrypoint_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 "matrix_seeds": SEEDS,
                 "acceptance": "targets_unset",
+                "process_memory_profile": memory_profile(args.bounded_memory),
             },
             indent=2,
         )
@@ -246,9 +280,9 @@ def main() -> int:
 dotnet build-server shutdown
 mkdir /work/feasibility
 printf %s "$HOSTLOOM_GRID_FEASIBILITY_OWNER" > /work/FEASIBILITY_OWNER
-dotnet tests/HostLoom.Tests/bin/Release/net10.0/HostLoom.Tests.dll -class '*DataGridFeasibilityTests' -showLiveOutput -xml /work/tests.xml
+__DRIVER_GC__dotnet tests/HostLoom.Tests/bin/Release/net10.0/HostLoom.Tests.dll -class '*DataGridFeasibilityTests' -showLiveOutput -xml /work/tests.xml
 """
-    )
+    ).replace("__DRIVER_GC__", "DOTNET_GCHeapHardLimit=C000000 " if args.bounded_memory else "")
     signal.signal(signal.SIGTERM, ENV.terminate)
     try:
         report = ENV.execute_owned(
@@ -256,11 +290,14 @@ dotnet tests/HostLoom.Tests/bin/Release/net10.0/HostLoom.Tests.dll -class '*Data
             command=command,
             environment={
                 "HOSTLOOM_GRID_FEASIBILITY": "1",
+                "HOSTLOOM_GRID_FEASIBILITY_BOUNDED_GC": "1" if args.bounded_memory else "0",
                 "HOSTLOOM_GRID_FEASIBILITY_OWNER": uuid.uuid4().hex,
                 "HOSTLOOM_GRID_FEASIBILITY_CASE": json.dumps(expected),
             },
             extra_artifacts=["feasibility"],
-            validate=lambda xml, code: validate_measurement(directory, expected, xml, code),
+            validate=lambda xml, code: validate_measurement(
+                directory, expected, xml, code, bounded_memory=args.bounded_memory
+            ),
         )
     except KeyboardInterrupt:
         return 130

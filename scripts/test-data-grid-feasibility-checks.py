@@ -20,12 +20,20 @@ SPEC.loader.exec_module(MODULE)
 class Runner(Protocol):
     SEEDS: list[int]
 
+    def memory_profile(self, bounded: bool) -> dict[str, str | int | None]: ...
+
     def scenario(
         self, batch: int, concurrency: int, seed: int, *, smoke: bool
     ) -> dict[str, int]: ...
     def nearest_rank(self, values: list[float], percentile: float) -> float | None: ...
     def validate_measurement(
-        self, directory: Path, expected: dict[str, int], xml: str, code: int
+        self,
+        directory: Path,
+        expected: dict[str, int],
+        xml: str,
+        code: int,
+        *,
+        bounded_memory: bool = False,
     ) -> dict[str, Any]: ...
 
 
@@ -75,6 +83,7 @@ def files(directory: Path) -> dict[str, int]:
         "case": spec,
         "is_p0": False,
         "status": "completed",
+        "process_memory_profile": RUNNER.memory_profile(False),
         "recovery_verified": True,
         "unresolved_mutations": 0,
         "warmup": summary,
@@ -87,6 +96,54 @@ def files(directory: Path) -> dict[str, int]:
 
 
 class FeasibilityEvidenceTests(unittest.TestCase):
+    def test_bounded_profile_applies_each_process_budget_without_increasing_container(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = files(directory)
+            path = directory / "feasibility/case.json"
+            report = json.loads(path.read_text())
+            profile = RUNNER.memory_profile(True)
+            self.assertEqual(
+                2 * 1024**3,
+                cast(int, profile["driver_heap_limit_bytes"])
+                + 3 * cast(int, profile["member_heap_limit_bytes"])
+                + cast(int, profile["remaining_container_bytes"]),
+            )
+            report["process_memory_profile"] = profile
+            report["runtime"] = {"total_available_memory_bytes": 192 * 1024**2}
+            path.write_text(json.dumps(report))
+            resources = directory / "feasibility/resources.jsonl"
+            rows: dict[str, Any] = {
+                "members": [
+                    {"member": i, "managed": {"total_available_memory_bytes": 448 * 1024**2}}
+                    for i in range(3)
+                ]
+            }
+            resources.write_text(json.dumps(rows) + "\n")
+            self.assertEqual(
+                "completed",
+                RUNNER.validate_measurement(directory, spec, XML, 0, bounded_memory=True)[
+                    "case_status"
+                ],
+            )
+            with self.assertRaises(RuntimeError):
+                RUNNER.validate_measurement(directory, spec, XML, 0)
+            report["runtime"] = {"total_available_memory_bytes": 1536 * 1024**2}
+            path.write_text(json.dumps(report))
+            with self.assertRaises(RuntimeError):
+                RUNNER.validate_measurement(directory, spec, XML, 0, bounded_memory=True)
+            report["runtime"] = {"total_available_memory_bytes": 192 * 1024**2}
+            path.write_text(json.dumps(report))
+            rows["members"][1]["managed"] = {"total_available_memory_bytes": 1536 * 1024**2}
+            resources.write_text(json.dumps(rows) + "\n")
+            with self.assertRaises(RuntimeError):
+                RUNNER.validate_measurement(directory, spec, XML, 0, bounded_memory=True)
+            rows["members"][1]["managed"] = {"total_available_memory_bytes": 448 * 1024**2}
+            rows["members"].pop()
+            resources.write_text(json.dumps(rows) + "\n")
+            with self.assertRaises(RuntimeError):
+                RUNNER.validate_measurement(directory, spec, XML, 0, bounded_memory=True)
+
     def test_full_plan_has_27_distinct_coordinates_and_three_seeds(self) -> None:
         plan = [
             RUNNER.scenario(b, c, s, smoke=False)
