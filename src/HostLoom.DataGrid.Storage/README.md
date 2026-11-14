@@ -138,3 +138,9 @@ prove that the fsync syscall itself returned ENOSPC. The first flush error is no
 retained. This experiment does not establish
 block-device delayed allocation, fsync/device failure, storage persistence across container
 removal, host/power-loss durability, recovery time or workload capacity.
+
+
+The selected [local prototype environment](../HostLoom.DataGrid.Runtime/ENVIRONMENT.md) qualifies
+Linux ARM64 process/TLS recovery on an owned container overlay layer. Its matrix runner captures
+the actual filesystem/runtime and explicitly excludes container/VM/host restart and device
+power loss. This does not extend tmpfs ENOSPC results to physical device durability.

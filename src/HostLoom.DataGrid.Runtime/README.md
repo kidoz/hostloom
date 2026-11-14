@@ -4,7 +4,9 @@ Experimental, non-packable integration of the internal Raft actor, file store an
 An internal client receiver now connects the separate authenticated listener to actor admission,
 with the TLS-bound principal supplying session ownership. There is no dependency-injection host
 or production support claim. Internal Propose/Read calls are local test entry points. Both three-actor and opt-in three-process Linux tests communicate over actual loopback TLS
-and retain separate owned directories. The process runner is test infrastructure.
+and retain separate owned directories. The process runner is test infrastructure. The selected [local Linux ARM64/overlayfs environment](ENVIRONMENT.md)
+records ownership, clock/storage/security assumptions and a reproducible process/TLS qualification
+runner. It does not qualify independent-host or device/power-loss behavior.
 
 Construction takes ownership of the supplied store and listener, including when startup fails
 before transport creation. Rollback stops that listener and releases the directory; a separate
