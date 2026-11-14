@@ -69,6 +69,9 @@ public sealed class InMemoryRequestBroker
     private readonly TimeProvider _clock;
     private volatile bool _disposed;
     private readonly Lock _lifecycleGate = new();
+    private readonly ConcurrentDictionary<TaskCompletionSource, byte> _publications = new(
+        ReferenceEqualityComparer.Instance
+    );
 
     public InMemoryRequestBroker()
         : this(null) { }
@@ -229,6 +232,12 @@ public sealed class InMemoryRequestBroker
                     try
                     {
                         more = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                        if (enumeratorToken.IsCancellationRequested)
+                            enumeratorToken.ThrowIfCancellationRequested();
+                        ObjectDisposedException.ThrowIf(
+                            subscription.Token.IsCancellationRequested,
+                            this
+                        );
                     }
                     catch (OperationCanceledException) when (delivery.Token.IsCancellationRequested)
                     {
@@ -250,12 +259,16 @@ public sealed class InMemoryRequestBroker
             }
             finally
             {
-                if (enumerator is not null)
+                try
                 {
-                    await enumerator.DisposeAsync().ConfigureAwait(false);
+                    await delivery.CancelAsync().ConfigureAwait(false);
+                    if (enumerator is not null)
+                        await enumerator.DisposeAsync().ConfigureAwait(false);
                 }
-
-                subscription!.Exit();
+                finally
+                {
+                    subscription!.Exit();
+                }
             }
         }
     }
@@ -332,12 +345,53 @@ public sealed class InMemoryRequestBroker
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
         ValidateFrameSize(frame.Length);
-        var owned = frame.ToArray();
-        var deliveries = _topics
-            .Where(pair => pair.Key.Topic == topic)
-            .Select(pair => DeliverEventAsync(pair.Value, owned))
-            .ToArray();
-        await Task.WhenAll(deliveries).WaitAsync(cancellationToken).ConfigureAwait(false);
+        var completion = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        lock (_lifecycleGate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _publications.TryAdd(completion, 0);
+        }
+        try
+        {
+            var owned = frame.ToArray();
+            var deliveries = Task.WhenAll(
+                _topics
+                    .Where(pair => pair.Key.Topic == topic)
+                    .Select(pair => DeliverEventAsync(pair.Value, owned))
+            );
+            _ = CompletePublicationAsync(deliveries, completion);
+            await completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _publications.TryRemove(completion, out _);
+        }
+    }
+
+    private async Task CompletePublicationAsync(Task deliveries, TaskCompletionSource completion)
+    {
+        try
+        {
+            await deliveries.ConfigureAwait(false);
+            lock (_lifecycleGate)
+            {
+                if (_disposed)
+                    completion.TrySetException(
+                        new ObjectDisposedException(nameof(InMemoryRequestBroker))
+                    );
+                else
+                    completion.TrySetResult();
+            }
+        }
+        catch (Exception exception)
+        {
+            completion.TrySetException(exception);
+        }
+        // A cancelled publisher may have stopped observing before a late handler failed.
+        if (completion.Task.IsFaulted)
+            _ = completion.Task.Exception;
     }
 
     private async Task DeliverEventAsync(EventSubscription subscription, byte[] frame)
@@ -524,6 +578,15 @@ public sealed class InMemoryRequestBroker
     {
         lock (_lifecycleGate)
             _disposed = true;
+        foreach (var publication in _publications.Keys)
+        {
+            if (
+                publication.TrySetException(
+                    new ObjectDisposedException(nameof(InMemoryRequestBroker))
+                )
+            )
+                _ = publication.Task.Exception;
+        }
         foreach (var reply in _waiting.Keys)
         {
             if (reply.TrySetException(new ObjectDisposedException(nameof(InMemoryRequestBroker))))
