@@ -14,6 +14,7 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from types import FrameType
 from typing import Any, NoReturn
@@ -79,6 +80,11 @@ def validate_matrix(xml: str, exit_code: int) -> dict[str, Any]:
             name == "DataGridSessionPressureTlsTests"
             and method == "GlobalSessionPressureSurvivesCompactionRestartAndBoundedExpiry"
             and reason.startswith("Full TLS session-capacity qualification takes")
+        )
+        allowed |= (
+            name == "DataGridFeasibilityTests"
+            and method == "OwnedThreeProcessFeasibilityCase"
+            and reason == "Requires explicit owned feasibility runner."
         )
         if not allowed:
             raise RuntimeError(
@@ -153,7 +159,14 @@ dotnet tests/HostLoom.Tests/bin/Release/net10.0/HostLoom.Tests.dll -class '*Data
 """
 
 
-def qualify(report_dir: Path) -> dict[str, Any]:
+def execute_owned(
+    report_dir: Path,
+    *,
+    command: str = COMMAND,
+    environment: dict[str, str] | None = None,
+    validate: Callable[[str, int], dict[str, Any]] = validate_matrix,
+    extra_artifacts: list[str] | None = None,
+) -> dict[str, Any]:
     owner = uuid.uuid4().hex
     report: dict[str, Any] = {
         "schema_version": 1,
@@ -273,13 +286,18 @@ def qualify(report_dir: Path) -> dict[str, Any]:
                     "exec",
                     "--env",
                     "HOSTLOOM_GRID_SOURCE_SHA256=" + digest,
+                    *[
+                        argument
+                        for key, value in (environment or {}).items()
+                        for argument in ("--env", key + "=" + value)
+                    ],
                     container,
                     "timeout",
                     "--kill-after=15s",
                     "900s",
                     "bash",
                     "-c",
-                    COMMAND,
+                    command,
                 ],
                 stdout=output,
                 stderr=subprocess.STDOUT,
@@ -288,7 +306,7 @@ def qualify(report_dir: Path) -> dict[str, Any]:
             )
         report["test_exit_code"] = result.returncode
         artifact_errors = []
-        for name in ["environment.txt", "tests.xml"]:
+        for name in ["environment.txt", "tests.xml", *(extra_artifacts or [])]:
             try:
                 run(["docker", "cp", container + ":/work/" + name, str(report_dir / name)])
             except RuntimeError as error:
@@ -298,7 +316,7 @@ def qualify(report_dir: Path) -> dict[str, Any]:
             raise RuntimeError(
                 f"Build/test process exited {result.returncode}; inspect run.log and any test XML."
             )
-        report["tests"] = validate_matrix((report_dir / "tests.xml").read_text(), result.returncode)
+        report["tests"] = validate((report_dir / "tests.xml").read_text(), result.returncode)
         report["status"] = "passed"
         return report
     except (OSError, RuntimeError, subprocess.SubprocessError, ValueError, ET.ParseError) as error:
@@ -324,6 +342,10 @@ def qualify(report_dir: Path) -> dict[str, Any]:
         finally:
             report["elapsed_seconds"] = round(time.monotonic() - started, 3)
             (report_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+
+
+def qualify(report_dir: Path) -> dict[str, Any]:
+    return execute_owned(report_dir)
 
 
 def terminate(_signal: int, _frame: FrameType | None) -> NoReturn:

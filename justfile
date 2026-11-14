@@ -31,6 +31,7 @@ python-check:
     uv run --locked python -B scripts/test-composition-baseline.py
     uv run --locked python -B scripts/test-chaos-runner.py
     uv run --locked python -B scripts/test-data-grid-environment-checks.py
+    uv run --locked python -B scripts/test-data-grid-feasibility-checks.py
 
 # Restore the solution's package graph.
 restore:
@@ -71,6 +72,10 @@ test-redis-gateway:
 # Qualify the selected local Linux ARM64/overlayfs grid prototype in an owned container.
 test-data-grid-environment:
     uv run --locked python -B scripts/test-data-grid-environment.py
+
+# Print the 27-case feasibility plan; use the script --execute flag for one owned run.
+data-grid-feasibility-plan:
+    uv run --locked python -B scripts/run-data-grid-feasibility.py
 
 # Run all object mapping comparisons and strategy measurements.
 benchmark-mapping:

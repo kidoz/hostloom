@@ -70,6 +70,12 @@ class GridEnvironmentEvidenceTests(unittest.TestCase):
                 "Requires explicit owned bounded tmpfs disk-full fixture.",
             ),
             (
+                "DataGridFeasibilityTests",
+                "OwnedThreeProcessFeasibilityCase",
+                "Skip",
+                "Requires explicit owned feasibility runner.",
+            ),
+            (
                 "DataGridSessionPressureTlsTests",
                 "GlobalSessionPressureSurvivesCompactionRestartAndBoundedExpiry",
                 "Skip",
@@ -77,8 +83,8 @@ class GridEnvironmentEvidenceTests(unittest.TestCase):
             ),
         ]
         summary = RUNNER.validate_matrix(evidence(rows), 0)
-        self.assertEqual(2, summary["skipped"])
-        self.assertEqual(2, len(summary["explicit_exclusions"]))
+        self.assertEqual(3, summary["skipped"])
+        self.assertEqual(3, len(summary["explicit_exclusions"]))
 
     def test_nested_legacy_skip_reason_is_supported_without_allowing_other_skips(self) -> None:
         xml = ET.fromstring(
