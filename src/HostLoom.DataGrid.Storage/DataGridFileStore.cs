@@ -612,12 +612,7 @@ internal sealed partial class DataGridFileStore : IDisposable
                     DataGridCommittedCommandCodec.ReadFrom(entry.GetCommand())
                 );
             }
-            var expected = application.SaveSnapshot(
-                target.Snapshot.Descriptor.SnapshotId,
-                target.Snapshot.Descriptor.LastIncludedTerm
-            );
-            if (!expected.Content.SequenceEqual(target.Snapshot.Content))
-                throw new InvalidDataException("Snapshot disagrees with the known log prefix.");
+            application.VerifyCanonicalSnapshot(target.Snapshot);
         }
     }
 

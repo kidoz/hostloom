@@ -59,20 +59,70 @@ public sealed partial class DataGridLocalStateMachine
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(includedTerm);
         if (snapshotId == Guid.Empty)
             throw new ArgumentException("A snapshot identity is required.", nameof(snapshotId));
-        // V1 fixed envelopes/sections plus charged key/value bytes and per-entry/session fields.
-        // Exact capacity is checked again when ownership of the completed buffer is detached.
-        var encodedBytes = 154L + StoredDataByteCount + 59L * StoredKeyCount;
+        var layout = GetSnapshotLayout();
+        using var image = new GridWriter(
+            (int)DataGridSnapshotDescriptor.MaxSnapshotByteCount,
+            layout.TotalBytes
+        );
+        WriteSnapshot(image, includedTerm, layout);
+        var bytes = image.DetachExactContent();
+        return new(
+            new(snapshotId, LastAppliedIndex, includedTerm, bytes.Length, SHA256.HashData(bytes)),
+            bytes
+        );
+    }
+
+    // The caller still reconstructs the durable prefix independently. Only its additional
+    // encoded image is omitted; canonical bytes are compared as the shared encoder emits them.
+    internal void VerifyCanonicalSnapshot(DataGridLocalSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        snapshot.Validate(_configuration);
+        var layout = GetSnapshotLayout();
+        if (
+            snapshot.Descriptor.LastIncludedIndex != LastAppliedIndex
+            || snapshot.Descriptor.ByteCount != layout.TotalBytes
+        )
+            throw new InvalidDataException("Snapshot disagrees with the known log prefix.");
+        using var comparison = GridWriter.Comparing(snapshot.ContentMemory);
+        WriteSnapshot(comparison, snapshot.Descriptor.LastIncludedTerm, layout);
+        comparison.CompleteComparison();
+    }
+
+    private readonly record struct SnapshotLayout(
+        int TotalBytes,
+        long MapBytes,
+        long EntryBytes,
+        long SessionBytes
+    );
+
+    private SnapshotLayout GetSnapshotLayout()
+    {
+        // V1 fixed envelope/sections, followed by exact section payload sizes. Both output
+        // and comparison emit lengths up front; no placeholder bytes escape comparison.
+        long maps = 0,
+            sessions = 0;
         foreach (var map in _maps)
-            encodedBytes +=
+            maps +=
                 20
                 + Encoding.UTF8.GetByteCount(map.Configuration.Name)
                 + (map.Cursor?.ByteCount ?? 0);
         foreach (var session in _sessions.Values)
-            encodedBytes += 100 + 31L * (session.Result?.ItemCount ?? 0);
-        using var image = new GridWriter(
-            (int)DataGridSnapshotDescriptor.MaxSnapshotByteCount,
-            checked((int)encodedBytes)
-        );
+            sessions += 100 + 31L * (session.Result?.ItemCount ?? 0);
+        var entries = StoredDataByteCount + 59L * StoredKeyCount;
+        return new(checked((int)(154 + maps + entries + sessions)), maps, entries, sessions);
+    }
+
+    private static void WriteSnapshotSection(GridWriter writer, int id, int count, long bytes)
+    {
+        writer.Number((ulong)id, 2);
+        writer.Number(0, 2);
+        writer.Number((ulong)count, 4);
+        writer.Number((ulong)bytes, 4);
+    }
+
+    private void WriteSnapshot(GridWriter image, long includedTerm, SnapshotLayout layout)
+    {
         image.Raw("HLGS"u8);
         image.Number(1, 2);
         image.Number(0, 2);
@@ -81,26 +131,22 @@ public sealed partial class DataGridLocalStateMachine
         image.Number((ulong)LastAppliedIndex, 8);
         image.Number((ulong)includedTerm, 8);
         image.Number((ulong)AppliedTime.UtcTicks, 8);
-        var lengthPosition = image.Length;
-        image.Number(0, 8);
-        var bodyStart = image.Length;
+        image.Number((ulong)(layout.TotalBytes - 88), 8);
         var body = image;
         body.Raw("HLGB"u8);
         body.Number(1, 2);
         body.Number(4, 2);
-        var section = body.BeginSection(1, 1);
+        WriteSnapshotSection(body, 1, 1, 10);
         body.Number((ulong)_sessionHighWater, 8);
         body.Number((ulong)_maintenanceMapOrdinal, 2);
-        body.EndSection(section);
-        section = body.BeginSection(2, _maps.Length);
+        WriteSnapshotSection(body, 2, _maps.Length, layout.MapBytes);
         foreach (var map in _maps)
         {
             body.Id(map.Configuration.MapId);
             body.Text(map.Configuration.Name);
             body.Key(map.Cursor);
         }
-        body.EndSection(section);
-        section = body.BeginSection(3, StoredKeyCount);
+        WriteSnapshotSection(body, 3, StoredKeyCount, layout.EntryBytes);
         foreach (var map in _maps)
         foreach (var entry in map.Entries)
         {
@@ -112,8 +158,7 @@ public sealed partial class DataGridLocalStateMachine
             body.Number((ulong)entry.Value.Length, 4);
             body.Raw(entry.Value);
         }
-        body.EndSection(section);
-        section = body.BeginSection(4, _sessions.Count);
+        WriteSnapshotSection(body, 4, _sessions.Count, layout.SessionBytes);
         foreach (var session in _sessions.Values)
         {
             body.Number((ulong)session.Number, 8);
@@ -138,13 +183,6 @@ public sealed partial class DataGridLocalStateMachine
                         WriteVersion(body, item.Version);
                 }
         }
-        body.EndSection(section);
-        image.NumberAt(lengthPosition, (ulong)(image.Length - bodyStart), 8);
-        var bytes = image.DetachExactContent();
-        return new(
-            new(snapshotId, LastAppliedIndex, includedTerm, bytes.Length, SHA256.HashData(bytes)),
-            bytes
-        );
     }
 
     /// <summary>Validates a complete candidate image before returning a new local owner. Performs no I/O.</summary>

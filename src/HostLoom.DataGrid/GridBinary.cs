@@ -6,14 +6,29 @@ namespace HostLoom.DataGrid;
 internal sealed class GridWriter : IDisposable
 {
     private readonly int _limit;
-    private readonly MemoryStream _stream;
+    private readonly Stream _stream;
 
     internal GridWriter(int limit, int initialCapacity = 0)
     {
         if (initialCapacity < 0 || initialCapacity > limit)
             throw new ArgumentOutOfRangeException(nameof(initialCapacity));
         _limit = limit;
-        _stream = new(initialCapacity);
+        _stream = new MemoryStream(initialCapacity);
+    }
+
+    private GridWriter(ReadOnlyMemory<byte> expected)
+    {
+        _limit = expected.Length;
+        _stream = new ComparisonStream(expected);
+    }
+
+    internal static GridWriter Comparing(ReadOnlyMemory<byte> expected) => new(expected);
+
+    internal void CompleteComparison()
+    {
+        if (_stream is not ComparisonStream comparison)
+            throw new InvalidOperationException("This writer does not compare content.");
+        comparison.Complete();
     }
 
     internal int Length => checked((int)_stream.Length);
@@ -71,13 +86,18 @@ internal sealed class GridWriter : IDisposable
         _stream.Position = end;
     }
 
-    internal byte[] ToArray() => _stream.ToArray();
+    internal byte[] ToArray() =>
+        _stream is MemoryStream buffer
+            ? buffer.ToArray()
+            : throw new InvalidOperationException("A comparison writer has no output buffer.");
 
     internal byte[] DetachExactContent()
     {
-        if (_stream.Length != _stream.Capacity)
+        if (_stream is not MemoryStream buffer)
+            throw new InvalidOperationException("A comparison writer has no output buffer.");
+        if (buffer.Length != buffer.Capacity)
             throw new InvalidOperationException("Exact snapshot size disagrees with its encoding.");
-        var bytes = _stream.GetBuffer();
+        var bytes = buffer.GetBuffer();
         // The closed writer cannot modify the transferred array; other codecs keep ToArray.
         _stream.Dispose();
         return bytes;
@@ -96,6 +116,61 @@ internal sealed class GridWriter : IDisposable
     }
 
     public void Dispose() => _stream.Dispose();
+
+    // Borrows canonical bytes for forward comparison only. Every write is checked;
+    // completion also rejects an unconsumed suffix. No image-sized output is retained.
+    private sealed class ComparisonStream(ReadOnlyMemory<byte> expected) : Stream
+    {
+        private int _position;
+        private bool _disposed;
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => !_disposed;
+        public override long Length => _position;
+        public override long Position
+        {
+            get => _position;
+            set => throw new NotSupportedException();
+        }
+
+        internal void Complete()
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_position != expected.Length)
+                throw new InvalidDataException("Canonical encoding has a different length.");
+        }
+
+        public override void Write(ReadOnlySpan<byte> buffer)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (
+                buffer.Length > expected.Length - _position
+                || !buffer.SequenceEqual(expected.Span.Slice(_position, buffer.Length))
+            )
+                throw new InvalidDataException("Snapshot disagrees with the canonical encoding.");
+            _position += buffer.Length;
+        }
+
+        public override void Write(byte[] buffer, int offset, int count) =>
+            Write(buffer.AsSpan(offset, count));
+
+        public override void Flush() => ObjectDisposedException.ThrowIf(_disposed, this);
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
+
+        public override long Seek(long offset, SeekOrigin origin) =>
+            throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            _disposed = true;
+            base.Dispose(disposing);
+        }
+    }
 }
 
 internal ref struct GridReader(ReadOnlySpan<byte> bytes)
