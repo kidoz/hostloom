@@ -66,6 +66,8 @@ public sealed class KafkaLogEventTests
         }
 
         var consumer = Substitute.For<IConsumer<string, byte[]>>();
+        // The failed seek below models a revoked partition, so the loop may resume consumption.
+        consumer.Assignment.Returns(new List<TopicPartition>());
         consumer
             .Consume(Arg.Any<CancellationToken>())
             .Returns(call => Next(script, call.Arg<CancellationToken>()));

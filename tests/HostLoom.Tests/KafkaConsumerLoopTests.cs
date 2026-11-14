@@ -138,6 +138,50 @@ public sealed class KafkaConsumerLoopTests
         Assert.Equal([1, 2], log.Commits.Select(commit => commit.Offset.Value));
     }
 
+    [Theory]
+    [InlineData("seek")]
+    [InlineData("pause")]
+    [InlineData("resume")]
+    public async Task A_failed_recovery_operation_is_retried_before_later_records_commit(
+        string operation
+    )
+    {
+        var log = new PartitionLog("requests", 2)
+        {
+            SeekFailuresRemaining = operation == "seek" ? 1 : 0,
+        };
+        var handled = new List<long>();
+        await using (
+            Start(
+                log,
+                (record, _) =>
+                {
+                    handled.Add(record.Offset.Value);
+                    if (handled.Count == 1)
+                    {
+                        if (operation == "seek")
+                            throw new InvalidOperationException("handler failed");
+                        throw new ReceiveSuspendedException(
+                            "requests",
+                            null,
+                            DateTimeOffset.UtcNow.AddSeconds(-1)
+                        );
+                    }
+                    return ValueTask.CompletedTask;
+                },
+                recoveryFailure: operation
+            )
+        )
+        {
+            await WaitUntilAsync(
+                () => log.Commits.Count == 2,
+                "recovery completes and both records commit"
+            );
+        }
+        Assert.Equal([0, 0, 1], handled);
+        Assert.Equal([1, 2], log.Commits.Select(commit => commit.Offset.Value));
+    }
+
     [Fact]
     public async Task Malformed_record_is_committed_past_without_a_rewind()
     {
@@ -554,10 +598,28 @@ public sealed class KafkaConsumerLoopTests
     private static ConsumerSubscription Start(
         PartitionLog log,
         Func<ConsumeResult<string, byte[]>, CancellationToken, ValueTask> handler,
-        bool retryIndefinitely = false
+        bool retryIndefinitely = false,
+        string? recoveryFailure = null
     )
     {
         var consumer = Substitute.For<IConsumer<string, byte[]>>();
+        consumer.Assignment.Returns(log.Assignment);
+        var pauseCalls = 0;
+        var resumeCalls = 0;
+        consumer
+            .When(c => c.Pause(Arg.Any<IEnumerable<TopicPartition>>()))
+            .Do(_ =>
+            {
+                if (recoveryFailure == "pause" && pauseCalls++ == 0)
+                    throw new KafkaException(ErrorCode.Local_State);
+            });
+        consumer
+            .When(c => c.Resume(Arg.Any<IEnumerable<TopicPartition>>()))
+            .Do(_ =>
+            {
+                if (recoveryFailure == "resume" && resumeCalls++ == 0)
+                    throw new KafkaException(ErrorCode.Local_State);
+            });
         consumer
             .Consume(Arg.Any<CancellationToken>())
             .Returns(call => log.Next(call.Arg<CancellationToken>()));
@@ -619,6 +681,9 @@ public sealed class KafkaConsumerLoopTests
         public string Topic { get; }
 
         public int CommitFailuresRemaining { get; set; }
+        public int SeekFailuresRemaining { get; set; }
+        public List<TopicPartition> Assignment =>
+            _counts.Keys.Select(partition => new TopicPartition(Topic, partition)).ToList();
 
         /// <summary>The record value served at an offset; empty unless a test decodes it.</summary>
         public Func<long, byte[]> ValueAt { get; init; } = static _ => [];
@@ -672,6 +737,8 @@ public sealed class KafkaConsumerLoopTests
 
         public void Seek(TopicPartitionOffset offset)
         {
+            if (SeekFailuresRemaining-- > 0)
+                throw new KafkaException(ErrorCode.Local_State);
             lock (_gate)
             {
                 Seeks.Add(offset);

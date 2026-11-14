@@ -324,32 +324,11 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
             }
             catch (ReceiveSuspendedException exception)
             {
-                // Keep the record. Pause so the loop does not spin, then read the same offset again.
-                var assigned = _consumer.Assignment;
-                if (assigned is { Count: > 0 })
-                {
-                    _consumer.Pause(assigned);
-                }
-
-                var delay = exception.ResumeAt - _clock.GetUtcNow();
-                if (delay > TimeSpan.Zero)
-                {
-                    try
-                    {
-                        await Task.Delay(delay, _clock, _stopping.Token).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        break;
-                    }
-                }
-
-                if (assigned is { Count: > 0 })
-                {
-                    _consumer.Resume(assigned);
-                }
-
-                _consumer.Seek(record.TopicPartitionOffset);
+                if (
+                    !await SuspendAsync(exception).ConfigureAwait(false)
+                    || !await RewindAsync(record).ConfigureAwait(false)
+                )
+                    break;
             }
             catch (UnroutableReplyException exception)
             {
@@ -408,15 +387,13 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                     attempts
                 );
 
-                if (TrySeek(record))
+                if (await RewindAsync(record).ConfigureAwait(false))
                 {
                     retries[record.TopicPartition] = (record.Offset.Value, attempts);
                 }
                 else
                 {
-                    // The partition was most likely revoked. Its offset is still uncommitted,
-                    // so whoever is assigned it next redelivers the record.
-                    retries.Remove(record.TopicPartition);
+                    break;
                 }
 
                 if (!await DelayAsync().ConfigureAwait(false))
@@ -425,6 +402,82 @@ internal sealed class ConsumerSubscription : IAsyncDisposable
                 }
             }
         }
+    }
+
+    // Never consume a later record while a failed rewind can still belong to us. Only a
+    // verified revocation permits ordinary consumption; the new owner starts at the commit.
+    private async Task<bool> RewindAsync(ConsumeResult<string, byte[]> record)
+    {
+        while (!_stopping.IsCancellationRequested)
+        {
+            if (TrySeek(record))
+                return true;
+            try
+            {
+                if (!_consumer.Assignment.Contains(record.TopicPartition))
+                    return true;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(
+                    KafkaEvents.SeekFailed,
+                    exception,
+                    "Reading Kafka assignment during rewind recovery failed."
+                );
+            }
+            if (!await DelayAsync().ConfigureAwait(false))
+                return false;
+        }
+        return false;
+    }
+
+    private async Task<bool> SuspendAsync(ReceiveSuspendedException suspended)
+    {
+        foreach (var pause in new[] { true, false })
+        {
+            while (!_stopping.IsCancellationRequested)
+            {
+                try
+                {
+                    var assigned = _consumer.Assignment;
+                    if (assigned is { Count: > 0 })
+                    {
+                        if (pause)
+                            _consumer.Pause(assigned);
+                        else
+                            _consumer.Resume(assigned);
+                    }
+                    break;
+                }
+                catch (Exception exception)
+                {
+                    RecordFault(pause ? "pause" : "resume");
+                    _logger.LogError(
+                        KafkaEvents.LoopFaulted,
+                        exception,
+                        "Kafka receive-pause transition failed; retrying."
+                    );
+                    if (!await DelayAsync().ConfigureAwait(false))
+                        return false;
+                }
+            }
+            if (pause)
+            {
+                var delay = suspended.ResumeAt - _clock.GetUtcNow();
+                if (delay > TimeSpan.Zero)
+                {
+                    try
+                    {
+                        await Task.Delay(delay, _clock, _stopping.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        return !_stopping.IsCancellationRequested;
     }
 
     private bool TrySeek(ConsumeResult<string, byte[]> record)
