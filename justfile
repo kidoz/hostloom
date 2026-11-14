@@ -30,6 +30,7 @@ python-check:
     uv run --locked ty check
     uv run --locked python -B scripts/test-composition-baseline.py
     uv run --locked python -B scripts/test-chaos-runner.py
+    uv run --locked python -B scripts/test-data-grid-environment-checks.py
 
 # Restore the solution's package graph.
 restore:
@@ -66,6 +67,10 @@ test-redis-cluster:
 # Test HAProxy recovery and reject unsupported single-endpoint Cluster routing.
 test-redis-gateway:
     uv run --locked python scripts/test-redis-cluster.py --haproxy
+
+# Qualify the selected local Linux ARM64/overlayfs grid prototype in an owned container.
+test-data-grid-environment:
+    uv run --locked python -B scripts/test-data-grid-environment.py
 
 # Run all object mapping comparisons and strategy measurements.
 benchmark-mapping:
