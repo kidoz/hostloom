@@ -42,6 +42,14 @@ the collector; there is no fallback, truncation or silent repair. Runtime startu
 maintenance and compaction preparation drive collection. A full batch defers compaction to a
 later turn. Inventories already outside the startup limits still require explicit recovery.
 
+When a proposed snapshot covers a known durable log prefix, the store independently restores
+and replays that prefix, then verifies its canonical encoding directly against the proposed
+immutable bytes. Capture and comparison share one v1 encoder. Envelope and section sizes are
+calculated up front, so comparison checks every emitted byte without allocating another full
+encoded image or skipping temporary length placeholders. Candidate semantic/digest validation,
+exact output length, retained suffix and hard-state checks remain active. Reconstruction still
+allocates application state; this does not bound total process memory or qualify full-size capacity.
+
 Publication verifies snapshot files by comparing every byte, through a 16-KiB stack buffer,
 against the immutable image already semantically validated for the exact bootstrap configuration.
 Length, EOF and descriptor equality remain checked. The new image is verified after flush and

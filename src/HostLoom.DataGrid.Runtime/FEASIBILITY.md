@@ -197,15 +197,22 @@ invalidate workload feasibility even when the driver correctly records an `incom
 case. A completed smoke does not resolve this constraint, and changed partial counts/timings
 are not accepted capacity or throughput gains.
 
-Publication readback now compares disk bytes against the validated canonical snapshot through
-a 16-KiB buffer. Focused 10000-key checks reduce managed allocation for this operation from
-about 50 MB to 33 KB, retaining exact readback, seed parsing and fresh-Open semantic validation.
-The subsequent full-size repeat acknowledges 56912 keys, then stops during population with a
-managed OOM while constructing the expected snapshot for the independent committed-prefix
-comparison. No full-size warmup, sample or retained recovery was completed.
+Publication readback compares disk bytes against the validated canonical snapshot through a
+16-KiB buffer. The independent known-prefix check also uses the same canonical encoder as
+snapshot capture, comparing forward bytes without creating a second full encoded image. Focused
+10000-key checks retain about 33 KB of managed readback allocation; prefix-check overhead above
+required reconstruction falls from 11.75 MB to 0.60 MB. Reconstruction itself still allocates
+application state. The v1 golden bytes, semantic/digest checks and fresh Open validation remain.
 
-Next reduce that temporary canonical encoding cost without weakening the known-prefix check,
-then resolve the [incoming snapshot admission ceiling](RESOURCE_LIMITS.md#retained-result-and-snapshot-bounds)
-with explicit bounded ownership. Both process profiles remain unqualified until full workload,
-catch-up and recovery evidence exists. Lifetime/last-GC pause observations provide context;
-they are not a complete event trace or a numerical service target.
+The subsequent full-size repeat acknowledges 78928 keys, then stops during population with a
+managed OOM during independent reconstruction/replay, before canonical comparison. No full-size
+warmup, sample or retained recovery was completed. An allocation stack identifies where the
+last request failed; it does not by itself identify the dominant retained memory owner. Changed
+partial counts/timings do not establish supported capacity or a throughput improvement.
+
+Next design a bounded [incoming snapshot handoff](RESOURCE_LIMITS.md#retained-result-and-snapshot-bounds)
+and sustainable aggregate ownership for live state, durable/candidate/in-flight images and the
+independent verifier. Preserve explicit ownership until actual completion and all prefix/disk
+checks. The current actor admission ceiling still prevents catch-up of larger snapshots. Both
+process profiles remain unqualified until full workload, catch-up and recovery evidence exists.
+Lifetime/last-GC pause observations provide context, not a complete event trace or service target.
