@@ -42,6 +42,18 @@ the collector; there is no fallback, truncation or silent repair. Runtime startu
 maintenance and compaction preparation drive collection. A full batch defers compaction to a
 later turn. Inventories already outside the startup limits still require explicit recovery.
 
+Publication verifies snapshot files by comparing every byte, through a 16-KiB stack buffer,
+against the immutable image already semantically validated for the exact bootstrap configuration.
+Length, EOF and descriptor equality remain checked. The new image is verified after flush and
+its published path is checked again when the seed WAL resolves its snapshot manifest; an existing
+image is checked before reuse and during seed verification. This avoids full-image reread arrays
+and reconstructed application copies for readback. It does not skip WAL parsing, on-disk readback,
+known committed-prefix comparison, flush/rename/frontier steps or directory ownership checks.
+A fresh Open still reads and fully validates its selected snapshot from disk. It cannot borrow
+the prior process's validation state. These allocation savings do not establish full-size capacity;
+the runtime's [incoming snapshot admission ceiling](../HostLoom.DataGrid.Runtime/RESOURCE_LIMITS.md#retained-result-and-snapshot-bounds)
+is a separate constraint.
+
 The prototype permits Linux/macOS x64 and arm64. Directory handles use native `open` with
 directory/no-follow/close-on-exec flags, and `RandomAccess.FlushToDisk` supplies directory flushing.
 The directory and its parents must be private to a trusted local owner. Path checks reject

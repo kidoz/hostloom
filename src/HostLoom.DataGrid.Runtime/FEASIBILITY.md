@@ -190,26 +190,22 @@ An increase in cgroup OOM-kill count after the driver's first resource snapshot 
 cancels the case and reports `infeasible`. The triggering snapshot is flushed before cancellation.
 The runner does not keep timing a baseline workload after an unintended OOM member loss.
 
-Recorded 100000-key population attempts in this two-GiB profile hit OOM before warmup. Full-size
-capacity remains unqualified. Diagnose process memory and transient allocation pressure before
-collecting the full campaign; a completed smoke does not resolve that constraint.
-Validation reuse, exact-buffer encoding and removal of full-image read/send copies reduce known
-allocation amplification. The full population still hits this fixture's limit. Aggregate
-transient/in-flight snapshot and process memory remains a qualification concern.
-Separate bounded-GC full-size attempts also stopped during population without an observed
-cgroup OOM kill. The repeat acknowledged 56656 keys, then exceeded the 45-second immutable-request
-resolution budget with `QuorumUnavailable` at about 199 seconds. Warmup, sampling and full-size
-recovery were not executed. Both profiles remain unqualified for this workload. Heap ownership
-captures and explicit process budgets are diagnostic evidence, not proof that GC caps make this
-composition feasible. Member role/progress/fault and GC-pause evidence around lost quorum is the
-next diagnostic before choosing a further allocation or coordination change.
+Full-size capacity remains unqualified in this two-GiB fixture. Runtime-default attempts hit
+cgroup OOM; bounded-GC attempts expose managed allocation failures without a cgroup kill. A
+member's runtime can fail while its probe process remains observable. Captured member faults
+invalidate workload feasibility even when the driver correctly records an `incomplete_budget`
+case. A completed smoke does not resolve this constraint, and changed partial counts/timings
+are not accepted capacity or throughput gains.
 
-The role/fault-enabled bounded-GC repeat identifies a managed `OutOfMemoryException` while
-rereading the snapshot during generation-seed verification. No cgroup OOM kill is needed for
-that failure: the member's runtime can stop while its probe process remains observable. The
-repeat acknowledges 55504 keys, then exhausts resolution after quorum/unknown outcomes; it is
-not full-size qualification. A captured member fault invalidates workload feasibility even when
-the driver successfully records an `incomplete_budget` case. Reducing transient publication
-allocations and resolving the [incoming snapshot admission ceiling](RESOURCE_LIMITS.md#retained-result-and-snapshot-bounds)
-remain necessary before retrying full-size recovery. Lifetime pause counters and last-GC samples
-provide diagnostic context, not a complete pause trace or accepted performance target.
+Publication readback now compares disk bytes against the validated canonical snapshot through
+a 16-KiB buffer. Focused 10000-key checks reduce managed allocation for this operation from
+about 50 MB to 33 KB, retaining exact readback, seed parsing and fresh-Open semantic validation.
+The subsequent full-size repeat acknowledges 56912 keys, then stops during population with a
+managed OOM while constructing the expected snapshot for the independent committed-prefix
+comparison. No full-size warmup, sample or retained recovery was completed.
+
+Next reduce that temporary canonical encoding cost without weakening the known-prefix check,
+then resolve the [incoming snapshot admission ceiling](RESOURCE_LIMITS.md#retained-result-and-snapshot-bounds)
+with explicit bounded ownership. Both process profiles remain unqualified until full workload,
+catch-up and recovery evidence exists. Lifetime/last-GC pause observations provide context;
+they are not a complete event trace or a numerical service target.

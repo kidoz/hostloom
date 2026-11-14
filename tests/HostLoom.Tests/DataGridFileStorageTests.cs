@@ -18,6 +18,130 @@ public sealed class DataGridFileStorageTests
     private static readonly Guid Nonce = new("40112233-4455-6677-8899-aabbccddeeff");
     private static readonly DataGridKey Key = DataGridKey.FromUtf8("catalog:eu");
 
+    [Theory]
+    [InlineData(false, "content")]
+    [InlineData(false, "truncate")]
+    [InlineData(false, "append")]
+    [InlineData(true, "content")]
+    [InlineData(true, "truncate")]
+    [InlineData(true, "append")]
+    public void GenerationReadbackRejectsDamagedSnapshotWithoutReplacingCurrent(
+        bool existing,
+        string damage
+    )
+    {
+        var token = TestContext.Current.CancellationToken;
+        using var directory = new OwnedDirectory();
+        var config = Configuration();
+        var armed = false;
+        Guid selected;
+        byte[] anchor;
+        using (
+            var store = DataGridFileStore.Bootstrap(
+                directory.Path,
+                config,
+                0,
+                observe: step =>
+                {
+                    if (armed && step == DataGridStorageStep.SnapshotFlushed)
+                        DamageSnapshot(
+                            Directory.GetFiles(directory.Path, "pending-*.tmp").Single(),
+                            damage
+                        );
+                }
+            )
+        )
+        {
+            var original = Image(config, 2);
+            var entries = original.Entries.ToArray();
+            entries[1] = Entry(2, 1, Mutation(1, new byte[64 * 1024]));
+            store.Persist(new(config, 3, 2, entries, 2), token);
+            var snapshot = store.RestoreApplication().SaveSnapshot(Nonce, 1);
+            var target = new RaftDurableImage(
+                config,
+                3,
+                2,
+                store.Image.Entries.Skip(2),
+                2,
+                snapshot
+            );
+            if (existing)
+                store.Persist(target, token);
+            selected = store.GenerationId;
+            anchor = File.ReadAllBytes(System.IO.Path.Combine(directory.Path, "CURRENT"));
+            if (existing)
+                DamageSnapshot(
+                    System.IO.Path.Combine(directory.Path, $"snapshot-{Nonce:N}.bin"),
+                    damage
+                );
+            else
+                armed = true;
+            Assert.Throws<InvalidDataException>(() =>
+            {
+                if (existing)
+                    store.RollGeneration(token);
+                else
+                    store.Persist(target, token);
+            });
+            Assert.Equal(
+                anchor,
+                File.ReadAllBytes(System.IO.Path.Combine(directory.Path, "CURRENT"))
+            );
+            if (!existing)
+                Assert.True(store.IsFaulted);
+        }
+        if (existing)
+        {
+            Assert.Throws<InvalidDataException>(() =>
+            {
+                using var refused = DataGridFileStore.Open(directory.Path, config, 0);
+            });
+        }
+        else
+        {
+            using var recovered = DataGridFileStore.Open(directory.Path, config, 0);
+            Assert.Equal(selected, recovered.GenerationId);
+            Assert.Equal(3, recovered.Image.Term);
+            Assert.Equal(2, recovered.Image.Vote);
+            Assert.Equal(2, recovered.Image.CommitIndex);
+            Assert.Equal(
+                new byte[64 * 1024],
+                recovered.RestoreApplication().Read(Map, Key)!.GetValue()
+            );
+        }
+    }
+
+    private static void DamageSnapshot(string path, string damage)
+    {
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.None
+        );
+        switch (damage)
+        {
+            case "content":
+                // Beyond the verification buffer's first chunk, with unchanged file length.
+                stream.Position = 32 * 1024;
+                var value = stream.ReadByte();
+                Assert.NotEqual(-1, value);
+                stream.Position--;
+                stream.WriteByte((byte)(value ^ 1));
+                break;
+            case "truncate":
+                stream.SetLength(stream.Length - 1);
+                break;
+            case "append":
+                stream.Position = stream.Length;
+                stream.WriteByte(1);
+                break;
+            default:
+                throw new ArgumentException("Unknown snapshot damage.", nameof(damage));
+        }
+        stream.Flush(flushToDisk: true);
+    }
+
     [Fact]
     public void CurrentAnchorMatchesIndependentBytesAndRejectsEveryCorruptedByte()
     {

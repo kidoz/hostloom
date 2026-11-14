@@ -1,12 +1,81 @@
 using System.Security.Cryptography;
 using HostLoom.DataGrid;
 using HostLoom.DataGrid.Consensus;
+using HostLoom.DataGrid.Storage;
 using Xunit;
 
 namespace HostLoom.Tests;
 
 public sealed class DataGridSnapshotAllocationTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void GenerationReadbackUsesBoundedBuffersForNewAndExistingSnapshots(bool rollExisting)
+    {
+        using var directory = new DataGridFileStorageTests.OwnedDirectory();
+        using var fixture = new DataGridPeerFixture(10000, 16 * 1024 * 1024);
+        var config = fixture.Configuration;
+        var machine = Populate(config, DataGridFeasibilityCase.Key);
+        var snapshot = machine.SaveSnapshot(Guid.NewGuid(), 1);
+        var target = new RaftDurableImage(
+            config,
+            1,
+            commitIndex: machine.LastAppliedIndex,
+            snapshot: snapshot
+        );
+        using (var store = DataGridFileStore.Bootstrap(directory.Path, config, 0))
+        {
+            if (rollExisting)
+                store.Persist(target, TestContext.Current.CancellationToken);
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            if (rollExisting)
+                store.RollGeneration(TestContext.Current.CancellationToken);
+            else
+                store.Persist(target, TestContext.Current.CancellationToken);
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            TestContext.Current.TestOutputHelper!.WriteLine(
+                $"Generation readback (existing={rollExisting}): {allocated} allocated bytes; snapshot {snapshot.Descriptor.ByteCount} bytes."
+            );
+            // Verification must not allocate even one image or another reconstructed application.
+            Assert.True(
+                allocated < snapshot.Descriptor.ByteCount,
+                $"Generation readback allocated {allocated} bytes for {snapshot.Descriptor.ByteCount} snapshot bytes."
+            );
+            Assert.Same(snapshot, store.Image.Snapshot);
+        }
+        using var recovered = DataGridFileStore.Open(directory.Path, config, 0);
+        Assert.Equal(snapshot.GetContent(), recovered.Image.Snapshot!.GetContent());
+        var restored = recovered.RestoreApplication();
+        Assert.Equal(
+            new byte[1024],
+            restored.Read(DataGridPeerFixture.Map, DataGridFeasibilityCase.Key(0))!.GetValue()
+        );
+        var replay = restored.Apply(
+            restored.LastAppliedIndex + 1,
+            DataGridCommittedCommand.Mutate(
+                DataGridPeerFixture.Principal,
+                new(
+                    DataGridMutationKind.Put,
+                    DataGridPeerFixture.Map,
+                    1,
+                    79,
+                    DataGridExpiryKind.Never,
+                    0,
+                    Enumerable
+                        .Range(9984, 16)
+                        .Select(i => new DataGridMutationItem(
+                            DataGridFeasibilityCase.Key(i),
+                            new byte[1024]
+                        ))
+                        .ToArray()
+                ),
+                default
+            )
+        );
+        Assert.Equal(snapshot.Descriptor.LastIncludedIndex, replay.GetItem(0).Version.LogIndex);
+    }
+
     [Fact]
     public void SnapshotEncodingStaysV1WithoutMaterializingSeparateBodyCopies()
     {

@@ -412,15 +412,29 @@ internal sealed partial class DataGridFileStore : IDisposable
         if (seedBytes > _limits.WalBytes)
             throw new IOException("Generation seed exceeds WAL capacity.");
         var snapshot = target.Snapshot;
+        // Only this publication's immutable, semantically validated image can be reused.
+        // The seed parser still checks every record and exact descriptor, and its referenced
+        // on-disk image is compared again before publishing CURRENT.
+        DataGridLocalSnapshot ReadVerifiedSnapshot(DataGridSnapshotDescriptor descriptor)
+        {
+            if (
+                snapshot is null
+                || !descriptor.Encode().AsSpan().SequenceEqual(snapshot.Descriptor.Encode())
+            )
+                throw new InvalidDataException("Generation seed refers to a different snapshot.");
+            VerifySnapshotFile(SnapshotName(descriptor.SnapshotId), snapshot, cancellationToken);
+            return snapshot;
+        }
+
         var needsImage =
             snapshot is not null
             && !File.Exists(FilePath(SnapshotName(snapshot.Descriptor.SnapshotId)));
         if (snapshot is not null && !needsImage)
-        {
-            var existing = ReadSnapshot(snapshot.Descriptor);
-            if (!existing.Content.SequenceEqual(snapshot.Content))
-                throw new InvalidDataException("Snapshot identity cannot be overwritten.");
-        }
+            VerifySnapshotFile(
+                SnapshotName(snapshot.Descriptor.SnapshotId),
+                snapshot,
+                cancellationToken
+            );
         Reserve(
             checked(
                 seedBytes
@@ -438,11 +452,7 @@ internal sealed partial class DataGridFileStore : IDisposable
                 var imageTemp = TemporaryName();
                 Reached(DataGridStorageStep.SnapshotWriteStarting, cancellationToken);
                 WriteFlushed(imageTemp, snapshot!.Content);
-                DataGridLocalStateMachine.Restore(
-                    _configuration,
-                    snapshot.Descriptor,
-                    ReadBounded(imageTemp, checked((int)snapshot.Descriptor.ByteCount))
-                );
+                VerifySnapshotFile(imageTemp, snapshot, cancellationToken);
                 Reached(DataGridStorageStep.SnapshotFlushed, cancellationToken);
                 File.Move(
                     FilePath(imageTemp),
@@ -469,7 +479,13 @@ internal sealed partial class DataGridFileStore : IDisposable
                     nextHash.AppendData(record);
                 }
                 seed.Position = 0;
-                DataGridWalRecovery.Read(seed, _configuration, _member, generation, ReadSnapshot);
+                DataGridWalRecovery.Read(
+                    seed,
+                    _configuration,
+                    _member,
+                    generation,
+                    ReadVerifiedSnapshot
+                );
                 seed.Flush(flushToDisk: true);
             }
             Reached(DataGridStorageStep.GenerationFlushed, cancellationToken);
@@ -678,6 +694,35 @@ internal sealed partial class DataGridFileStore : IDisposable
             );
         }
         return application;
+    }
+
+    private void VerifySnapshotFile(
+        string name,
+        DataGridLocalSnapshot snapshot,
+        CancellationToken cancellationToken
+    )
+    {
+        snapshot.Validate(_configuration);
+        var expected = snapshot.Content;
+        var path = FilePath(name);
+        CheckPath(path);
+        using var stream = File.OpenRead(path);
+        if (stream.Length != expected.Length)
+            throw new InvalidDataException("Unexpected storage file length.");
+        // Publication already owns the validated canonical image. Exact bounded readback
+        // proves the file has those same semantics without allocating another full image/map.
+        Span<byte> buffer = stackalloc byte[16 * 1024];
+        for (var offset = 0; offset < expected.Length; )
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var chunk = buffer[..Math.Min(buffer.Length, expected.Length - offset)];
+            stream.ReadExactly(chunk);
+            if (!chunk.SequenceEqual(expected.Slice(offset, chunk.Length)))
+                throw new InvalidDataException("Snapshot bytes disagree with the validated image.");
+            offset += chunk.Length;
+        }
+        if (stream.ReadByte() != -1)
+            throw new InvalidDataException("Storage file changed during read.");
     }
 
     private DataGridLocalSnapshot ReadSnapshot(DataGridSnapshotDescriptor descriptor)
