@@ -132,7 +132,7 @@ fan-out primitive:
 | Transport | Topic | Subscription |
 | --- | --- | --- |
 | In-memory | named in-process channel | a named handler on the topic |
-| RabbitMQ | fanout exchange | durable queue named `topic.subscription` bound to it |
+| RabbitMQ | fanout exchange | durable V2 queue returned by `RabbitMqQueueNames.Subscription(topic, subscription)` bound to it |
 | Kafka | Kafka topic | its own consumer group |
 
 On RabbitMQ, subscriptions accumulate their own backlog rather than

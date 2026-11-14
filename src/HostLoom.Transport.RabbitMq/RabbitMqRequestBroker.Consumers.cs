@@ -323,27 +323,16 @@ public sealed partial class RabbitMqRequestBroker
                     }
                 }
 
-                try
+                // Use the same retrying, ownership-aware path as broker cancellation.
+                Task restoring;
+                lock (_gate)
                 {
-                    var consumption = await _consume(this, restoring: true, _restoration.Token)
-                        .ConfigureAwait(false);
-                    Attach(consumption);
+                    if (Stopping.IsCancellationRequested)
+                        return;
+                    RequestRestoration();
+                    restoring = _restoring;
                 }
-                catch (Exception) when (Stopping.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception exception)
-                {
-                    _broker._logger.LogWarning(
-                        new EventId(1415, "RabbitMqConsumerResumeFailed"),
-                        exception,
-                        "Resuming RabbitMQ {Role} consumption on queue {Queue} after a pause failed.",
-                        _role,
-                        _queue
-                    );
-                    return;
-                }
+                await restoring.ConfigureAwait(false);
 
                 return;
             }
@@ -370,7 +359,7 @@ public sealed partial class RabbitMqRequestBroker
                     channel = _channel;
                     consumerTag = _consumerTag;
                     _channel = null;
-                    restoring = _restoring;
+                    restoring = Task.WhenAll(_restoring, _pausing ?? Task.CompletedTask);
                 }
 
                 Exit();
@@ -430,9 +419,9 @@ public sealed partial class RabbitMqRequestBroker
                     .ConfigureAwait(false);
             }
 
-            await restoring.ConfigureAwait(false);
             try
             {
+                await restoring.WaitAsync(deadline.Token).ConfigureAwait(false);
                 await _drained.Task.WaitAsync(deadline.Token).ConfigureAwait(false);
                 return true;
             }
