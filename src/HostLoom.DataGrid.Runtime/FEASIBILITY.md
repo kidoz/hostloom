@@ -1,0 +1,130 @@
+# Reproduce a grid feasibility case
+
+The opt-in runner exercises the public TLS SDK against three independently stoppable member
+processes in the selected [local Linux ARM64/overlayfs fixture](ENVIRONMENT.md). It records
+observations and capacity refusals. Numerical service targets are unset; a completed run is
+execution evidence, not performance acceptance or production qualification.
+
+## Before running
+
+Use the repository's locked Python environment, Docker with native ARM64 Linux, the pinned SDK
+image and a restored local NuGet cache described in the environment profile. Each execution
+creates a new isolated container with two CPU quota, two GiB memory/no swap, no external network
+and separate member directories. Build servers are shut down before starting the load driver.
+The source snapshot and artifacts are private local files.
+Do not run competing builds or benchmarks when collecting measurements. Other host activity
+and Docker Desktop scheduling remain uncontrolled and must be considered when comparing runs.
+
+Print the full plan without starting Docker:
+
+```bash
+just data-grid-feasibility-plan
+```
+
+It contains 27 cases: batches 1/32/128, concurrency 1/16/64, and seeds 17/29/43. Each full case
+requests 100000 initial key writes, sixty seconds of warmup and a 300-second sample. Execute
+one coordinate at a time, retaining every repeat, refusal and incomplete result:
+
+```bash
+uv run --locked python -B scripts/run-data-grid-feasibility.py \
+  --execute --batch-size 128 --concurrency 1 --seed 43 \
+  --report-dir /tmp/grid-feasibility-new-case
+```
+
+Use a new report directory for every execution. For runner validation, add `--smoke`: this uses
+256 keys, one second of warmup and a five-second sample. Smoke is explicitly labeled and must
+never be reported as the full workload. The runner accepts no external endpoints or existing
+containers. It verifies ownership and removes only its exact container on exit/interruption.
+
+## Workload and limits
+
+All keys are 32 bytes, all values 1024 bytes with a self-checking SHA-256 payload. The fixed
+seed selects reproducible key sequences. Each worker uses its own SDK/session and one outstanding
+invocation. Four new reads alternate with one new Put; unresolved writes retry the same encoded
+command, session and sequence before any newer mutation. Retries can change the observed
+read/write invocation ratio. This is closed-loop load: slow replies reduce arrivals and can hide
+overload latency. No open-loop arrival model or coordinated-omission correction is claimed.
+
+Even keys use Never expiration; odd keys use relative sixty-second TTL. Population writes Never
+keys first, then TTL keys, using four setup SDKs and a separate setup principal. It acknowledges
+every initial write or records infeasibility. Acknowledged population is not a claim that all
+100000 keys were simultaneously live: TTL starts at each write. There is no refill during
+warmup/sample, so expired reads can miss and writes can recreate keys. Values returned by reads
+are checked outside invocation timing. Batch size applies to individual keys per SDK request;
+all keys in a write batch use the same expiration kind.
+
+The fixture explicitly configures one map at 100000 keys/128 MiB within the existing group
+100000-key/256-MiB ceiling. Runtime admission limits remain active: 64 sessions/principal,
+eight outstanding operations/principal, eight client starts/second at a listener, and SDK
+limits of eight calls, two connection starts/second, three attempts and five-second deadline
+per instance. Setup and workload use separate synthetic principals with the same map grants.
+These byte quotas charge logical state, not managed heap or resident memory; see the
+[resource inventory](RESOURCE_LIMITS.md) for the remaining storage, snapshot and transport ceilings.
+High requested concurrency does not imply high admitted throughput. Refusals and unknown
+outcomes are observations, not successful operations or permission to raise production limits.
+
+## Measurement definitions
+
+Each phase retains every started SDK invocation, including cancellation and late completion.
+The stopwatch surrounds `ExecuteAsync`, including SDK queueing/retry/network/actor time but
+excluding request construction, checksum validation and raw-file serialization. Individual
+invocation durations use microseconds. p50/p95/p99 use nearest rank of individual observations,
+never averages divided by batch size. Successful, all normally returned calls (including
+refusals), and resolved logical writes have separate distributions. Late or cancelled calls
+are excluded from percentiles and counted as censored. Empty distributions contain null values.
+Logical write latency includes retries, but a write originating in warmup and resolving in the
+sample is excluded from the sample's logical distribution and remains in raw observations.
+
+Request throughput is successful in-window SDK invocations divided by requested phase seconds;
+item throughput multiplies by processed batch items. Successful reads include misses. Item
+rejections make a call unsuccessful. Failure rates divide by **all started invocations**, including
+late/cancelled calls: unknown means `OutcomeUnknown`; refusal means a returned failure with
+`MayHaveBeenAdmitted == false`; error includes cancellations, returned failures and item failures.
+SDK timeout counts come from the dedicated `hostloom.datagrid.client.timeouts` counter, which
+excludes caller cancellation. Unknown outcomes are not inferred to be timeouts. The counter
+listener is active only during its measured phase.
+
+One-second samples record client/member process RSS, cumulative CPU time, raw Linux `/proc/PID/io`
+counters, member store-directory bytes/file counts, and container cgroup memory current/peak
+bytes and OOM events. The cgroup peak includes the preceding build; event increments and member
+samples identify changes during load. Missing/racing processes/files are
+recorded as unavailable. CPU deltas can be derived from cumulative observations; RSS sums can
+double-count shared pages. Directory bytes are not physical disk writes or free space, and
+`/proc/io` is not network I/O. Network bytes, allocation rate and GC pause distributions are not
+measured. Reported framework, server-GC and processor count describe the executing process;
+JIT/tiering/PGO use image defaults. Monitoring/counter/checksum overhead is included in the load
+process; raw call serialization occurs after each phase and can add an inter-phase gap.
+
+After sampling, the runner drains unresolved identities within a bounded budget. It then writes
+a canary, verifies application on all members, kills the current leader, and measures time to a
+survivor's strong read with exact value/version and retained mutation replay. It rejoins that
+member, abruptly stops all three and measures whole-group restart to retained replay/read.
+Recovery is outside workload timing. These are elapsed observations, not RTO acceptance, power
+loss, host failure or an arbitrary concurrent-history correctness proof.
+
+## Reports and stop conditions
+
+The environment artifacts include source archive/hash, pinned tuple, source/build log, test XML
+and exact-container cleanup result. Additional files are:
+
+| File | Contents |
+| --- | --- |
+| `plan.json` | Coordinate, smoke/full label, entrypoint hash and repeat seeds |
+| `feasibility/case.json` | Effective limits, timing rules, phase summaries, rates, population/recovery results and case status |
+| `feasibility/warmup-calls.jsonl`, `sample-calls.jsonl` | Per-invocation timings, outcomes, batch items, mutation sequence/digest and cross-phase resolution flags |
+| `feasibility/resources.jsonl` | One-second process and directory observations by phase |
+
+The validator recomputes percentiles, throughput and failure accounting from raw observations
+and rejects identity changes, missing evidence and false smoke/full labels. Its controller
+may execute successfully while the case is `infeasible` or `incomplete_budget`; inspect both
+statuses in `report.json`. A completed case requires resolved writes and verified recovery.
+Checksum/identity corruption, unexpected exceptions, failed/skipped driver, lost raw observations,
+or failed ownership/cleanup fail execution. Population is bounded to 300 seconds, identity drain
+to 45 seconds, the case to 840 seconds and the container command to 900 seconds. Each phase
+permits at most 100000 invocation records; reaching that bound stops rather than truncates.
+No numerical latency/throughput stop-go threshold is invented. A full 27-case campaign and
+explicit target decisions remain necessary before performance acceptance.
+
+An increase in cgroup OOM-kill count after the driver's first resource snapshot immediately
+cancels the case and reports `infeasible`. The triggering snapshot is flushed before cancellation.
+The runner does not keep timing a baseline workload after an unintended OOM member loss.

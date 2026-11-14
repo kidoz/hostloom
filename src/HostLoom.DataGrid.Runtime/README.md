@@ -7,6 +7,8 @@ or production support claim. Internal Propose/Read calls are local test entry po
 and retain separate owned directories. The process runner is test infrastructure. The selected [local Linux ARM64/overlayfs environment](ENVIRONMENT.md)
 records ownership, clock/storage/security assumptions and a reproducible process/TLS qualification
 runner. It does not qualify independent-host or device/power-loss behavior.
+The opt-in [feasibility runner](FEASIBILITY.md) plans the workload matrix and records raw SDK,
+resource and recovery observations; numerical acceptance targets remain unset.
 
 Construction takes ownership of the supplied store and listener, including when startup fails
 before transport creation. Rollback stops that listener and releases the directory; a separate

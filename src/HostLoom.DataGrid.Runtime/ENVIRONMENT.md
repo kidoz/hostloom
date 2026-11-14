@@ -96,7 +96,8 @@ Required process, peer/client TLS, credential, storage/frontier and protocol cla
 present, pass and have no skips. Zero cases, failed/inconsistent XML counters, infrastructure
 errors, absent required classes and unexpected skips fail qualification. Only these omissions
 are explicit exclusions: the eleven separate tmpfs ENOSPC cases and the separately opted-in
-long global-session-capacity case. They are not counted as passes; their existing evidence keeps
+long global-session-capacity case, plus the separately opted-in feasibility driver. They are not
+counted as passes; their existing evidence keeps
 its own scope. New skip conditions must be assessed rather than silently accepted.
 
 Artifacts stay in the printed private directory:
@@ -118,3 +119,5 @@ remain untouched. Artifacts contain source and synthetic diagnostics, not runtim
 Qualification applies only to the selected local engineering envelope. Production environment
 selection, independent-host/device qualification, actual workload measurements, supported release
 upgrades and claimed Native AOT paths retain separate gates.
+Use the separate [feasibility runner](FEASIBILITY.md) for workload measurements; the ordinary
+environment matrix does not silently opt into load or recovery experiments after load.
