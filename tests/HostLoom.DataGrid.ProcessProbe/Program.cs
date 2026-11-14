@@ -18,14 +18,16 @@ if (!OperatingSystem.IsLinux() || args.Length is not (9 or 10))
 var directory = args[0];
 var member = int.Parse(args[1], CultureInfo.InvariantCulture);
 var epoch = long.Parse(args[2], CultureInfo.InvariantCulture);
+var feasibility = Environment.GetEnvironmentVariable("HOSTLOOM_GRID_FEASIBILITY_MEMBER") == "1";
 var config = ProbeConfiguration.Create(
-    args.Skip(3).Take(3).Select(s => int.Parse(s, CultureInfo.InvariantCulture)).ToArray()
+    args.Skip(3).Take(3).Select(s => int.Parse(s, CultureInfo.InvariantCulture)).ToArray(),
+    feasibility
 );
 var port = int.Parse(args[6], CultureInfo.InvariantCulture);
 var clock = new ProbeClock(long.Parse(args[7], CultureInfo.InvariantCulture));
 if (args[8] != "owned-test")
     throw new InvalidOperationException("Test ownership marker required.");
-using var lifetime = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+using var lifetime = new CancellationTokenSource(TimeSpan.FromMinutes(feasibility ? 15 : 3));
 var token = lifetime.Token;
 using var root = X509CertificateLoader.LoadCertificateFromFile(Path.Combine(directory, "root.cer"));
 using var certificate = X509CertificateLoader.LoadPkcs12FromFile(
@@ -65,18 +67,28 @@ if (
     throw new InvalidOperationException("Unsupported storage pause.");
 var storagePaused = 0;
 var publishingSnapshot = false;
-var policy = new DataGridClientAccessPolicy(
-    config,
-    root,
-    [
+using var setupClient = feasibility
+    ? X509CertificateLoader.LoadCertificateFromFile(Path.Combine(directory, "setup-client.cer"))
+    : null;
+var grants = new List<DataGridClientPrincipal>
+{
+    new(
+        ProbeConfiguration.Principal,
+        client.GetCertHash(HashAlgorithmName.SHA256),
+        true,
+        [new(ProbeConfiguration.Map, DataGridMapActions.Read | DataGridMapActions.Mutate)]
+    ),
+};
+if (setupClient is not null)
+    grants.Add(
         new(
-            ProbeConfiguration.Principal,
-            client.GetCertHash(HashAlgorithmName.SHA256),
+            ProbeConfiguration.SetupPrincipal,
+            setupClient.GetCertHash(HashAlgorithmName.SHA256),
             true,
             [new(ProbeConfiguration.Map, DataGridMapActions.Read | DataGridMapActions.Mutate)]
-        ),
-    ]
-);
+        )
+    );
+var policy = new DataGridClientAccessPolicy(config, root, grants);
 await using var security = new DataGridSecurityContext(credentials, policy);
 await using var runtime = OpenRuntime();
 var receiver = new PausingReceiver(runtime, output);
@@ -162,7 +174,7 @@ DataGridPeerRuntime OpenRuntime()
             ),
             Enumerable.Repeat(IPAddress.Parse($"127.0.0.{10 + member}"), 3).ToArray(),
             epoch,
-            clock,
+            feasibility ? TimeProvider.System : clock,
             security
         );
     }

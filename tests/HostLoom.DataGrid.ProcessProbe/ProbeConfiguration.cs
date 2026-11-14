@@ -7,7 +7,12 @@ internal static class ProbeConfiguration
     internal static readonly Guid Map = new("00112233-4455-6677-8899-aabbccddeeff");
     internal static readonly Guid Principal = new("20112233-4455-6677-8899-aabbccddeeff");
 
-    internal static DataGridBootstrapConfiguration Create(IReadOnlyList<int> peerPorts) =>
+    internal static readonly Guid SetupPrincipal = new("50112233-4455-6677-8899-aabbccddeeff");
+
+    internal static DataGridBootstrapConfiguration Create(
+        IReadOnlyList<int> peerPorts,
+        bool feasibility = false
+    ) =>
         new(
             Cluster,
             Enumerable
@@ -25,8 +30,8 @@ internal static class ProbeConfiguration
                     DataGridMapOwnership.Derived,
                     "catalog-service",
                     "catalog-loader",
-                    1000,
-                    1048576,
+                    feasibility ? 100000 : 1000,
+                    feasibility ? 128L * 1024 * 1024 : 1048576,
                     new(1, 1, 2, 1, 1)
                 ),
             ]

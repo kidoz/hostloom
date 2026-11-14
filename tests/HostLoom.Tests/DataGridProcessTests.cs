@@ -752,9 +752,11 @@ public sealed class DataGridProcessTests
         return result.Reply.Result.GetItem(0).Version;
     }
 
-    private sealed class ProcessCluster : IAsyncDisposable
+    internal sealed class ProcessCluster : IAsyncDisposable
     {
-        private readonly DataGridPeerFixture _fixture = new();
+        private readonly DataGridPeerFixture _fixture;
+        private readonly bool _feasibility;
+        private readonly X509Certificate2? _setupClient;
         private readonly X509Certificate2 _client;
         private readonly string _directory = Path.Combine(
             Path.GetTempPath(),
@@ -767,8 +769,13 @@ public sealed class DataGridProcessTests
         internal ProcessNode?[] Nodes { get; } = new ProcessNode?[3];
         internal long Clock { get; private set; } = DateTimeOffset.UtcNow.Ticks;
 
-        internal ProcessCluster()
+        internal string DirectoryPath => _directory;
+        internal DataGridBootstrapConfiguration Configuration => _config;
+
+        internal ProcessCluster(bool feasibility = false)
         {
+            _feasibility = feasibility;
+            _fixture = new(feasibility ? 100000 : 1000, feasibility ? 128L * 1024 * 1024 : 1048576);
             if (!OperatingSystem.IsLinux())
                 throw new PlatformNotSupportedException();
             Directory.CreateDirectory(
@@ -779,7 +786,8 @@ public sealed class DataGridProcessTests
                 Enumerable
                     .Range(0, 3)
                     .Select(i => (int)_fixture.Configuration.GetMember(i).Port)
-                    .ToArray()
+                    .ToArray(),
+                feasibility
             );
             Assert.Equal(_fixture.Configuration.Encode(), _config.Encode());
             _client = _fixture.Issue("catalog-process-client.example", clientOnly: true);
@@ -791,6 +799,14 @@ public sealed class DataGridProcessTests
                 Path.Combine(_directory, "client.cer"),
                 _client.Export(X509ContentType.Cert)
             );
+            if (feasibility)
+            {
+                _setupClient = _fixture.Issue("catalog-setup-client.example", clientOnly: true);
+                File.WriteAllBytes(
+                    Path.Combine(_directory, "setup-client.cer"),
+                    _setupClient.Export(X509ContentType.Cert)
+                );
+            }
             for (var i = 0; i < 3; i++)
             {
                 File.WriteAllBytes(
@@ -853,7 +869,8 @@ public sealed class DataGridProcessTests
                 _config,
                 _ports[member],
                 Clock,
-                pause
+                pause,
+                _feasibility
             );
             try
             {
@@ -953,12 +970,16 @@ public sealed class DataGridProcessTests
             }
         }
 
-        internal GridClient Client(int member, DataGridClientHistory? history = null) =>
+        internal GridClient Client(
+            int member,
+            DataGridClientHistory? history = null,
+            bool setup = false
+        ) =>
             new(
                 new(
                     _config,
-                    ProbeConfiguration.Principal,
-                    _client,
+                    setup ? ProbeConfiguration.SetupPrincipal : ProbeConfiguration.Principal,
+                    setup ? _setupClient! : _client,
                     _fixture.Root,
                     Enumerable
                         .Range(0, 3)
@@ -984,17 +1005,19 @@ public sealed class DataGridProcessTests
             await Task.WhenAll(_links.Values.Select(link => link.DisposeAsync().AsTask()));
             Assert.All(_links.Values, link => Assert.Null(link.Failure));
             _client.Dispose();
+            _setupClient?.Dispose();
             _fixture.Dispose();
             Directory.Delete(_directory, recursive: true);
         }
     }
 
-    private sealed record NodeStatus(RaftRole Role, long Commit, long Applied, long Snapshot);
+    internal sealed record NodeStatus(RaftRole Role, long Commit, long Applied, long Snapshot);
 
-    private sealed class ProcessNode : IAsyncDisposable
+    internal sealed class ProcessNode : IAsyncDisposable
     {
         private readonly Process _process;
-        private readonly CancellationTokenSource _io = new(TimeSpan.FromMinutes(3));
+        private readonly CancellationTokenSource _io;
+        internal int ProcessId => _process.Id;
         private readonly Task _reader;
         private readonly Task<string> _errors;
         private readonly Channel<string> _replies = Channel.CreateBounded<string>(16);
@@ -1020,9 +1043,11 @@ public sealed class DataGridProcessTests
             DataGridBootstrapConfiguration config,
             int clientPort,
             long clock,
-            DataGridStorageStep? pause
+            DataGridStorageStep? pause,
+            bool feasibility = false
         )
         {
+            _io = new(TimeSpan.FromMinutes(feasibility ? 15 : 3));
             var start = new ProcessStartInfo("dotnet")
             {
                 UseShellExecute = false,
@@ -1030,6 +1055,7 @@ public sealed class DataGridProcessTests
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             };
+            start.Environment["HOSTLOOM_GRID_FEASIBILITY_MEMBER"] = feasibility ? "1" : "0";
             start.ArgumentList.Add(
                 Path.Combine(AppContext.BaseDirectory, "HostLoom.DataGrid.ProcessProbe.dll")
             );
