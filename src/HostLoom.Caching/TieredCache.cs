@@ -32,6 +32,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     private readonly TimeProvider _time;
     private readonly ILogger _logger;
     private readonly KeyedAsyncGuard _guard;
+    private readonly KeyedAsyncGuard _writes;
     private readonly DegradedLogThrottle _throttle;
     private readonly string _dataPrefix;
     private readonly string _leasePrefix;
@@ -106,6 +107,10 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         // Four guards per in-process entry bounds the single-flight map; beyond that idle guards
         // are reclaimed at once and further keys share striped guards.
         _guard = new KeyedAsyncGuard(
+            _time,
+            (int)Math.Clamp(4L * options.L1.MaxEntries, 1, int.MaxValue)
+        );
+        _writes = new KeyedAsyncGuard(
             _time,
             (int)Math.Clamp(4L * options.L1.MaxEntries, 1, int.MaxValue)
         );
@@ -259,6 +264,8 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
         using var activity = StartActivity("cache.set", key);
         var start = Stopwatch.GetTimestamp();
+        using var write = await _writes.AcquireAsync(key, cancellationToken).ConfigureAwait(false);
+        _tier.Apply(new CacheInvalidation([key], []));
         var degraded = await WriteAsync(
                 key,
                 value,
@@ -299,6 +306,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         }
 
         var start = Stopwatch.GetTimestamp();
+        using var write = await _writes.AcquireAsync(key, cancellationToken).ConfigureAwait(false);
         if (_store is null)
         {
             var added = _tier.SetIfAbsent(
@@ -312,13 +320,11 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             return added;
         }
 
-        using var payload = Encode(key, value, options, out var compressed);
-        if (payload is null)
-        {
-            RecordOperation("set_if_absent", "error", start);
-            return false;
-        }
+        using var payload =
+            Encode(key, value, options, out var compressed, throwOnFailure: true)
+            ?? throw new CacheUnavailableException(key, CacheFailureKind.Other, null);
 
+        _tier.Apply(new CacheInvalidation([key], []));
         var generation = _tier.Capture(key, options.Tags);
         bool written;
         try
@@ -364,7 +370,16 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     }
 
     /// <inheritdoc />
-    public async ValueTask RemoveAsync(string key, CancellationToken cancellationToken = default)
+    public async ValueTask RemoveAsync(string key, CancellationToken cancellationToken = default) =>
+        await RemoveAsync(key, UnavailableBehavior.ReturnFalse, cancellationToken)
+            .ConfigureAwait(false);
+
+    /// <inheritdoc />
+    public async ValueTask RemoveAsync(
+        string key,
+        UnavailableBehavior onUnavailable,
+        CancellationToken cancellationToken = default
+    )
     {
         ValidateKey(key);
         ThrowIfDisposed();
@@ -380,7 +395,9 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             }
             catch (Exception exception) when (!IsCallerCancellation(exception, cancellationToken))
             {
-                NoteStoreFailure(exception, "remove", key);
+                var kind = NoteStoreFailure(exception, "remove", key);
+                if (onUnavailable == UnavailableBehavior.Throw)
+                    throw new CacheUnavailableException(key, kind, exception);
                 degraded = true;
             }
         }
@@ -429,8 +446,14 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         }
 
         _tier.Apply(new CacheInvalidation(list, []));
-        await PublishAsync(new CacheInvalidation(list, []), cancellationToken)
-            .ConfigureAwait(false);
+        // Large invalidations must fit every adapter's bounded message envelope. A flush is
+        // conservative and constant-sized, and cannot strand remote entries after bulk removal.
+        var invalidation =
+            list.Count > 128
+            || list.Sum(key => (long)System.Text.Encoding.UTF8.GetByteCount(key)) > 16_384
+                ? CacheInvalidation.Flush
+                : new CacheInvalidation(list, []);
+        await PublishAsync(invalidation, cancellationToken).ConfigureAwait(false);
         RecordOperation("remove", degraded ? "degraded" : "miss", start);
     }
 
@@ -616,6 +639,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
 
         _tier.Dispose();
         _guard.Dispose();
+        _writes.Dispose();
         _disposal.Dispose();
     }
 
@@ -1001,6 +1025,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         CancellationToken cancellationToken
     )
     {
+        using var write = await _writes.AcquireAsync(key, cancellationToken).ConfigureAwait(false);
         if (!_tier.IsCurrent(generation))
         {
             NoteWriteSkipped(key);
@@ -1056,6 +1081,9 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         CancellationToken cancellationToken
     )
     {
+        using var write = fromFactory
+            ? await _writes.AcquireAsync(key, cancellationToken).ConfigureAwait(false)
+            : (KeyedAsyncGuard.Releaser?)null;
         if (fromFactory && !_tier.IsCurrent(generation))
         {
             NoteWriteSkipped(key);
@@ -1170,7 +1198,8 @@ public sealed class TieredCache : ICache, IAsyncDisposable
         string key,
         T value,
         CacheEntryOptions options,
-        out bool compressed
+        out bool compressed,
+        bool throwOnFailure = false
     )
     {
         var writer = new PooledBufferWriter();
@@ -1197,12 +1226,14 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             _logger.LogError(
                 new EventId(1002, "CachePayloadUnreadable"),
                 exception,
-                "Value for '{Key}' in namespace '{Namespace}' could not be serialized as {Type}; it is kept in the in-process tier only.",
+                "Value for '{Key}' in namespace '{Namespace}' could not be serialized as {Type}; the distributed write was skipped.",
                 key,
                 _options.Namespace,
                 typeof(T).Name
             );
             compressed = false;
+            if (throwOnFailure)
+                throw new CacheUnavailableException(key, CacheFailureKind.Other, exception);
             return null;
         }
 
@@ -1214,7 +1245,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
             writer.Dispose();
             _logger.LogError(
                 new EventId(1003, "CachePayloadTooLarge"),
-                "Value for '{Key}' in namespace '{Namespace}' serializes to {Bytes} bytes ({EncodedBytes} encoded), above Caching:MaxPayloadBytes ({MaxPayloadBytes}); it is kept in the in-process tier only.",
+                "Value for '{Key}' in namespace '{Namespace}' serializes to {Bytes} bytes ({EncodedBytes} encoded), above Caching:MaxPayloadBytes ({MaxPayloadBytes}); the distributed write was skipped.",
                 key,
                 _options.Namespace,
                 bodyLength,
@@ -1222,6 +1253,15 @@ public sealed class TieredCache : ICache, IAsyncDisposable
                 _options.MaxPayloadBytes
             );
             compressed = false;
+            if (throwOnFailure)
+                throw new CacheUnavailableException(
+                    key,
+                    CacheFailureKind.Other,
+                    new ArgumentException(
+                        "The conditional cache value exceeds MaxPayloadBytes.",
+                        nameof(value)
+                    )
+                );
             return null;
         }
 
@@ -1368,6 +1408,7 @@ public sealed class TieredCache : ICache, IAsyncDisposable
     {
         _tier.RemoveExpired();
         _guard.Reclaim(_options.L1.GuardIdleTime);
+        _writes.Reclaim(_options.L1.GuardIdleTime);
     }
 
     private CacheFailureKind NoteStoreFailure(Exception exception, string operation, string key)

@@ -34,14 +34,15 @@ public sealed class CacheStoreException : Exception
 /// <summary>
 /// Raised by <see cref="ICache.SetIfAbsentAsync{T}(string, T, CacheEntryOptions, CancellationToken)"/>
 /// when the distributed store is unavailable and the caller chose
-/// <see cref="UnavailableBehavior.Throw"/>. No other read or write throws for a store failure.
+/// <see cref="UnavailableBehavior.Throw"/>, or conditional payload encoding failed. Strict
+/// removal also raises this exception when distributed deletion cannot be confirmed.
 /// </summary>
 public sealed class CacheUnavailableException : Exception
 {
     /// <summary>Creates the exception for <paramref name="key"/>.</summary>
     public CacheUnavailableException(string key, CacheFailureKind kind, Exception? innerException)
         : base(
-            $"The distributed cache store is unavailable ({kind}), so '{key}' could not be written.",
+            $"The distributed cache store is unavailable ({kind}), so '{key}' could not be updated.",
             innerException
         )
     {
@@ -49,7 +50,7 @@ public sealed class CacheUnavailableException : Exception
         Kind = kind;
     }
 
-    /// <summary>The consumer key that could not be written.</summary>
+    /// <summary>The consumer key that could not be updated.</summary>
     public string Key { get; }
 
     /// <summary>Why the store could not answer.</summary>

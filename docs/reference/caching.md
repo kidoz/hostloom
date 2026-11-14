@@ -29,7 +29,8 @@ Every member returns `ValueTask`, takes a trailing optional
 | `GetAsync<T>(key, ct)` | `default(T)` on a miss or under degradation. For a value type a cached `0` is indistinguishable from a miss; kept for call sites written against that contract. |
 | `SetAsync<T>(key, value, options, ct)` | Distributed tier, then in-process tier. Publishes no invalidation; see [write visibility](#write-visibility-across-instances). Null throws `ArgumentNullException`. |
 | `SetIfAbsentAsync<T>(key, value, options \| expiration, ct)` | Atomic in the distributed tier (in-process when there is none). Tags are indexed in both tiers when the write happened. Publishes no invalidation. `false` when present, or when the store is unavailable and `OnUnavailable` is `ReturnFalse`; `CacheUnavailableException` under `Throw`. |
-| `RemoveAsync(key \| keys, ct)` | In-process tier first, then one batched distributed call, then one invalidation message. |
+| `RemoveAsync(key \| keys, ct)` | In-process tier first, then one batched distributed call, then a bounded invalidation (a flush for large batches). |
+| `RemoveAsync(key, onUnavailable, ct)` | With `Throw`, distributed removal failure raises `CacheUnavailableException`; default removal stays fail-open. Custom cache implementations must opt into strict removal. |
 | `RemoveByTagAsync(tag, ct)` | Evicts every entry written with the tag, on every instance. |
 | `GetManyAsync<T>(keys, ct)` | In-process tier, then one batched distributed read; only found entries; partial under failure, never throws. |
 | `WarmupAsync<T>(entries, expiration, progress, ct)` | Writes in batches of `Caching:Warmup:BatchSize`, fills both tiers, reports `CacheWarmupProgress`, fail-open. |
@@ -352,3 +353,11 @@ The in-memory distributed store and lock provider reclaim expired historical ent
 activity, sweeping at most once per second. Inspecting their counts forces reclamation.
 Tag indexes accumulate memberships across live rewrites; cleanup prunes memberships only
 when the referenced entry no longer exists.
+
+Conditional encoding or payload-size failure always raises `CacheUnavailableException` with
+kind `Other`, including under `ReturnFalse`: it cannot establish that a key exists. Inbox and
+deduplication consumers can therefore distinguish failure from a duplicate. An explicit
+`SetAsync` supersedes older in-process factory fills, including cached-null fills. This ordering
+is local to one cache instance; it is not a cross-process compare-and-set contract.
+Large bulk removals publish a constant-sized flush so adapter message limits cannot leave
+remote L1 entries stale solely because the key list exceeds the invalidation envelope.

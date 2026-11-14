@@ -305,9 +305,14 @@ store:
     provider => InboxStore.FromClaim(
         (key, window, token) => provider.GetRequiredService<ICache>().SetIfAbsentAsync(
             key, key, new CacheEntryOptions(window) { OnUnavailable = UnavailableBehavior.Throw }, token),
-        (key, token) => provider.GetRequiredService<ICache>().RemoveAsync(key, token)),
+        (key, token) => provider.GetRequiredService<ICache>().RemoveAsync(key, UnavailableBehavior.Throw, token)),
     TimeSpan.FromDays(1))
 ```
+
+The strict removal overload makes a failed distributed release visible to the inbox logger.
+It is implemented by `TieredCache`; a custom `ICache` must implement it explicitly.
+For durable processing guarantees, use an application-owned inbox with claim/completion
+state and recovery coordinated with the handler's transaction.
 
 The single-delegate `FromClaim(tryRecord)` overload remains and builds a store
 that cannot release.
@@ -318,8 +323,10 @@ twice is recoverable, dropping a delivery on an outage is not.
 
 When the handlers throw or are cancelled after the key was recorded, the filter
 calls `ReleaseAsync` and then rethrows the original exception unchanged, so the
-transport redelivers the event and the handlers run again: delivery stays
-at-least-once. The release runs with its own five-second token rather than the
+transport can redeliver the event. A successful release lets the handlers run again.
+A failed distributed release can leave the claim until expiry and suppress a redelivery;
+this claim-before-handler composition does not guarantee at-least-once handler execution
+across release failure, process crash, or concurrent delivery. The release runs with its own five-second token rather than the
 delivery's, which may be the cancellation being handled; a release that fails is
 logged as a warning (`InboxReleaseFailed`, 3312) and never replaces the
 handlers' exception. The key covers the subscription, so a redelivery after one

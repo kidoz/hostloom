@@ -58,7 +58,7 @@ public static class InboxStore
     /// <code>
     /// InboxStore.FromClaim(
     ///     (key, window, ct) =&gt; cache.SetIfAbsentAsync(key, key, new CacheEntryOptions(window) { OnUnavailable = UnavailableBehavior.Throw }, ct),
-    ///     (key, ct) =&gt; cache.RemoveAsync(key, ct))
+    ///     (key, ct) =&gt; cache.RemoveAsync(key, UnavailableBehavior.Throw, ct))
     /// </code>
     /// </summary>
     public static IInboxStore FromClaim(

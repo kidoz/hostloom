@@ -11,7 +11,7 @@ namespace HostLoom.Caching;
 /// records a metric, and logs at most one warning per key per
 /// <see cref="CacheDiagnosticsOptions.DegradedLogInterval"/>. The only members that can throw for
 /// a store failure are <see cref="SetIfAbsentAsync{T}(string, T, CacheEntryOptions, CancellationToken)"/>
-/// under <see cref="UnavailableBehavior.Throw"/>, and cancellation.
+/// under <see cref="UnavailableBehavior.Throw"/>, strict removal, and cancellation.
 /// </remarks>
 public interface ICache
 {
@@ -98,8 +98,9 @@ public interface ICache
     /// <see cref="CacheEntryOptions.OnUnavailable"/> is <see cref="UnavailableBehavior.ReturnFalse"/>.
     /// </returns>
     /// <exception cref="CacheUnavailableException">
-    /// The distributed store was unavailable and <see cref="CacheEntryOptions.OnUnavailable"/> is
-    /// <see cref="UnavailableBehavior.Throw"/>.
+    /// The conditional payload could not be encoded, or the distributed store was unavailable
+    /// and <see cref="CacheEntryOptions.OnUnavailable"/> is <see cref="UnavailableBehavior.Throw"/>.
+    /// Encoding failures always throw because they cannot establish that a key already exists.
     /// </exception>
     ValueTask<bool> SetIfAbsentAsync<T>(
         string key,
@@ -125,8 +126,19 @@ public interface ICache
     /// </summary>
     ValueTask RemoveAsync(string key, CancellationToken cancellationToken = default);
 
+    /// <summary>Removes a key, optionally throwing when distributed removal cannot be confirmed.</summary>
+    /// <remarks>Custom caches must implement this overload to support strict removal.</remarks>
+    ValueTask RemoveAsync(
+        string key,
+        UnavailableBehavior onUnavailable,
+        CancellationToken cancellationToken = default
+    ) =>
+        onUnavailable == UnavailableBehavior.Throw
+            ? throw new NotSupportedException("This cache does not support strict removal.")
+            : RemoveAsync(key, cancellationToken);
+
     /// <summary>
-    /// Evicts every key in one distributed-store call and one invalidation message, in the same
+    /// Evicts every key in one distributed-store call and a bounded invalidation (a flush for large batches), in the same
     /// tier order as <see cref="RemoveAsync(string, CancellationToken)"/>.
     /// </summary>
     ValueTask RemoveAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default);

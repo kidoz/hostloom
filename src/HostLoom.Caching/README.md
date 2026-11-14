@@ -148,3 +148,10 @@ Meter and activity source are both named `HostLoom.Caching`. Instruments are
 `hostloom.cache.errors`, and `hostloom.cache.compressions`; identity is the
 `hostloom.cache.namespace` tag. `CachingProbe.Describe(cache)` returns the composition, each line
 naming the option that decided it, without executing anything.
+
+Conditional writes throw `CacheUnavailableException` on serialization or payload-size failure;
+those failures never mean that a key already exists. `RemoveAsync(key,
+UnavailableBehavior.Throw, token)` exposes distributed deletion failure for claim stores such
+as an inbox. Other removal overloads remain fail-open. Explicit writes supersede older local
+factory results, including remembered nulls. Large bulk removals invalidate remote L1 through
+a bounded flush message; invalidation delivery remains best-effort.

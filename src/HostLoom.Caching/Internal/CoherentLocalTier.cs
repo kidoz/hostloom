@@ -310,7 +310,13 @@ internal sealed class CoherentLocalTier : IDisposable
     {
         lock (_gate)
         {
-            return _store!.SetIfAbsent(key, value, timeToLive, tags, size);
+            var added = _store!.SetIfAbsent(key, value, timeToLive, tags, size);
+            if (added)
+            {
+                _generations[StripeOf(key)]++;
+                Interlocked.Increment(ref _wholeGeneration);
+            }
+            return added;
         }
     }
 
