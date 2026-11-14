@@ -7,7 +7,7 @@ using Xunit;
 
 namespace HostLoom.Tests;
 
-public sealed class MessagingFrameLimitTests
+public sealed partial class MessagingFrameLimitTests
 {
     private const int Limit = 1024;
 

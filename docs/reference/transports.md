@@ -69,6 +69,10 @@ returned or copied into an owned RabbitMQ reply buffer. An oversized frame is a
 | RabbitMQ request or event | The delivery is rejected without requeue, reaching `DeadLetterExchange` when configured |
 | Correlated reply on any built-in transport | The waiting caller fails with `MalformedEnvelopeException`; its pending entry is removed and the reply consumer remains usable |
 
+The dispatcher also bounds generated responses and faults. An oversized response or detailed
+fault becomes a bounded framework fault; if even that envelope cannot fit the configured
+limit, dispatch throws `MalformedEnvelopeException` rather than emitting an oversized frame.
+
 Uncorrelated replies are ignored. Broker/network buffers precede these checks; the framework limit
 does not replace broker or SDK receive-buffer limits. Encoded-size limits do not apply to typed
 in-process streams, which have no wire envelope.

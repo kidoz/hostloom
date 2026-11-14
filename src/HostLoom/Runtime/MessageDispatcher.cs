@@ -215,7 +215,12 @@ internal sealed class MessageDispatcher
                 Body = _serializer.Serialize(receiveContext.Response, registration.ResponseType),
             };
 
-            return WireEnvelopeCodec.Encode(envelope);
+            var encoded = WireEnvelopeCodec.Encode(envelope);
+            if (encoded.Length > _maxFrameBytes)
+                throw new InvalidOperationException(
+                    "The response exceeds HostLoomOptions.MaxFrameBytes."
+                );
+            return encoded;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -364,23 +369,37 @@ internal sealed class MessageDispatcher
         }
     }
 
-    private static byte[] EncodeFault(MessageEnvelope request, in TagList tags, RemoteFault fault)
+    private byte[] EncodeFault(MessageEnvelope request, in TagList tags, RemoteFault fault)
     {
         HostLoomDiagnostics.Faults.Add(1, tags);
-        return WireEnvelopeCodec.Encode(
-            new MessageEnvelope
-            {
-                MessageId = Guid.NewGuid(),
-                CorrelationId = request.MessageId,
-                ConversationId = request.ConversationId ?? request.MessageId,
-                InitiatorId = request.CorrelationId ?? request.MessageId,
-                Kind = MessageKind.Fault,
-                MessageType = request.ResponseType,
-                ResponseType = request.ResponseType,
-                SentAt = DateTimeOffset.UtcNow,
-                Body = [],
-                Fault = fault,
-            }
-        );
+        var envelope = new MessageEnvelope
+        {
+            MessageId = Guid.NewGuid(),
+            CorrelationId = request.MessageId,
+            ConversationId = request.ConversationId ?? request.MessageId,
+            InitiatorId = request.CorrelationId ?? request.MessageId,
+            Kind = MessageKind.Fault,
+            MessageType = request.ResponseType,
+            ResponseType = request.ResponseType,
+            SentAt = DateTimeOffset.UtcNow,
+            Body = [],
+            Fault = fault,
+        };
+        var encoded = WireEnvelopeCodec.Encode(envelope);
+        if (encoded.Length <= _maxFrameBytes)
+            return encoded;
+        envelope = envelope with
+        {
+            Fault = new RemoteFault(
+                HandlerFaultType,
+                "The response exceeded the maximum frame size."
+            ),
+        };
+        encoded = WireEnvelopeCodec.Encode(envelope);
+        if (encoded.Length > _maxFrameBytes)
+            throw new MalformedEnvelopeException(
+                "The fault response exceeds HostLoomOptions.MaxFrameBytes."
+            );
+        return encoded;
     }
 }
