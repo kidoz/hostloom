@@ -149,7 +149,7 @@ The package's conformance tests consume the schema and exact fixtures from
 
 ## AOT compatibility
 
-`HostLoom.Diagnostics`, `HostLoom.Mapping`,
+`HostLoom.Diagnostics`, `HostLoom.Composition`, `HostLoom.Composition.Testing`, `HostLoom.Mapping`,
 `HostLoom.Mapping.DependencyInjection`, `HostLoom.Mapping.Testing`,
 `HostLoom.Caching`, `HostLoom.Caching.DependencyInjection`,
 `HostLoom.Caching.Testing`, `HostLoom.Caching.Pipelines`, `HostLoom.Locking`,
@@ -162,7 +162,8 @@ The package's conformance tests consume the schema and exact fixtures from
 `HostLoom.NodeLeasing`, `HostLoom.NodeLeasing.DependencyInjection`,
 `HostLoom.NodeLeasing.Testing`, and
 `HostLoom.Logging` enable the .NET SDK Native AOT and trimming analyzers
-(`IsAotCompatible=true`), as does `HostLoom.Generators`.
+(`IsAotCompatible=true`), as do `HostLoom.Generators`, `HostLoom.Generators.Testing`,
+and `HostLoom.Valkey`.
 `examples/HostLoom.Examples.CachingAot` publishes with `PublishAot=true`
 and exercises named cache/lock profiles, a serialized cache round trip through a source-generated
 `JsonSerializerContext`, and opted-in sliding renewal and inactivity expiry, so the caching and
@@ -171,8 +172,8 @@ executes named composition, serialized L2, a real conditional sliding renewal, l
 token-bucket rate limits through named and container-free composition, and explicit invalidation
 against a standalone server.
 `examples/HostLoom.Examples.GeneratorsAot` does the same for the generators:
-it resolves every generator from a service collection in the native binary
-and checks each output against its contract.
+it constructs the generator kernels directly in the native binary and checks their outputs.
+The generator package has no dependency-injection adapter.
 `examples/HostLoom.Examples.LoggingAot` does the same for logging: it binds options from
 configuration, destructures preserved and masked types, and exits non-zero when its output
 differs. Destructuring reads members by reflection, so a native app preserves the types it
@@ -188,3 +189,21 @@ package states that rather than asserting a compatibility it cannot verify.
 | Language version | C# 14 |
 | SDK pin | 10.0.400 (`global.json`, `rollForward: latestPatch`) |
 | License | MIT |
+
+The routine .NET pull-request/main workflow and release workflow publish and execute all six
+native samples: caching, logging, mapping, generators, composition, and standalone Valkey.
+The release workflow additionally executes the packed composition verifier's native mode.
+These samples cover their declared paths; packages with only `IsAotCompatible` analysis do
+not gain executed native coverage by association. The messaging kernel and Redis adapter
+make no general Native AOT claim.
+
+## Experimental DataGrid
+
+The `HostLoom.DataGrid*` projects are non-packable prototypes and are excluded from the NuGet
+inventory above. Their public runtime, storage, transport, and client contracts are documented
+in the [runtime source guide](https://github.com/kidoz/hostloom/tree/main/src/HostLoom.DataGrid.Runtime).
+The [resource inventory](https://github.com/kidoz/hostloom/blob/main/src/HostLoom.DataGrid.Runtime/RESOURCE_LIMITS.md)
+distinguishes queued, executing, and retained ownership; logical byte quotas are not heap limits.
+The declared full-size workload remains unqualified in the selected two-GiB fixture. Cache
+integration and production packaging remain gated on feasibility and explicit acceptance targets;
+passing bounded tests or smoke workloads does not close that gate.

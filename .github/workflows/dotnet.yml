@@ -1,0 +1,46 @@
+name: .NET verification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dotnet-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DOTNET_NOLOGO: true
+      HOSTLOOM_REQUIRE_BROKERS: "1"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - run: dotnet tool restore
+      - run: dotnet restore HostLoom.slnx
+      - run: dotnet csharpier check .
+      - run: dotnet build HostLoom.slnx -c Release --no-restore
+      - run: docker compose up -d --wait
+      - run: dotnet test --solution HostLoom.slnx -c Release --no-build --no-restore
+      - name: Execute all Native AOT samples
+        shell: bash
+        run: |
+          set -euo pipefail
+          for sample in Caching Logging Mapping Generators Composition Valkey; do
+            dotnet publish "examples/HostLoom.Examples.${sample}Aot" -c Release -r linux-x64 -o "artifacts/aot/${sample}"
+            "artifacts/aot/${sample}/HostLoom.Examples.${sample}Aot"
+          done
+      - name: Stop owned brokers
+        if: always()
+        run: docker compose down -v

@@ -63,7 +63,7 @@ jobs:
     needs: validate
     if: needs.validate.outputs.publish_nuget == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -121,7 +121,7 @@ jobs:
         # compile, while reporting a green suite that never touched either broker.
         env:
           HOSTLOOM_REQUIRE_BROKERS: "1"
-        run: dotnet test HostLoom.slnx --configuration Release --no-build --no-restore
+        run: dotnet test --solution HostLoom.slnx --configuration Release --no-build --no-restore
 
       - name: Verify Valkey TLS, ACL and restart recovery
         run: python3 scripts/test-valkey-deployment.py --no-build
@@ -136,6 +136,15 @@ jobs:
           dotnet publish examples/HostLoom.Examples.LoggingAot -c Release -r linux-x64 -o artifacts/logging-aot -p:Version=${{ steps.version.outputs.version }}
           artifacts/logging-aot/HostLoom.Examples.LoggingAot
 
+      - name: Verify remaining Native AOT samples
+        shell: bash
+        run: |
+          set -euo pipefail
+          for sample in Caching Mapping Generators Composition; do
+            dotnet publish "examples/HostLoom.Examples.${sample}Aot" -c Release -r linux-x64 -o "artifacts/aot/${sample}" -p:Version=${{ steps.version.outputs.version }}
+            "artifacts/aot/${sample}/HostLoom.Examples.${sample}Aot"
+          done
+
       - name: Stop brokers
         if: always()
         run: docker compose down -v
@@ -144,7 +153,7 @@ jobs:
         run: dotnet pack HostLoom.slnx --configuration Release --no-build --no-restore --output artifacts/packages -p:Version=${{ steps.version.outputs.version }}
 
       - name: Verify packed composition consumer
-        run: python3 scripts/verify-composition-package.py --packages artifacts/packages --version ${{ steps.version.outputs.version }}
+        run: python3 scripts/verify-composition-package.py --packages artifacts/packages --version ${{ steps.version.outputs.version }} --runtime linux-x64
 
       - name: Upload package artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
