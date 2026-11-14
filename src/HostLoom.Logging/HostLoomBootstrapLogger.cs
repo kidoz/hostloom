@@ -173,7 +173,11 @@ public sealed class HostLoomBootstrapLogger : ILogger, IDisposable
         {
             if (_disposed == 0)
             {
-                _output.Flush();
+                try
+                {
+                    _output.Flush();
+                }
+                catch (Exception) when (!_failFast) { }
             }
         }
     }

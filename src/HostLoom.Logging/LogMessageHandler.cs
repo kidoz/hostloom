@@ -157,8 +157,28 @@ public ref struct LogMessageHandler
         Entry.AppendText(text ?? string.Empty, name);
     }
 
-    private readonly void AppendBoxedFormattable<T>(T value, string? format, string? name) =>
-        // The static type is unknown here, so the safe kind is text: a numeric token would need
-        // proof the rendering is valid JSON, and only the concrete overloads can promise that.
-        Entry!.AppendFormattable((IUtf8SpanFormattable)value!, format, name, LogFieldKind.Text);
+    private readonly void AppendBoxedFormattable<T>(T value, string? format, string? name)
+    {
+        var kind = value switch
+        {
+            byte
+            or sbyte
+            or short
+            or ushort
+            or int
+            or uint
+            or long
+            or ulong
+            or Int128
+            or UInt128
+            or nint
+            or nuint
+            or decimal => LogFieldKind.Number,
+            float number when float.IsFinite(number) => LogFieldKind.Number,
+            double number when double.IsFinite(number) => LogFieldKind.Number,
+            Half number when Half.IsFinite(number) => LogFieldKind.Number,
+            _ => LogFieldKind.Text,
+        };
+        Entry!.AppendFormattable((IUtf8SpanFormattable)value!, format, name, kind);
+    }
 }
