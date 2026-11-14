@@ -39,6 +39,11 @@ public sealed class DataGridFeasibilityTests
             DataGridFeasibilityCase.Json
         )!;
         spec.Validate();
+        if (DataGridFeasibilityMemory.Bounded)
+            Assert.Equal(
+                DataGridFeasibilityMemory.DriverHeapBytes,
+                GC.GetGCMemoryInfo().TotalAvailableMemoryBytes
+            );
         Directory.CreateDirectory("/work/feasibility");
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
             TestContext.Current.CancellationToken
@@ -51,6 +56,7 @@ public sealed class DataGridFeasibilityTests
             ["is_p0"] = spec.IsP0,
             ["status"] = "incomplete",
             ["acceptance"] = "no_numerical_targets",
+            ["process_memory_profile"] = DataGridFeasibilityMemory.Profile,
             ["load_model"] = "closed_loop_one_outstanding_per_worker",
             ["key_bytes"] = 32,
             ["value_bytes"] = 1024,
@@ -76,6 +82,7 @@ public sealed class DataGridFeasibilityTests
                 Framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
                 ServerGc = GCSettings.IsServerGC,
                 ProcessorCount = Environment.ProcessorCount,
+                TotalAvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
             },
             ["instrumentation"] =
                 "one-second process/io/directory snapshots; raw call serialization after each phase",
@@ -104,6 +111,7 @@ public sealed class DataGridFeasibilityTests
             report["startup_to_leader_role_seconds"] = clock.Elapsed.TotalSeconds;
             phase = "population";
             var setupClients = new List<GridClient>();
+            var stored = 0;
             try
             {
                 using var population = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -117,7 +125,6 @@ public sealed class DataGridFeasibilityTests
                 }
                 report["startup_to_sessions_seconds"] = clock.Elapsed.TotalSeconds;
                 var sequences = new ulong[] { 1, 1, 1, 1 };
-                var stored = 0;
                 var populationStarted = Stopwatch.GetTimestamp();
                 double ttlPopulationSeconds = 0;
                 for (var parity = 0; parity < 2; parity++)
@@ -186,6 +193,12 @@ public sealed class DataGridFeasibilityTests
             }
             finally
             {
+                report["population_progress"] = new
+                {
+                    AcknowledgedKeys = stored,
+                    RequestedKeys = spec.KeyCount,
+                    Complete = stored == spec.KeyCount,
+                };
                 foreach (var setup in setupClients)
                     await setup.DisposeAsync();
             }
@@ -267,6 +280,11 @@ public sealed class DataGridFeasibilityTests
             report["status"] = "infeasible";
             report["reason"] = exception.Message;
         }
+        catch (ResolutionBudgetExpired exception)
+        {
+            report["status"] = "incomplete_budget";
+            report["reason"] = exception.Message;
+        }
         catch (OperationCanceledException)
             when (!TestContext.Current.CancellationToken.IsCancellationRequested)
         {
@@ -283,6 +301,7 @@ public sealed class DataGridFeasibilityTests
         }
         finally
         {
+            report["stopped_phase"] = phase;
             phase = "cleanup";
             try
             {
@@ -326,24 +345,37 @@ public sealed class DataGridFeasibilityTests
         using var bound = CancellationTokenSource.CreateLinkedTokenSource(token);
         bound.CancelAfter(TimeSpan.FromSeconds(45));
         using var pacing = new PeriodicTimer(TimeSpan.FromMilliseconds(150));
-        do
+        DataGridClientFailureCode? lastFailure = null;
+        try
         {
-            var result = await client.ExecuteAsync(request, bound.Token);
-            if (result.Reply.Failure is null)
-                return result.Reply;
-            if (
-                result.Reply.Failure.Code
-                is not (
-                    DataGridClientFailureCode.CapacityExceeded
-                    or DataGridClientFailureCode.QuorumUnavailable
-                    or DataGridClientFailureCode.OutcomeUnknown
-                    or DataGridClientFailureCode.Redirect
+            do
+            {
+                var result = await client.ExecuteAsync(request, bound.Token);
+                lastFailure = result.Reply.Failure?.Code;
+                if (result.Reply.Failure is null)
+                    return result.Reply;
+                if (
+                    result.Reply.Failure.Code
+                    is not (
+                        DataGridClientFailureCode.CapacityExceeded
+                        or DataGridClientFailureCode.QuorumUnavailable
+                        or DataGridClientFailureCode.OutcomeUnknown
+                        or DataGridClientFailureCode.Redirect
+                    )
                 )
-            )
-                throw new Infeasible(
-                    "Immutable identity could not resolve: " + result.Reply.Failure.Code
-                );
-        } while (await pacing.WaitForNextTickAsync(bound.Token));
+                    throw new Infeasible(
+                        "Immutable identity could not resolve: " + result.Reply.Failure.Code
+                    );
+            } while (await pacing.WaitForNextTickAsync(bound.Token));
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            throw new ResolutionBudgetExpired(
+                "Immutable identity resolution exceeded 45 seconds; last returned failure: "
+                    + (lastFailure?.ToString() ?? "none")
+                    + "."
+            );
+        }
         throw new Infeasible("Unresolved immutable request.");
     }
 
@@ -756,6 +788,8 @@ public sealed class DataGridFeasibilityTests
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
     }
+
+    private sealed class ResolutionBudgetExpired(string message) : Exception(message);
 
     private sealed class Infeasible(string message) : Exception(message);
 }

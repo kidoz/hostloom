@@ -1056,6 +1056,12 @@ public sealed class DataGridProcessTests
                 RedirectStandardError = true,
             };
             start.Environment["HOSTLOOM_GRID_FEASIBILITY_MEMBER"] = feasibility ? "1" : "0";
+            if (feasibility && DataGridFeasibilityMemory.Bounded)
+                start.Environment["DOTNET_GCHeapHardLimit"] =
+                    DataGridFeasibilityMemory.MemberHeapBytes.ToString(
+                        "X",
+                        CultureInfo.InvariantCulture
+                    );
             start.ArgumentList.Add(
                 Path.Combine(AppContext.BaseDirectory, "HostLoom.DataGrid.ProcessProbe.dll")
             );

@@ -7,6 +7,23 @@ using HostLoom.DataGrid.ProcessProbe;
 
 namespace HostLoom.Tests;
 
+internal static class DataGridFeasibilityMemory
+{
+    internal const long DriverHeapBytes = 192L * 1024 * 1024;
+    internal const long MemberHeapBytes = 448L * 1024 * 1024;
+    internal const long RemainingContainerBytes = 512L * 1024 * 1024;
+    internal static bool Bounded =>
+        Environment.GetEnvironmentVariable("HOSTLOOM_GRID_FEASIBILITY_BOUNDED_GC") == "1";
+    internal static object Profile =>
+        new
+        {
+            Name = Bounded ? "shared-2g-bounded-gc-v1" : "runtime_defaults",
+            DriverHeapLimitBytes = Bounded ? (long?)DriverHeapBytes : null,
+            MemberHeapLimitBytes = Bounded ? (long?)MemberHeapBytes : null,
+            RemainingContainerBytes = Bounded ? (long?)RemainingContainerBytes : null,
+        };
+}
+
 internal sealed record DataGridFeasibilityCase(
     int KeyCount,
     int BatchSize,
