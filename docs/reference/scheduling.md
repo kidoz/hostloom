@@ -86,17 +86,18 @@ exclusive schedule composed without a guard.
 
 ## Local and cluster schedules
 
-A schedule without `Exclusive` runs on every instance that hosts it, each on
-its own clock. An `Exclusive` schedule runs on one instance per occurrence:
-every instance claims the schedule through the guard before the run, and a
-refused claim skips that occurrence. The claim is kept past the run until the
-lease ends or this instance's next occurrence is due, whichever comes first,
-so an instance reaching the same occurrence a little later is refused rather
-than running it again; `ScheduleState.ClaimHeldUntil` and the probe report the
-hold. There is no leader election and no affinity. When the guard throws, the
-job runs on no instance. See
-[Run a schedule on every instance or on one](../how-to/schedule-on-one-instance.md)
-for the failure table and the verification steps.
+Every instance computes its own trigger cadence. `Exclusive` acquires a shared claim before
+each local run and skips that run when another instance holds the claim. This provides mutual
+exclusion while a coordinated lease remains valid and work honours cancellation. It does not
+provide a shared occurrence stream, durable execution history, catch-up, or exactly-once runs.
+Fixed-rate starts and fixed-delay completions can differ across replicas and after failover.
+
+The claim is retained after a run until its lease ends or this instance's next due time,
+whichever comes first. `ScheduleState.ClaimHeldUntil` and the probe expose that hold; it can
+suppress nearby duplicate attempts, but it cannot identify an occurrence across staggered
+cadences. `UseDistributedLock()` selects direct lock contention. `UseLeader(role)` selects
+a leader-only guard instead; see the [leadership guide](../how-to/run-one-leader.md).
+See [schedule coordination](../how-to/schedule-on-one-instance.md) for failure and verification.
 
 ## The guard (`IScheduleGuard`)
 

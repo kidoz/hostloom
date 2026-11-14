@@ -675,23 +675,23 @@ A job is resolved from a fresh dependency-injection scope for every run, so it t
 dependencies through its constructor like a request handler. The token it receives is cancelled
 when the host stops, when the schedule's timeout elapses, or when an exclusive claim is lost.
 
-Local or cluster is decided per schedule. A schedule without `Exclusive` runs on every instance,
-each on its own clock. An `Exclusive` schedule runs on exactly one instance per occurrence: the
-claim is kept past the run until the lease ends or that instance's next occurrence is due, so an
-instance whose clock runs a little behind finds the claim taken and skips instead of running the
-job again. When the lock backend is unreachable the job runs nowhere and every instance records
-`GuardFailed`, because nobody can tell whether another instance already runs it. The kernel
-composes with `new` and reports its schedules through `SchedulingProbe`; see the
+A schedule without `Exclusive` runs on every instance, each on its own clock. An `Exclusive`
+schedule takes a shared lease before each local run and skips when busy. The retained claim
+suppresses nearby attempts, but fixed-rate starts and fixed-delay completions remain local:
+there is no shared occurrence stream, durable history, or exactly-once execution. Lease loss
+and backend failover require idempotent jobs that honour cancellation. The kernel composes
+with `new` and reports state through `SchedulingProbe`; see the
 [scheduling reference](docs/reference/scheduling.md) and
-[Run a schedule on every instance or on one](docs/how-to/schedule-on-one-instance.md).
+[schedule coordination guide](docs/how-to/schedule-on-one-instance.md).
 
 ## Leader election
 
 `HostLoom.Leadership` elects one leader for a role among the instances of a service, the
 lease-based election that Kubernetes controllers and Spring Integration's leader initiator use,
 over the HostLoom distributed lock. A candidate tries to take the lease `leader:{role}`, the leader
-renews it on its own cadence, and a renewal that fails or a lease that expires steps the instance
-back to candidate at once. `ILeadership` is what consumers inject: `IsLeader`, `Term`, a
+renews it on its own cadence. A refused renewal or an expired lease steps the instance back
+to candidate. A transient renewal failure preserves the current lease and term while renewal
+is retried, no later than the lease deadline. `ILeadership` is what consumers inject: `IsLeader`, `Term`, a
 `LeadershipToken` cancelled when leadership ends, `WaitForLeadershipAsync`, and `OnChange`.
 
 ```csharp

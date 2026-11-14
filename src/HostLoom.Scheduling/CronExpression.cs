@@ -253,9 +253,7 @@ public sealed class CronExpression
             return dayOfMonth || dayOfWeek;
         }
 
-        return _restrictsDayOfMonth ? dayOfMonth
-            : _restrictsDayOfWeek ? dayOfWeek
-            : true;
+        return dayOfMonth && dayOfWeek;
     }
 
     private static ulong ParseField(
@@ -274,7 +272,7 @@ public sealed class CronExpression
             return Range(minimum, maximum);
         }
 
-        restricted = true;
+        restricted = !text.StartsWith('*');
         var mask = 0UL;
         foreach (var item in text.Split(','))
         {

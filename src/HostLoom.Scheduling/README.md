@@ -29,11 +29,12 @@ await using var scheduler = new Scheduler(new SchedulingOptions(), [nightly, syn
 await scheduler.StartAsync();
 ```
 
-A schedule without `Exclusive` runs on every instance that hosts it. An `Exclusive` schedule runs
-on one instance per occurrence: the claim is kept past the run until the lease ends or this
-instance's next occurrence is due, whichever comes first, so a slower instance reaching the same
-occurrence is refused rather than running the job again. Choose the lease as at least the clock
-skew between instances plus the run's duration, and no more than the period.
+An `Exclusive` schedule claims a shared lease before each local run and skips when busy.
+The claim is kept after a run until the lease ends or this instance's next due time, whichever
+comes first. Each replica still has its own cadence: fixed-rate starts and fixed-delay
+completions are not a shared cluster occurrence stream. This is lease-based mutual exclusion,
+not exactly-once execution, durable history, or catch-up. Jobs must tolerate duplicate work
+and honour cancellation on lease loss.
 
 Three trigger shapes follow the Spring conventions. `Cron` takes five fields (minute, hour, day of
 month, month, day of week) or six with a leading seconds field, with `*`, lists, ranges, steps,
