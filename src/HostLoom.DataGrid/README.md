@@ -45,7 +45,11 @@ committed index/term, file size and SHA-256 digest. It bounds images to 512 MiB 
 The descriptor requires a checksummed WAL envelope and does not validate or publish a snapshot
 file. Neither codec performs I/O, durable flushing, recovery, truncation or snapshot installation.
 The initial recovery design refuses incomplete/corrupt records and requires explicit verified
-recovery; no automatic torn-tail repair is implemented. Checksums do not authenticate hostile data.
+recovery; no automatic torn-tail repair is implemented. The separate storage layer uses a
+[v2 CURRENT frontier](../HostLoom.DataGrid.Storage/WAL_PUBLICATION.md) to distinguish published
+bytes from an unpublished suffix. Before writing again, it publishes the validated state in a
+fresh generation; unpublished bytes stay in the old file until collection. Damage inside the
+published prefix still refuses. Checksums do not authenticate hostile data.
 
 `DataGridMutationCommand` encodes canonical ordered Put, PutIfAbsent, CompareExchange, Remove and CompareRemove
 batches. It owns item/value inputs, rejects duplicate keys and invalid operation/expiry fields,

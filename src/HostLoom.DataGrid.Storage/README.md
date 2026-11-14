@@ -4,22 +4,23 @@ Experimental, non-packable file storage for the native data-grid prototype. The 
 grid kernel has no filesystem dependency; this project translates its internal persistence
 effects into WAL records and generation publication. It has no network, host or cache adapter.
 
-`DataGridCurrentAnchor` implements the 88-byte v1 HLGC anchor with nonempty incarnation, member
-and generation identities, network-order UUIDs, and SHA-256. The internal file store uses CURRENT
+`DataGridCurrentAnchor` reads legacy 88-byte v1 and new 136-byte v2 HLGC anchors. V2 also records
+published WAL length, record count and prefix digest. Both validate identities and SHA-256; see
+the [publication and recovery contract](WAL_PUBLICATION.md) for exact bytes and compatibility. The internal file store uses CURRENT
 as its sole recovery authority. It never chooses the newest file or falls back to an old generation
 after a selected generation fails validation. Bootstrap requires an explicitly empty, existing
 owned directory. Open never silently bootstraps a missing CURRENT.
 
 The internal `DataGridFileStore` requires serialized ownership. It holds an exclusive LOCK file
-through disposal and validates identity/configuration, frame sequence/checksum and all WAL payload
-transitions before exposing a recovered image. Recovery applies only through the durable commit
-checkpoint and preserves the uncommitted suffix. Every incomplete header, payload or digest,
+through disposal and validates identity/configuration, frame sequence/checksum and all published
+WAL payload transitions before exposing a recovered image. Recovery applies only through the durable commit
+checkpoint and preserves the uncommitted suffix. Within the selected prefix, every incomplete header, payload or digest,
 unknown format/kind, malformed command, invalid term/vote/log transition or corrupt referenced
 snapshot refuses startup. No automatic truncation, repair or generation fallback occurs.
 
 Persist validates a candidate before writing. It appends term/vote, logical truncation/replacement
-and commit records in dependency order and calls `FileStream.Flush(true)` before completing the
-effect. The caller must then acknowledge that exact effect to the Raft actor. File storage cannot
+and commit records in dependency order, calls `FileStream.Flush(true)`, then writes/flushes a
+new v2 CURRENT, atomically replaces it and flushes the directory before completing the effect. The caller must then acknowledge that exact effect to the Raft actor. File storage cannot
 establish quorum by itself. An I/O error or cancellation after submission faults the owner and
 requires validated restart. Cancellation before submission leaves the owner usable. Admission
 capacity checks reject before writing. Tokens are checked between synchronous persistence steps;
@@ -32,7 +33,7 @@ the directory again. Only then does the owner switch WALs and complete the effec
 and a matching uncommitted suffix survive publication. Known application prefixes are checked
 against the proposed snapshot. Old generations/images and incomplete temporaries remain charged
 to the directory budget until collected. Internal CollectObsoleteFiles validates the current
-anchor/ownership and the bounded inventory, then removes at most 32 known obsolete files per
+exact anchor/ownership and the bounded inventory, then removes at most 32 known obsolete files per
 call. It keeps CURRENT, LOCK, the selected WAL and its referenced snapshot. Before the first
 deletion it flushes the recovered WAL and directory, sealing a CURRENT selection recovered
 after an interrupted rename; it flushes the directory again after deletion. No active publication
@@ -111,7 +112,7 @@ checks owner markers and mount type/capacity, and removes its exact container on
 fifteen-minute overall timeout; each fill has a five-second/32-MiB bound. It does not select an
 external path or fill the host filesystem. Set `HOSTLOOM_DATA_GRID_FULL_TESTS=1` to include the
 broader grid suite and local-process experiments. The separate long session-capacity opt-in
-remains disabled. Normal solution tests skip the nine disk-full cases.
+remains disabled. Normal solution tests skip the eleven disk-full cases.
 
 The test-only free-space reserve is zero because the bounded filesystem is smaller than the
 normal one-GiB reserve. The WAL/directory/file ceilings and production defaults are unchanged.
@@ -120,17 +121,16 @@ after successful reservation; normal FileStream writes/flushes must then report 
 A small write can still fit an already allocated final page; the TLS experiment releases space
 after any successful flush and repeats the bounded fill before the next write.
 
-The directed tests cover zero-byte and partial WAL appends, snapshot/seeded-generation/CURRENT
-publication, retained immutable request identities, and corrupt/torn selected-root refusal.
-Publication failure preserves the old CURRENT and selected WAL, allowing restart and replay
-after space release. A clean append failure can also restart. **A partial selected-WAL append
-leaves a torn tail: freeing space alone does not make that member restartable.** Startup preserves
-its files and refuses; no automatic repair, truncation, older-generation fallback or member reseed
-is implemented. Keep that member stopped and preserve the directory for diagnosis. A healthy
-two-member majority can recover its acknowledged requests and resolve the original unknown
-request identity, but this does not restore the third member. A safe member recovery/rejoin
-procedure remains an open implementation requirement. Never delete CURRENT or truncate the WAL
-as an implicit recovery step.
+The directed tests cover zero-byte/partial WAL append, append-frontier publication and failed
+recovery rollover, snapshot/seeded-generation/CURRENT publication, retained immutable request
+identities and corrupt/torn published-root refusal. A v2 partial append preserves CURRENT and
+the published prefix. After space release, Open validates that prefix and leaves later bytes
+unchanged; the next write publishes a fresh generation. The TLS case recovers/rejoins the
+faulted third member and retains the original identity through another whole-group restart.
+Published-prefix corruption and legacy v1 torn tails still refuse. No in-place repair/truncation,
+older-generation fallback or member reseed is implemented. Never delete CURRENT or truncate a
+WAL as an implicit recovery step. See [compatibility](WAL_PUBLICATION.md#compatibility) before
+upgrading a valid v1 root; older binaries cannot open a v2 root.
 
 Tmpfs exercises real allocation/write ENOSPC and buffered flush failure. The observed seeded-WAL
 and anchor exceptions surface from disposal retrying buffered output during unwind; they do not

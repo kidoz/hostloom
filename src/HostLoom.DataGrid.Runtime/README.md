@@ -16,7 +16,7 @@ These checks establish local ownership/retry behavior, not deployment readiness 
 or shutdown-time guarantee.
 
 The runtime serializes all actor/application/storage access. It consumes persistence effects
-through the file store, acknowledges their exact tokens after flush/publication, then sends
+through the file store, acknowledges their exact tokens after [v2 CURRENT frontier publication](../HostLoom.DataGrid.Storage/WAL_PUBLICATION.md), then sends
 dependent replies. A write failure faults the actor and leaves admitted mutations uncertain.
 Only a current-term quorum commit can complete an operation. Reads append fresh committed-time
 barriers. Batch reads capture the ordered vector and grid time before the actor advances to the
