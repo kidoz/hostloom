@@ -1,10 +1,27 @@
+using System.Text.Json;
 using HostLoom.DataGrid;
+using HostLoom.DataGrid.ProcessProbe;
 using Xunit;
 
 namespace HostLoom.Tests;
 
 public sealed class DataGridFeasibilityModelTests
 {
+    [Fact]
+    public void FailureDiagnosticsRetainCauseTypesWithoutExceptionMessages()
+    {
+        var error = new InvalidOperationException(
+            "synthetic-private-outer",
+            new IOException("synthetic-private-inner")
+        );
+        var captured = ProbeFailureSnapshot.Capture(error)!;
+        Assert.Equal(typeof(InvalidOperationException).FullName, captured.Type);
+        Assert.Equal(typeof(IOException).FullName, captured.RootType);
+        var json = JsonSerializer.Serialize(captured);
+        Assert.DoesNotContain("synthetic-private", json, StringComparison.Ordinal);
+        Assert.Null(ProbeFailureSnapshot.Capture(null));
+    }
+
     [Theory]
     [InlineData(1, 1)]
     [InlineData(32, 16)]

@@ -10,7 +10,12 @@ internal sealed record ProbeMemorySnapshot(
     long TotalAvailableMemoryBytes,
     int Gen0Collections,
     int Gen1Collections,
-    int Gen2Collections
+    int Gen2Collections,
+    double TotalPauseMilliseconds,
+    long GcIndex,
+    double PauseTimePercentage,
+    double LastPause0Milliseconds,
+    double LastPause1Milliseconds
 )
 {
     internal static ProbeMemorySnapshot Capture()
@@ -26,10 +31,51 @@ internal sealed record ProbeMemorySnapshot(
             info.TotalAvailableMemoryBytes,
             GC.CollectionCount(0),
             GC.CollectionCount(1),
-            GC.CollectionCount(2)
+            GC.CollectionCount(2),
+            GC.GetTotalPauseDuration().TotalMilliseconds,
+            info.Index,
+            info.PauseTimePercentage,
+            info.PauseDurations.Length > 0 ? info.PauseDurations[0].TotalMilliseconds : 0,
+            info.PauseDurations.Length > 1 ? info.PauseDurations[1].TotalMilliseconds : 0
         );
     }
 }
+
+internal sealed record ProbeFailureSnapshot(
+    string Type,
+    string RootType,
+    string? RootStack,
+    bool StackTruncated
+)
+{
+    internal static ProbeFailureSnapshot? Capture(Exception? error)
+    {
+        if (error is null)
+            return null;
+        var root = error.GetBaseException();
+        var stack = root.StackTrace;
+        return new(
+            error.GetType().FullName!,
+            root.GetType().FullName!,
+            stack is { Length: > 8192 } ? stack[..8192] : stack,
+            stack is { Length: > 8192 }
+        );
+    }
+}
+
+internal sealed record ProbeMemberSnapshot(
+    string Role,
+    long Term,
+    long CommitIndex,
+    long AppliedIndex,
+    long SnapshotIndex,
+    bool Ready,
+    bool Stopped,
+    int? LeaderId,
+    ProbeFailureSnapshot? RuntimeFailure,
+    ProbeFailureSnapshot? ServerFailure,
+    ProbeMemorySnapshot Memory
+);
 
 // Shared only by the child-process harness and its owning tests, not deployment configuration.
 internal static class ProbeConfiguration

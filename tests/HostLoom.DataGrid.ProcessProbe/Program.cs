@@ -104,6 +104,26 @@ while (await Console.In.ReadLineAsync(token) is { } line)
         case "memory":
             output.Write(JsonSerializer.Serialize(ProbeMemorySnapshot.Capture()));
             break;
+        case "diagnostics":
+            var observed = runtime.Status;
+            output.Write(
+                JsonSerializer.Serialize(
+                    new ProbeMemberSnapshot(
+                        observed.Role.ToString(),
+                        observed.Term,
+                        observed.CommitIndex,
+                        observed.AppliedIndex,
+                        observed.SnapshotIndex,
+                        observed.Ready,
+                        observed.Stopped,
+                        observed.LeaderId,
+                        ProbeFailureSnapshot.Capture(runtime.Failure),
+                        ProbeFailureSnapshot.Capture(server.FatalError),
+                        ProbeMemorySnapshot.Capture()
+                    )
+                )
+            );
+            break;
         case "status":
             var status = runtime.Status;
             output.Write(

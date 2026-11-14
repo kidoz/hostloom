@@ -57,6 +57,7 @@ public sealed class DataGridFeasibilityTests
             ["status"] = "incomplete",
             ["acceptance"] = "no_numerical_targets",
             ["process_memory_profile"] = DataGridFeasibilityMemory.Profile,
+            ["diagnostics_version"] = 1,
             ["load_model"] = "closed_loop_one_outstanding_per_worker",
             ["key_bytes"] = 32,
             ["value_bytes"] = 1024,
@@ -93,9 +94,11 @@ public sealed class DataGridFeasibilityTests
         await using var cluster = new Cluster(feasibility: true);
         using var monitorStop = new CancellationTokenSource();
         var phase = "startup";
+        using var journal = new ResolutionJournal(clock, () => phase);
         string? resourceFailure = null;
         var monitor = Monitor(
             cluster,
+            clock,
             () => phase,
             reason =>
             {
@@ -121,7 +124,7 @@ public sealed class DataGridFeasibilityTests
                 {
                     var setup = cluster.Client(leader, setup: true);
                     setupClients.Add(setup);
-                    sessions.Add(await Open(setup, population.Token));
+                    sessions.Add(await Open(setup, journal, population.Token));
                 }
                 report["startup_to_sessions_seconds"] = clock.Elapsed.TotalSeconds;
                 var sequences = new ulong[] { 1, 1, 1, 1 };
@@ -156,6 +159,7 @@ public sealed class DataGridFeasibilityTests
                                     var result = await Resolve(
                                         setupClients[lane],
                                         request,
+                                        journal,
                                         population.Token
                                     );
                                     if (
@@ -207,7 +211,7 @@ public sealed class DataGridFeasibilityTests
                 var client = cluster.Client(leader);
                 try
                 {
-                    workers.Add(new(i, client, await Open(client, token), spec));
+                    workers.Add(new(i, client, await Open(client, journal, token), spec));
                 }
                 catch
                 {
@@ -226,7 +230,7 @@ public sealed class DataGridFeasibilityTests
                 foreach (var worker in workers)
                     if (worker.Pending is { } pending)
                     {
-                        _ = await Resolve(worker.Client, pending, settle.Token);
+                        _ = await Resolve(worker.Client, pending, journal, settle.Token);
                         worker.Pending = null;
                         worker.Sequence++;
                     }
@@ -243,18 +247,20 @@ public sealed class DataGridFeasibilityTests
                 canary.Id,
                 ttl: false
             );
-            var original = (await Resolve(canary.Client, requestCanary, token)).Result!.GetItem(0);
+            var original = (
+                await Resolve(canary.Client, requestCanary, journal, token)
+            ).Result!.GetItem(0);
             await cluster.AppliedEverywhere(original.Version.LogIndex, token);
             leader = await cluster.Leader(token);
             var failureAt = Stopwatch.GetTimestamp();
             await cluster.Kill(leader);
             await using (var survivor = cluster.Client((leader + 1) % 3))
             {
-                await StrongCanary(survivor, original.Version, token);
+                await StrongCanary(survivor, original.Version, journal, token);
                 report["leader_loss_to_strong_read_seconds"] = Stopwatch
                     .GetElapsedTime(failureAt)
                     .TotalSeconds;
-                var replay = await Resolve(survivor, requestCanary, token);
+                var replay = await Resolve(survivor, requestCanary, journal, token);
                 Assert.Equal(original, replay.Result!.GetItem(0));
             }
             await cluster.Start(leader, token);
@@ -265,9 +271,9 @@ public sealed class DataGridFeasibilityTests
             await cluster.StartAll(token);
             await using (var reopened = cluster.Client(await cluster.Leader(token)))
             {
-                var replay = await Resolve(reopened, requestCanary, token);
+                var replay = await Resolve(reopened, requestCanary, journal, token);
                 Assert.Equal(original, replay.Result!.GetItem(0));
-                await StrongCanary(reopened, original.Version, token);
+                await StrongCanary(reopened, original.Version, journal, token);
                 report["whole_group_restart_to_retained_replay_seconds"] = Stopwatch
                     .GetElapsedTime(restartAt)
                     .TotalSeconds;
@@ -312,6 +318,7 @@ public sealed class DataGridFeasibilityTests
             }
             finally
             {
+                report["resolution_journal_records"] = journal.RecordCount;
                 report["elapsed_seconds"] = clock.Elapsed.TotalSeconds;
                 report["unresolved_mutations"] = workers.Count(w => w.Pending is not null);
                 await File.WriteAllTextAsync(
@@ -323,7 +330,11 @@ public sealed class DataGridFeasibilityTests
         }
     }
 
-    private static async Task<long> Open(GridClient client, CancellationToken token)
+    private static async Task<long> Open(
+        GridClient client,
+        ResolutionJournal journal,
+        CancellationToken token
+    )
     {
         var result = await Resolve(
             client,
@@ -331,6 +342,7 @@ public sealed class DataGridFeasibilityTests
                 Guid.NewGuid(),
                 DataGridTimestamp.FromUtc(DateTimeOffset.UtcNow.AddSeconds(4))
             ),
+            journal,
             token
         );
         return result.Result!.SessionNumber;
@@ -339,9 +351,14 @@ public sealed class DataGridFeasibilityTests
     private static async Task<DataGridClientReply> Resolve(
         GridClient client,
         DataGridClientRequest request,
+        ResolutionJournal journal,
         CancellationToken token
     )
     {
+        var logical = journal.Begin();
+        var digest = request.Mutation is { } mutation
+            ? Convert.ToHexString(mutation.ComputeDigest())
+            : null;
         using var bound = CancellationTokenSource.CreateLinkedTokenSource(token);
         bound.CancelAfter(TimeSpan.FromSeconds(45));
         using var pacing = new PeriodicTimer(TimeSpan.FromMilliseconds(150));
@@ -350,7 +367,18 @@ public sealed class DataGridFeasibilityTests
         {
             do
             {
-                var result = await client.ExecuteAsync(request, bound.Token);
+                var started = journal.Seconds;
+                DataGridClientOutcome result;
+                try
+                {
+                    result = await client.ExecuteAsync(request, bound.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    journal.Record(logical, request, digest, started, null);
+                    throw;
+                }
+                journal.Record(logical, request, digest, started, result);
                 lastFailure = result.Reply.Failure?.Code;
                 if (result.Reply.Failure is null)
                     return result.Reply;
@@ -382,12 +410,14 @@ public sealed class DataGridFeasibilityTests
     private static async Task StrongCanary(
         GridClient client,
         DataGridEntryVersion version,
+        ResolutionJournal journal,
         CancellationToken token
     )
     {
         var read = await Resolve(
             client,
             DataGridClientRequest.Read(ProbeConfiguration.Map, [DataGridFeasibilityCase.Key(0)]),
+            journal,
             token
         );
         Assert.Equal(version, read.Read!.GetItem(0)!.Version);
@@ -652,6 +682,7 @@ public sealed class DataGridFeasibilityTests
 
     private static async Task Monitor(
         Cluster cluster,
+        Stopwatch clock,
         Func<string> phase,
         Action<string> abort,
         CancellationToken token
@@ -659,12 +690,12 @@ public sealed class DataGridFeasibilityTests
     {
         await using var writer = new StreamWriter("/work/feasibility/resources.jsonl");
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
-        var began = Stopwatch.GetTimestamp();
         long? initialOomKills = null;
         try
         {
             do
             {
+                var sampleStarted = clock.Elapsed.TotalSeconds;
                 var members = new List<object>();
                 for (var i = -1; i < 3; i++)
                 {
@@ -691,6 +722,15 @@ public sealed class DataGridFeasibilityTests
                                 : Directory.GetFiles(
                                     Path.Combine(cluster.DirectoryPath, $"node-{i}")
                                 );
+                        var probeStarted = Stopwatch.GetTimestamp();
+                        var probeStartedSeconds = clock.Elapsed.TotalSeconds;
+                        var diagnostic =
+                            i < 0
+                                ? null
+                                : JsonSerializer.Deserialize<ProbeMemberSnapshot>(
+                                    await node!.Command("diagnostics", token)
+                                ) ?? throw new InvalidDataException("Missing probe diagnostics.");
+                        var roundTrip = Stopwatch.GetElapsedTime(probeStarted).TotalMilliseconds;
                         members.Add(
                             new
                             {
@@ -700,9 +740,11 @@ public sealed class DataGridFeasibilityTests
                                 CpuSeconds = process.TotalProcessorTime.TotalSeconds,
                                 Managed = i < 0
                                     ? ProbeMemorySnapshot.Capture()
-                                    : JsonSerializer.Deserialize<ProbeMemorySnapshot>(
-                                        await node!.Command("memory", token)
-                                    ),
+                                    : diagnostic!.Memory,
+                                Diagnostic = diagnostic,
+                                ProbeStartedSeconds = probeStartedSeconds,
+                                ObservedSeconds = clock.Elapsed.TotalSeconds,
+                                ProbeRoundTripMilliseconds = roundTrip,
                                 Io = io,
                                 OwnedFileBytes = files.Sum(path => new FileInfo(path).Length),
                                 Files = files.Length,
@@ -773,7 +815,8 @@ public sealed class DataGridFeasibilityTests
                             new
                             {
                                 Phase = phase(),
-                                Seconds = Stopwatch.GetElapsedTime(began).TotalSeconds,
+                                SampleStartedSeconds = sampleStarted,
+                                Seconds = clock.Elapsed.TotalSeconds,
                                 Members = members,
                                 Cgroup = cgroup,
                             },
@@ -787,6 +830,73 @@ public sealed class DataGridFeasibilityTests
             } while (await timer.WaitForNextTickAsync(token));
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+    }
+
+    private sealed class ResolutionJournal(Stopwatch clock, Func<string> phase) : IDisposable
+    {
+        private readonly object _sync = new();
+        private readonly StreamWriter _writer = new("/work/feasibility/resolutions.jsonl");
+        private long _logical;
+        internal int RecordCount { get; private set; }
+        internal double Seconds => clock.Elapsed.TotalSeconds;
+
+        internal long Begin() => Interlocked.Increment(ref _logical);
+
+        internal void Record(
+            long logical,
+            DataGridClientRequest request,
+            string? digest,
+            double started,
+            DataGridClientOutcome? reply
+        )
+        {
+            var finished = Seconds;
+            lock (_sync)
+            {
+                if (RecordCount >= 10000)
+                    throw new Infeasible(
+                        "Resolution journal bound reached; observations were not silently dropped."
+                    );
+                _writer.WriteLine(
+                    JsonSerializer
+                        .Serialize(
+                            new
+                            {
+                                Logical = logical,
+                                Phase = phase(),
+                                StartedSeconds = started,
+                                FinishedSeconds = finished,
+                                Kind = request.Kind.ToString(),
+                                Session = request.Mutation?.SessionNumber,
+                                RequestNumber = request.Mutation?.RequestNumber,
+                                Digest = digest,
+                                Outcome = reply is null
+                                    ? "cancelled"
+                                    : reply.Reply.Failure?.Code.ToString() ?? "completed",
+                                MayHaveBeenAdmitted = reply?.MayHaveBeenAdmitted,
+                                ApplyStatus = reply?.Reply.Result?.Status.ToString(),
+                                Attempts = reply
+                                    ?.Attempts.Select(attempt => new
+                                    {
+                                        attempt.AttemptId,
+                                        attempt.MemberId,
+                                        attempt.RequestSubmitted,
+                                        WireReplyObserved = attempt.Reply is not null,
+                                        Failure = attempt.Reply?.Failure?.Code.ToString(),
+                                        ApplyStatus = attempt.Reply?.Result?.Status.ToString(),
+                                    })
+                                    .ToArray(),
+                            },
+                            DataGridFeasibilityCase.Json
+                        )
+                        .Replace("\n", "", StringComparison.Ordinal)
+                );
+                _writer.Flush();
+                RecordCount++;
+            }
+        }
+
+        public void Dispose() => _writer.Dispose();
     }
 
     private sealed class ResolutionBudgetExpired(string message) : Exception(message);
