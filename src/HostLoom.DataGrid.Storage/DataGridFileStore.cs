@@ -180,6 +180,7 @@ internal sealed partial class DataGridFileStore : IDisposable
     {
         var started = Stopwatch.GetTimestamp();
         var success = false;
+        DataGridStorageDiagnostics.MapRecovery(configuration, member, "started", null);
         try
         {
             var store = OpenCore(directory, configuration, member, limits, observe);
@@ -188,6 +189,12 @@ internal sealed partial class DataGridFileStore : IDisposable
         }
         finally
         {
+            DataGridStorageDiagnostics.MapRecovery(
+                configuration,
+                member,
+                success ? "recovered" : "failed",
+                Stopwatch.GetElapsedTime(started).TotalSeconds
+            );
             DataGridStorageDiagnostics.Recovered(
                 success,
                 Stopwatch.GetElapsedTime(started).TotalSeconds

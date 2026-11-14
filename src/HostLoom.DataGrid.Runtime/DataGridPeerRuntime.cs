@@ -210,6 +210,15 @@ internal sealed class DataGridPeerRuntime
             var result = await SubmitCore(command, map, key, token, keys, principal)
                 .ConfigureAwait(false);
             outcome = DataGridRuntimeDiagnostics.Outcome(result.Kind);
+            if (result.TimedOut)
+                DataGridRuntimeDiagnostics.TimedOut(operation);
+            if (result.Kind == RaftCompletionKind.Applied)
+                DataGridRuntimeDiagnostics.AppliedResult(
+                    _configuration,
+                    _memberOrdinal,
+                    command!,
+                    result.Result!
+                );
             return result;
         }
         catch (OperationCanceledException)
@@ -318,7 +327,10 @@ internal sealed class DataGridPeerRuntime
         {
             return new(
                 id,
-                command is null ? RaftCompletionKind.Unavailable : RaftCompletionKind.OutcomeUnknown
+                command is null
+                    ? RaftCompletionKind.Unavailable
+                    : RaftCompletionKind.OutcomeUnknown,
+                TimedOut: true
             );
         }
     }
@@ -1090,7 +1102,13 @@ internal sealed class DataGridPeerRuntime
             _lastReadBarrierTerm,
             Array.AsReadOnly(maps),
             Array.AsReadOnly(replicas),
-            _store.Progress
+            _store.Progress,
+            new(
+                _node.Durable.Entries.Count,
+                _node.Durable.Entries.Sum(entry => (long)entry.ByteCount),
+                _node.Machine.SessionCount,
+                _node.Machine.RetainedResultByteCount
+            )
         );
     }
 

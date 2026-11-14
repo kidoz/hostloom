@@ -22,6 +22,15 @@ public static class DataGridClientDiagnostics
         "{attempt}",
         "Entered physical attempts, including attempts canceled before connecting or writing."
     );
+    private static readonly Counter<long> Timeouts = Meter.CreateCounter<long>(
+        "hostloom.datagrid.client.timeouts",
+        "{call}",
+        "Calls terminated by the SDK deadline; excludes caller cancellation, disable and credential retirement."
+    );
+
+    internal static void TimedOut(string operation, bool mayHaveBeenAdmitted) =>
+        Timeouts.Add(1, new(OperationTag, operation), new(AdmissionTag, mayHaveBeenAdmitted));
+
     private static readonly UpDownCounter<long> Active = Meter.CreateUpDownCounter<long>(
         "hostloom.datagrid.client.calls.active",
         "{call}",

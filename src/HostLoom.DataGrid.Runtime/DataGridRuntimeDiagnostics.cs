@@ -13,6 +13,47 @@ public static partial class DataGridRuntimeDiagnostics
     public const string OutcomeTag = "hostloom.datagrid.outcome";
 
     private static readonly Meter Meter = new(MeterName);
+    private static readonly Counter<long> Results = Meter.CreateCounter<long>(
+        "hostloom.datagrid.runtime.results",
+        "{result}",
+        "Applied local-call result statuses, including session failures and retained replays; not unique writes."
+    );
+    private static readonly Counter<long> MutationItems = Meter.CreateCounter<long>(
+        "hostloom.datagrid.runtime.map.mutation.items",
+        "{item}",
+        "Mutation item replies delivered to local callers, including retained and conditional/capacity rejections."
+    );
+    private static readonly Counter<long> Timeouts = Meter.CreateCounter<long>(
+        "hostloom.datagrid.runtime.timeouts",
+        "{operation}",
+        "Local submissions terminated by their physical deadline; does not release retained actor work."
+    );
+    private static readonly Gauge<long> MapState = Meter.CreateGauge<long>(
+        "hostloom.datagrid.runtime.map.state",
+        "{state}",
+        "Group local-ready, fault and stop flags projected onto each configured map; not current quorum health."
+    );
+    private static readonly Gauge<long> MapPosition = Meter.CreateGauge<long>(
+        "hostloom.datagrid.runtime.map.position",
+        "{position}",
+        "Group committed/applied/snapshot positions projected onto each map, not external source watermarks."
+    );
+    private static readonly Gauge<long> ExpiredReclaimed = Meter.CreateGauge<long>(
+        "hostloom.datagrid.runtime.map.expired.reclaimed",
+        "{entry}",
+        "Physical expired versions removed by reclaim/overwrite in the current application instance, including replay; resets on restore."
+    );
+    private static readonly Gauge<long> CapacityItems = Meter.CreateGauge<long>(
+        "hostloom.datagrid.runtime.capacity.items",
+        "{item}",
+        "Cached retained log/session counts and configured hard/client admission limits."
+    );
+    private static readonly Gauge<long> CapacityBytes = Meter.CreateGauge<long>(
+        "hostloom.datagrid.runtime.capacity.bytes",
+        "By",
+        "Cached retained log/result encoded charges and limits; not managed heap size."
+    );
+
     private static readonly Gauge<long> ObservationTime = Meter.CreateGauge<long>(
         "hostloom.datagrid.runtime.observation.time",
         "ms",

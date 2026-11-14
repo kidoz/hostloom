@@ -239,7 +239,8 @@ internal sealed record RaftCompletion(
     long Index = 0,
     DataGridApplyResult? Result = null,
     DataGridLocalEntry? Entry = null,
-    DataGridReadResult? ReadResult = null
+    DataGridReadResult? ReadResult = null,
+    bool TimedOut = false
 ) : RaftEffect;
 
 internal sealed record RaftFault(string Reason) : RaftEffect;

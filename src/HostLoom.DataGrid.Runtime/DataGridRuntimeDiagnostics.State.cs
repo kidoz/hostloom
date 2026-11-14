@@ -46,7 +46,53 @@ public static partial class DataGridRuntimeDiagnostics
             MapKeys.Record(map.KeyLimit, member, ordinal, new(MeasureTag, "limit"));
             MapBytes.Record(map.ChargedBytes, member, ordinal, new(MeasureTag, "charged"));
             MapBytes.Record(map.ByteLimit, member, ordinal, new(MeasureTag, "limit"));
+            ExpiredReclaimed.Record(map.ExpiredReclaimed, member, ordinal);
+            MapState.Record(
+                snapshot.LocalReadyHint ? 1 : 0,
+                member,
+                ordinal,
+                new(StateTag, "local_ready_hint")
+            );
+            MapState.Record(snapshot.Faulted ? 1 : 0, member, ordinal, new(StateTag, "faulted"));
+            MapState.Record(
+                snapshot.Local.Stopped ? 1 : 0,
+                member,
+                ordinal,
+                new(StateTag, "stopped")
+            );
+            MapPosition.Record(
+                snapshot.Local.CommitIndex,
+                member,
+                ordinal,
+                new(PositionTag, "committed")
+            );
+            MapPosition.Record(
+                snapshot.Local.AppliedIndex,
+                member,
+                ordinal,
+                new(PositionTag, "applied")
+            );
+            MapPosition.Record(
+                snapshot.Local.SnapshotIndex,
+                member,
+                ordinal,
+                new(PositionTag, "snapshot")
+            );
         }
+        Items("log_entries", snapshot.Capacity.LogEntries, RaftDurableImage.MaxEntries);
+        Items(
+            "client_log_entries",
+            snapshot.Capacity.LogEntries,
+            RaftDurableImage.ClientEntryLimit
+        );
+        Items("sessions", snapshot.Capacity.Sessions, DataGridLocalStateMachine.MaxSessionCount);
+        Bytes("log", snapshot.Capacity.LogBytes, RaftDurableImage.MaxLogBytes);
+        Bytes("client_log", snapshot.Capacity.LogBytes, RaftDurableImage.ClientLogByteLimit);
+        Bytes(
+            "retained_results",
+            snapshot.Capacity.ResultBytes,
+            DataGridLocalStateMachine.MaxResultBytes
+        );
         StorageBytes.Record(
             snapshot.Storage.PublishedWalBytes,
             member,
@@ -63,5 +109,35 @@ public static partial class DataGridRuntimeDiagnostics
             instrument.Record(value ? 1 : 0, member, new(StateTag, state));
         void At(string position, long value) =>
             Position.Record(value, member, new(PositionTag, position));
+        void Items(string resource, long used, long limit)
+        {
+            CapacityItems.Record(
+                used,
+                member,
+                new(ResourceTag, resource),
+                new(MeasureTag, "charged")
+            );
+            CapacityItems.Record(
+                limit,
+                member,
+                new(ResourceTag, resource),
+                new(MeasureTag, "limit")
+            );
+        }
+        void Bytes(string resource, long used, long limit)
+        {
+            CapacityBytes.Record(
+                used,
+                member,
+                new(ResourceTag, resource),
+                new(MeasureTag, "charged")
+            );
+            CapacityBytes.Record(
+                limit,
+                member,
+                new(ResourceTag, resource),
+                new(MeasureTag, "limit")
+            );
+        }
     }
 }

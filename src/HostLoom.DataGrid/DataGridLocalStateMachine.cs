@@ -5,7 +5,8 @@ internal sealed record DataGridMapUsage(
     int ChargedKeys,
     long ChargedBytes,
     int KeyLimit,
-    long ByteLimit
+    long ByteLimit,
+    long ExpiredReclaimed
 );
 
 /// <summary>Single-owner deterministic local application. Not thread safe; contains no quorum or I/O.</summary>
@@ -14,7 +15,7 @@ public sealed partial class DataGridLocalStateMachine
 {
     public const int MaxSessionCount = 4096;
     public const int MaxSessionsPerPrincipal = 64;
-    private const long MaxResultBytes = 64L * 1024 * 1024;
+    internal const long MaxResultBytes = 64L * 1024 * 1024;
     private static readonly DataGridKey MaximumKey = new(
         Enumerable.Repeat(byte.MaxValue, DataGridKey.MaxByteCount).ToArray()
     );
@@ -40,6 +41,7 @@ public sealed partial class DataGridLocalStateMachine
     public long SessionHighWater => _sessionHighWater;
     public int StoredKeyCount => _maps.Sum(map => map.Entries.Count);
     public long StoredDataByteCount => _maps.Sum(map => map.Bytes);
+    internal long RetainedResultByteCount => _resultBytes;
     public Guid NextMaintenanceMapId => _maps[_maintenanceMapOrdinal].Configuration.MapId;
 
     // Owner-thread observation only. Expired entries remain charged until deterministic reclamation.
@@ -53,7 +55,8 @@ public sealed partial class DataGridLocalStateMachine
             map.Entries.Count,
             map.Bytes,
             map.Configuration.MaxKeyCount,
-            map.Configuration.MaxDataByteCount
+            map.Configuration.MaxDataByteCount,
+            map.ExpiredReclaimed
         );
     }
 
@@ -287,7 +290,11 @@ public sealed partial class DataGridLocalStateMachine
             ordinal
         );
         if (stored)
+        {
             map.Entries.Remove(old);
+            if (!live && map.ExpiredReclaimed < long.MaxValue)
+                map.ExpiredReclaimed++;
+        }
         map.Entries.Add(new(item.Key, value, version, expiration));
         map.Bytes += delta;
         return new(DataGridMutationStatus.Stored, version);
@@ -339,6 +346,8 @@ public sealed partial class DataGridLocalStateMachine
             {
                 map.Entries.Remove(entry);
                 map.Bytes -= entry.Key.ByteCount + entry.Value.Length;
+                if (map.ExpiredReclaimed < long.MaxValue)
+                    map.ExpiredReclaimed++;
             }
         }
         _maintenanceMapOrdinal = (Array.IndexOf(_maps, map) + 1) % _maps.Length;
@@ -383,6 +392,7 @@ public sealed partial class DataGridLocalStateMachine
 
     private sealed class MapState(DataGridMapConfiguration configuration)
     {
+        internal long ExpiredReclaimed { get; set; }
         internal DataGridMapConfiguration Configuration { get; } = configuration;
         internal SortedSet<Entry> Entries { get; } =
             new(

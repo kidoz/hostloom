@@ -118,7 +118,8 @@ internal sealed class RaftNode
                     client,
                     client.IsRead
                         ? RaftCompletionKind.Unavailable
-                        : RaftCompletionKind.OutcomeUnknown
+                        : RaftCompletionKind.OutcomeUnknown,
+                    timedOut: true
                 );
                 return;
             }
@@ -869,12 +870,15 @@ internal sealed class RaftNode
         long index = 0,
         DataGridApplyResult? result = null,
         DataGridLocalEntry? entry = null,
-        DataGridReadResult? read = null
+        DataGridReadResult? read = null,
+        bool timedOut = false
     )
     {
         _clients.Remove(client.RequestId);
         _effects.Add(new RaftCancelTimer(client.Deadline));
-        _effects.Add(new RaftCompletion(client.RequestId, kind, index, result, entry, read));
+        _effects.Add(
+            new RaftCompletion(client.RequestId, kind, index, result, entry, read, timedOut)
+        );
     }
 
     private void Reply(

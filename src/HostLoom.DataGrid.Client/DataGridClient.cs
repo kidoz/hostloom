@@ -207,6 +207,19 @@ public sealed class DataGridClient : IAsyncDisposable
                 security.Revoked
             );
             var token = lifetime.Token;
+            void RecordTimeout()
+            {
+                if (
+                    deadline.IsCancellationRequested
+                    && !cancellationToken.IsCancellationRequested
+                    && !disabledToken.IsCancellationRequested
+                    && !security.Revoked.IsCancellationRequested
+                )
+                    DataGridClientDiagnostics.TimedOut(
+                        DataGridClientDiagnostics.Operation(request.Kind),
+                        mayHaveBeenAdmitted
+                    );
+            }
             var member = Volatile.Read(ref _preferred);
             var redirects = 0;
             for (var attempt = 0; attempt < 3; attempt++)
@@ -351,6 +364,7 @@ public sealed class DataGridClient : IAsyncDisposable
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
                     mayHaveBeenAdmitted |= submitted && !replyValidated;
+                    RecordTimeout();
                     return Finish(Unavailable());
                 }
                 catch (Exception exception)
@@ -398,6 +412,7 @@ public sealed class DataGridClient : IAsyncDisposable
                         }
                         catch (OperationCanceledException) when (token.IsCancellationRequested)
                         {
+                            RecordTimeout();
                             return Finish(Unavailable());
                         }
                     }

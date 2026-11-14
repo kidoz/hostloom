@@ -9,6 +9,13 @@ internal sealed record DataGridReplicaProgress(
     long? EntryLag
 );
 
+internal sealed record DataGridRuntimeCapacity(
+    int LogEntries,
+    long LogBytes,
+    int Sessions,
+    long ResultBytes
+);
+
 /// <summary>Immutable owner-thread observation. Reading it performs no actor, network or filesystem work.</summary>
 internal sealed record DataGridRuntimeSnapshot(
     int MemberOrdinal,
@@ -23,5 +30,6 @@ internal sealed record DataGridRuntimeSnapshot(
     long LastSuccessfulReadBarrierTerm,
     IReadOnlyList<DataGridMapUsage> Maps,
     IReadOnlyList<DataGridReplicaProgress> Replicas,
-    DataGridStorageProgress Storage
+    DataGridStorageProgress Storage,
+    DataGridRuntimeCapacity Capacity
 );
