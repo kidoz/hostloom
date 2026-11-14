@@ -50,6 +50,13 @@ already admitted operations retain their uncertainty. File flush/deletion can bl
 so the existing disposal wait does not become a hard cleanup deadline.
 
 Snapshots share the existing 512-MiB v1 format ceiling across consensus, storage and transport.
+Durable metadata transitions reuse successful validation of the same immutable snapshot and
+configuration instance, rather than reconstructing every value on every log/commit update.
+New snapshots/configurations still receive full validation, and public snapshot bytes remain
+copies. This removes repeated allocation; logical byte quotas still do not bound heap or RSS.
+Snapshot capture pre-sizes one owned buffer from the v1 field widths. Synchronous readers and
+asynchronous peer transfers borrow immutable content; protocol chunks and actual restored map
+values keep their own storage. Public snapshot readers continue receiving independent copies.
 The configured group quotas imply a conservative maximum encoded state of 291016890 bytes,
 including map metadata/cursors, entries and all retained result vectors. This resolves the
 former 8-MiB snapshot mismatch; it is not a measured heap, supported-capacity or latency claim.
