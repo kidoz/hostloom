@@ -8,6 +8,53 @@ namespace HostLoom.Analyzers.Tests;
 public sealed class SyncOverAsyncAnalyzerTests
 {
     [Fact]
+    public async Task Reports_configured_awaitables_and_local_task_origins()
+    {
+        var diagnostics = await AnalyzerTestHarness.AnalyzeAsync(
+            """
+            using HostLoom;
+            internal sealed record GreetingRequest : IRequest<string>;
+            internal static class Consumer
+            {
+                public static void Run(IRequestClient<GreetingRequest, string> client)
+                {
+                    var first = client.GetResponseAsync("catalog", new GreetingRequest());
+                    first.AsTask().Wait();
+                    var second = client.GetResponseAsync("catalog", new GreetingRequest()).ConfigureAwait(false);
+                    var awaiter = second.GetAwaiter();
+                    _ = awaiter.GetResult();
+                }
+            }
+            """,
+            new SyncOverAsyncAnalyzer()
+        );
+        Assert.Equal(2, diagnostics.Length);
+    }
+
+    [Fact]
+    public async Task A_reassigned_local_does_not_have_a_provable_HostLoom_origin()
+    {
+        var diagnostics = await AnalyzerTestHarness.AnalyzeAsync(
+            """
+            using System.Threading.Tasks;
+            using HostLoom;
+            internal sealed record GreetingRequest : IRequest<string>;
+            internal static class Consumer
+            {
+                public static void Run(IRequestClient<GreetingRequest, string> client)
+                {
+                    var pending = client.GetResponseAsync("catalog", new GreetingRequest());
+                    pending = ValueTask.FromResult("books");
+                    _ = pending.Result;
+                }
+            }
+            """,
+            new SyncOverAsyncAnalyzer()
+        );
+        Assert.Empty(diagnostics);
+    }
+
+    [Fact]
     public async Task Reports_result_wait_and_get_result()
     {
         Diagnostic[] diagnostics = await AnalyzerTestHarness.AnalyzeAsync(

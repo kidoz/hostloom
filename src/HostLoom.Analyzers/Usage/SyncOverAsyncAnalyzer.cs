@@ -68,14 +68,7 @@ public sealed class SyncOverAsyncAnalyzer : DiagnosticAnalyzer
 
         if (
             string.Equals(memberName, "GetResult", StringComparison.Ordinal)
-            && memberAccess.Expression is InvocationExpressionSyntax awaiterInvocation
-            && awaiterInvocation.Expression is MemberAccessExpressionSyntax awaiterAccess
-            && string.Equals(
-                awaiterAccess.Name.Identifier.ValueText,
-                "GetAwaiter",
-                StringComparison.Ordinal
-            )
-            && TryGetHostLoomAsyncCallName(context, awaiterAccess.Expression) is { } awaiterTarget
+            && TryGetHostLoomAsyncCallName(context, memberAccess.Expression) is { } awaiterTarget
         )
         {
             Report(context, invocation, awaiterTarget, ".GetAwaiter().GetResult()");
@@ -84,12 +77,60 @@ public sealed class SyncOverAsyncAnalyzer : DiagnosticAnalyzer
 
     private static string? TryGetHostLoomAsyncCallName(
         SyntaxNodeAnalysisContext context,
-        ExpressionSyntax expression
+        ExpressionSyntax expression,
+        int depth = 0
     )
     {
+        if (depth > 16)
+            return null;
         if (expression is ParenthesizedExpressionSyntax parenthesized)
         {
-            return TryGetHostLoomAsyncCallName(context, parenthesized.Expression);
+            return TryGetHostLoomAsyncCallName(context, parenthesized.Expression, depth + 1);
+        }
+
+        if (
+            expression is IdentifierNameSyntax
+            && context.SemanticModel.GetSymbolInfo(expression).Symbol is ILocalSymbol local
+            && local
+                .DeclaringSyntaxReferences.FirstOrDefault()
+                ?.GetSyntax(context.CancellationToken)
+                is VariableDeclaratorSyntax { Initializer: { } initializer } declaration
+        )
+        {
+            var scope = declaration
+                .Ancestors()
+                .FirstOrDefault(node =>
+                    node
+                        is BaseMethodDeclarationSyntax
+                            or AnonymousFunctionExpressionSyntax
+                            or LocalFunctionStatementSyntax
+                );
+            // Reassigned and by-reference locals have no single provable origin.
+            if (
+                scope is null
+                || scope
+                    .DescendantNodes()
+                    .Any(node =>
+                        node is AssignmentExpressionSyntax assignment
+                            && assignment
+                                .Left.DescendantNodesAndSelf()
+                                .OfType<IdentifierNameSyntax>()
+                                .Any(id =>
+                                    SymbolEqualityComparer.Default.Equals(
+                                        context.SemanticModel.GetSymbolInfo(id).Symbol,
+                                        local
+                                    )
+                                )
+                        || node is ArgumentSyntax argument
+                            && !argument.RefKindKeyword.IsKind(SyntaxKind.None)
+                            && SymbolEqualityComparer.Default.Equals(
+                                context.SemanticModel.GetSymbolInfo(argument.Expression).Symbol,
+                                local
+                            )
+                    )
+            )
+                return null;
+            return TryGetHostLoomAsyncCallName(context, initializer.Value, depth + 1);
         }
 
         if (expression is not InvocationExpressionSyntax invocation)
@@ -107,14 +148,13 @@ public sealed class SyncOverAsyncAnalyzer : DiagnosticAnalyzer
 
         if (
             invocation.Expression is MemberAccessExpressionSyntax memberAccess
-            && string.Equals(
-                memberAccess.Name.Identifier.ValueText,
-                "AsTask",
-                StringComparison.Ordinal
-            )
+            && memberAccess.Name.Identifier.ValueText
+                is "AsTask"
+                    or "ConfigureAwait"
+                    or "GetAwaiter"
         )
         {
-            return TryGetHostLoomAsyncCallName(context, memberAccess.Expression);
+            return TryGetHostLoomAsyncCallName(context, memberAccess.Expression, depth + 1);
         }
 
         return null;

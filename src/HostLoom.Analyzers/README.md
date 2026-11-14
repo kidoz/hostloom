@@ -173,3 +173,9 @@ dotnet_diagnostic.HLM0001.severity = error
 ```
 
 Generated code is ignored, and analyzer execution is safe for concurrent compiler execution.
+
+The sync-over-async rule follows non-reassigned local task/awaiter initializers through
+`AsTask`, `ConfigureAwait`, and `GetAwaiter`. Fields and arbitrary helper-returned tasks remain
+outside this proof. Cancellation-factory analysis includes source method groups across files
+and partial implementations; metadata-only targets remain opaque. Mapping completeness counts
+member targets in nested deconstruction assignments.

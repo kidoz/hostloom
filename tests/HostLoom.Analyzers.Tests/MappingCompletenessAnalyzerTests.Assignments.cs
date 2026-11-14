@@ -37,11 +37,8 @@ public sealed partial class MappingCompletenessAnalyzerTests
     }
 
     [Fact]
-    public async Task A_deconstruction_assignment_is_not_yet_counted_as_an_assignment()
+    public async Task A_deconstruction_assignment_counts_each_destination_member()
     {
-        // Pinned as observed, not as intended: the targets of a deconstruction sit under a tuple
-        // rather than directly under an assignment, so the rule misses them and reports the map
-        // as incomplete although every member is written. A false positive, not a data loss.
         Diagnostic[] diagnostics = await AnalyzeAsync(
             """
             public sealed class Mapper : IMapper<Source, Destination>
@@ -56,16 +53,7 @@ public sealed partial class MappingCompletenessAnalyzerTests
             """
         );
 
-        Diagnostic diagnostic = Assert.Single(diagnostics);
-        Assert.Equal(
-            HostLoomDiagnosticDescriptors.UnassignedDestinationMemberDiagnosticId,
-            diagnostic.Id
-        );
-        Assert.Contains(
-            "City, Mask",
-            diagnostic.GetMessage(CultureInfo.InvariantCulture),
-            StringComparison.Ordinal
-        );
+        Assert.Empty(diagnostics);
     }
 
     [Fact]

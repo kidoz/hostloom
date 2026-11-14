@@ -317,9 +317,14 @@ public sealed class MappingCompletenessAnalyzer : DiagnosticAnalyzer
             };
 
             // local.Member = value assigns it; local.Member on the right-hand side only reads.
+            IOperation target = parent;
+            while (
+                target.Parent is ITupleOperation or IConversionOperation { OperatorMethod: null }
+            )
+                target = target.Parent;
             if (
-                parent.Parent is IAssignmentOperation assignment
-                && ReferenceEquals(assignment.Target, parent)
+                target.Parent is IAssignmentOperation assignment
+                && ReferenceEquals(assignment.Target, target)
             )
             {
                 assignedMember = member;

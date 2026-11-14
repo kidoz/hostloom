@@ -87,3 +87,9 @@ syntax and validation limits. Constructor dependency resolution remains a final-
 The existing HLM0003 does not inspect generated code. Capture diagnostics examine known plan
 edges only; unknown dependencies and uncertain constructor choices still require provider/scope
 validation and known closed-service resolution tests.
+
+`HLM0001` follows non-reassigned local task/awaiter initializers and `AsTask`, `ConfigureAwait`,
+and `GetAwaiter` chains. Reassigned/by-reference locals, fields, and arbitrary helper-returned
+tasks remain outside that proof. The cancellation-factory rule inspects source method groups
+across files, including partial implementations; metadata-only method bodies remain opaque.
+`HLM0004` counts each member target in nested deconstruction assignments.

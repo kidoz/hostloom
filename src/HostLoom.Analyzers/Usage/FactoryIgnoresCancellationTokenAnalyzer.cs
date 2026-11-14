@@ -74,7 +74,7 @@ public sealed class FactoryIgnoresCancellationTokenAnalyzer : DiagnosticAnalyzer
         IMethodReferenceOperation group
     )
     {
-        IMethodSymbol method = group.Method;
+        IMethodSymbol method = group.Method.PartialImplementationPart ?? group.Method;
         if (method.DeclaringSyntaxReferences.Length != 1)
         {
             return;
@@ -83,16 +83,14 @@ public sealed class FactoryIgnoresCancellationTokenAnalyzer : DiagnosticAnalyzer
         SyntaxNode declaration = method
             .DeclaringSyntaxReferences[0]
             .GetSyntax(context.CancellationToken);
-        // Only a target declared in the same file can be inspected with the model the analyzer
-        // already holds; a method group into another file is left alone rather than guessed at.
-        if (
-            invocation.SemanticModel is not { } model
-            || declaration.SyntaxTree != invocation.Syntax.SyntaxTree
-        )
-        {
-            return;
-        }
-
+        // Cross-file source method groups need their declaring tree's model. This is limited
+        // to explicit factory arguments; external methods are excluded above.
+#pragma warning disable RS1030
+        var model =
+            declaration.SyntaxTree == invocation.Syntax.SyntaxTree
+                ? invocation.SemanticModel!
+                : context.Compilation.GetSemanticModel(declaration.SyntaxTree);
+#pragma warning restore RS1030
         IOperation? body = model.GetOperation(declaration, context.CancellationToken);
         if (body is null)
         {

@@ -14,16 +14,21 @@ internal static class AnalyzerTestHarness
     public static async Task<Diagnostic[]> AnalyzeAsync(
         string source,
         params DiagnosticAnalyzer[] analyzers
+    ) => await AnalyzeAsync(new[] { source }, analyzers).ConfigureAwait(false);
+
+    public static async Task<Diagnostic[]> AnalyzeAsync(
+        IEnumerable<string> sources,
+        params DiagnosticAnalyzer[] analyzers
     )
     {
         CSharpCompilation compilation = CSharpCompilation.Create(
             "HostLoom.Analyzers.Tests.Target",
-            [
+            sources.Select(source =>
                 CSharpSyntaxTree.ParseText(
                     source,
                     CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview)
-                ),
-            ],
+                )
+            ),
             CreateReferences(),
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
         );

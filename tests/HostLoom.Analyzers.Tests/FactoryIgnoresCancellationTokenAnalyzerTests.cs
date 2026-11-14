@@ -9,6 +9,33 @@ namespace HostLoom.Analyzers.Tests;
 public sealed class FactoryIgnoresCancellationTokenAnalyzerTests
 {
     [Fact]
+    public async Task A_source_method_group_in_another_file_is_inspected()
+    {
+        var diagnostics = await AnalyzerTestHarness.AnalyzeAsync(
+            new[]
+            {
+                CachingLockingContracts.Source
+                    + """
+                    internal static class Consumer
+                    {
+                        public static System.Threading.Tasks.ValueTask<int> Load(HostLoom.Caching.ICache cache) =>
+                            cache.GetOrCreateAsync("catalog", Factories.Load, System.TimeSpan.FromMinutes(1));
+                    }
+                    """,
+                """
+                internal static class Factories
+                {
+                    public static System.Threading.Tasks.ValueTask<int> Load(System.Threading.CancellationToken token) =>
+                        System.Threading.Tasks.ValueTask.FromResult(1);
+                }
+                """,
+            },
+            new FactoryIgnoresCancellationTokenAnalyzer()
+        );
+        Assert.Single(diagnostics);
+    }
+
+    [Fact]
     public async Task Reports_a_named_token_the_lambda_never_uses()
     {
         Diagnostic diagnostic = Assert.Single(
