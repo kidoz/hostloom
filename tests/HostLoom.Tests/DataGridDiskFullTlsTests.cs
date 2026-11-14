@@ -92,26 +92,22 @@ public sealed class DataGridDiskFullTlsTests(ITestOutputHelper output)
         await lab.Cluster.Stop(leader);
         volumes[leader].Release();
         var files = DataGridDiskFullTests.Files(volumes[leader].StorePath);
-        var recoveryError = Record.Exception(() =>
-        {
-            using var recovered = DataGridFileStore.Open(
+        using (
+            var recovered = DataGridFileStore.Open(
                 volumes[leader].StorePath,
                 lab.Peer.Configuration,
                 leader,
                 DataGridDiskFullTests.Limits
-            );
-            Assert.True(recovered.Image.CommitIndex >= original.Version.LogIndex);
-        });
-        if (recoveryError is not null)
+            )
+        )
         {
-            Assert.IsType<InvalidDataException>(recoveryError);
+            Assert.True(recovered.Image.CommitIndex >= original.Version.LogIndex);
             Assert.Equal(files, DataGridDiskFullTests.Files(volumes[leader].StorePath));
-            output.WriteLine(
-                "Faulted member has a torn tail and refuses restart without modifying any file. Its rejoin requires a separately designed recovery procedure."
-            );
         }
-        else
-            output.WriteLine("Faulted member's complete prefix reopens after space release.");
+        Volatile.Write(ref armed, -1);
+        output.WriteLine(
+            "Faulted member validates its published prefix after space release; unpublished bytes remain unchanged."
+        );
         foreach (var member in healthy)
             lab.Cluster.Start(member);
         client = lab.Client(0, await lab.Cluster.Leader(token));
@@ -121,11 +117,11 @@ public sealed class DataGridDiskFullTlsTests(ITestOutputHelper output)
         Assert.Equal(DataGridMutationStatus.Stored, resolved.Status);
         Assert.True(resolved.Version.LogIndex > original.Version.LogIndex);
         Assert.Equal(resolved, Item(await RecoverSend(uncertainRequest)));
-        foreach (var member in healthy)
-            await lab.Cluster.Nodes[member]!.WaitForAppliedAsync(resolved.Version.LogIndex, token);
+        lab.Cluster.Start(leader);
+        await lab.AppliedEverywhere(resolved.Version.LogIndex, token);
+        lab.Healthy();
         await lab.StopAll();
-        foreach (var member in healthy)
-            lab.Cluster.Start(member);
+        lab.Cluster.StartAll();
         client = lab.Client(0, await lab.Cluster.Leader(token));
         Assert.Equal(resolved, Item(await RecoverSend(uncertainRequest)));
         var read = await lab.Send(
@@ -137,7 +133,7 @@ public sealed class DataGridDiskFullTlsTests(ITestOutputHelper output)
         Assert.Equal(resolved.Version, read.Reply.Read!.GetItem(0)!.Version);
         Assert.Equal(new byte[65536], read.Reply.Read.GetItem(0)!.GetValue());
         output.WriteLine(
-            $"Healthy majority recovered the acknowledged identity unchanged; original uncertain identity resolved once at {resolved.Version.LogIndex} and retained that version through another restart."
+            $"All three members recovered and rejoined; original uncertain identity resolved once at {resolved.Version.LogIndex} and retained that version through another whole-group restart."
         );
 
         async Task<DataGridClientOutcome> RecoverSend(DataGridClientRequest request)

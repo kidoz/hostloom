@@ -64,6 +64,7 @@ if (
 )
     throw new InvalidOperationException("Unsupported storage pause.");
 var storagePaused = 0;
+var publishingSnapshot = false;
 var policy = new DataGridClientAccessPolicy(
     config,
     root,
@@ -135,7 +136,14 @@ DataGridPeerRuntime OpenRuntime()
         member,
         observe: step =>
         {
-            if (step != pauseStep || Interlocked.Exchange(ref storagePaused, 1) != 0)
+            if (step == DataGridStorageStep.SnapshotWriteStarting)
+                publishingSnapshot = true;
+            // This probe targets snapshot publication, not the v2 anchor written on every append.
+            if (
+                !publishingSnapshot
+                || step != pauseStep
+                || Interlocked.Exchange(ref storagePaused, 1) != 0
+            )
                 return;
             output.Write(FormattableString.Invariant($"STORAGEPAUSED {(int)step}"));
             // Only the owning parent kills this process; the lifetime bounds orphaned probes.

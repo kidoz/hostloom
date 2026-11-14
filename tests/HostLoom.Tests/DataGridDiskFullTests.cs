@@ -66,7 +66,9 @@ public sealed class DataGridDiskFullTests(ITestOutputHelper output)
     [Theory(Timeout = 20000)]
     [InlineData(0)]
     [InlineData(4096)]
-    public void ActualWalEnospcEitherRecoversCleanPrefixOrRefusesTornTail(int remainingBytes)
+    public void ActualWalEnospcRecoversPublishedPrefixAndRetriesThroughFreshGeneration(
+        int remainingBytes
+    )
     {
         using var volume = new OwnedDiskFullVolume(0);
         using var peer = new DataGridPeerFixture();
@@ -123,28 +125,23 @@ public sealed class DataGridDiskFullTests(ITestOutputHelper output)
         Assert.Equal(anchor, File.ReadAllBytes(Path.Combine(volume.StorePath, "CURRENT")));
         volume.Release();
         if (remainingBytes != 0)
-        {
             Assert.InRange(failed.Length - prefix.Length, 1, remainingBytes);
-            var beforeRefusal = Files(volume.StorePath);
-            Assert.Throws<InvalidDataException>(() =>
-                DataGridFileStore.Open(volume.StorePath, peer.Configuration, 0, Limits)
-            );
-            Assert.Equal(beforeRefusal, Files(volume.StorePath));
-            output.WriteLine(
-                "Partial WAL remains preserved and startup refuses without truncation, repair or fallback; freeing space alone cannot restart this member."
-            );
-            return;
-        }
-        Assert.Equal(prefix, failed);
+        else
+            Assert.Equal(prefix, failed);
+        var beforeRecovery = Files(volume.StorePath);
         using var recovered = DataGridFileStore.Open(
             volume.StorePath,
             peer.Configuration,
             0,
             Limits
         );
+        Assert.Equal(beforeRecovery, Files(volume.StorePath));
         Assert.Equal(2, recovered.Image.CommitIndex);
         AssertOriginalReplay(recovered.RestoreApplication(), 3);
         recovered.Persist(candidate, TestContext.Current.CancellationToken);
+        if (remainingBytes != 0)
+            Assert.Equal(failed, File.ReadAllBytes(selected));
+        Assert.Equal(remainingBytes != 0, Selected(volume.StorePath) != selected);
         var state = recovered.RestoreApplication();
         var version = state.Read(DataGridPeerFixture.Map, DataGridPeerFixture.Key)!.Version;
         Assert.Equal(3, version.LogIndex);
@@ -232,6 +229,110 @@ public sealed class DataGridDiskFullTests(ITestOutputHelper output)
         );
         Assert.Equal(2, reopened.Image.SnapshotIndex);
         AssertOriginalReplay(reopened.RestoreApplication(), 3);
+    }
+
+    [Theory(Timeout = 20000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ActualEnospcDuringAppendAnchorAndRecoveryRolloverKeepsPublishedPrefix(
+        bool failRecovery
+    )
+    {
+        using var volume = new OwnedDiskFullVolume(0);
+        using var peer = new DataGridPeerFixture();
+        using (
+            var initial = DataGridFileStore.Bootstrap(
+                volume.StorePath,
+                peer.Configuration,
+                0,
+                Limits
+            )
+        )
+            Prepare(initial, peer.Configuration);
+        var selected = Selected(volume.StorePath);
+        var anchor = File.ReadAllBytes(Path.Combine(volume.StorePath, "CURRENT"));
+        RaftDurableImage candidate;
+        using (
+            var store = DataGridFileStore.Open(
+                volume.StorePath,
+                peer.Configuration,
+                0,
+                Limits,
+                step =>
+                {
+                    if (step == DataGridStorageStep.AnchorWriteStarting)
+                        volume.Fill();
+                }
+            )
+        )
+        {
+            candidate = Next(store.Image, peer.Configuration);
+            try
+            {
+                var error = Assert.Throws<IOException>(() =>
+                    store.Persist(candidate, TestContext.Current.CancellationToken)
+                );
+                Enospc(error);
+                output.WriteLine(error.ToString());
+                Assert.True(store.IsFaulted);
+                Assert.Equal(2, store.Progress.DurableCommitIndex);
+            }
+            finally
+            {
+                DisposeFaulted(store);
+            }
+        }
+        Assert.Equal(anchor, File.ReadAllBytes(Path.Combine(volume.StorePath, "CURRENT")));
+        var retainedWal = File.ReadAllBytes(selected);
+        volume.Release();
+        if (failRecovery)
+        {
+            using (
+                var retry = DataGridFileStore.Open(
+                    volume.StorePath,
+                    peer.Configuration,
+                    0,
+                    Limits,
+                    step =>
+                    {
+                        if (step == DataGridStorageStep.GenerationWriteStarting)
+                            volume.Fill();
+                    }
+                )
+            )
+            {
+                Assert.Equal(2, retry.Image.CommitIndex);
+                try
+                {
+                    var error = Assert.Throws<IOException>(() =>
+                        retry.Persist(candidate, TestContext.Current.CancellationToken)
+                    );
+                    Enospc(error);
+                    output.WriteLine(error.ToString());
+                }
+                finally
+                {
+                    DisposeFaulted(retry);
+                }
+            }
+            Assert.Equal(anchor, File.ReadAllBytes(Path.Combine(volume.StorePath, "CURRENT")));
+            volume.Release();
+        }
+        using var recovered = DataGridFileStore.Open(
+            volume.StorePath,
+            peer.Configuration,
+            0,
+            Limits
+        );
+        Assert.Equal(2, recovered.Image.CommitIndex);
+        AssertOriginalReplay(recovered.RestoreApplication(), 3);
+        recovered.Persist(candidate, TestContext.Current.CancellationToken);
+        Assert.NotEqual(selected, Selected(volume.StorePath));
+        Assert.Equal(retainedWal, File.ReadAllBytes(selected));
+        Assert.Equal(3, recovered.Image.CommitIndex);
+        output.WriteLine(
+            $"Append frontier ENOSPC; recovery rollover fault={failRecovery}; original prefix retained and retry committed through a fresh generation."
+        );
     }
 
     [Theory(Timeout = 20000)]

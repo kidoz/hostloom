@@ -229,8 +229,8 @@ public sealed class DataGridFileStorageTests
             );
         }
         using var recovered = DataGridFileStore.Open(directory.Path, config, 0);
-        Assert.Equal(2, recovered.Image.CommitIndex);
-        Assert.Equal(4, recovered.Image.LastIndex);
+        Assert.Equal(0, recovered.Image.CommitIndex);
+        Assert.Equal(0, recovered.Image.LastIndex);
     }
 
     [Fact]
@@ -268,7 +268,7 @@ public sealed class DataGridFileStorageTests
             Assert.True(store.IsFaulted);
         }
         using var recovered = DataGridFileStore.Open(directory.Path, config, 0);
-        Assert.Equal(2, recovered.Image.CommitIndex);
+        Assert.Equal(0, recovered.Image.CommitIndex);
     }
 
     [Fact]
@@ -283,6 +283,11 @@ public sealed class DataGridFileStorageTests
             generation = store.GenerationId;
         }
         var path = directory.GenerationPath(generation);
+        // Legacy v1 selects the whole file; it has no published-prefix frontier.
+        File.WriteAllBytes(
+            System.IO.Path.Combine(directory.Path, "CURRENT"),
+            new DataGridCurrentAnchor(Cluster, Member(0), generation).Encode()
+        );
         var original = File.ReadAllBytes(path);
         var final = RecordOffsets(original)[^1];
         // Last record is the checkpoint. Append an uncommitted entry and then tear/corrupt it.
@@ -330,6 +335,11 @@ public sealed class DataGridFileStorageTests
             store.Persist(replacement, TestContext.Current.CancellationToken);
         }
         var path = directory.GenerationPath(generation);
+        // Legacy v1 selects the whole file; it has no published-prefix frontier.
+        File.WriteAllBytes(
+            System.IO.Path.Combine(directory.Path, "CURRENT"),
+            new DataGridCurrentAnchor(Cluster, Member(0), generation).Encode()
+        );
         var complete = File.ReadAllBytes(path);
         var boundaries = RecordOffsets(complete)
             .Where(offset => offset >= originalLength)
@@ -730,6 +740,9 @@ public sealed class DataGridFileStorageTests
     [Theory(Timeout = 30_000)]
     [InlineData("append", (int)DataGridStorageStep.WalWritten)]
     [InlineData("append", (int)DataGridStorageStep.WalFlushed)]
+    [InlineData("append", (int)DataGridStorageStep.AnchorFlushed)]
+    [InlineData("append", (int)DataGridStorageStep.AnchorRenamed)]
+    [InlineData("append", (int)DataGridStorageStep.AnchorDirectoryFlushed)]
     [InlineData("snapshot", (int)DataGridStorageStep.SnapshotFlushed)]
     [InlineData("snapshot", (int)DataGridStorageStep.GenerationDirectoryFlushed)]
     [InlineData("snapshot", (int)DataGridStorageStep.AnchorDirectoryFlushed)]
@@ -756,10 +769,10 @@ public sealed class DataGridFileStorageTests
         using var recovered = DataGridFileStore.Open(directory.Path, config, 0);
         if (operation == "append")
         {
-            if (stage == (int)DataGridStorageStep.WalFlushed)
-                Assert.Equal(5, recovered.Image.CommitIndex);
-            else
-                Assert.Contains(recovered.Image.CommitIndex, new long[] { 2, 5 });
+            Assert.Equal(
+                stage >= (int)DataGridStorageStep.AnchorRenamed ? 5 : 2,
+                recovered.Image.CommitIndex
+            );
             Assert.Equal(previous, recovered.GenerationId);
         }
         else
@@ -967,10 +980,10 @@ public sealed class DataGridFileStorageTests
         return offsets;
     }
 
-    private static RaftEntry Entry(long index, long term, DataGridCommittedCommand command) =>
+    internal static RaftEntry Entry(long index, long term, DataGridCommittedCommand command) =>
         new(index, term, DataGridCommittedCommandCodec.Encode(command));
 
-    private static DataGridCommittedCommand Mutation(ulong sequence, byte[] value) =>
+    internal static DataGridCommittedCommand Mutation(ulong sequence, byte[] value) =>
         DataGridCommittedCommand.Mutate(
             Principal,
             new(
@@ -985,7 +998,7 @@ public sealed class DataGridFileStorageTests
             default
         );
 
-    private static RaftDurableImage Image(DataGridBootstrapConfiguration config, long commit) =>
+    internal static RaftDurableImage Image(DataGridBootstrapConfiguration config, long commit) =>
         new(
             config,
             3,
@@ -1010,7 +1023,7 @@ public sealed class DataGridFileStorageTests
 
     private static Guid Member(int index) => new(index + 1, 0, 0, new byte[8]);
 
-    private static DataGridBootstrapConfiguration Configuration(int keys = 1000) =>
+    internal static DataGridBootstrapConfiguration Configuration(int keys = 1000) =>
         new(
             Cluster,
             [
@@ -1032,7 +1045,7 @@ public sealed class DataGridFileStorageTests
             ]
         );
 
-    private sealed class OwnedDirectory : IDisposable
+    internal sealed class OwnedDirectory : IDisposable
     {
         internal OwnedDirectory()
         {
