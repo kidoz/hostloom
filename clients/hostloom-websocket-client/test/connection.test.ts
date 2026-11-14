@@ -795,3 +795,51 @@ test("pong can echo a ping on an owned request stream without settling the reque
     socket.message(JSON.stringify({ kind: "response", streamId, payload: "e30=" }));
     assert.equal(await request, "e30=");
 });
+
+test("a reentrant state change stops notifications for the obsolete transition", async () => {
+    const { connection, socket } = createHarness();
+    const changes: string[] = [];
+    connection.onStateChange((change) => {
+        if (change.state === "connected") connection.close();
+    });
+    connection.onStateChange((change) => changes.push(change.state));
+    await connectHarness(connection, socket);
+    assert.equal(connection.state, "closing");
+    assert.ok(!changes.includes("connected"));
+    socket.closed(1000);
+});
+
+for (const errorFirst of [false, true]) {
+    test(`connect from a subscription close callback waits for a fresh welcome (error=${errorFirst})`, async () => {
+        const { connection, socket } = createHarness();
+        await connectHarness(connection, socket);
+        const pendingSubscription = connection.subscribe("inventory.changed", { credit: 1 });
+        const sent = JSON.parse(socket.sent.at(-1) as string) as { streamId: string };
+        socket.message(
+            JSON.stringify({
+                kind: "subscribed",
+                streamId: sent.streamId,
+                topic: "inventory.changed",
+                credit: 1,
+            }),
+        );
+        const subscription = await pendingSubscription;
+        let reconnected: Promise<WelcomeFrame> | undefined;
+        subscription.onClose(() => {
+            reconnected = connection.connect();
+        });
+        if (errorFirst) socket.error();
+        socket.closed(1006, "lost", false);
+        assert.equal(connection.state, "connecting");
+        assert.ok(reconnected !== undefined);
+        const replacement = {
+            ...(JSON.parse(welcomeJson) as WelcomeFrame),
+            sessionId: "22222222222222222222222222222222",
+        };
+        socket.open();
+        socket.message(JSON.stringify(replacement));
+        assert.equal((await reconnected).sessionId, replacement.sessionId);
+        connection.close();
+        socket.closed(1000);
+    });
+}

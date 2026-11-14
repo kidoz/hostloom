@@ -209,6 +209,7 @@ export function decodeServerFrame(json: string): ServerFrame {
         });
     }
 
+    assertUniqueJsonProperties(json);
     const frame = validateFrame(value, "server");
     return canonicalize(frame) as unknown as ServerFrame;
 }
@@ -459,4 +460,22 @@ function canonicalize(frame: JsonObject): JsonObject {
     }
 
     return result;
+}
+
+/** JSON.parse has already validated syntax; retain key spelling before duplicate keys disappear. */
+function assertUniqueJsonProperties(json: string): void {
+    const scopes: (Set<string> | undefined)[] = [];
+    const tokens = /"(?:\\.|[^"\\])*"|[{}[\]]/g;
+    for (const match of json.matchAll(tokens)) {
+        const token = match[0];
+        if (token === "{") scopes.push(new Set<string>());
+        else if (token === "[") scopes.push(undefined);
+        else if (token === "}" || token === "]") scopes.pop();
+        else if (/^\s*:/.test(json.slice(match.index + token.length))) {
+            const keys = scopes.at(-1);
+            const key = JSON.parse(token) as string;
+            if (keys?.has(key)) throw new HostLoomProtocolError("Duplicate JSON frame property.");
+            keys?.add(key);
+        }
+    }
 }

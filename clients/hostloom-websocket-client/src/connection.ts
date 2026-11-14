@@ -320,7 +320,10 @@ export class HostLoomConnection {
         return this.#lastClose;
     }
 
+    #finishingClose = false;
+
     public connect(): Promise<WelcomeFrame> {
+        if (this.#finishingClose) return this.#queueConnectAfterClose();
         if (this.#state === "connected") {
             return Promise.resolve(this.#welcome as WelcomeFrame);
         }
@@ -597,12 +600,15 @@ export class HostLoomConnection {
         if (this.#state === "reconnecting") {
             const close: HostLoomCloseInfo = { code, reason, wasClean: true };
             const error = new HostLoomConnectionClosedError(close);
+            this.#finishingClose = true;
             this.#cancelReconnectTimer();
             this.#rejectReconnectPromise(error);
             this.#rejectAllSubscriptions(error);
             this.#lastClose = close;
-            this.#transition("disconnected", { close });
+            this.#finishingClose = false;
             this.#closeDisposition = undefined;
+            this.#transition("disconnected", { close });
+            this.#resumeQueuedConnect();
             return;
         }
 
@@ -779,6 +785,9 @@ export class HostLoomConnection {
 
         const error = new HostLoomConnectionError("The WebSocket reported a connection error.");
         const socket = this.#socket;
+        this.#finishingClose = true;
+        this.#transition("closing", { error });
+        if (!this.#ownsClosingSocket(socket)) return;
         this.#rejectPendingConnect(error);
         this.#rejectAllRequests(error);
         if (this.#shouldPreserveSubscriptions()) {
@@ -786,7 +795,7 @@ export class HostLoomConnection {
         } else {
             this.#rejectAllSubscriptions(error);
         }
-        this.#transition("closing", { error });
+        this.#finishingClose = false;
         this.#closeAfterFailure(socket);
     };
 
@@ -806,6 +815,7 @@ export class HostLoomConnection {
     #finishClose(socket: HostLoomWebSocket, close: HostLoomCloseInfo): void {
         if (this.#socket !== socket) return;
 
+        this.#finishingClose = true;
         this.#cancelCloseTimer();
         this.#detach(socket);
         const closeError = new HostLoomConnectionClosedError(close);
@@ -822,12 +832,15 @@ export class HostLoomConnection {
         if (this.#canReconnect(close, disposition)) {
             this.#suspendAllSubscriptions(closeError);
             this.#ensureReconnectPromise();
+            this.#finishingClose = false;
             this.#transition("reconnecting", { close });
             this.#scheduleReconnect(close);
+            this.#resumeQueuedConnect();
         } else {
             this.#cancelReconnectTimer();
             this.#rejectReconnectPromise(closeError);
             this.#rejectAllSubscriptions(closeError);
+            this.#finishingClose = false;
             this.#transition("disconnected", { close });
             this.#resumeQueuedConnect();
         }
@@ -876,11 +889,14 @@ export class HostLoomConnection {
     #failProtocol(error: Error): void {
         const socket = this.#socket;
         this.#closeDisposition = "protocol";
+        this.#finishingClose = true;
+        this.#transition("closing", { error });
+        if (!this.#ownsClosingSocket(socket)) return;
         this.#rejectPendingConnect(error);
         this.#rejectReconnectPromise(error);
         this.#rejectAllRequests(error);
         this.#rejectAllSubscriptions(error);
-        this.#transition("closing", { error });
+        this.#finishingClose = false;
         this.#closeAfterFailure(socket);
     }
 
@@ -1247,7 +1263,9 @@ export class HostLoomConnection {
             }
 
             this.#pendingControl.delete(subscription);
-            subscription.flushControl();
+            if (subscription.flushControl(() => this.#controlBudget.delay() === 0)) {
+                this.#pendingControl.add(subscription);
+            }
         }
 
         this.#scheduleControlFlush();
@@ -1384,6 +1402,7 @@ export class HostLoomConnection {
         this.#state = state;
 
         for (const listener of this.#stateListeners) {
+            if (this.#state !== state) break;
             notifyListener(listener, change);
         }
     }

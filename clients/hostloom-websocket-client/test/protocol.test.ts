@@ -393,3 +393,11 @@ test("rejects malformed client frames and application payloads", () => {
     assert.throws(() => encodeJsonPayload(undefined), HostLoomProtocolError);
     assert.throws(() => decodeJsonPayload("not base64"), HostLoomProtocolError);
 });
+
+test("duplicate and escaped duplicate JSON properties are rejected", () => {
+    const frame = '{"kind":"pong","streamId":"11111111111111111111111111111111"}';
+    for (const key of ['"kind"', '"k\\u0069nd"']) {
+        const duplicate = frame.replace("{", `{${key}:"pong",`);
+        assert.throws(() => decodeServerFrame(duplicate), HostLoomProtocolError);
+    }
+});

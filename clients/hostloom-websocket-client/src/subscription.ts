@@ -429,10 +429,9 @@ export class SubscriptionController {
      * most one frame of each. The connection calls it when its control-frame budget allows, so
      * events that arrive while a frame is held back add to it instead of sending another.
      */
-    public flushControl(): void {
+    public flushControl(canSend: () => boolean): boolean {
         const acknowledgement = this.#pendingAcknowledgement;
-        this.#pendingAcknowledgement = 0;
-        if (this.#needsCredit) {
+        if (this.#needsCredit && canSend()) {
             const amount = this.#credit - this.#remainingCredit;
             const previousCredit = this.#remainingCredit;
             this.#remainingCredit = this.#credit;
@@ -441,20 +440,21 @@ export class SubscriptionController {
             } catch (error) {
                 this.#remainingCredit = previousCredit;
                 this.fail(asError(error));
-                return;
+                return false;
             }
         }
 
-        if (this.#state !== "active" || acknowledgement <= this.#sentAcknowledgement) {
-            return;
+        if (this.#state !== "active") return false;
+        if (acknowledgement > this.#sentAcknowledgement && canSend()) {
+            try {
+                this.#send({ kind: "ack", streamId: this.#streamId, sequence: acknowledgement });
+                this.#sentAcknowledgement = acknowledgement;
+            } catch (error) {
+                this.fail(asError(error));
+                return false;
+            }
         }
-
-        try {
-            this.#send({ kind: "ack", streamId: this.#streamId, sequence: acknowledgement });
-            this.#sentAcknowledgement = acknowledgement;
-        } catch (error) {
-            this.fail(asError(error));
-        }
+        return this.#needsCredit || this.#pendingAcknowledgement > this.#sentAcknowledgement;
     }
 
     #requestCredit(): void {

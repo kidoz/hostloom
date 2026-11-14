@@ -428,3 +428,20 @@ test("the control budget option must be a positive safe integer", () => {
         );
     }
 });
+
+test("one-frame pacing separates credit from acknowledgement without losing either", async () => {
+    vi.useFakeTimers();
+    const { connection, gateway } = await connectToGateway({ maximumControlFramesPerSecond: 1 });
+    const subscription = await subscribeOne(connection, { credit: 2 });
+    subscription.onEvent((event) => subscription.acknowledge(event.sequence));
+    gateway.publish(subscription.streamId);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const afterCredit = gateway.controlFrames.length;
+    assert.equal(afterCredit, 2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    assert.equal(gateway.controlFrames.length, 3);
+    assert.equal(gateway.credits.length, 1);
+    assert.equal(gateway.acknowledgements.length, 1);
+    assert.ok(busiestSecond(gateway.controlFrames) <= 1);
+    assert.equal(connection.state, "connected");
+});
