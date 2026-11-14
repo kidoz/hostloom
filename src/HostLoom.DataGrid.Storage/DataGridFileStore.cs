@@ -22,6 +22,10 @@ internal enum DataGridStorageStep
     ObsoleteFileDeleted,
     ObsoleteDirectoryFlushed,
     CollectionRootFlushed,
+    WalWriteStarting,
+    SnapshotWriteStarting,
+    GenerationWriteStarting,
+    AnchorWriteStarting,
 }
 
 internal sealed record DataGridStorageLimits(
@@ -266,6 +270,7 @@ internal sealed partial class DataGridFileStore : IDisposable
             throw new IOException("WAL capacity requires a new generation.");
         try
         {
+            Reached(DataGridStorageStep.WalWriteStarting, cancellationToken);
             foreach (var record in records)
                 _wal.Write(record);
             Reached(DataGridStorageStep.WalWritten, cancellationToken);
@@ -383,6 +388,7 @@ internal sealed partial class DataGridFileStore : IDisposable
             if (needsImage)
             {
                 var imageTemp = TemporaryName();
+                Reached(DataGridStorageStep.SnapshotWriteStarting, cancellationToken);
                 WriteFlushed(imageTemp, snapshot!.GetContent());
                 DataGridLocalStateMachine.Restore(
                     _configuration,
@@ -399,6 +405,7 @@ internal sealed partial class DataGridFileStore : IDisposable
                 Reached(DataGridStorageStep.SnapshotDirectoryFlushed, cancellationToken);
             }
             var walTemp = TemporaryName();
+            Reached(DataGridStorageStep.GenerationWriteStarting, cancellationToken);
             using (
                 var seed = new FileStream(
                     FilePath(walTemp),
@@ -422,6 +429,7 @@ internal sealed partial class DataGridFileStore : IDisposable
             nextWal = OpenWal(GenerationName(generation));
             nextWal.Position = nextWal.Length;
             var anchorTemp = TemporaryName();
+            Reached(DataGridStorageStep.AnchorWriteStarting, cancellationToken);
             WriteFlushed(
                 anchorTemp,
                 new DataGridCurrentAnchor(
