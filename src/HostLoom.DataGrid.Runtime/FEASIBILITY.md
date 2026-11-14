@@ -90,10 +90,18 @@ bytes and OOM events. The cgroup peak includes the preceding build; event increm
 samples identify changes during load. Missing/racing processes/files are
 recorded as unavailable. CPU deltas can be derived from cumulative observations; RSS sums can
 double-count shared pages. Directory bytes are not physical disk writes or free space, and
-`/proc/io` is not network I/O. Network bytes, allocation rate and GC pause distributions are not
+`/proc/io` is not network I/O. Network bytes, allocation type/stack profiles and GC pause distributions are not
 measured. Reported framework, server-GC and processor count describe the executing process;
 JIT/tiering/PGO use image defaults. Monitoring/counter/checksum overhead is included in the load
 process; raw call serialization occurs after each phase and can add an inter-phase gap.
+
+The process sampler also records approximate managed bytes, cumulative all-thread allocation,
+last-GC heap/committed/fragmented bytes, generation collection counts and cgroup `memory.stat`.
+It queries a read-only probe command and never forces collection. Approximate managed bytes can
+include garbage awaiting collection; last-GC values are not current live-object counts or peaks.
+Allocation counters may lag. GC memory-load/available-memory observations belong to each runtime
+and are not private reservations of the container budget. RSS, GC committed memory and cgroup
+anonymous/file/kernel charges have different accounting and must not be added together.
 
 After sampling, the runner drains unresolved identities within a bounded budget. It then writes
 a canary, verifies application on all members, kills the current leader, and measures time to a
@@ -132,3 +140,7 @@ The runner does not keep timing a baseline workload after an unintended OOM memb
 Recorded 100000-key population attempts in this two-GiB profile hit OOM before warmup. Full-size
 capacity remains unqualified. Diagnose process memory and transient allocation pressure before
 collecting the full campaign; a completed smoke does not resolve that constraint.
+Validation reuse, exact-buffer encoding and removal of full-image read/send copies reduce known
+allocation amplification. The full population still hits this fixture's limit. Aggregate
+transient/in-flight snapshot and process memory must be attributed and bounded before retrying
+the full-size coordinate and remaining campaign.
