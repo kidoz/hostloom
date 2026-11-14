@@ -33,6 +33,7 @@ internal sealed class LockHandle : ILockHandle
     private readonly ITimer? _extendTimer;
     private TimeSpan _lease;
     private DateTimeOffset _leaseEnd;
+    private LeaseDeadline _deadline;
     private int _state;
     private bool _counted = true;
 
@@ -61,6 +62,7 @@ internal sealed class LockHandle : ILockHandle
         _lease = deadline.Lease;
         _autoExtend = autoExtend;
         _acquiredAt = deadline.RequestedAt;
+        _deadline = deadline;
         // Read once: the source is disposed with the handle, and the token stays readable after.
         _lostToken = _lost.Token;
         var remaining = deadline.Remaining(owner.Clock);
@@ -72,7 +74,7 @@ internal sealed class LockHandle : ILockHandle
         _leaseTimer = owner.Clock.CreateTimer(
             static state => ((LockHandle)state!).OnLeaseExpired(),
             this,
-            NotBefore(remaining),
+            Timeout.InfiniteTimeSpan,
             Timeout.InfiniteTimeSpan
         );
         _warnTimer = owner.Clock.CreateTimer(
@@ -89,6 +91,8 @@ internal sealed class LockHandle : ILockHandle
                 Timeout.InfiniteTimeSpan
             )
             : null;
+        // Arm only after every timer is owned. Even a zero/early callback can now safely re-arm.
+        _leaseTimer.Change(NotBefore(deadline.Remaining(owner.Clock)), Timeout.InfiniteTimeSpan);
     }
 
     public string Key { get; }
@@ -97,7 +101,22 @@ internal sealed class LockHandle : ILockHandle
 
     public string PrefixedKey => _prefixedKey;
 
-    public bool IsHeld => Volatile.Read(ref _state) == HeldState;
+    public bool IsHeld
+    {
+        get
+        {
+            lock (_gate)
+            {
+                if (_state != HeldState)
+                    return false;
+                if (!_deadline.IsSpent(_owner.Clock))
+                    return true;
+            }
+            OnLeaseExpired();
+            lock (_gate)
+                return _state == HeldState && !_deadline.IsSpent(_owner.Clock);
+        }
+    }
 
     public DateTimeOffset LeaseEnd
     {
@@ -219,6 +238,7 @@ internal sealed class LockHandle : ILockHandle
             }
 
             _lease = lease;
+            _deadline = deadline;
             _leaseEnd = _owner.Clock.GetUtcNow() + remaining;
             _leaseTimer.Change(remaining, Timeout.InfiniteTimeSpan);
             _warnTimer.Change(remaining * 0.8, Timeout.InfiniteTimeSpan);
@@ -287,7 +307,29 @@ internal sealed class LockHandle : ILockHandle
 
     private static TimeSpan NotBefore(TimeSpan due) => due > TimeSpan.Zero ? due : TimeSpan.Zero;
 
-    private void OnLeaseExpired() => MarkLost("the lease expired on the local clock");
+    private void OnLeaseExpired()
+    {
+        lock (_gate)
+        {
+            if (_state != HeldState)
+                return;
+            var remaining = _deadline.Remaining(_owner.Clock);
+            if (remaining > TimeSpan.Zero)
+            {
+                // Timer resolution can deliver slightly before the monotonic deadline.
+                _leaseTimer.Change(
+                    remaining < TimeSpan.FromMilliseconds(1)
+                        ? TimeSpan.FromMilliseconds(1)
+                        : remaining,
+                    Timeout.InfiniteTimeSpan
+                );
+                return;
+            }
+            _state = LostState;
+        }
+        ReportLost("the lease expired on the local clock");
+        Decrement();
+    }
 
     private void OnHoldThreshold()
     {
@@ -369,7 +411,7 @@ internal sealed class LockHandle : ILockHandle
                 return;
             }
 
-            var remaining = _leaseEnd - _owner.Clock.GetUtcNow();
+            var remaining = _deadline.Remaining(_owner.Clock);
             if (remaining <= TimeSpan.Zero)
             {
                 return;

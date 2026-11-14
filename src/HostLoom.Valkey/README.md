@@ -149,11 +149,11 @@ Acquisition is `SET key owner NX PX lease`. Lua release and extension compare th
 return false; backend failures become `LockProviderException`; caller cancellation propagates.
 
 Command, pipeline, and script transport failures are never automatically replayed. A lost reply
-may mean the operation executed, so an unconfirmed acquisition is reported as a failure. When
-that failure is a command timeout, the lock issues one owner-checked release for the abandoned
-owner, so a lease the server did grant is freed instead of waiting out its expiry; a connection
-failure reported as unavailable releases nothing, and its lease expires. The next independent operation can reconnect. Script-cache recovery retries only a
-received `NOSCRIPT` response.
+may mean the operation executed. A connection failure whose SDK delivery status is
+`MayHaveBeenSent` becomes lock failure kind `Other`; the kernel issues one bounded,
+owner-checked release for that abandoned owner. A definitely `NotSent` connection failure is
+`Unavailable` and needs no cleanup. Timeouts also receive uncertain-outcome cleanup. The next
+independent operation can reconnect; script-cache recovery retries only a received `NOSCRIPT`.
 
 These are coordination leases on one primary, without fencing or consensus guarantees. A primary
 failover can lose a lease. Database constraints, transactions, or idempotency own persisted-state

@@ -28,7 +28,15 @@ internal static class ValkeyFailures
 
     internal static LockProviderException Lock(Exception exception, string operation) =>
         new(
-            Classify(exception) switch
+            (
+                exception
+                    is ValkeyConnectionException
+                    {
+                        DeliveryStatus: not ValkeyCommandDeliveryStatus.NotSent
+                    }
+                    ? CacheFailureKind.Other
+                    : Classify(exception)
+            ) switch
             {
                 CacheFailureKind.Timeout => LockFailureKind.Timeout,
                 CacheFailureKind.Unavailable => LockFailureKind.Unavailable,

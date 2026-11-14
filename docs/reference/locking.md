@@ -78,7 +78,9 @@ turn into a handle ends in one of these cases:
 - The provider threw with kind `Unavailable`: it could not reach the backend,
   so there is nothing to release. The Redis provider also reports a connection
   that fails while a command is in flight as `Unavailable`; such a key is held
-  for at most one lease.
+  for at most one lease. Valkey preserves the SDK's delivery certainty: a connection failure
+  that may have sent the command is `Other` and receives owner-checked cleanup; a definitely
+  unsent command is `Unavailable`.
 
 Each release is one best-effort, owner-checked call for the abandoned owner,
 bounded by the lease and at most five seconds, and nobody waits for it. The
