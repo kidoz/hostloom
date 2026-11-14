@@ -128,3 +128,7 @@ explicit target decisions remain necessary before performance acceptance.
 An increase in cgroup OOM-kill count after the driver's first resource snapshot immediately
 cancels the case and reports `infeasible`. The triggering snapshot is flushed before cancellation.
 The runner does not keep timing a baseline workload after an unintended OOM member loss.
+
+Recorded 100000-key population attempts in this two-GiB profile hit OOM before warmup. Full-size
+capacity remains unqualified. Diagnose process memory and transient allocation pressure before
+collecting the full campaign; a completed smoke does not resolve that constraint.
