@@ -69,6 +69,15 @@ retained vectors. It does not qualify a full 256-MiB dataset, heap amplification
 maximum-size transfer, recovery latency, mixed builds or downgrade behavior. Members must use
 matching builds; those deployment measurements remain separate.
 
+Snapshot format capacity also exceeds current incoming actor admission. A received snapshot
+request charges its full descriptor byte count plus 128 bytes against both the retained-control
+pool and control queue's 16-MiB ceiling. Even with an empty lane, snapshot content above
+16777088 bytes cannot be admitted. Transport transfer reservations do not bypass this actor
+bound. A member that requires a larger snapshot therefore cannot catch up through the current
+handoff; increasing the file-format or transport limit alone does not resolve it. Any future
+handoff must preserve an explicit byte/count owner until actual installation completes, including
+caller cancellation, rather than replace the full charge with unaccounted metadata.
+
 ## What the directed checks establish
 
 The new TLS quota checks select either a one-key map or a byte ceiling exactly filled by the

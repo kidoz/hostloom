@@ -116,8 +116,7 @@ bytes and OOM events. The cgroup peak includes the preceding build; event increm
 samples identify changes during load. Missing/racing processes/files are
 recorded as unavailable. CPU deltas can be derived from cumulative observations; RSS sums can
 double-count shared pages. Directory bytes are not physical disk writes or free space, and
-`/proc/io` is not network I/O. Network bytes, allocation type/stack profiles and GC pause distributions are not
-measured. Reported framework, server-GC and processor count describe the executing process;
+`/proc/io` is not network I/O. Network bytes, allocation profiles and complete GC pause distributions are not measured. Reported framework, server-GC and processor count describe the executing process;
 JIT/tiering/PGO use image defaults. Monitoring/counter/checksum overhead is included in the load
 process; raw call serialization occurs after each phase and can add an inter-phase gap.
 
@@ -128,6 +127,29 @@ include garbage awaiting collection; last-GC values are not current live-object 
 Allocation counters may lag. GC memory-load/available-memory observations belong to each runtime
 and are not private reservations of the container budget. RSS, GC committed memory and cgroup
 anonymous/file/kernel charges have different accounting and must not be added together.
+
+The sampler also retains member role/term, leader hint, commit/applied/snapshot positions,
+ready/stopped flags, and runtime/listener failure outer/base type and bounded base stack.
+Exception messages and payloads are omitted. Status and failure fields are cached passive
+observations, not an atomic state transition or a live quorum assertion. Probe request/response
+bounds and resource rows use the driver's stopwatch timeline. GC/CPU counters restart with a new
+PID; retained term and log positions are separate persistence state.
+GC observations include cumulative pause milliseconds, last completed GC index, cumulative pause
+percentage and the two pause durations associated with that GC. The
+[cumulative pause duration](https://learn.microsoft.com/en-us/dotnet/api/system.gc.gettotalpauseduration?view=net-10.0) and
+[last-GC fields](https://learn.microsoft.com/en-us/dotnet/api/system.gcmemoryinfo?view=net-10.0) are counters,
+not a complete pause-event trace. Repeated GC indexes repeat the same last-GC observations;
+several collections can occur between samples. Pause deltas can correlate with lost progress
+but cannot alone assign causality or reconstruct every pause's timing.
+
+`resolutions.jsonl` retains setup, settle and recovery SDK invocations outside the timed phases.
+Each row has logical identity, mutation digest, phase, driver start/end seconds, returned failure
+and physical attempt member/ID/submitted/wire-reply metadata. Request/value bytes are not retained.
+Cancelled invocations have null attempt data because the SDK did not return an outcome; this is
+not evidence of zero attempts or non-admission. Completed SDK outcomes expose their observed
+attempts but no individual attempt latency. The journal flushes after each record and stops at
+10000 records rather than truncating. Its hashing/serialization/flush overhead affects setup
+and diagnostic workload feasibility, outside measured invocation durations.
 
 After sampling, the runner drains unresolved identities within a bounded budget. It then writes
 a canary, verifies application on all members, kills the current leader, and measures time to a
@@ -146,13 +168,14 @@ and exact-container cleanup result. Additional files are:
 | `plan.json` | Coordinate, smoke/full label, process memory profile, entrypoint hash and repeat seeds |
 | `feasibility/case.json` | Effective limits, timing rules, phase summaries, rates, population/recovery results and case status |
 | `feasibility/warmup-calls.jsonl`, `sample-calls.jsonl` | Per-invocation timings, outcomes, batch items, mutation sequence/digest and cross-phase resolution flags |
-| `feasibility/resources.jsonl` | One-second process and directory observations by phase |
+| `feasibility/resources.jsonl` | One-second process, member progress/fault, GC-pause and directory observations by phase |
+| `feasibility/resolutions.jsonl` | Bounded setup/settle/recovery call and physical-attempt provenance |
 
 The validator recomputes percentiles, throughput and failure accounting from raw observations
-and rejects identity changes, missing evidence and false smoke/full labels. Its controller
+and rejects identity changes, missing diagnostics/attempt provenance, inconsistent counts and false smoke/full labels. Its controller
 may execute successfully while the case is `infeasible` or `incomplete_budget`; inspect both
 statuses in `report.json`. A completed case requires resolved writes and verified recovery.
-Checksum/identity corruption, unexpected exceptions, failed/skipped driver, lost raw observations,
+Checksum/identity corruption, unexpected driver exceptions, failed/skipped driver, lost raw observations,
 or failed ownership/cleanup fail execution. Partial population acknowledgements and the stopping phase are retained on failure. An interrupted
 setup mutation may have been admitted; acknowledged progress is not rollback evidence.
 `unresolved_mutations` counts timed workers, which have not started during population. Resolving
@@ -180,3 +203,13 @@ recovery were not executed. Both profiles remain unqualified for this workload. 
 captures and explicit process budgets are diagnostic evidence, not proof that GC caps make this
 composition feasible. Member role/progress/fault and GC-pause evidence around lost quorum is the
 next diagnostic before choosing a further allocation or coordination change.
+
+The role/fault-enabled bounded-GC repeat identifies a managed `OutOfMemoryException` while
+rereading the snapshot during generation-seed verification. No cgroup OOM kill is needed for
+that failure: the member's runtime can stop while its probe process remains observable. The
+repeat acknowledges 55504 keys, then exhausts resolution after quorum/unknown outcomes; it is
+not full-size qualification. A captured member fault invalidates workload feasibility even when
+the driver successfully records an `incomplete_budget` case. Reducing transient publication
+allocations and resolving the [incoming snapshot admission ceiling](RESOURCE_LIMITS.md#retained-result-and-snapshot-bounds)
+remain necessary before retrying full-size recovery. Lifetime pause counters and last-GC samples
+provide diagnostic context, not a complete pause trace or accepted performance target.
