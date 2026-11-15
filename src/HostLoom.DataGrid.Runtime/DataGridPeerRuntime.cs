@@ -60,6 +60,7 @@ internal sealed class DataGridPeerRuntime
     private readonly DataGridRuntimeQueue _queue = new();
     private readonly DataGridRuntimeOperationBudget _operations = new();
     private readonly DataGridRuntimeOperationBudget _control = new(control: true);
+    private readonly DataGridSnapshotInstallBudget _snapshotInstalls = new();
     private readonly object _admission = new();
     private readonly Dictionary<
         Guid,
@@ -155,6 +156,7 @@ internal sealed class DataGridPeerRuntime
 
     internal DataGridPeerRuntimeStatus Status => Volatile.Read(ref _status);
     internal DataGridRuntimeSnapshot Diagnostics => Volatile.Read(ref _diagnostics);
+    internal DataGridSnapshotInstallProgress SnapshotInstalls => _snapshotInstalls.Progress;
 
     // Actual owner cleanup, independent of the bounded DisposeAsync wait.
     internal Task Completion => _loop;
@@ -541,11 +543,39 @@ internal sealed class DataGridPeerRuntime
         RaftMessage message,
         CancellationToken cancellationToken
     ) =>
-        Invoke(
-            () => Apply(_node.Receive(message, Now()), message),
-            checked((int)message.ByteCount),
-            cancellationToken
-        );
+        message.Kind == RaftMessageKind.SnapshotRequest
+            ? InstallSnapshot(message, cancellationToken)
+            : Invoke(
+                () => Apply(_node.Receive(message, Now()), message),
+                checked((int)message.ByteCount),
+                cancellationToken
+            );
+
+    private async Task<RaftMessage?> InstallSnapshot(RaftMessage message, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        var snapshot = message.Snapshot;
+        if (
+            snapshot is null
+            || message.Entries.Count != 0
+            || snapshot.Content.Length != snapshot.Descriptor.ByteCount
+        )
+            throw new InvalidDataException("Invalid snapshot install shape or size.");
+        using var reservation =
+            _snapshotInstalls.TryAcquire(
+                snapshot.Descriptor.ByteCount,
+                _stop.IsCancellationRequested
+            ) ?? throw new IOException("Snapshot installation admission refused.");
+        // After posting, wait for actual action/skip/drain. In particular, caller cancellation
+        // cannot release this image slot or the transport/credential scopes awaiting this task.
+        return await Invoke(
+                () => Apply(_node.Receive(message, Now()), message),
+                128,
+                awaitOwner: true,
+                token
+            )
+            .ConfigureAwait(false);
+    }
 
     public Task<long> ObserveLeaderAsync(long term, CancellationToken cancellationToken) =>
         Invoke(
@@ -558,7 +588,15 @@ internal sealed class DataGridPeerRuntime
             cancellationToken
         );
 
-    private async Task<T> Invoke<T>(Func<T> action, int bytes, CancellationToken token)
+    private Task<T> Invoke<T>(Func<T> action, int bytes, CancellationToken token) =>
+        Invoke(action, bytes, awaitOwner: false, token);
+
+    private async Task<T> Invoke<T>(
+        Func<T> action,
+        int bytes,
+        bool awaitOwner,
+        CancellationToken token
+    )
     {
         token.ThrowIfCancellationRequested();
         var result = new TaskCompletionSource<T>(
@@ -586,7 +624,9 @@ internal sealed class DataGridPeerRuntime
             bytes,
             control: true
         );
-        return await result.Task.WaitAsync(token).ConfigureAwait(false);
+        return await (awaitOwner ? result.Task : result.Task.WaitAsync(token)).ConfigureAwait(
+            false
+        );
     }
 
     private void Post(Action action, Action<Exception> reject, int bytes, bool control)
@@ -653,6 +693,7 @@ internal sealed class DataGridPeerRuntime
             _operations.Complete();
             var cancellation = _cancellation ??= _stop.CancelAsync();
             _control.Complete();
+            _snapshotInstalls.Complete();
             return cancellation;
         }
     }

@@ -88,3 +88,67 @@ internal sealed class DataGridRuntimeOperationBudget(bool control = false)
 
     private readonly record struct Usage(int Count, long Bytes);
 }
+
+internal readonly record struct DataGridSnapshotInstallProgress(
+    int Active,
+    long Bytes,
+    long ByteLimit,
+    bool Stopped
+);
+
+// Separate from ordinary control metadata: one complete queued/executing image.
+internal sealed class DataGridSnapshotInstallBudget
+{
+    internal const long ByteLimit = DataGridSnapshotDescriptor.MaxSnapshotByteCount;
+    private readonly object _sync = new();
+    private long _bytes;
+    private bool _stopped;
+
+    internal DataGridSnapshotInstallProgress Progress
+    {
+        get
+        {
+            lock (_sync)
+                return new(_bytes == 0 ? 0 : 1, _bytes, ByteLimit, _stopped);
+        }
+    }
+
+    internal Lease? TryAcquire(long bytes, bool stopping = false)
+    {
+        lock (_sync)
+        {
+            var reason =
+                _stopped || stopping ? "stopped"
+                : bytes < 1 || bytes > ByteLimit ? "bytes"
+                : _bytes != 0 ? "items"
+                : null;
+            if (reason is not null)
+            {
+                DataGridRuntimeDiagnostics.Reject(control: true, reason);
+                return null;
+            }
+            _bytes = bytes;
+            return new(this);
+        }
+    }
+
+    internal void Complete()
+    {
+        lock (_sync)
+            _stopped = true;
+    }
+
+    internal sealed class Lease(DataGridSnapshotInstallBudget owner) : IDisposable
+    {
+        private DataGridSnapshotInstallBudget? _owner = owner;
+
+        public void Dispose()
+        {
+            var held = Interlocked.Exchange(ref _owner, null);
+            if (held is null)
+                return;
+            lock (held._sync)
+                held._bytes = 0;
+        }
+    }
+}
