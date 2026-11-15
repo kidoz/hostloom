@@ -204,15 +204,22 @@ snapshot capture, comparing forward bytes without creating a second full encoded
 required reconstruction falls from 11.75 MB to 0.60 MB. Reconstruction itself still allocates
 application state. The v1 golden bytes, semantic/digest checks and fresh Open validation remain.
 
-The subsequent full-size repeat acknowledges 78928 keys, then stops during population with a
+Before the incoming handoff change, the full-size repeat acknowledged 78928 keys, then stopped during population with a
 managed OOM during independent reconstruction/replay, before canonical comparison. No full-size
 warmup, sample or retained recovery was completed. An allocation stack identifies where the
 last request failed; it does not by itself identify the dominant retained memory owner. Changed
 partial counts/timings do not establish supported capacity or a throughput improvement.
 
-Next design a bounded [incoming snapshot handoff](RESOURCE_LIMITS.md#retained-result-and-snapshot-bounds)
-and sustainable aggregate ownership for live state, durable/candidate/in-flight images and the
-independent verifier. Preserve explicit ownership until actual completion and all prefix/disk
-checks. The current actor admission ceiling still prevents catch-up of larger snapshots. Both
-process profiles remain unqualified until full workload, catch-up and recovery evidence exists.
-Lifetime/last-GC pause observations provide context, not a complete event trace or service target.
+The [incoming snapshot handoff](RESOURCE_LIMITS.md#retained-result-and-snapshot-bounds) now
+reserves one exact-byte image separately from ordinary control metadata and waits for actual
+owner completion across cancellation. Nineteen focused Linux checks include a real TLS image
+above 16 MiB, reopen/replay and credential/stop/fault ownership. The following full-size repeat
+acknowledges 91216 keys, then stops during population with managed OOM in snapshot capture and
+independent prefix reconstruction. No cgroup OOM kill or full-size warmup/sample/recovery occurs.
+This closes the former incoming admission defect; it does not establish aggregate memory fit.
+
+Next quantify retained owners and peak overlap, then select a bounded capture/verification
+composition under the declared fixture. Keep independent prefix/disk checks. Partial counts
+are not a throughput comparison. Both process profiles remain unqualified until full workload,
+catch-up and recovery evidence exists. Lifetime/last-GC pause observations provide context,
+not a complete event trace or service target.

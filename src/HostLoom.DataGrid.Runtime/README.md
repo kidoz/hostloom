@@ -71,6 +71,13 @@ eight consecutive turns before an available local client gets a turn. Up to 128 
 latest pending request per peer; replacing work cancels the preceding exchange rather than
 building a chain of tasks. Correlation/term checks discard obsolete replies. Snapshot messages
 refer to bounded immutable images and are encoded as individual 64 KiB chunks at the transport.
+Incoming snapshot installation reserves one separate image slot and its exact encoded bytes,
+up to the existing 512-MiB format limit. Only its 128-byte envelope uses the ordinary control
+pool/queue; a second queued or executing install refuses. After posting, snapshot ReceiveAsync
+waits for actual installation, cancelled dequeue or stop/fault drain, retaining the image and
+awaiting transport/credential scopes despite caller cancellation. A started install can commit
+after cancellation, leaving a sender without a reply uncertain. These logical bounds do not
+establish physical memory capacity; see [resource limits](RESOURCE_LIMITS.md).
 The shared queue component enforces both count and byte limits atomically and drains its
 reservations on shutdown/fault. Within the client lane, authenticated principals have FIFO queues
 and take one turn each in round-robin order. A new or returning principal joins the rotation's

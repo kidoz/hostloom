@@ -59,8 +59,8 @@ and reconstructed application copies for readback. It does not skip WAL parsing,
 known committed-prefix comparison, flush/rename/frontier steps or directory ownership checks.
 A fresh Open still reads and fully validates its selected snapshot from disk. It cannot borrow
 the prior process's validation state. These allocation savings do not establish full-size capacity;
-the runtime's [incoming snapshot admission ceiling](../HostLoom.DataGrid.Runtime/RESOURCE_LIMITS.md#retained-result-and-snapshot-bounds)
-is a separate constraint.
+the runtime's [incoming snapshot ownership and aggregate memory bounds](../HostLoom.DataGrid.Runtime/RESOURCE_LIMITS.md#retained-result-and-snapshot-bounds)
+are separate constraints.
 
 The prototype permits Linux/macOS x64 and arm64. Directory handles use native `open` with
 directory/no-follow/close-on-exec flags, and `RandomAccess.FlushToDisk` supplies directory flushing.
