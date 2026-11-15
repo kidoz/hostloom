@@ -8,6 +8,81 @@ namespace HostLoom.Tests;
 
 public sealed class DataGridSnapshotAllocationTests
 {
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1024)]
+    public void BorrowedVerifierRebuildsStateAndReplacesValuesWithoutChangingItsSnapshot(int length)
+    {
+        using var fixture = new DataGridPeerFixture();
+        var machine = new DataGridLocalStateMachine(fixture.Configuration);
+        machine.Apply(
+            1,
+            DataGridCommittedCommand.OpenSession(
+                DataGridPeerFixture.Principal,
+                DataGridPeerFixture.Nonce,
+                new(4 * TimeSpan.TicksPerSecond),
+                default
+            )
+        );
+        var originalValue = Enumerable.Repeat((byte)42, length).ToArray();
+        machine.Apply(2, DataGridFileStorageTests.Mutation(1, originalValue));
+        var snapshot = machine.SaveSnapshot(Guid.NewGuid(), 1);
+        var originalBytes = snapshot.GetContent();
+        var borrowed = DataGridLocalStateMachine.RestoreForVerification(
+            fixture.Configuration,
+            snapshot
+        );
+        var copiedInput = snapshot.GetContent();
+        var copied = DataGridLocalStateMachine.Restore(
+            fixture.Configuration,
+            snapshot.Descriptor,
+            copiedInput
+        );
+        borrowed.VerifyCanonicalSnapshot(snapshot);
+        Assert.Equal(machine.StoredDataByteCount, borrowed.StoredDataByteCount);
+        var replay = borrowed.Apply(3, DataGridFileStorageTests.Mutation(1, originalValue));
+        Assert.Equal(2, replay.GetItem(0).Version.LogIndex);
+        var replacement = new byte[] { 7, 8, 9 };
+        borrowed.Apply(4, DataGridFileStorageTests.Mutation(2, replacement));
+        var result = borrowed.Read(DataGridPeerFixture.Map, DataGridPeerFixture.Key)!;
+        Assert.Equal(replacement, result.GetValue());
+        Assert.Equal(4, result.Version.LogIndex);
+        Array.Fill(copiedInput, (byte)255);
+        Assert.Equal(
+            originalValue,
+            copied.Read(DataGridPeerFixture.Map, DataGridPeerFixture.Key)!.GetValue()
+        );
+        Assert.Equal(
+            originalValue,
+            machine.Read(DataGridPeerFixture.Map, DataGridPeerFixture.Key)!.GetValue()
+        );
+        Assert.Equal(originalBytes, snapshot.GetContent());
+    }
+
+    [Fact]
+    public void BorrowedVerifierStillChecksDigestAndConfigurationAfterPriorValidation()
+    {
+        using var fixture = new DataGridPeerFixture();
+        var machine = new DataGridLocalStateMachine(fixture.Configuration);
+        machine.Apply(1, DataGridCommittedCommand.AdvanceTime(default));
+        var snapshot = machine.SaveSnapshot(Guid.NewGuid(), 1);
+        snapshot.Validate(fixture.Configuration);
+        var damaged = snapshot.GetContent();
+        damaged[^1] ^= 1;
+        Assert.Throws<InvalidDataException>(() =>
+            DataGridLocalStateMachine.RestoreForVerification(
+                fixture.Configuration,
+                new(snapshot.Descriptor, damaged)
+            )
+        );
+        Assert.Throws<InvalidDataException>(() =>
+            DataGridLocalStateMachine.RestoreForVerification(
+                DataGridFileStorageTests.Configuration(1001),
+                snapshot
+            )
+        );
+    }
+
     [Fact]
     public void ComparisonWriterChecksEveryByteAndCompletionWithoutChangingBorrowedInput()
     {
@@ -75,6 +150,9 @@ public sealed class DataGridSnapshotAllocationTests
         );
         // Independent reconstruction is required. Its canonical comparison must not add an image-sized output buffer.
         Assert.True(allocated - reconstruction < nextSnapshot.Descriptor.ByteCount);
+        // Prefix verification may borrow immutable durable values while rebuilding its own
+        // indexes. It must avoid copying most of this 10000 x 1024-byte payload again.
+        Assert.True(reconstruction - allocated > 10000L * 1024 * 3 / 4);
         Assert.Equal(
             nextSnapshot.Descriptor.SnapshotId,
             store.Image.Snapshot!.Descriptor.SnapshotId
