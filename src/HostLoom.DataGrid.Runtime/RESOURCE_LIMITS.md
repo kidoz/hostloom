@@ -45,6 +45,11 @@ execution/pending work. Consequently, 24 MiB transport + 16 MiB client + 16 MiB 
 formula for maximum heap. TLS, arrays/copies, replay/application state, credentials, kernel buffers
 and runtime/test infrastructure have other costs. The supported memory signal is process-wide;
 capacity and peak-memory qualification still require actual workload/environment measurements.
+The store's temporary prefix verifier rebuilds its own keys/indexes and replay state while
+borrowing read-only values from its selected immutable durable snapshot. It shares those input
+bytes already owned by the store through comparison; it does not borrow the live application or
+candidate state. Public/ordinary restore still copies values. This reduces one overlapping value
+copy, while metadata, candidate validation, live state and encoded images retain separate costs.
 
 ## Retained-result and snapshot bounds
 

@@ -47,8 +47,12 @@ and replays that prefix, then verifies its canonical encoding directly against t
 immutable bytes. Capture and comparison share one v1 encoder. Envelope and section sizes are
 calculated up front, so comparison checks every emitted byte without allocating another full
 encoded image or skipping temporary length placeholders. Candidate semantic/digest validation,
-exact output length, retained suffix and hard-state checks remain active. Reconstruction still
-allocates application state; this does not bound total process memory or qualify full-size capacity.
+exact output length, retained suffix and hard-state checks remain active. The ephemeral prefix verifier still rebuilds keys, indexes, versions and replay state, but borrows
+read-only value slices from the immutable snapshot in the store's own durable image. Replacement
+writes own their values and cannot mutate the source. Public Restore and ordinary store/startup
+restoration still copy values. This avoids repeated full value payload copies without borrowing
+the live application or candidate state. The temporary verifier retains its input bytes through
+comparison. Metadata/replay still allocate; total memory and full-size capacity remain unqualified.
 
 Publication verifies snapshot files by comparing every byte, through a 16-KiB stack buffer,
 against the immutable image already semantically validated for the exact bootstrap configuration.

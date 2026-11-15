@@ -218,8 +218,23 @@ acknowledges 91216 keys, then stops during population with managed OOM in snapsh
 independent prefix reconstruction. No cgroup OOM kill or full-size warmup/sample/recovery occurs.
 This closes the former incoming admission defect; it does not establish aggregate memory fit.
 
-Next quantify retained owners and peak overlap, then select a bounded capture/verification
-composition under the declared fixture. Keep independent prefix/disk checks. Partial counts
-are not a throughput comparison. Both process profiles remain unqualified until full workload,
-catch-up and recovery evidence exists. Lifetime/last-GC pause observations provide context,
-not a complete event trace or service target.
+Those attempts motivated retained-owner/overlap measurements and the verifier change below.
+Independent prefix/disk checks remain. Partial counts are not a throughput comparison. Both
+process profiles remain unqualified until full workload, catch-up and recovery evidence exists.
+Lifetime/last-GC pause observations provide context, not a complete event trace or service target.
+
+
+A subsequent store change makes the independent prefix verifier borrow read-only value slices
+from its already selected immutable snapshot. It rebuilds its own keys, indexes and replay state;
+public restore and entry/snapshot reads retain copy isolation. For the same 10000-key/1024-byte
+case, known-prefix Persist allocation falls from 14.44 MB to 4.04 MB. This is an allocation
+observation, not full-size workload acceptance. Capture, candidate validation, metadata and replay
+still allocate; the unchanged full coordinate and recovery gates remain necessary.
+
+The corresponding unprofiled full-size repeat stops during population at 98640 acknowledged
+writes, with managed OOM in exact snapshot capture on two members. It completes no full-size
+warmup/sample/recovery and records no cgroup OOM kill. Next bound internal encoded snapshot
+content across capture, parsing, disk readback and peer send/receive, preserving v1 bytes and
+all independent checks. A streamed encoder that materializes a full array in a later layer
+still has the same allocation boundary. Verify the full coordinate/recovery again before
+extending the workload campaign; numerical targets and production capacity remain open.
