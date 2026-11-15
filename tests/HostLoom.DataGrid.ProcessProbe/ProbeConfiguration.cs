@@ -74,7 +74,15 @@ internal sealed record ProbeMemberSnapshot(
     int? LeaderId,
     ProbeFailureSnapshot? RuntimeFailure,
     ProbeFailureSnapshot? ServerFailure,
-    ProbeMemorySnapshot Memory
+    ProbeMemorySnapshot Memory,
+    ProbeSnapshotInstallSnapshot SnapshotInstall
+);
+
+internal sealed record ProbeSnapshotInstallSnapshot(
+    int Active,
+    long Bytes,
+    long ByteLimit,
+    bool Stopped
 );
 
 // Shared only by the child-process harness and its owning tests, not deployment configuration.

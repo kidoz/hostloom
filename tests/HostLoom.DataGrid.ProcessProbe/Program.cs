@@ -106,6 +106,7 @@ while (await Console.In.ReadLineAsync(token) is { } line)
             break;
         case "diagnostics":
             var observed = runtime.Status;
+            var installs = runtime.SnapshotInstalls;
             output.Write(
                 JsonSerializer.Serialize(
                     new ProbeMemberSnapshot(
@@ -119,7 +120,13 @@ while (await Console.In.ReadLineAsync(token) is { } line)
                         observed.LeaderId,
                         ProbeFailureSnapshot.Capture(runtime.Failure),
                         ProbeFailureSnapshot.Capture(server.FatalError),
-                        ProbeMemorySnapshot.Capture()
+                        ProbeMemorySnapshot.Capture(),
+                        new ProbeSnapshotInstallSnapshot(
+                            installs.Active,
+                            installs.Bytes,
+                            installs.ByteLimit,
+                            installs.Stopped
+                        )
                     )
                 )
             );

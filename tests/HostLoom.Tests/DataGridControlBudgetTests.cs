@@ -7,6 +7,54 @@ namespace HostLoom.Tests;
 [Collection(nameof(DataGridDiagnosticsTests))]
 public sealed class DataGridControlBudgetTests
 {
+    [Fact]
+    public async Task OneSnapshotImageIsBoundedIndependentlyAndStopKeepsItsChargeUntilRelease()
+    {
+        var images = new DataGridSnapshotInstallBudget();
+        Assert.Null(images.TryAcquire(0));
+        Assert.Null(images.TryAcquire(DataGridSnapshotInstallBudget.ByteLimit + 1));
+        var leases = new ConcurrentBag<DataGridSnapshotInstallBudget.Lease>();
+        await Task.WhenAll(
+            Enumerable
+                .Range(0, 32)
+                .Select(_ =>
+                    Task.Run(
+                        () =>
+                        {
+                            if (
+                                images.TryAcquire(DataGridSnapshotInstallBudget.ByteLimit) is
+                                { } lease
+                            )
+                                leases.Add(lease);
+                        },
+                        TestContext.Current.CancellationToken
+                    )
+                )
+        );
+        var held = Assert.Single(leases);
+        Assert.Equal(1, images.Progress.Active);
+        Assert.Equal(DataGridSnapshotInstallBudget.ByteLimit, images.Progress.Bytes);
+        var controls = new DataGridRuntimeOperationBudget(control: true);
+        using var control = controls.TryAcquire(
+            Guid.Empty,
+            (int)DataGridRuntimeQueue.ByteLimit,
+            out _
+        );
+        Assert.NotNull(control);
+        images.Complete();
+        Assert.Null(images.TryAcquire(1));
+        Assert.True(images.Progress.Stopped);
+        Assert.Equal(1, images.Progress.Active);
+        await Task.WhenAll(
+            Enumerable
+                .Range(0, 32)
+                .Select(_ => Task.Run(held.Dispose, TestContext.Current.CancellationToken))
+        );
+        Assert.Equal(0, images.Progress.Active);
+        Assert.Equal(0, images.Progress.Bytes);
+        Assert.Null(images.TryAcquire(1));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
