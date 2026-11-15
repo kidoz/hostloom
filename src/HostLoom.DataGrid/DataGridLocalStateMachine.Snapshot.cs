@@ -156,7 +156,7 @@ public sealed partial class DataGridLocalStateMachine
             body.Number(entry.Expiration.Deadline is null ? 0UL : 1UL, 1);
             body.Number((ulong)(entry.Expiration.Deadline?.UtcTicks ?? 0), 8);
             body.Number((ulong)entry.Value.Length, 4);
-            body.Raw(entry.Value);
+            body.Raw(entry.Value.Span);
         }
         WriteSnapshotSection(body, 4, _sessions.Count, layout.SessionBytes);
         foreach (var session in _sessions.Values)
@@ -190,6 +190,21 @@ public sealed partial class DataGridLocalStateMachine
         DataGridBootstrapConfiguration configuration,
         DataGridSnapshotDescriptor descriptor,
         ReadOnlySpan<byte> content
+    ) => RestoreCore(configuration, descriptor, content, default);
+
+    // Ephemeral store verification rebuilds its own keys, indexes, versions and replay state.
+    // Only value bytes borrow slices of an already immutable durable snapshot. Public spans
+    // still copy, and replacements never mutate the borrowed input or the live application.
+    internal static DataGridLocalStateMachine RestoreForVerification(
+        DataGridBootstrapConfiguration configuration,
+        DataGridLocalSnapshot snapshot
+    ) => RestoreCore(configuration, snapshot.Descriptor, snapshot.Content, snapshot.ContentMemory);
+
+    private static DataGridLocalStateMachine RestoreCore(
+        DataGridBootstrapConfiguration configuration,
+        DataGridSnapshotDescriptor descriptor,
+        ReadOnlySpan<byte> content,
+        ReadOnlyMemory<byte> immutableValues
     )
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -283,6 +298,15 @@ public sealed partial class DataGridLocalStateMachine
                     throw new InvalidDataException("Deadline violates map policy.");
                 var length = entries.Count(4, DataGridMutationItem.MaxValueByteCount);
                 var value = entries.Take(length);
+                ReadOnlyMemory<byte> storedValue;
+                if (!immutableValues.IsEmpty && length != 0)
+                {
+                    if (!content.Overlaps(value, out var offset))
+                        throw new InvalidDataException("Value is outside the immutable snapshot.");
+                    storedValue = immutableValues.Slice(offset, length);
+                }
+                else
+                    storedValue = value.ToArray();
                 var size = key.ByteCount + length;
                 if (
                     map.Entries.Count >= map.Configuration.MaxKeyCount
@@ -294,7 +318,7 @@ public sealed partial class DataGridLocalStateMachine
                 map.Entries.Add(
                     new(
                         key,
-                        value.ToArray(),
+                        storedValue,
                         version,
                         hasExpiry ? DataGridExpiration.At(deadline) : default
                     )

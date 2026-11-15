@@ -91,7 +91,7 @@ public sealed partial class DataGridLocalStateMachine
         )
             return null;
         return new(
-            entry.Value,
+            entry.Value.Span,
             entry.Version,
             entry.Expiration.GetRemainingTimeToLive(AppliedTime)
         );
@@ -367,7 +367,7 @@ public sealed partial class DataGridLocalStateMachine
     private static int ResultBytes(DataGridApplyResult? result) =>
         result is null ? 0 : 2 + 31 * result.ItemCount;
 
-    private static Entry Probe(DataGridKey key) => new(key, [], default, default);
+    private static Entry Probe(DataGridKey key) => new(key, default, default, default);
 
     private static DataGridKey? Successor(DataGridKey key)
     {
@@ -385,7 +385,7 @@ public sealed partial class DataGridLocalStateMachine
 
     private readonly record struct Entry(
         DataGridKey Key,
-        byte[] Value,
+        ReadOnlyMemory<byte> Value,
         DataGridEntryVersion Version,
         DataGridExpiration Expiration
     );

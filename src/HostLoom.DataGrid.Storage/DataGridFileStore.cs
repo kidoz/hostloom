@@ -603,7 +603,7 @@ internal sealed partial class DataGridFileStore : IDisposable
             throw new InvalidDataException("Snapshot transition changed its required suffix.");
         if (matches)
         {
-            var application = RestoreApplication(_image);
+            var application = RestoreApplication(_image, borrowSnapshotValues: true);
             while (application.LastAppliedIndex < target.SnapshotIndex)
             {
                 var entry = _image.EntryAt(application.LastAppliedIndex + 1);
@@ -671,14 +671,19 @@ internal sealed partial class DataGridFileStore : IDisposable
         return RestoreApplication(_image);
     }
 
-    private DataGridLocalStateMachine RestoreApplication(RaftDurableImage image)
+    private DataGridLocalStateMachine RestoreApplication(
+        RaftDurableImage image,
+        bool borrowSnapshotValues = false
+    )
     {
         var application = image.Snapshot is { } snapshot
-            ? DataGridLocalStateMachine.Restore(
-                _configuration,
-                snapshot.Descriptor,
-                snapshot.Content
-            )
+            ? borrowSnapshotValues
+                ? DataGridLocalStateMachine.RestoreForVerification(_configuration, snapshot)
+                : DataGridLocalStateMachine.Restore(
+                    _configuration,
+                    snapshot.Descriptor,
+                    snapshot.Content
+                )
             : new(_configuration);
         while (application.LastAppliedIndex < image.CommitIndex)
         {

@@ -162,9 +162,13 @@ public sealed class DataGridLocalEntry
 {
     private readonly byte[] _value;
 
-    internal DataGridLocalEntry(byte[] value, DataGridEntryVersion version, TimeSpan? remaining)
+    internal DataGridLocalEntry(
+        ReadOnlySpan<byte> value,
+        DataGridEntryVersion version,
+        TimeSpan? remaining
+    )
     {
-        _value = (byte[])value.Clone();
+        _value = value.ToArray();
         Version = version;
         RemainingTimeToLive = remaining;
     }
