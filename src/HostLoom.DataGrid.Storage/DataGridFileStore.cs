@@ -679,11 +679,7 @@ internal sealed partial class DataGridFileStore : IDisposable
         var application = image.Snapshot is { } snapshot
             ? borrowSnapshotValues
                 ? DataGridLocalStateMachine.RestoreForVerification(_configuration, snapshot)
-                : DataGridLocalStateMachine.Restore(
-                    _configuration,
-                    snapshot.Descriptor,
-                    snapshot.Content
-                )
+                : DataGridLocalStateMachine.RestoreSnapshot(_configuration, snapshot)
             : new(_configuration);
         while (application.LastAppliedIndex < image.CommitIndex)
         {
@@ -717,7 +713,7 @@ internal sealed partial class DataGridFileStore : IDisposable
             cancellationToken.ThrowIfCancellationRequested();
             var chunk = buffer[..Math.Min(buffer.Length, expected.Length - offset)];
             stream.ReadExactly(chunk);
-            if (!chunk.SequenceEqual(expected.Slice(offset, chunk.Length)))
+            if (!expected.Matches(offset, chunk))
                 throw new InvalidDataException("Snapshot bytes disagree with the validated image.");
             offset += chunk.Length;
         }
@@ -729,11 +725,24 @@ internal sealed partial class DataGridFileStore : IDisposable
     {
         if (descriptor.ByteCount > RaftDurableImage.MaxImageBytes)
             throw new InvalidDataException("Snapshot fixture capacity exceeded.");
-        var bytes = ReadBounded(
-            SnapshotName(descriptor.SnapshotId),
-            checked((int)descriptor.ByteCount)
-        );
-        var snapshot = new DataGridLocalSnapshot(descriptor, bytes);
+        var path = FilePath(SnapshotName(descriptor.SnapshotId));
+        CheckPath(path);
+        using var stream = File.OpenRead(path);
+        if (stream.Length != descriptor.ByteCount)
+            throw new InvalidDataException("Unexpected storage file length.");
+        using var builder = new DataGridSnapshotContent.Builder(checked((int)descriptor.ByteCount));
+        Span<byte> buffer = stackalloc byte[16 * 1024];
+        while (builder.Length < descriptor.ByteCount)
+        {
+            var chunk = buffer[
+                ..(int)Math.Min(buffer.Length, descriptor.ByteCount - builder.Length)
+            ];
+            stream.ReadExactly(chunk);
+            builder.Write(chunk);
+        }
+        if (stream.ReadByte() != -1)
+            throw new InvalidDataException("Storage file changed during read.");
+        var snapshot = new DataGridLocalSnapshot(descriptor, builder.Complete());
         snapshot.Validate(_configuration);
         return snapshot;
     }
@@ -839,6 +848,23 @@ internal sealed partial class DataGridFileStore : IDisposable
         var path = FilePath(name);
         CheckPath(path);
         return new(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
+    }
+
+    private void WriteFlushed(string name, DataGridSnapshotContent content)
+    {
+        using var stream = new FileStream(
+            FilePath(name),
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None
+        );
+        for (var offset = 0; offset < content.Length; )
+        {
+            var block = content.BlockAt(offset);
+            stream.Write(block.Span);
+            offset += block.Length;
+        }
+        stream.Flush(flushToDisk: true);
     }
 
     private void WriteFlushed(string name, ReadOnlySpan<byte> bytes)

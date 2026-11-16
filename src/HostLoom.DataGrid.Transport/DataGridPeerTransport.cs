@@ -577,16 +577,17 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
             return SnapshotReply(message, result.Term, false);
         if (result.Installed || result.Offset != 0)
             throw new InvalidDataException("Invalid snapshot start acknowledgement.");
-        var bytes = snapshot.ContentMemory;
+        var bytes = snapshot.Content;
         for (var offset = 0; offset < bytes.Length; )
         {
             security.Check();
-            var count = Math.Min(65536, bytes.Length - offset);
+            var block = bytes.BlockAt(offset);
+            var count = block.Length;
             using var chunk = new GridWriter(65564);
             chunk.Id(snapshot.Descriptor.SnapshotId);
             chunk.Number((ulong)offset, 8);
             chunk.Number((ulong)count, 4);
-            chunk.Raw(bytes.Span.Slice(offset, count));
+            chunk.Raw(block.Span);
             await Write(
                     tls,
                     DataGridPeerCodec.Frame(
@@ -642,11 +643,11 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
                 .ConfigureAwait(false);
             return;
         }
-        var bytes = new byte[checked((int)descriptor.ByteCount)];
+        using var bytes = new DataGridSnapshotContent.Builder(checked((int)descriptor.ByteCount));
         var offset = 0;
         await SnapshotAck(tls, attempt, descriptor.SnapshotId, current, true, false, 0, token)
             .ConfigureAwait(false);
-        while (offset < bytes.Length)
+        while (offset < bytes.ExpectedLength)
         {
             var frame = await Read(tls, remote, security, token).ConfigureAwait(false);
             offset = CopyChunk(frame, attempt, descriptor.SnapshotId, bytes, offset);
@@ -667,7 +668,7 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
                     .ConfigureAwait(false);
                 return;
             }
-            if (offset < bytes.Length)
+            if (offset < bytes.ExpectedLength)
             {
                 await SnapshotAck(
                         tls,
@@ -682,7 +683,7 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
                     .ConfigureAwait(false);
                 continue;
             }
-            var snapshot = new DataGridLocalSnapshot(descriptor, bytes);
+            var snapshot = new DataGridLocalSnapshot(descriptor, bytes.Complete());
             snapshot.Validate(_config);
             var request = new RaftMessage(
                 RaftMessageKind.SnapshotRequest,
@@ -737,7 +738,7 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
         DataGridProtocolFrame frame,
         Guid attempt,
         Guid snapshot,
-        byte[] target,
+        DataGridSnapshotContent.Builder target,
         int next
     )
     {
@@ -753,20 +754,19 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
         if (
             count == 0
             || offset > (ulong)next
-            || offset > (ulong)target.Length
-            || (ulong)count > (ulong)target.Length - offset
+            || offset > (ulong)target.ExpectedLength
+            || (ulong)count > (ulong)target.ExpectedLength - offset
         )
             throw new InvalidDataException("Invalid snapshot offset/length.");
         if (offset < (ulong)next)
         {
-            if (
-                offset + (ulong)count > (ulong)next
-                || !chunk.SequenceEqual(target.AsSpan((int)offset, count))
-            )
+            if (offset + (ulong)count > (ulong)next || !target.MatchesWritten((int)offset, chunk))
                 throw new InvalidDataException("Changed snapshot retry bytes.");
             return next;
         }
-        chunk.CopyTo(target.AsSpan(next));
+        if (target.Length != next)
+            throw new InvalidDataException("Snapshot builder position disagrees with progress.");
+        target.Write(chunk);
         return checked(next + count);
     }
 

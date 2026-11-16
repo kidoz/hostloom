@@ -5,13 +5,19 @@ namespace HostLoom.DataGrid;
 
 public sealed class DataGridLocalSnapshot
 {
-    private readonly byte[] _content;
+    private readonly DataGridSnapshotContent _content;
     private readonly object _validationGate = new();
     private DataGridBootstrapConfiguration? _validatedConfiguration;
 
     // Internal producers transfer exclusive ownership of these bytes. Public readers receive
     // copies; the immutable content and configuration make successful validation reusable.
     internal DataGridLocalSnapshot(DataGridSnapshotDescriptor descriptor, byte[] content)
+        : this(descriptor, DataGridSnapshotContent.CopyFrom(content)) { }
+
+    internal DataGridLocalSnapshot(
+        DataGridSnapshotDescriptor descriptor,
+        DataGridSnapshotContent content
+    )
     {
         Descriptor = descriptor;
         _content = content;
@@ -19,13 +25,10 @@ public sealed class DataGridLocalSnapshot
 
     public DataGridSnapshotDescriptor Descriptor { get; }
 
-    public byte[] GetContent() => (byte[])_content.Clone();
+    public byte[] GetContent() => _content.ToArray();
 
-    // Borrowed only by synchronous trusted readers; public callers retain copy isolation.
-    internal ReadOnlySpan<byte> Content => _content;
-
-    // Async transfers retain this immutable array through the memory value until completion.
-    internal ReadOnlyMemory<byte> ContentMemory => _content;
+    // Immutable blocks are retained by each actual reader/transfer owner.
+    internal DataGridSnapshotContent Content => _content;
 
     internal void Validate(DataGridBootstrapConfiguration configuration)
     {
@@ -34,7 +37,7 @@ public sealed class DataGridLocalSnapshot
         {
             if (ReferenceEquals(_validatedConfiguration, configuration))
                 return;
-            _ = DataGridLocalStateMachine.Restore(configuration, Descriptor, _content);
+            _ = DataGridLocalStateMachine.RestoreSnapshot(configuration, this);
             // Cache only success, on this snapshot and one exact immutable configuration.
             // A new snapshot/configuration still receives complete semantic/digest validation.
             _validatedConfiguration = configuration;
@@ -60,14 +63,11 @@ public sealed partial class DataGridLocalStateMachine
         if (snapshotId == Guid.Empty)
             throw new ArgumentException("A snapshot identity is required.", nameof(snapshotId));
         var layout = GetSnapshotLayout();
-        using var image = new GridWriter(
-            (int)DataGridSnapshotDescriptor.MaxSnapshotByteCount,
-            layout.TotalBytes
-        );
+        using var image = GridWriter.Segmented(layout.TotalBytes);
         WriteSnapshot(image, includedTerm, layout);
-        var bytes = image.DetachExactContent();
+        var bytes = image.DetachSnapshotContent();
         return new(
-            new(snapshotId, LastAppliedIndex, includedTerm, bytes.Length, SHA256.HashData(bytes)),
+            new(snapshotId, LastAppliedIndex, includedTerm, bytes.Length, bytes.ComputeHash()),
             bytes
         );
     }
@@ -84,7 +84,7 @@ public sealed partial class DataGridLocalStateMachine
             || snapshot.Descriptor.ByteCount != layout.TotalBytes
         )
             throw new InvalidDataException("Snapshot disagrees with the known log prefix.");
-        using var comparison = GridWriter.Comparing(snapshot.ContentMemory);
+        using var comparison = GridWriter.Comparing(snapshot.Content);
         WriteSnapshot(comparison, snapshot.Descriptor.LastIncludedTerm, layout);
         comparison.CompleteComparison();
     }
@@ -190,7 +190,7 @@ public sealed partial class DataGridLocalStateMachine
         DataGridBootstrapConfiguration configuration,
         DataGridSnapshotDescriptor descriptor,
         ReadOnlySpan<byte> content
-    ) => RestoreCore(configuration, descriptor, content, default);
+    ) => RestoreCore(configuration, descriptor, content, null, false);
 
     // Ephemeral store verification rebuilds its own keys, indexes, versions and replay state.
     // Only value bytes borrow slices of an already immutable durable snapshot. Public spans
@@ -198,30 +198,40 @@ public sealed partial class DataGridLocalStateMachine
     internal static DataGridLocalStateMachine RestoreForVerification(
         DataGridBootstrapConfiguration configuration,
         DataGridLocalSnapshot snapshot
-    ) => RestoreCore(configuration, snapshot.Descriptor, snapshot.Content, snapshot.ContentMemory);
+    ) => RestoreCore(configuration, snapshot.Descriptor, default, snapshot.Content, true);
+
+    internal static DataGridLocalStateMachine RestoreSnapshot(
+        DataGridBootstrapConfiguration configuration,
+        DataGridLocalSnapshot snapshot
+    ) => RestoreCore(configuration, snapshot.Descriptor, default, snapshot.Content, false);
 
     private static DataGridLocalStateMachine RestoreCore(
         DataGridBootstrapConfiguration configuration,
         DataGridSnapshotDescriptor descriptor,
         ReadOnlySpan<byte> content,
-        ReadOnlyMemory<byte> immutableValues
+        DataGridSnapshotContent? blocks,
+        bool borrowValues
     )
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(descriptor);
+        var contentLength = blocks?.Length ?? content.Length;
         if (
-            content.Length != descriptor.ByteCount
-            || content.Length < 88
-            || content.Length > DataGridSnapshotDescriptor.MaxSnapshotByteCount
+            contentLength != descriptor.ByteCount
+            || contentLength < 88
+            || contentLength > DataGridSnapshotDescriptor.MaxSnapshotByteCount
         )
             throw new InvalidDataException("Invalid snapshot image size.");
         Span<byte> digest = stackalloc byte[32];
-        SHA256.HashData(content, digest);
+        if (blocks is null)
+            SHA256.HashData(content, digest);
+        else
+            blocks.ComputeHash().CopyTo(digest);
         if (!CryptographicOperations.FixedTimeEquals(digest, descriptor.GetDigest()))
             throw new InvalidDataException("Snapshot digest mismatch.");
         try
         {
-            var reader = new GridReader(content);
+            var reader = blocks is null ? new GridReader(content) : new GridReader(blocks);
             if (
                 !reader.Take(4).SequenceEqual("HLGS"u8)
                 || reader.Number(2) != 1
@@ -235,8 +245,8 @@ public sealed partial class DataGridLocalStateMachine
             var time = reader.Time();
             if (index != descriptor.LastIncludedIndex || term != descriptor.LastIncludedTerm)
                 throw new InvalidDataException("Snapshot position mismatch.");
-            var body = new GridReader(
-                reader.Take(reader.Count(8, (int)DataGridSnapshotDescriptor.MaxSnapshotByteCount))
+            var body = reader.Subreader(
+                reader.Count(8, (int)DataGridSnapshotDescriptor.MaxSnapshotByteCount)
             );
             reader.End();
             if (!body.Take(4).SequenceEqual("HLGB"u8) || body.Number(2) != 1 || body.Number(2) != 4)
@@ -297,16 +307,7 @@ public sealed partial class DataGridLocalStateMachine
                 if (hasExpiry && map.Configuration.Policy.Expiration == 1)
                     throw new InvalidDataException("Deadline violates map policy.");
                 var length = entries.Count(4, DataGridMutationItem.MaxValueByteCount);
-                var value = entries.Take(length);
-                ReadOnlyMemory<byte> storedValue;
-                if (!immutableValues.IsEmpty && length != 0)
-                {
-                    if (!content.Overlaps(value, out var offset))
-                        throw new InvalidDataException("Value is outside the immutable snapshot.");
-                    storedValue = immutableValues.Slice(offset, length);
-                }
-                else
-                    storedValue = value.ToArray();
+                var storedValue = entries.Value(length, borrowValues);
                 var size = key.ByteCount + length;
                 if (
                     map.Entries.Count >= map.Configuration.MaxKeyCount

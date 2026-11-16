@@ -22,7 +22,29 @@ internal sealed class GridWriter : IDisposable
         _stream = new ComparisonStream(expected);
     }
 
+    private GridWriter(DataGridSnapshotContent content)
+    {
+        _limit = content.Length;
+        _stream = new ComparisonStream(content);
+    }
+
+    private GridWriter(DataGridSnapshotContent.Builder builder)
+    {
+        _limit = builder.ExpectedLength;
+        _stream = builder;
+    }
+
+    internal static GridWriter Segmented(int length) =>
+        new(new DataGridSnapshotContent.Builder(length));
+
+    internal static GridWriter Comparing(DataGridSnapshotContent expected) => new(expected);
+
     internal static GridWriter Comparing(ReadOnlyMemory<byte> expected) => new(expected);
+
+    internal DataGridSnapshotContent DetachSnapshotContent() =>
+        _stream is DataGridSnapshotContent.Builder builder
+            ? builder.Complete()
+            : throw new InvalidOperationException("This writer does not own snapshot blocks.");
 
     internal void CompleteComparison()
     {
@@ -119,10 +141,25 @@ internal sealed class GridWriter : IDisposable
 
     // Borrows canonical bytes for forward comparison only. Every write is checked;
     // completion also rejects an unconsumed suffix. No image-sized output is retained.
-    private sealed class ComparisonStream(ReadOnlyMemory<byte> expected) : Stream
+    private sealed class ComparisonStream : Stream
     {
+        private readonly ReadOnlyMemory<byte> _expected;
+        private readonly DataGridSnapshotContent? _content;
+        private readonly int _length;
         private int _position;
         private bool _disposed;
+
+        internal ComparisonStream(ReadOnlyMemory<byte> expected)
+        {
+            _expected = expected;
+            _length = expected.Length;
+        }
+
+        internal ComparisonStream(DataGridSnapshotContent expected)
+        {
+            _content = expected;
+            _length = expected.Length;
+        }
 
         public override bool CanRead => false;
         public override bool CanSeek => false;
@@ -137,7 +174,7 @@ internal sealed class GridWriter : IDisposable
         internal void Complete()
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_position != expected.Length)
+            if (_position != _length)
                 throw new InvalidDataException("Canonical encoding has a different length.");
         }
 
@@ -145,8 +182,12 @@ internal sealed class GridWriter : IDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (
-                buffer.Length > expected.Length - _position
-                || !buffer.SequenceEqual(expected.Span.Slice(_position, buffer.Length))
+                buffer.Length > _length - _position
+                || !(
+                    _content is null
+                        ? buffer.SequenceEqual(_expected.Span.Slice(_position, buffer.Length))
+                        : _content.Matches(_position, buffer)
+                )
             )
                 throw new InvalidDataException("Snapshot disagrees with the canonical encoding.");
             _position += buffer.Length;
@@ -173,14 +214,69 @@ internal sealed class GridWriter : IDisposable
     }
 }
 
-internal ref struct GridReader(ReadOnlySpan<byte> bytes)
+internal ref struct GridReader
 {
-    private ReadOnlySpan<byte> _remaining = bytes;
+    private ReadOnlySpan<byte> _remaining;
+    private readonly DataGridSnapshotContent? _content;
+    private int _position;
+    private readonly int _end;
+
+    internal GridReader(ReadOnlySpan<byte> bytes)
+    {
+        _remaining = bytes;
+        _content = null;
+        _position = 0;
+        _end = 0;
+    }
+
+    internal GridReader(DataGridSnapshotContent content)
+        : this(content, 0, content.Length) { }
+
+    private GridReader(DataGridSnapshotContent content, int offset, int length)
+    {
+        _remaining = default;
+        _content = content;
+        _position = offset;
+        _end = checked(offset + length);
+    }
+
+    private readonly int Remaining => _content is null ? _remaining.Length : _end - _position;
+
+    internal GridReader Subreader(int length)
+    {
+        CheckLength(length);
+        if (_content is null)
+            return new(Take(length));
+        var result = new GridReader(_content, _position, length);
+        _position += length;
+        return result;
+    }
+
+    internal ReadOnlyMemory<byte> Value(int length, bool borrow)
+    {
+        CheckLength(length);
+        if (_content is null)
+            return Take(length).ToArray();
+        var result = _content.ReadValue(_position, length, borrow);
+        _position += length;
+        return result;
+    }
+
+    private readonly void CheckLength(int length)
+    {
+        if (length < 0 || length > Remaining)
+            throw new InvalidDataException("Truncated binary data.");
+    }
 
     internal ReadOnlySpan<byte> Take(int length)
     {
-        if (length < 0 || length > _remaining.Length)
-            throw new InvalidDataException("Truncated binary data.");
+        CheckLength(length);
+        if (_content is not null)
+        {
+            var data = _content.ReadField(_position, length);
+            _position += length;
+            return data;
+        }
         var result = _remaining[..length];
         _remaining = _remaining[length..];
         return result;
@@ -248,12 +344,12 @@ internal ref struct GridReader(ReadOnlySpan<byte> bytes)
             throw new InvalidDataException("Invalid snapshot section.");
         count = Count(4, maximumCount);
         var length = Count(4, (int)DataGridSnapshotDescriptor.MaxSnapshotByteCount);
-        return new(Take(length));
+        return Subreader(length);
     }
 
     internal void End()
     {
-        if (!_remaining.IsEmpty)
+        if (Remaining != 0)
             throw new InvalidDataException("Trailing binary bytes.");
     }
 }

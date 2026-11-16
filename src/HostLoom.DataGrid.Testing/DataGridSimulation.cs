@@ -290,11 +290,7 @@ public sealed class DataGridSimulation
         var snapshot = _journal.Checkpoint;
         var candidate = snapshot is null
             ? new DataGridLocalStateMachine(_configuration)
-            : DataGridLocalStateMachine.Restore(
-                _configuration,
-                snapshot.Descriptor,
-                snapshot.GetContent()
-            );
+            : DataGridLocalStateMachine.RestoreSnapshot(_configuration, snapshot);
         foreach (var record in _journal.ReadAfter(candidate.LastAppliedIndex))
             candidate.Apply(
                 record.Index,

@@ -38,7 +38,7 @@ internal sealed class RaftNode
         _durable = durable;
         CurrentTerm = durable.Term;
         _machine = durable.Snapshot is { } image
-            ? DataGridLocalStateMachine.Restore(configuration, image.Descriptor, image.Content)
+            ? DataGridLocalStateMachine.RestoreSnapshot(configuration, image)
             : new(configuration);
         ApplyCommitted();
         _effects.Clear();
@@ -763,11 +763,7 @@ internal sealed class RaftNode
         if (_machine.LastAppliedIndex < _durable.SnapshotIndex)
         {
             var snapshot = _durable.Snapshot!;
-            _machine = DataGridLocalStateMachine.Restore(
-                _configuration,
-                snapshot.Descriptor,
-                snapshot.Content
-            );
+            _machine = DataGridLocalStateMachine.RestoreSnapshot(_configuration, snapshot);
         }
         while (_machine.LastAppliedIndex < _durable.CommitIndex)
         {
