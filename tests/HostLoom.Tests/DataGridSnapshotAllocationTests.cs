@@ -8,6 +8,43 @@ namespace HostLoom.Tests;
 
 public sealed class DataGridSnapshotAllocationTests
 {
+    [Fact]
+    public void SnapshotBackingArraysStayBoundedWhenTheCanonicalImageGrows()
+    {
+        using var fixture = new DataGridPeerFixture(10000, 16 * 1024 * 1024);
+        var machine = Populate(fixture.Configuration, DataGridFeasibilityCase.Key);
+        var snapshot = machine.SaveSnapshot(Guid.NewGuid(), 1);
+        var seen = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        var largest = 0;
+        void Visit(object? value)
+        {
+            if (value is null || !seen.Add(value))
+                return;
+            if (value is byte[] bytes)
+                largest = Math.Max(largest, bytes.Length);
+            else if (value is Array array)
+                foreach (var child in array)
+                    Visit(child);
+            else if (value.GetType().Namespace == "HostLoom.DataGrid")
+                foreach (
+                    var field in value
+                        .GetType()
+                        .GetFields(
+                            System.Reflection.BindingFlags.Instance
+                                | System.Reflection.BindingFlags.Public
+                                | System.Reflection.BindingFlags.NonPublic
+                        )
+                )
+                    Visit(field.GetValue(value));
+        }
+        Visit(snapshot);
+        TestContext.Current.TestOutputHelper!.WriteLine(
+            $"Canonical image {snapshot.Descriptor.ByteCount} bytes; largest retained byte array {largest} bytes."
+        );
+        Assert.True(snapshot.Descriptor.ByteCount > 8 * 1024 * 1024);
+        Assert.InRange(largest, 1, 65536);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(1024)]
@@ -197,6 +234,16 @@ public sealed class DataGridSnapshotAllocationTests
         }
         using var recovered = DataGridFileStore.Open(directory.Path, config, 0);
         Assert.Equal(snapshot.GetContent(), recovered.Image.Snapshot!.GetContent());
+        for (var offset = 0; offset < recovered.Image.Snapshot.Content.Length; )
+        {
+            var block = recovered.Image.Snapshot.Content.BlockAt(offset);
+            Assert.InRange(block.Length, 1, 65536);
+            Assert.True(
+                System.Runtime.InteropServices.MemoryMarshal.TryGetArray(block, out var storage)
+            );
+            Assert.InRange(storage.Array!.Length, 1, 65536);
+            offset += block.Length;
+        }
         var restored = recovered.RestoreApplication();
         Assert.Equal(
             new byte[1024],

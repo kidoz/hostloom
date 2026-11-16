@@ -204,7 +204,7 @@ public sealed class DataGridPeerCodecTests
         using var fixture = new DataGridPeerFixture();
         var id = Guid.NewGuid();
         var attempt = DataGridPeerCodec.Attempt(new(1, 1));
-        var target = new byte[4];
+        using var target = new DataGridSnapshotContent.Builder(4);
         DataGridProtocolFrame Chunk(Guid snapshot, ulong offset, byte[] bytes)
         {
             using var writer = new GridWriter(65564);
@@ -247,7 +247,56 @@ public sealed class DataGridPeerCodecTests
             4,
             DataGridPeerTransport.CopyChunk(Chunk(id, 2, [3, 4]), attempt, id, target, 2)
         );
-        Assert.Equal(new byte[] { 1, 2, 3, 4 }, target);
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, target.Complete().ToArray());
+    }
+
+    [Fact]
+    public void SnapshotRetriesAcrossBackingBlocksMustMatchPreviouslyReceivedBytes()
+    {
+        using var fixture = new DataGridPeerFixture();
+        var id = Guid.NewGuid();
+        var attempt = DataGridPeerCodec.Attempt(new(1, 1));
+        var bytes = Enumerable.Range(0, 65560).Select(i => (byte)(i * 13)).ToArray();
+        using var target = new DataGridSnapshotContent.Builder(bytes.Length);
+        DataGridProtocolFrame Chunk(int offset, byte[] data)
+        {
+            using var writer = new GridWriter(65564);
+            writer.Id(id);
+            writer.Number((ulong)offset, 8);
+            writer.Number((ulong)data.Length, 4);
+            writer.Raw(data);
+            return DataGridPeerCodec.Frame(
+                fixture.Configuration,
+                0,
+                DataGridMessageKind.SnapshotChunk,
+                attempt,
+                writer.ToArray()
+            );
+        }
+        Assert.Equal(
+            65536,
+            DataGridPeerTransport.CopyChunk(Chunk(0, bytes[..65536]), attempt, id, target, 0)
+        );
+        Assert.Equal(
+            bytes.Length,
+            DataGridPeerTransport.CopyChunk(
+                Chunk(65536, bytes[65536..]),
+                attempt,
+                id,
+                target,
+                65536
+            )
+        );
+        var retry = bytes.AsSpan(65530, 20).ToArray();
+        Assert.Equal(
+            bytes.Length,
+            DataGridPeerTransport.CopyChunk(Chunk(65530, retry), attempt, id, target, bytes.Length)
+        );
+        retry[6] ^= 1;
+        Assert.Throws<InvalidDataException>(() =>
+            DataGridPeerTransport.CopyChunk(Chunk(65530, retry), attempt, id, target, bytes.Length)
+        );
+        Assert.Equal(bytes, target.Complete().ToArray());
     }
 
     [Fact]
