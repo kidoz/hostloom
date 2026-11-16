@@ -48,7 +48,8 @@ immutable bytes. Capture and comparison share one v1 encoder. Envelope and secti
 calculated up front, so comparison checks every emitted byte without allocating another full
 encoded image or skipping temporary length placeholders. Candidate semantic/digest validation,
 exact output length, retained suffix and hard-state checks remain active. The ephemeral prefix verifier still rebuilds keys, indexes, versions and replay state, but borrows
-read-only value slices from the immutable snapshot in the store's own durable image. Replacement
+read-only value slices within blocks of the immutable snapshot in the store's own durable image.
+A crossing value is copied once within its existing 64-KiB limit. Replacement
 writes own their values and cannot mutate the source. Public Restore and ordinary store/startup
 restoration still copy values. This avoids repeated full value payload copies without borrowing
 the live application or candidate state. The temporary verifier retains its input bytes through
@@ -61,7 +62,10 @@ its published path is checked again when the seed WAL resolves its snapshot mani
 image is checked before reuse and during seed verification. This avoids full-image reread arrays
 and reconstructed application copies for readback. It does not skip WAL parsing, on-disk readback,
 known committed-prefix comparison, flush/rename/frontier steps or directory ownership checks.
-A fresh Open still reads and fully validates its selected snapshot from disk. It cannot borrow
+Snapshot writes and fresh Open use owned content blocks at most 64 KiB, with a 16-KiB read
+buffer. Length/EOF, streamed SHA and complete semantic validation stay active; there is no
+image-sized read array or flattening before replay/comparison. A fresh Open still reads and
+fully validates its selected snapshot from disk. It cannot borrow
 the prior process's validation state. These allocation savings do not establish full-size capacity;
 the runtime's [incoming snapshot ownership and aggregate memory bounds](../HostLoom.DataGrid.Runtime/RESOURCE_LIMITS.md#retained-result-and-snapshot-bounds)
 are separate constraints.

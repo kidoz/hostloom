@@ -34,7 +34,11 @@ One transfer per receiver reserves at most the shared 512-MiB v1 image ceiling f
 This is an allocation/format bound, not a measured supported transfer size or recovery-time claim.
 Duplicate chunks compare already received bytes; gaps, changed retries, foreign IDs and overflow
 reject. Authenticated progress observes/persists the leader term and refreshes its election timer
-before installation. Complete length/hash/application validation precedes actor dispatch.
+before installation. Complete length/hash/application validation precedes actor dispatch. Send and assembly retain
+immutable blocks at most 64 KiB instead of a full contiguous image. The receiver's exact-length
+builder allocates data only inside transfer admission, compares retries against prior bytes
+across blocks, and never exposes partial content. Actor installation retains the same transfer,
+encoded-byte and credential scopes through actual completion.
 New-image completion waits for the actor's durable generation publication. An already committed
 prefix can acknowledge durable coverage without replacing newer state or publishing an older
 image. Thus completion confirms coverage, not that the requested snapshot UUID became CURRENT.

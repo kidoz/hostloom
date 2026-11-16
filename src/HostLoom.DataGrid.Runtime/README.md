@@ -54,9 +54,13 @@ Durable metadata transitions reuse successful validation of the same immutable s
 configuration instance, rather than reconstructing every value on every log/commit update.
 New snapshots/configurations still receive full validation, and public snapshot bytes remain
 copies. This removes repeated allocation; logical byte quotas still do not bound heap or RSS.
-Snapshot capture pre-sizes one owned buffer from the v1 field widths. Synchronous readers and
-asynchronous peer transfers borrow immutable content; protocol chunks and actual restored map
-values keep their own storage. Public snapshot readers continue receiving independent copies.
+Snapshot capture uses the exact v1 field widths and lazy owned blocks of at most 64 KiB.
+Hashing, canonical comparison, logical image/section parsing, disk readback and peer assembly
+walk these immutable blocks without creating a contiguous encoded image. A field or value
+crossing a block copies at most its existing 64-KiB limit; ordinary restore still owns its map
+values. The temporary prefix verifier borrows values within a single block and copies crossing
+values once. Public GetContent explicitly materializes an independent contiguous copy; runtime
+snapshot paths never call it. Blocks retain existing actual-completion ownership and quotas.
 The configured group quotas imply a conservative maximum encoded state of 291016890 bytes,
 including map metadata/cursors, entries and all retained result vectors. This resolves the
 former 8-MiB snapshot mismatch; it is not a measured heap, supported-capacity or latency claim.

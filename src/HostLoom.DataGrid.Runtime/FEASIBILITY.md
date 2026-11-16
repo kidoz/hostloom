@@ -233,8 +233,22 @@ still allocate; the unchanged full coordinate and recovery gates remain necessar
 
 The corresponding unprofiled full-size repeat stops during population at 98640 acknowledged
 writes, with managed OOM in exact snapshot capture on two members. It completes no full-size
-warmup/sample/recovery and records no cgroup OOM kill. Next bound internal encoded snapshot
-content across capture, parsing, disk readback and peer send/receive, preserving v1 bytes and
-all independent checks. A streamed encoder that materializes a full array in a later layer
-still has the same allocation boundary. Verify the full coordinate/recovery again before
-extending the workload campaign; numerical targets and production capacity remain open.
+warmup/sample/recovery and records no cgroup OOM kill. That result motivated bounded encoded content across every runtime layer, described below.
+Numerical targets and production capacity remain open.
+
+Runtime snapshot content now uses immutable owned blocks at most 64 KiB through capture,
+ordered SHA, canonical comparison, logical section parsing, disk write/readback/fresh Open and
+peer send/assembly. Public GetContent remains an explicit contiguous copy; runtime paths do
+not call it. Ordinary restore still copies values; the independent store verifier borrows
+within a block and copies crossing values once. V1 golden bytes and all semantic/digest/disk,
+retry/authority and actual-completion ownership checks remain. The 11.15-MB shape regression
+now retains byte arrays at most 65536 bytes, with bounded block metadata; this does not bound
+aggregate application/image/verifier/native memory.
+
+The corresponding full repeat acknowledges 99664 initial writes, then stops in population
+with managed OOM during the temporary semantic-validation application/value/tree reconstruction
+on two members. It completes no full warmup/sample/recovery and records no cgroup OOM kill.
+Partial counts are not a throughput comparison. Next bound that temporary semantic-validation
+working set while checking every invariant, preserve the separate independent prior-prefix
+proof, and rerun the declared coordinate/recovery before the wider campaign. Public/ordinary
+restore ownership, fixture limits and numerical gates remain unchanged.
