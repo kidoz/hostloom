@@ -274,5 +274,10 @@ The run recorded zero OOMs, runtime faults or unresolved mutations. Cgroup memor
 the fixture limit. An earlier attempt on this build ended early with expired sessions
 after macOS idle sleep. The completed attempt used `caffeinate -i` on the host.
 
-Two of the 27 workload combinations have completed across the recorded prototype revisions.
-Matrix coverage, contextual measurements and target decisions remain open.
+The concurrency 1 repeat completed on the value-sharing build with the same batch, seed and
+fixture limits. At concurrency 1 the sample delivered 1.98 successful requests/s with p99
+590.18 ms and one refusal out of 594 calls. At concurrency 16 the sample delivered 8.00
+successful requests/s with p99 1781.76 ms and 1942 refusals out of 4342 calls. Both runs
+verified leader-loss recovery and whole-group restart with zero unresolved mutations.
+Two of 27 workload combinations have completed on this build. Matrix coverage, contextual
+measurements and target decisions remain open.
