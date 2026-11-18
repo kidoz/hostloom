@@ -38,7 +38,7 @@ internal sealed class RaftNode
         _durable = durable;
         CurrentTerm = durable.Term;
         _machine = durable.Snapshot is { } image
-            ? DataGridLocalStateMachine.RestoreSnapshot(configuration, image)
+            ? DataGridLocalStateMachine.RestoreSnapshot(configuration, image, borrowValues: true)
             : new(configuration);
         ApplyCommitted();
         _effects.Clear();
@@ -187,10 +187,11 @@ internal sealed class RaftNode
             var image = _pending.Image;
             var continuation = _afterWrite;
             var writtenTerm = image.Term;
+            var snapshotChanged = !ReferenceEquals(_durable.Snapshot, image.Snapshot);
             _pending = null;
             _afterWrite = null;
             _durable = image;
-            ApplyCommitted();
+            ApplyCommitted(snapshotChanged);
             if (CurrentTerm > writtenTerm)
             {
                 PersistHigherTerm();
@@ -758,12 +759,19 @@ internal sealed class RaftNode
         _effects.Add(new RaftTimer(token, _rpcs[peer].Snapshot ? 60000 : 200));
     }
 
-    private void ApplyCommitted()
+    private void ApplyCommitted(bool snapshotChanged = false)
     {
-        if (_machine.LastAppliedIndex < _durable.SnapshotIndex)
+        if (snapshotChanged && _durable.Snapshot is { } snapshot)
         {
-            var snapshot = _durable.Snapshot!;
-            _machine = DataGridLocalStateMachine.RestoreSnapshot(_configuration, snapshot);
+            if (_machine.LastAppliedIndex < _durable.SnapshotIndex)
+                _machine = DataGridLocalStateMachine.RestoreSnapshot(
+                    _configuration,
+                    snapshot,
+                    borrowValues: true
+                );
+            else
+                // Remote images at or below the committed index never reach persistence.
+                _machine.UseCompactedSnapshotValues(snapshot);
         }
         while (_machine.LastAppliedIndex < _durable.CommitIndex)
         {

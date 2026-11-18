@@ -47,12 +47,16 @@ public sealed class DataGridLocalSnapshot
 
 public sealed partial class DataGridLocalStateMachine
 {
+    private const int SnapshotFixedBytes = 154;
+    private const int SnapshotSectionHeaderBytes = 12;
+    private const int SnapshotEntryFixedBytes = 59;
+
     // V1 field widths: fixed envelopes/sections, map names/cursors, entries and retained vectors.
     internal const long MaximumEncodedSnapshotBytes =
-        154
+        SnapshotFixedBytes
         + 16L * (16 + 2 + 128 + 2 + DataGridKey.MaxByteCount)
         + DataGridMapConfiguration.GroupMaxDataByteCount
-        + 59L * DataGridMapConfiguration.GroupMaxKeyCount
+        + SnapshotEntryFixedBytes * (long)DataGridMapConfiguration.GroupMaxKeyCount
         + MaxSessionCount * (100L + 31L * DataGridMutationCommand.MaxItemCount);
 
     /// <summary>Captures local application state only. The supplied term is not an election vote.</summary>
@@ -70,6 +74,30 @@ public sealed partial class DataGridLocalStateMachine
             new(snapshotId, LastAppliedIndex, includedTerm, bytes.Length, bytes.ComputeHash()),
             bytes
         );
+    }
+
+    // Called upon acknowledgement of an image captured at this owner's applied index.
+    // Only the value backing moves; versions, tree nodes and local counters stay in place.
+    internal void UseCompactedSnapshotValues(DataGridLocalSnapshot snapshot)
+    {
+        var layout = GetSnapshotLayout();
+        if (
+            snapshot.Descriptor.LastIncludedIndex != LastAppliedIndex
+            || snapshot.Content.Length != layout.TotalBytes
+        )
+            throw new InvalidOperationException("Compaction snapshot differs from its owner.");
+        // The fixed bytes include the session section header, which follows the entries.
+        var offset = checked(
+            (int)(SnapshotFixedBytes - SnapshotSectionHeaderBytes + layout.MapBytes)
+        );
+        foreach (var map in _maps)
+        foreach (var entry in map.Entries)
+        {
+            var length = entry.Value.Length;
+            offset += SnapshotEntryFixedBytes + entry.Key.ByteCount;
+            entry.Storage!.Bytes = snapshot.Content.ReadValue(offset, length, borrow: true);
+            offset += length;
+        }
     }
 
     // The caller still reconstructs the durable prefix independently. Only its additional
@@ -109,8 +137,13 @@ public sealed partial class DataGridLocalStateMachine
                 + (map.Cursor?.ByteCount ?? 0);
         foreach (var session in _sessions.Values)
             sessions += 100 + 31L * (session.Result?.ItemCount ?? 0);
-        var entries = StoredDataByteCount + 59L * StoredKeyCount;
-        return new(checked((int)(154 + maps + entries + sessions)), maps, entries, sessions);
+        var entries = StoredDataByteCount + SnapshotEntryFixedBytes * (long)StoredKeyCount;
+        return new(
+            checked((int)(SnapshotFixedBytes + maps + entries + sessions)),
+            maps,
+            entries,
+            sessions
+        );
     }
 
     private static void WriteSnapshotSection(GridWriter writer, int id, int count, long bytes)
@@ -192,31 +225,24 @@ public sealed partial class DataGridLocalStateMachine
         ReadOnlySpan<byte> content
     ) => ReadSnapshot(configuration, descriptor, content, null, SnapshotReadMode.Restore)!;
 
-    // Ephemeral store verification rebuilds its own keys, indexes, versions and replay state.
-    // Only value bytes borrow slices of an already immutable durable snapshot. Public spans
-    // still copy, and replacements never mutate the borrowed input or the live application.
+    // Store verification rebuilds its own keys, indexes, versions and replay state. Only
+    // immutable value payloads may share the published image, as with the live Raft owner.
     internal static DataGridLocalStateMachine RestoreForVerification(
         DataGridBootstrapConfiguration configuration,
         DataGridLocalSnapshot snapshot
-    ) =>
-        ReadSnapshot(
-            configuration,
-            snapshot.Descriptor,
-            default,
-            snapshot.Content,
-            SnapshotReadMode.VerifyPrefix
-        )!;
+    ) => RestoreSnapshot(configuration, snapshot, borrowValues: true);
 
     internal static DataGridLocalStateMachine RestoreSnapshot(
         DataGridBootstrapConfiguration configuration,
-        DataGridLocalSnapshot snapshot
+        DataGridLocalSnapshot snapshot,
+        bool borrowValues = false
     ) =>
         ReadSnapshot(
             configuration,
             snapshot.Descriptor,
             default,
             snapshot.Content,
-            SnapshotReadMode.Restore
+            borrowValues ? SnapshotReadMode.BorrowValues : SnapshotReadMode.Restore
         )!;
 
     internal static void ValidateSnapshot(
@@ -235,7 +261,7 @@ public sealed partial class DataGridLocalStateMachine
     {
         Validate,
         Restore,
-        VerifyPrefix,
+        BorrowValues,
     }
 
     private static DataGridLocalStateMachine? ReadSnapshot(
@@ -327,7 +353,7 @@ public sealed partial class DataGridLocalStateMachine
                 configuration,
                 index,
                 state,
-                mode == SnapshotReadMode.VerifyPrefix
+                mode == SnapshotReadMode.BorrowValues
             );
             var sessions = body.Section(4, MaxSessionCount, out count);
             var sessionNonces = new SortedDictionary<Guid, SortedSet<Guid>>();
@@ -502,7 +528,7 @@ public sealed partial class DataGridLocalStateMachine
                     .Entries.Add(
                         new(
                             new DataGridKey(key),
-                            storedValue,
+                            new(storedValue),
                             version,
                             hasExpiry ? DataGridExpiration.At(deadline) : default
                         )

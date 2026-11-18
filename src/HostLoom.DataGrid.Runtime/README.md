@@ -59,10 +59,13 @@ comparison.
 Snapshot capture uses the exact v1 field widths and lazy owned blocks of at most 64 KiB.
 Hashing, canonical comparison, logical image/section parsing, disk readback and peer assembly
 walk these immutable blocks without creating a contiguous encoded image. A field or value
-crossing a block copies at most its existing 64-KiB limit; ordinary restore still owns its map
-values. The temporary prefix verifier borrows values within a single block and copies crossing
-values once. Public GetContent explicitly materializes an independent contiguous copy; runtime
-snapshot paths never call it. Blocks retain existing actual-completion ownership and quotas.
+crossing a block copies at most its existing 64-KiB limit. The Raft application shares contiguous
+value bytes after snapshot recovery, installation or durable acknowledgement of local
+compaction. Rebinding on compaction preserves the live tree, versions and counters. Mutations
+replace entries without modifying the immutable blocks. The prefix verifier rebuilds and
+replays its own prior durable state, and ordinary restore owns its values. Public GetContent
+materializes an independent contiguous copy. Blocks retain existing actual-completion ownership
+and quotas.
 The configured group quotas imply a conservative maximum encoded state of 291016890 bytes,
 including map metadata/cursors, entries and all retained result vectors. This resolves the
 former 8-MiB snapshot mismatch; it is not a measured heap, supported-capacity or latency claim.

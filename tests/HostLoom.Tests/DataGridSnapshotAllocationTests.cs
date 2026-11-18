@@ -1,3 +1,5 @@
+using System.Collections;
+using System.Reflection;
 using System.Security.Cryptography;
 using HostLoom.DataGrid;
 using HostLoom.DataGrid.Consensus;
@@ -8,6 +10,79 @@ namespace HostLoom.Tests;
 
 public sealed class DataGridSnapshotAllocationTests
 {
+    [Fact]
+    public void RaftSharesPublishedSnapshotValuesAfterAcknowledgementAndRestart()
+    {
+        using var fixture = new DataGridPeerFixture();
+        var configuration = fixture.Configuration;
+        var value = Enumerable.Repeat((byte)42, 1024).ToArray();
+        var open = DataGridCommittedCommand.OpenSession(
+            DataGridPeerFixture.Principal,
+            DataGridPeerFixture.Nonce,
+            new(4 * TimeSpan.TicksPerSecond),
+            default
+        );
+        var node = new RaftNode(
+            configuration,
+            0,
+            1,
+            new(
+                configuration,
+                1,
+                null,
+                [
+                    new RaftEntry(1, 1, DataGridCommittedCommandCodec.Encode(open)),
+                    new RaftEntry(
+                        2,
+                        1,
+                        DataGridCommittedCommandCodec.Encode(
+                            DataGridFileStorageTests.Mutation(1, value)
+                        )
+                    ),
+                ],
+                2
+            )
+        );
+        var previousValue = ReadEntryStorage(node.Machine);
+        var write = Assert.Single(node.Compact(Guid.NewGuid()).OfType<RaftWrite>());
+        var snapshot = write.Image.Snapshot!;
+        var publishedValue = snapshot.Content.ReadValue(
+            snapshot.GetContent().AsSpan().IndexOf(value),
+            value.Length,
+            borrow: true
+        );
+        Assert.True(previousValue.Equals(ReadEntryStorage(node.Machine)));
+        Assert.False(publishedValue.Equals(previousValue));
+
+        node.Persisted(write.Token, true);
+        Assert.True(publishedValue.Equals(ReadEntryStorage(node.Machine)));
+        var restarted = new RaftNode(configuration, 0, 2, write.Image);
+        Assert.True(publishedValue.Equals(ReadEntryStorage(restarted.Machine)));
+
+        var ordinary = DataGridLocalStateMachine.RestoreSnapshot(configuration, snapshot);
+        Assert.False(publishedValue.Equals(ReadEntryStorage(ordinary)));
+        var replacement = new byte[] { 7, 8, 9 };
+        var applied = restarted.Machine.Apply(3, DataGridFileStorageTests.Mutation(2, replacement));
+        Assert.Equal(DataGridMutationStatus.Stored, applied.GetItem(0).Status);
+        Assert.Equal(replacement, ReadEntryStorage(restarted.Machine).ToArray());
+        Assert.Equal(value, publishedValue.ToArray());
+        Assert.Equal(
+            value,
+            node.Machine.Read(DataGridPeerFixture.Map, DataGridPeerFixture.Key)!.GetValue()
+        );
+    }
+
+    private static ReadOnlyMemory<byte> ReadEntryStorage(DataGridLocalStateMachine machine)
+    {
+        const BindingFlags flags =
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        var maps = (Array)machine.GetType().GetField("_maps", flags)!.GetValue(machine)!;
+        var map = maps.GetValue(0)!;
+        var entries = (IEnumerable)map.GetType().GetProperty("Entries", flags)!.GetValue(map)!;
+        var entry = Assert.Single(entries.Cast<object>());
+        return (ReadOnlyMemory<byte>)entry.GetType().GetProperty("Value", flags)!.GetValue(entry)!;
+    }
+
     [Fact]
     public void FirstSnapshotValidationDoesNotAllocateTheRestoredApplication()
     {

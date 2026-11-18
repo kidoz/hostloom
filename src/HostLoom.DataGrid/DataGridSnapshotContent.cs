@@ -54,6 +54,8 @@ internal sealed class DataGridSnapshotContent
         CheckRange(offset, length, Length);
         if (length > BlockBytes)
             throw new InvalidDataException("Snapshot field exceeds the bounded read size.");
+        if (length == 0)
+            return ReadOnlyMemory<byte>.Empty;
         var first = BlockAt(offset);
         if (borrow && length <= first.Length)
             return first[..length];

@@ -295,7 +295,7 @@ public sealed partial class DataGridLocalStateMachine
             if (!live && map.ExpiredReclaimed < long.MaxValue)
                 map.ExpiredReclaimed++;
         }
-        map.Entries.Add(new(item.Key, value, version, expiration));
+        map.Entries.Add(new(item.Key, new(value), version, expiration));
         map.Bytes += delta;
         return new(DataGridMutationStatus.Stored, version);
     }
@@ -385,12 +385,21 @@ public sealed partial class DataGridLocalStateMachine
         return null;
     }
 
+    // The owner can rebind storage while its key and other entry metadata stay in the tree.
+    private sealed class EntryValue(ReadOnlyMemory<byte> bytes)
+    {
+        internal ReadOnlyMemory<byte> Bytes { get; set; } = bytes;
+    }
+
     private readonly record struct Entry(
         DataGridKey Key,
-        ReadOnlyMemory<byte> Value,
+        EntryValue? Storage,
         DataGridEntryVersion Version,
         DataGridExpiration Expiration
-    );
+    )
+    {
+        internal ReadOnlyMemory<byte> Value => Storage?.Bytes ?? default;
+    }
 
     private sealed class MapState(DataGridMapConfiguration configuration)
     {

@@ -266,5 +266,13 @@ a compaction snapshot during the sample, with zero cgroup OOMs or OOM kills. The
 requires all three members to apply the recovery canary failed, leaving the intentional
 leader-loss and whole-group restart checks pending. The sample includes time spent in a degraded
 quorum and recorded 2376 in-window successes and 2324 refusals out of 4701 started calls.
-One of 27 coordinates has completed. The remaining matrix work, contextual measurements and
-target decisions remain open.
+
+After the live Raft application began sharing immutable published value bytes, the same
+concurrency 16 case completed population, both timed windows, settlement and both recovery
+checks. The sample had 2400 in-window successes and 1942 refusals out of 4342 calls.
+The run recorded zero OOMs, runtime faults or unresolved mutations. Cgroup memory reached
+the fixture limit. An earlier attempt on this build ended early with expired sessions
+after macOS idle sleep. The completed attempt used `caffeinate -i` on the host.
+
+Two of the 27 workload combinations have completed across the recorded prototype revisions.
+Matrix coverage, contextual measurements and target decisions remain open.
