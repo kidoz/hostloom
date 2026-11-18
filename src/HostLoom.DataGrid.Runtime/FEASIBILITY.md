@@ -258,5 +258,13 @@ The full repeat for batch 128, concurrency 1 and seed 43 completed in the same b
 fixture. It acknowledged all 100000 initial writes, finished warmup and sampling, settled
 pending identities, and verified leader-loss and whole-group recovery. The 300-second sample
 had 599 successful calls within the window out of 600 started. Cgroup OOM counters remained at
-zero. This completes one of the 27 workload coordinates. The rest of the matrix, contextual
-measurements and target decisions remain open.
+zero.
+
+The concurrency 16 follow-up used the same batch, seed and memory profile. It acknowledged
+100000 writes and settled all outstanding mutations. A member hit managed OOM while capturing
+a compaction snapshot during the sample, with zero cgroup OOMs or OOM kills. The precheck that
+requires all three members to apply the recovery canary failed, leaving the intentional
+leader-loss and whole-group restart checks pending. The sample includes time spent in a degraded
+quorum and recorded 2376 in-window successes and 2324 refusals out of 4701 started calls.
+One of 27 coordinates has completed. The remaining matrix work, contextual measurements and
+target decisions remain open.
