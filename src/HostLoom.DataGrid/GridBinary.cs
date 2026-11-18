@@ -252,6 +252,15 @@ internal ref struct GridReader
         return result;
     }
 
+    internal void Skip(int length)
+    {
+        CheckLength(length);
+        if (_content is null)
+            _remaining = _remaining[length..];
+        else
+            _position += length;
+    }
+
     internal ReadOnlyMemory<byte> Value(int length, bool borrow)
     {
         CheckLength(length);

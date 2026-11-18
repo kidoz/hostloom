@@ -37,7 +37,7 @@ public sealed class DataGridLocalSnapshot
         {
             if (ReferenceEquals(_validatedConfiguration, configuration))
                 return;
-            _ = DataGridLocalStateMachine.RestoreSnapshot(configuration, this);
+            DataGridLocalStateMachine.ValidateSnapshot(configuration, this);
             // Cache only success, on this snapshot and one exact immutable configuration.
             // A new snapshot/configuration still receives complete semantic/digest validation.
             _validatedConfiguration = configuration;
@@ -190,7 +190,7 @@ public sealed partial class DataGridLocalStateMachine
         DataGridBootstrapConfiguration configuration,
         DataGridSnapshotDescriptor descriptor,
         ReadOnlySpan<byte> content
-    ) => RestoreCore(configuration, descriptor, content, null, false);
+    ) => ReadSnapshot(configuration, descriptor, content, null, SnapshotReadMode.Restore)!;
 
     // Ephemeral store verification rebuilds its own keys, indexes, versions and replay state.
     // Only value bytes borrow slices of an already immutable durable snapshot. Public spans
@@ -198,19 +198,52 @@ public sealed partial class DataGridLocalStateMachine
     internal static DataGridLocalStateMachine RestoreForVerification(
         DataGridBootstrapConfiguration configuration,
         DataGridLocalSnapshot snapshot
-    ) => RestoreCore(configuration, snapshot.Descriptor, default, snapshot.Content, true);
+    ) =>
+        ReadSnapshot(
+            configuration,
+            snapshot.Descriptor,
+            default,
+            snapshot.Content,
+            SnapshotReadMode.VerifyPrefix
+        )!;
 
     internal static DataGridLocalStateMachine RestoreSnapshot(
         DataGridBootstrapConfiguration configuration,
         DataGridLocalSnapshot snapshot
-    ) => RestoreCore(configuration, snapshot.Descriptor, default, snapshot.Content, false);
+    ) =>
+        ReadSnapshot(
+            configuration,
+            snapshot.Descriptor,
+            default,
+            snapshot.Content,
+            SnapshotReadMode.Restore
+        )!;
 
-    private static DataGridLocalStateMachine RestoreCore(
+    internal static void ValidateSnapshot(
+        DataGridBootstrapConfiguration configuration,
+        DataGridLocalSnapshot snapshot
+    ) =>
+        ReadSnapshot(
+            configuration,
+            snapshot.Descriptor,
+            default,
+            snapshot.Content,
+            SnapshotReadMode.Validate
+        );
+
+    private enum SnapshotReadMode
+    {
+        Validate,
+        Restore,
+        VerifyPrefix,
+    }
+
+    private static DataGridLocalStateMachine? ReadSnapshot(
         DataGridBootstrapConfiguration configuration,
         DataGridSnapshotDescriptor descriptor,
         ReadOnlySpan<byte> content,
         DataGridSnapshotContent? blocks,
-        bool borrowValues
+        SnapshotReadMode mode
     )
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -251,85 +284,55 @@ public sealed partial class DataGridLocalStateMachine
             reader.End();
             if (!body.Take(4).SequenceEqual("HLGB"u8) || body.Number(2) != 1 || body.Number(2) != 4)
                 throw new InvalidDataException("Invalid snapshot body.");
-            var state = new DataGridLocalStateMachine(configuration)
-            {
-                LastAppliedIndex = index,
-                AppliedTime = time,
-            };
+            var state =
+                mode == SnapshotReadMode.Validate
+                    ? null
+                    : new DataGridLocalStateMachine(configuration)
+                    {
+                        LastAppliedIndex = index,
+                        AppliedTime = time,
+                    };
             var metadata = body.Section(1, 1, out var count);
             if (count != 1)
                 throw new InvalidDataException("Missing snapshot metadata.");
-            state._sessionHighWater = metadata.Signed();
-            state._maintenanceMapOrdinal = metadata.Count(2, configuration.MapCount - 1);
+            var sessionHighWater = metadata.Signed();
+            var maintenanceMapOrdinal = metadata.Count(2, configuration.MapCount - 1);
             metadata.End();
-            if (state._sessionHighWater < 0 || state._sessionHighWater > index)
+            if (sessionHighWater < 0 || sessionHighWater > index)
                 throw new InvalidDataException("Invalid session high-water mark.");
+            if (state is not null)
+            {
+                state._sessionHighWater = sessionHighWater;
+                state._maintenanceMapOrdinal = maintenanceMapOrdinal;
+            }
             var maps = body.Section(2, 16, out count);
             if (count != configuration.MapCount)
                 throw new InvalidDataException("Map inventory mismatch.");
             for (var i = 0; i < count; i++)
             {
-                if (
-                    maps.Id() != state._maps[i].Configuration.MapId
-                    || maps.Text(128) != state._maps[i].Configuration.Name
-                )
+                var map = configuration.GetMap(i);
+                if (maps.Id() != map.MapId || maps.Text(128) != map.Name)
                     throw new InvalidDataException("Map declaration mismatch.");
-                state._maps[i].Cursor = maps.Key(allowEmpty: true);
+                var cursorLength = maps.Count(2, DataGridKey.MaxByteCount);
+                if (state is null)
+                    maps.Skip(cursorLength);
+                else
+                    state._maps[i].Cursor = cursorLength == 0 ? null : new(maps.Take(cursorLength));
             }
             maps.End();
             var entries = body.Section(3, DataGridMapConfiguration.GroupMaxKeyCount, out count);
-            var previousMap = -1;
-            DataGridKey? previousKey = null;
-            var versions = new SortedSet<(long, int)>();
-            for (var i = 0; i < count; i++)
-            {
-                var id = entries.Id();
-                var ordinal = Array.FindIndex(state._maps, map => map.Configuration.MapId == id);
-                var key = entries.Key(allowEmpty: false)!;
-                var version = ReadVersion(ref entries, configuration.IncarnationId, index);
-                if (
-                    ordinal < 0
-                    || ordinal < previousMap
-                    || (
-                        ordinal == previousMap
-                        && DataGridKeyComparer.Instance.Compare(previousKey, key) >= 0
-                    )
-                    || !versions.Add((version.LogIndex, version.ItemIndex))
-                )
-                    throw new InvalidDataException("Invalid snapshot entry order/version.");
-                previousMap = ordinal;
-                previousKey = key;
-                var hasExpiry = entries.Flag();
-                var deadline = entries.Time();
-                if (!hasExpiry && deadline.UtcTicks != 0)
-                    throw new InvalidDataException("Invalid absent deadline.");
-                var map = state._maps[ordinal];
-                if (hasExpiry && map.Configuration.Policy.Expiration == 1)
-                    throw new InvalidDataException("Deadline violates map policy.");
-                var length = entries.Count(4, DataGridMutationItem.MaxValueByteCount);
-                var storedValue = entries.Value(length, borrowValues);
-                var size = key.ByteCount + length;
-                if (
-                    map.Entries.Count >= map.Configuration.MaxKeyCount
-                    || map.Bytes + size > map.Configuration.MaxDataByteCount
-                    || state.StoredDataByteCount + size
-                        > DataGridMapConfiguration.GroupMaxDataByteCount
-                )
-                    throw new InvalidDataException("Snapshot exceeds capacity.");
-                map.Entries.Add(
-                    new(
-                        key,
-                        storedValue,
-                        version,
-                        hasExpiry ? DataGridExpiration.At(deadline) : default
-                    )
-                );
-                map.Bytes += size;
-            }
-            entries.End();
+            ReadSnapshotEntries(
+                ref entries,
+                count,
+                configuration,
+                index,
+                state,
+                mode == SnapshotReadMode.VerifyPrefix
+            );
             var sessions = body.Section(4, MaxSessionCount, out count);
             var sessionNonces = new SortedDictionary<Guid, SortedSet<Guid>>();
             long previous = 0;
+            long resultBytes = 0;
             for (var i = 0; i < count; i++)
             {
                 var number = sessions.Signed();
@@ -340,7 +343,7 @@ public sealed partial class DataGridLocalStateMachine
                 var closed = sessions.Flag();
                 var sequence = sessions.Number(8);
                 var hasResult = sessions.Flag();
-                var fingerprint = sessions.Take(32).ToArray();
+                var fingerprint = sessions.Take(32);
                 var results = sessions.Count(2, 128);
                 var opened = expires.UtcTicks - TimeSpan.FromMinutes(10).Ticks;
                 if (!sessionNonces.TryGetValue(principal, out var principalNonces))
@@ -350,7 +353,7 @@ public sealed partial class DataGridLocalStateMachine
                 }
                 if (
                     number <= previous
-                    || number > state._sessionHighWater
+                    || number > sessionHighWater
                     || sequence > (ulong)(index - number)
                     || opened < 0
                     || opened > time.UtcTicks
@@ -367,13 +370,14 @@ public sealed partial class DataGridLocalStateMachine
                     || (
                         !hasResult
                         && (
-                            fingerprint.Any(part => part != 0)
+                            fingerprint.ContainsAnyExcept((byte)0)
                             || (closed ? sequence == 0 : sequence != 0)
                         )
                     )
                 )
                     throw new InvalidDataException("Invalid retained session result.");
-                var vector = new DataGridMutationResult[results];
+                var vector =
+                    state is null || !hasResult ? null : new DataGridMutationResult[results];
                 long resultIndex = 0;
                 for (var j = 0; j < results; j++)
                 {
@@ -400,28 +404,117 @@ public sealed partial class DataGridLocalStateMachine
                         foreach (var part in sessions.Take(28))
                             if (part != 0)
                                 throw new InvalidDataException("Unexpected result version.");
-                    vector[j] = new(status, version);
+                    if (vector is not null)
+                        vector[j] = new(status, version);
                 }
-                var sessionState = new SessionState(number, principal, nonce, notAfter, expires)
-                {
-                    Closed = closed,
-                    LastSequence = sequence,
-                    Digest = hasResult ? fingerprint : [],
-                    Result = hasResult ? new(DataGridApplyStatus.Completed, vector) : null,
-                };
-                state._resultBytes += ResultBytes(sessionState.Result);
-                if (state._resultBytes > MaxResultBytes)
+                if (hasResult)
+                    resultBytes += ResultBytes(results);
+                if (resultBytes > MaxResultBytes)
                     throw new InvalidDataException("Retained result capacity exceeded.");
-                state._sessions.Add(number, sessionState);
+                state?._sessions.Add(
+                    number,
+                    new SessionState(number, principal, nonce, notAfter, expires)
+                    {
+                        Closed = closed,
+                        LastSequence = sequence,
+                        Digest = hasResult ? fingerprint.ToArray() : [],
+                        Result = vector is null ? null : new(DataGridApplyStatus.Completed, vector),
+                    }
+                );
             }
             sessions.End();
             body.End();
+            if (state is not null)
+                state._resultBytes = resultBytes;
             return state;
         }
         catch (ArgumentException exception)
         {
             throw new InvalidDataException("Invalid snapshot field.", exception);
         }
+    }
+
+    private static void ReadSnapshotEntries(
+        ref GridReader entries,
+        int count,
+        DataGridBootstrapConfiguration configuration,
+        long index,
+        DataGridLocalStateMachine? state,
+        bool borrowValues
+    )
+    {
+        // Version uniqueness spans all maps. Sorting exact pairs keeps it independent of
+        // key order and bounds the index to one compact array under the group entry limit.
+        var versions = new (long LogIndex, int ItemIndex)[count];
+        var ordinal = 0;
+        var map = configuration.GetMap(ordinal);
+        ReadOnlySpan<byte> previousKey = default;
+        var mapKeys = 0;
+        long mapBytes = 0;
+        long groupBytes = 0;
+        for (var i = 0; i < count; i++)
+        {
+            var id = entries.Id();
+            while (id != map.MapId)
+            {
+                if (++ordinal == configuration.MapCount)
+                    throw new InvalidDataException("Invalid snapshot entry map order.");
+                map = configuration.GetMap(ordinal);
+                previousKey = default;
+                mapKeys = 0;
+                mapBytes = 0;
+            }
+
+            var keyLength = entries.Count(2, DataGridKey.MaxByteCount);
+            if (keyLength == 0)
+                throw new InvalidDataException("Empty key.");
+            var key = entries.Take(keyLength);
+            if (previousKey.SequenceCompareTo(key) >= 0)
+                throw new InvalidDataException("Invalid snapshot entry order.");
+            previousKey = key;
+            var version = ReadVersion(ref entries, configuration.IncarnationId, index);
+            versions[i] = (version.LogIndex, version.ItemIndex);
+
+            var hasExpiry = entries.Flag();
+            var deadline = entries.Time();
+            if (!hasExpiry && deadline.UtcTicks != 0)
+                throw new InvalidDataException("Invalid absent deadline.");
+            if (hasExpiry && map.Policy.Expiration == 1)
+                throw new InvalidDataException("Deadline violates map policy.");
+            var length = entries.Count(4, DataGridMutationItem.MaxValueByteCount);
+            var size = keyLength + length;
+            mapBytes += size;
+            groupBytes += size;
+            if (
+                ++mapKeys > map.MaxKeyCount
+                || mapBytes > map.MaxDataByteCount
+                || groupBytes > DataGridMapConfiguration.GroupMaxDataByteCount
+            )
+                throw new InvalidDataException("Snapshot exceeds capacity.");
+
+            if (state is null)
+                entries.Skip(length);
+            else
+            {
+                var storedValue = entries.Value(length, borrowValues);
+                state
+                    ._maps[ordinal]
+                    .Entries.Add(
+                        new(
+                            new DataGridKey(key),
+                            storedValue,
+                            version,
+                            hasExpiry ? DataGridExpiration.At(deadline) : default
+                        )
+                    );
+                state._maps[ordinal].Bytes = mapBytes;
+            }
+        }
+        entries.End();
+        Array.Sort(versions);
+        for (var i = 1; i < versions.Length; i++)
+            if (versions[i] == versions[i - 1])
+                throw new InvalidDataException("Duplicate snapshot entry version.");
     }
 
     private static void WriteVersion(GridWriter writer, DataGridEntryVersion version)

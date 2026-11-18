@@ -207,7 +207,7 @@ public sealed partial class DataGridLocalStateMachine
         var map = FindMap(command.MapId);
         if (map is null)
             return Failure(DataGridApplyStatus.MissingMap);
-        var reservedBytes = 2 + 31 * command.ItemCount;
+        var reservedBytes = ResultBytes(command.ItemCount);
         if (_resultBytes - ResultBytes(session.Result) + reservedBytes > MaxResultBytes)
             return Failure(DataGridApplyStatus.CapacityExceeded);
         var invalid =
@@ -365,7 +365,9 @@ public sealed partial class DataGridLocalStateMachine
     private static DataGridApplyResult Failure(DataGridApplyStatus status) => new(status);
 
     private static int ResultBytes(DataGridApplyResult? result) =>
-        result is null ? 0 : 2 + 31 * result.ItemCount;
+        result is null ? 0 : ResultBytes(result.ItemCount);
+
+    private static int ResultBytes(int itemCount) => 2 + 31 * itemCount;
 
     private static Entry Probe(DataGridKey key) => new(key, default, default, default);
 
