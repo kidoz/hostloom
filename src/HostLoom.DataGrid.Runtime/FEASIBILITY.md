@@ -248,7 +248,15 @@ aggregate application/image/verifier/native memory.
 The corresponding full repeat acknowledges 99664 initial writes, then stops in population
 with managed OOM during the temporary semantic-validation application/value/tree reconstruction
 on two members. It completes no full warmup/sample/recovery and records no cgroup OOM kill.
-Partial counts are not a throughput comparison. Next bound that temporary semantic-validation
-working set while checking every invariant, preserve the separate independent prior-prefix
-proof, and rerun the declared coordinate/recovery before the wider campaign. Public/ordinary
-restore ownership, fixture limits and numerical gates remain unchanged.
+The subsequent validation change uses the shared v1 parser to scan candidate snapshots. It
+checks digest, identity, ordering, versions, quotas and sessions while advancing over bounded
+value payloads. The independent prior-prefix verifier still reconstructs and replays durable
+state. First validation of a 10000-entry image on macOS ARM64 allocated 161520 bytes after the
+change, down from 14243528 bytes on the original implementation.
+
+The full repeat for batch 128, concurrency 1 and seed 43 completed in the same bounded-memory
+fixture. It acknowledged all 100000 initial writes, finished warmup and sampling, settled
+pending identities, and verified leader-loss and whole-group recovery. The 300-second sample
+had 599 successful calls within the window out of 600 started. Cgroup OOM counters remained at
+zero. This completes one of the 27 workload coordinates. The rest of the matrix, contextual
+measurements and target decisions remain open.

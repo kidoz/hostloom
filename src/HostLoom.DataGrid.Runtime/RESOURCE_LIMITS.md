@@ -105,6 +105,12 @@ crossing fields/values may copy at most 65536 bytes. Public GetContent remains a
 contiguous copy API. This bounds encoded backing allocation size; multiple images, map/value
 copies, indexes and native/RSS costs still overlap, so it does not establish aggregate fit.
 
+Candidate semantic validation scans the bounded content and skips value payloads after checking
+their lengths and section limits. It tracks quota totals, the preceding key, session nonces and
+one exact version pair per entry, capped at 100000 pairs. It sorts these pairs to check uniqueness
+across maps. The store still reconstructs and replays its prior committed prefix independently.
+Ordinary restore creates its own application data.
+
 ## What the directed checks establish
 
 The new TLS quota checks select either a one-key map or a byte ceiling exactly filled by the

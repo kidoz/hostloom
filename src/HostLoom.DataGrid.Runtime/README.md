@@ -51,9 +51,11 @@ so the existing disposal wait does not become a hard cleanup deadline.
 
 Snapshots share the existing 512-MiB v1 format ceiling across consensus, storage and transport.
 Durable metadata transitions reuse successful validation of the same immutable snapshot and
-configuration instance, rather than reconstructing every value on every log/commit update.
-New snapshots/configurations still receive full validation, and public snapshot bytes remain
-copies. This removes repeated allocation; logical byte quotas still do not bound heap or RSS.
+configuration instance. The first validation scans the encoded fields with the shared restore
+parser. It skips value copies and holds only the previous key, quota counters, a compact
+version index and session nonce tracking. Restore materializes application state when a caller
+needs it. The store independently reconstructs and replays its prior durable prefix for canonical
+comparison.
 Snapshot capture uses the exact v1 field widths and lazy owned blocks of at most 64 KiB.
 Hashing, canonical comparison, logical image/section parsing, disk readback and peer assembly
 walk these immutable blocks without creating a contiguous encoded image. A field or value
