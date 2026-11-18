@@ -333,6 +333,95 @@ public sealed class DataGridLocalStateMachineTests
     }
 
     [Fact]
+    public void SnapshotValidationChecksOrderAndVersionUniquenessAcrossMapsAndBoundsValueReads()
+    {
+        var baseline = Configuration();
+        var config = new DataGridBootstrapConfiguration(
+            Cluster,
+            Enumerable.Range(0, 3).Select(baseline.GetMember).ToArray(),
+            [
+                MapDefinition(11, "catalog"),
+                MapDefinition(12, "inventory"),
+                MapDefinition(13, "pricing"),
+            ]
+        );
+        var state = new DataGridLocalStateMachine(config);
+        Apply(state, Open(Principal, Nonce));
+        var value = new byte[DataGridMutationItem.MaxValueByteCount];
+        value[0] = 11;
+        value[^1] = 23;
+        Put(13, 1, "aa", [1]);
+        Put(11, 2, "aa", value);
+        Put(11, 3, "bb", [2]);
+        var snapshot = state.SaveSnapshot(SnapshotId, 1);
+        snapshot.Validate(config);
+        var bytes = snapshot.GetContent();
+        Assert.Equal(
+            value,
+            DataGridLocalStateMachine
+                .Restore(config, snapshot.Descriptor, bytes)
+                .Read(NumberId(11), Key("aa"))!
+                .GetValue()
+        );
+
+        const int keyOffset = 18;
+        const int versionOffset = keyOffset + 2;
+        const int lengthOffset = versionOffset + DataGridEntryVersion.EncodedByteCount + 1 + 8;
+        var first = FindSection(bytes, 3);
+        var second = first + lengthOffset + 4 + value.Length;
+        var third = second + lengthOffset + 4 + 1;
+
+        var duplicateVersion = snapshot.GetContent();
+        bytes
+            .AsSpan(first + versionOffset, DataGridEntryVersion.EncodedByteCount)
+            .CopyTo(duplicateVersion.AsSpan(third + versionOffset));
+        AssertInvalidRehashed(config, snapshot.Descriptor, duplicateVersion);
+
+        var duplicateKey = snapshot.GetContent();
+        bytes.AsSpan(first + keyOffset, 2).CopyTo(duplicateKey.AsSpan(second + keyOffset));
+        AssertInvalidRehashed(config, snapshot.Descriptor, duplicateKey);
+
+        var reverseMap = snapshot.GetContent();
+        bytes.AsSpan(third, 16).CopyTo(reverseMap.AsSpan(second));
+        bytes.AsSpan(first, 16).CopyTo(reverseMap.AsSpan(third));
+        AssertInvalidRehashed(config, snapshot.Descriptor, reverseMap);
+
+        var oversizedValue = snapshot.GetContent();
+        BinaryPrimitives.WriteUInt32BigEndian(oversizedValue.AsSpan(third + lengthOffset), 2);
+        AssertInvalidRehashed(config, snapshot.Descriptor, oversizedValue);
+
+        void Put(int map, ulong sequence, string key, byte[] payload) =>
+            Apply(
+                state,
+                DataGridCommittedCommand.Mutate(
+                    Principal,
+                    new(
+                        DataGridMutationKind.Put,
+                        NumberId(map),
+                        1,
+                        sequence,
+                        DataGridExpiryKind.Never,
+                        0,
+                        [new(Key(key), payload)]
+                    ),
+                    default
+                )
+            );
+
+        static DataGridMapConfiguration MapDefinition(int map, string name) =>
+            new(
+                NumberId(map),
+                name,
+                DataGridMapOwnership.Derived,
+                "catalog-service",
+                "catalog-loader",
+                10,
+                1048576,
+                new(1, 1, 2, 1, 1)
+            );
+    }
+
+    [Fact]
     public void SnapshotRejectsCorruptionAndSemanticallyInvalidRehashedImagesWithoutChangingOwner()
     {
         var config = Configuration();
@@ -350,23 +439,17 @@ public sealed class DataGridLocalStateMachineTests
         {
             var changed = snapshot.GetContent();
             changed[offset] = 0xff;
-            Assert.Throws<InvalidDataException>(() =>
-                RestoreRehashed(config, snapshot.Descriptor, changed)
-            );
+            AssertInvalidRehashed(config, snapshot.Descriptor, changed);
         }
         var entries = FindSection(snapshot.GetContent(), 3);
         var invalidBoolean = snapshot.GetContent();
         var keyLength = BinaryPrimitives.ReadUInt16BigEndian(invalidBoolean.AsSpan(entries + 16));
         invalidBoolean[entries + 18 + keyLength + 28] = 2;
-        Assert.Throws<InvalidDataException>(() =>
-            RestoreRehashed(config, snapshot.Descriptor, invalidBoolean)
-        );
+        AssertInvalidRehashed(config, snapshot.Descriptor, invalidBoolean);
         var impossibleQuota = Configuration(keys: 1);
         var quotaImage = snapshot.GetContent();
         impossibleQuota.ComputeDigest().CopyTo(quotaImage, 24);
-        Assert.Throws<InvalidDataException>(() =>
-            RestoreRehashed(impossibleQuota, snapshot.Descriptor, quotaImage)
-        );
+        AssertInvalidRehashed(impossibleQuota, snapshot.Descriptor, quotaImage);
         Assert.Equal(2, state.StoredKeyCount);
         Assert.Equal(new byte[] { 1 }, state.Read(Map, Key("k1"))!.GetValue());
     }
@@ -537,30 +620,22 @@ public sealed class DataGridLocalStateMachineTests
         var start = FindSection(snapshot.GetContent(), 4);
         var mixed = snapshot.GetContent();
         BinaryPrimitives.WriteInt64BigEndian(mixed.AsSpan(start + 150), 1);
-        Assert.Throws<InvalidDataException>(() =>
-            RestoreRehashed(config, snapshot.Descriptor, mixed)
-        );
+        AssertInvalidRehashed(config, snapshot.Descriptor, mixed);
         var badFlag = snapshot.GetContent();
         badFlag[start + 65] = 2;
-        Assert.Throws<InvalidDataException>(() =>
-            RestoreRehashed(config, snapshot.Descriptor, badFlag)
-        );
+        AssertInvalidRehashed(config, snapshot.Descriptor, badFlag);
         var impossibleSequence = snapshot.GetContent();
         BinaryPrimitives.WriteUInt64BigEndian(
             impossibleSequence.AsSpan(start + 57),
             ulong.MaxValue
         );
-        Assert.Throws<InvalidDataException>(() =>
-            RestoreRehashed(config, snapshot.Descriptor, impossibleSequence)
-        );
+        AssertInvalidRehashed(config, snapshot.Descriptor, impossibleSequence);
         var impossibleAllocator = snapshot.GetContent();
         BinaryPrimitives.WriteInt64BigEndian(
             impossibleAllocator.AsSpan(FindSection(impossibleAllocator, 1)),
             long.MaxValue
         );
-        Assert.Throws<InvalidDataException>(() =>
-            RestoreRehashed(config, snapshot.Descriptor, impossibleAllocator)
-        );
+        AssertInvalidRehashed(config, snapshot.Descriptor, impossibleAllocator);
     }
 
     [Fact]
@@ -622,9 +697,7 @@ public sealed class DataGridLocalStateMachineTests
                 .AsSpan(sessions + 24, 16)
                 .CopyTo(bytes.AsSpan(sessions + emptySessionBytes + 24));
         }
-        Assert.Throws<InvalidDataException>(() =>
-            RestoreRehashed(configuration, snapshot.Descriptor, bytes)
-        );
+        AssertInvalidRehashed(configuration, snapshot.Descriptor, bytes);
     }
 
     [Fact]
@@ -961,22 +1034,25 @@ public sealed class DataGridLocalStateMachineTests
         throw new InvalidOperationException("Missing test section.");
     }
 
-    private static DataGridLocalStateMachine RestoreRehashed(
+    private static void AssertInvalidRehashed(
         DataGridBootstrapConfiguration configuration,
         DataGridSnapshotDescriptor descriptor,
         byte[] bytes
-    ) =>
-        DataGridLocalStateMachine.Restore(
-            configuration,
-            new(
-                descriptor.SnapshotId,
-                descriptor.LastIncludedIndex,
-                descriptor.LastIncludedTerm,
-                bytes.Length,
-                SHA256.HashData(bytes)
-            ),
-            bytes
+    )
+    {
+        var rehashed = new DataGridSnapshotDescriptor(
+            descriptor.SnapshotId,
+            descriptor.LastIncludedIndex,
+            descriptor.LastIncludedTerm,
+            bytes.Length,
+            SHA256.HashData(bytes)
         );
+        Assert.Throws<InvalidDataException>(() =>
+            DataGridLocalStateMachine.Restore(configuration, rehashed, bytes)
+        );
+        var snapshot = new DataGridLocalSnapshot(rehashed, bytes);
+        Assert.Throws<InvalidDataException>(() => snapshot.Validate(configuration));
+    }
 
     private static DataGridApplyResult Apply(
         DataGridLocalStateMachine state,

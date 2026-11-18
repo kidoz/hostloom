@@ -9,6 +9,26 @@ namespace HostLoom.Tests;
 public sealed class DataGridSnapshotAllocationTests
 {
     [Fact]
+    public void FirstSnapshotValidationDoesNotAllocateTheRestoredApplication()
+    {
+        using var fixture = new DataGridPeerFixture(10000, 16 * 1024 * 1024);
+        var configuration = fixture.Configuration;
+        var machine = Populate(configuration, DataGridFeasibilityCase.Key);
+        machine.SaveSnapshot(Guid.NewGuid(), 1).Validate(configuration);
+        var snapshot = machine.SaveSnapshot(Guid.NewGuid(), 1);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        snapshot.Validate(configuration);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        TestContext.Current.TestOutputHelper!.WriteLine(
+            $"First validation allocated {allocated} bytes for an image of {snapshot.Descriptor.ByteCount} bytes."
+        );
+        // Allow room for the compact version index and fields crossing a content block.
+        Assert.True(allocated < 512 * 1024, $"Validation allocated {allocated} bytes.");
+    }
+
+    [Fact]
     public void SnapshotBackingArraysStayBoundedWhenTheCanonicalImageGrows()
     {
         using var fixture = new DataGridPeerFixture(10000, 16 * 1024 * 1024);
