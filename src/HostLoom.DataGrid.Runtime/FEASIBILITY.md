@@ -279,5 +279,9 @@ fixture limits. At concurrency 1 the sample delivered 1.98 successful requests/s
 590.18 ms and one refusal out of 594 calls. At concurrency 16 the sample delivered 8.00
 successful requests/s with p99 1781.76 ms and 1942 refusals out of 4342 calls. Both runs
 verified leader-loss recovery and whole-group restart with zero unresolved mutations.
-Two of 27 workload combinations have completed on this build. Matrix coverage, contextual
-measurements and target decisions remain open.
+
+At concurrency 64, the same workload also delivered 8.00 successful requests/s, with 11795
+refusals out of 14195 calls (83.09%) and p99 1717.80 ms for successful calls. All 51 pending
+mutations settled, and the leader-loss and whole-group restart checks verified retained replay.
+The run recorded zero member faults or OOMs. Three of 27 workload combinations have completed
+on this build. Matrix coverage, contextual measurements and target decisions remain open.
