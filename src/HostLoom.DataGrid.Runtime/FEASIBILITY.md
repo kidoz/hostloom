@@ -285,9 +285,9 @@ refusals out of 14195 calls (83.09%) and p99 1717.80 ms for successful calls. Al
 mutations settled, and the leader-loss and whole-group restart checks verified retained replay.
 The run recorded zero member faults or OOMs.
 
-At concurrency 1 and seed 43, batch 32 completed both recovery checks and delivered 2.00
-successful requests/s and 63.89 items/s in the sample. Batch 128 delivered 1.98 successful
-requests/s and 253.01 items/s on the same executable inputs and fixture. Both runs recorded
-one sample refusal and zero unresolved mutations. Four of 27 workload combinations have
+At concurrency 1 and seed 43, batches 1, 32 and 128 each delivered about two successful
+requests/s on the same executable inputs and fixture. They processed 2.00, 63.89 and
+253.01 items/s, respectively. All three runs verified both recovery checks and recorded
+one sample refusal and zero unresolved mutations. Five of 27 workload combinations have
 completed on this build. Matrix coverage, contextual measurements and target decisions remain
 open.
