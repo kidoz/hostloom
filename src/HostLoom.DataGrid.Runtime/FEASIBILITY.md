@@ -283,5 +283,11 @@ verified leader-loss recovery and whole-group restart with zero unresolved mutat
 At concurrency 64, the same workload also delivered 8.00 successful requests/s, with 11795
 refusals out of 14195 calls (83.09%) and p99 1717.80 ms for successful calls. All 51 pending
 mutations settled, and the leader-loss and whole-group restart checks verified retained replay.
-The run recorded zero member faults or OOMs. Three of 27 workload combinations have completed
-on this build. Matrix coverage, contextual measurements and target decisions remain open.
+The run recorded zero member faults or OOMs.
+
+At concurrency 1 and seed 43, batch 32 completed both recovery checks and delivered 2.00
+successful requests/s and 63.89 items/s in the sample. Batch 128 delivered 1.98 successful
+requests/s and 253.01 items/s on the same executable inputs and fixture. Both runs recorded
+one sample refusal and zero unresolved mutations. Four of 27 workload combinations have
+completed on this build. Matrix coverage, contextual measurements and target decisions remain
+open.
