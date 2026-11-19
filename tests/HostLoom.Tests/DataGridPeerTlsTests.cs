@@ -834,7 +834,7 @@ public sealed class DataGridPeerTlsTests
         private readonly IReadOnlyList<DataGridSecurityContext>? _security;
         private readonly Action<int, DataGridStorageStep>? _observe;
         private readonly TimeProvider? _timeProvider;
-        private readonly long[] _epochs = new long[3];
+        private readonly long[] _epochs;
         private readonly DataGridStorageLimits? _storageLimits;
 
         internal LiveCluster(
@@ -848,13 +848,15 @@ public sealed class DataGridPeerTlsTests
         {
             _storageLimits = storageLimits;
             _fixture = fixture;
+            Nodes = new DataGridPeerRuntime?[fixture.Configuration.MemberCount];
+            _epochs = new long[Nodes.Length];
             _security = security;
             _observe = observe;
             _timeProvider = timeProvider;
             Paths =
                 paths
                 ?? Enumerable
-                    .Range(0, 3)
+                    .Range(0, Nodes.Length)
                     .Select(_ =>
                         Path.Combine(
                             Path.GetTempPath(),
@@ -862,7 +864,7 @@ public sealed class DataGridPeerTlsTests
                         )
                     )
                     .ToArray();
-            for (var i = 0; i < 3; i++)
+            for (var i = 0; i < Nodes.Length; i++)
             {
                 Directory.CreateDirectory(Paths[i]);
                 using var store = DataGridFileStore.Bootstrap(
@@ -875,11 +877,11 @@ public sealed class DataGridPeerTlsTests
         }
 
         internal string[] Paths { get; }
-        internal DataGridPeerRuntime?[] Nodes { get; } = new DataGridPeerRuntime?[3];
+        internal DataGridPeerRuntime?[] Nodes { get; }
 
         internal void StartAll()
         {
-            for (var i = 0; i < 3; i++)
+            for (var i = 0; i < Nodes.Length; i++)
                 Start(i);
         }
 
@@ -910,7 +912,7 @@ public sealed class DataGridPeerTlsTests
                     store,
                     _fixture.Credentials(node),
                     _fixture.Listeners[node],
-                    DataGridPeerFixture.Routes,
+                    Enumerable.Repeat(System.Net.IPAddress.Loopback, Nodes.Length).ToArray(),
                     ++_epochs[node],
                     timeProvider: _timeProvider,
                     security: _security?[node]
@@ -936,7 +938,7 @@ public sealed class DataGridPeerTlsTests
         {
             using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
             var candidates = Enumerable
-                .Range(0, 3)
+                .Range(0, Nodes.Length)
                 .Where(i => Nodes[i] is not null)
                 .Select(i => (Node: i, Ready: Nodes[i]!.WaitForLeaderAsync(cancellation.Token)))
                 .ToArray();
@@ -957,7 +959,7 @@ public sealed class DataGridPeerTlsTests
 
         public async ValueTask DisposeAsync()
         {
-            for (var i = 0; i < 3; i++)
+            for (var i = 0; i < Nodes.Length; i++)
                 await Stop(i);
             foreach (var path in Paths)
                 Directory.Delete(path, recursive: true);

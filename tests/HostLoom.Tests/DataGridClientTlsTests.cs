@@ -16,14 +16,17 @@ namespace HostLoom.Tests;
 
 public sealed class DataGridClientTlsTests
 {
-    [Fact(Timeout = 30000)]
-    public async Task ClientRoundTripPreservesConditionalVersionsAndBatchCapture()
+    [Theory(Timeout = 30000)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task ClientRoundTripPreservesConditionalVersionsAndBatchCapture(int memberCount)
     {
         RequireLinux();
         using var timeout = Deadline(TestContext.Current.CancellationToken);
-        await using var fixture = new ClientCluster();
+        await using var fixture = new ClientCluster(memberCount: memberCount);
         var leader = await fixture.Cluster.Leader(timeout.Token);
-        await using var client = fixture.Client(leader);
+        await using var client = fixture.Client((leader + 1) % memberCount);
         var session = await Open(client, timeout.Token);
         var put = await client.ExecuteAsync(
             DataGridClientRequest.Mutate(DataGridClientCodecTests.Mutation(session)),
@@ -578,7 +581,7 @@ public sealed class DataGridClientTlsTests
         private readonly Guid _otherId = Guid.NewGuid();
         private readonly Guid _readerId = Guid.NewGuid();
         private readonly TcpListener[] _listeners;
-        internal DataGridPeerFixture Peer { get; } = new();
+        internal DataGridPeerFixture Peer { get; }
         internal DataGridPeerTlsTests.LiveCluster Cluster { get; }
         internal DataGridClientServer[] Servers { get; }
         internal Func<
@@ -590,16 +593,18 @@ public sealed class DataGridClientTlsTests
 
         internal ClientCluster(
             Action<int, DataGridStorageStep>? observe = null,
-            TimeProvider? timeProvider = null
+            TimeProvider? timeProvider = null,
+            int memberCount = 3
         )
         {
+            Peer = new(memberCount: memberCount);
             _writer = Peer.Issue("catalog-writer.example", clientOnly: true);
             _reader = Peer.Issue("catalog-reader.example", clientOnly: true);
             _otherWriter = Peer.Issue("catalog-editor.example", clientOnly: true);
             Cluster = new(Peer, observe: observe, timeProvider: timeProvider);
             Cluster.StartAll();
             _listeners = Enumerable
-                .Range(0, 3)
+                .Range(0, Peer.Configuration.MemberCount)
                 .Select(_ => new TcpListener(IPAddress.Loopback, 0))
                 .ToArray();
             var policy = new DataGridClientAccessPolicy(
@@ -637,7 +642,7 @@ public sealed class DataGridClientTlsTests
                 ]
             );
             Servers = Enumerable
-                .Range(0, 3)
+                .Range(0, Peer.Configuration.MemberCount)
                 .Select(i => new DataGridClientServer(
                     Peer.Credentials(i),
                     policy,
@@ -675,7 +680,7 @@ public sealed class DataGridClientTlsTests
                         ),
                     Peer.Root,
                     Enumerable
-                        .Range(0, 3)
+                        .Range(0, Peer.Configuration.MemberCount)
                         .Select(i => new DataGridClientEndpoint(
                             Peer.Configuration.GetMember(i).MemberId,
                             Peer.Configuration.GetMember(i).DnsName,

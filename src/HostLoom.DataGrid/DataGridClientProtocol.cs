@@ -396,7 +396,7 @@ public static class DataGridClientCodec
         if (
             frame.AttemptId != expectedAttempt
             || !Enumerable
-                .Range(0, 3)
+                .Range(0, configuration.MemberCount)
                 .Any(i => configuration.GetMember(i).MemberId == frame.SenderId)
             || frame.IncarnationId != configuration.IncarnationId
             || frame.SessionNumber != request.SessionNumber
@@ -418,7 +418,7 @@ public static class DataGridClientCodec
                 if (
                     redirect != Guid.Empty
                     && !Enumerable
-                        .Range(0, 3)
+                        .Range(0, configuration.MemberCount)
                         .Any(i => configuration.GetMember(i).MemberId == redirect)
                 )
                     throw new InvalidDataException("Foreign redirect.");

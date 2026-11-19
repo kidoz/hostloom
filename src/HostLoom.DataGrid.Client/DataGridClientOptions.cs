@@ -62,13 +62,14 @@ public sealed class DataGridClientOptions
         if (
             principalId == Guid.Empty
             || !certificate.HasPrivateKey
-            || endpoints.Count != 3
+            || endpoints.Count != configuration.MemberCount
             || buildDigest.Length != 32
-            || initialMember is < 0 or > 2
+            || initialMember < 0
+            || initialMember >= configuration.MemberCount
         )
             throw new ArgumentException("Invalid client configuration.");
-        var ordered = new DataGridClientEndpoint[3];
-        for (var i = 0; i < 3; i++)
+        var ordered = new DataGridClientEndpoint[configuration.MemberCount];
+        for (var i = 0; i < ordered.Length; i++)
         {
             var matches = endpoints
                 .Where(endpoint => endpoint.MemberId == configuration.GetMember(i).MemberId)

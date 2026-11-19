@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Text;
 using HostLoom.DataGrid;
 using Xunit;
@@ -33,6 +34,25 @@ public sealed class DataGridP0CompletionTests
         Assert.Equal(first.ComputeDigest(), second.ComputeDigest());
     }
 
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(2, 2)]
+    [InlineData(3, 2)]
+    public void BootstrapEncodesTheConfiguredVoterCount(int count, int majority)
+    {
+        var configuration = new DataGridBootstrapConfiguration(
+            Cluster,
+            Members()[..count],
+            [Catalog()]
+        );
+        Assert.Equal(count, configuration.MemberCount);
+        Assert.Equal(majority, configuration.Majority);
+        Assert.Equal(
+            count,
+            BinaryPrimitives.ReadUInt16BigEndian(configuration.Encode().AsSpan(24))
+        );
+    }
+
     [Fact]
     public void CanonicalMapOrderingAndQuotaChangesAffectOnlyTheIntendedIdentity()
     {
@@ -63,7 +83,14 @@ public sealed class DataGridP0CompletionTests
     {
         var members = Members();
         Assert.Throws<ArgumentException>(() =>
-            new DataGridBootstrapConfiguration(Cluster, members[..2], [Catalog()])
+            new DataGridBootstrapConfiguration(Cluster, [], [Catalog()])
+        );
+        Assert.Throws<ArgumentException>(() =>
+            new DataGridBootstrapConfiguration(
+                Cluster,
+                [.. members, new(Guid.NewGuid(), "node-d.example", 7400)],
+                [Catalog()]
+            )
         );
         Assert.Throws<ArgumentException>(() =>
             new DataGridBootstrapConfiguration(Cluster, members, [])

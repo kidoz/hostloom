@@ -164,7 +164,7 @@ and its cleanup actually finishes. This does not establish a hard OS-I/O shutdow
 Tests cover live election/replication/reads, one-node leader restart, retained-result retry,
 whole-group restart, minority unavailability, uncertain write recovery and chunked snapshot
 catch-up. Opt-in process cases kill a follower at three snapshot publication stages and verify
-selected-generation recovery, majority progress and rejoin. Another kills all three members after
+selected-generation recovery, majority progress and rejoin. The whole-group restart case kills every member in groups of one, two, and three after
 an applied CAS loses its reply, then checks the retained identity through the SDK after restart.
 These are local process crashes on a surviving filesystem. Separate live-actor tests cover atomic
 credential publication, revocation, expiry and root replacement; process tests currently exercise

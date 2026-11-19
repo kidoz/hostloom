@@ -4,7 +4,7 @@ Experimental, non-packable unary client for the native data-grid prototype. It d
 transport and the dependency-free grid contracts. The server/actor composition is still internal;
 there is no supported deployment host, cache adapter or production readiness claim.
 
-`DataGridClientOptions` binds three configured members to client-listener ports, exact DNS SANs,
+`DataGridClientOptions` binds every configured voter to client-listener ports, exact DNS SANs,
 SHA-256 leaf pins and a private trust root. The certificate must hold a private key and be bound
 to a principal by the server. Construction captures owned certificate handles and a public-only
 root copy; input certificates may be disposed once construction returns.

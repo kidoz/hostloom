@@ -45,7 +45,7 @@ public static class DataGridStorageDiagnostics
         double? seconds
     )
     {
-        if (configuration is null || member is < 0 or > 2)
+        if (configuration is null || member < 0 || member >= configuration.MemberCount)
             return;
         for (var i = 0; i < configuration.MapCount; i++)
         {

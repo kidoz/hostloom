@@ -1,6 +1,6 @@
 # HostLoom.DataGrid
 
-Experimental, dependency-free byte-map/session model, internal three-member Raft transition
+Experimental, dependency-free byte-map/session model, internal fixed-membership Raft transition
 model and binary contract primitives. This non-packable project has no network transport,
 filesystem dependency or cache backend. The separate [storage project](../HostLoom.DataGrid.Storage/README.md)
 implements experimental WAL/recovery and generation publication. Kernel tests cover modeled quorum/commit behavior;
@@ -67,7 +67,7 @@ TLS and authenticated dispatch belong to the separate experimental transport/run
 performs no networking or authorization. Local HLGR wrappers and HLGS/HLGB images have in-memory
 codecs. No distributed correctness claim follows from format validation.
 
-`DataGridBootstrapConfiguration` validates immutable three-member and per-map declarations,
+`DataGridBootstrapConfiguration` validates one to three immutable voter declarations and per-map policies,
 orders UUIDs by network bytes, and encodes canonical HLGF bytes and their SHA-256 digest. Maps
 explicitly identify authoritative/derived ownership, durable/refill responsibility, supported
 policy codes and key/byte quotas. Per-map quota sums must fit group capacity. Unsupported policies,
@@ -99,13 +99,27 @@ The separate `HostLoom.DataGrid.Testing` project supplies bounded in-memory deli
 and seeded stop/restart/fault scripts. Real persistence/network behavior remains later work.
 
 
-The internal `Consensus` model has exactly three fixed voters in canonical configuration order.
+Choose the voter set when constructing `DataGridBootstrapConfiguration`. Each voter has its
+own member identity and endpoint. The internal `Consensus` model uses their canonical order.
+
+| Configured voters | Votes needed to elect a leader or commit | Unavailable voters tolerated |
+| --- | --- | --- |
+| 1 | 1 | 0 |
+| 2 | 2 | 0 |
+| 3 | 2 | 1 |
+
+A single voter persists its self-vote, current-term log entry and commit checkpoint locally.
+A two-voter group replicates the data, but losing either voter blocks writes and strong reads.
+Membership belongs to the configuration digest. To choose another size, bootstrap a fresh group
+with a new incarnation and fresh member directories. Existing three-member configurations retain
+their canonical bytes and digest.
+
 Every method consumes one serialized event and returns persistence, packet, timer or completion
 effects. Term/vote/log/commit/snapshot changes require an acknowledged immutable memory transaction
 before dependent replies. Restart epochs and correlated tokens reject stale persistence completions
 and RPC replies. An uncertain write faults the member until restart from the actual modeled store.
 
-A leader commits only current-term entries persisted by two voters and applies after its own
+A leader commits only current-term entries persisted by a majority of configured voters and applies after its own
 commit checkpoint is persisted. A new leader first commits a time entry. Each distributed-model
 read commits another current-term time entry and captures the value at that index; it uses no
 lease. A minority leader cannot complete writes or reads. Unknown mutation outcomes retain their

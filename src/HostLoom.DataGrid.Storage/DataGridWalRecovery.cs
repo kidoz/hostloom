@@ -226,7 +226,7 @@ internal static class DataGridWalRecovery
     {
         if (member == Guid.Empty)
             return null;
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < config.MemberCount; i++)
             if (config.GetMember(i).MemberId == member)
                 return i;
         throw new InvalidDataException("Foreign persistent voter.");

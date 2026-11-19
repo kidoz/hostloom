@@ -73,7 +73,7 @@ internal sealed partial class DataGridFileStore : IDisposable
                 "File-store experiments require Linux/macOS x64 or arm64."
             );
         ArgumentNullException.ThrowIfNull(configuration);
-        if (member is < 0 or > 2)
+        if (member < 0 || member >= configuration.MemberCount)
             throw new ArgumentOutOfRangeException(nameof(member));
         _limits = limits ?? new();
         if (
@@ -142,7 +142,8 @@ internal sealed partial class DataGridFileStore : IDisposable
     {
         EnsureUsable();
         if (
-            member is < 0 or > 2
+            member < 0
+            || member >= configuration.MemberCount
             || configuration.IncarnationId != _configuration.IncarnationId
             || configuration.GetMember(member).MemberId != _member
             || !configuration.ComputeDigest().AsSpan().SequenceEqual(_configuration.ComputeDigest())

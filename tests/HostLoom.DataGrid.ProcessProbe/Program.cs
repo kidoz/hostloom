@@ -12,22 +12,29 @@ using HostLoom.DataGrid.Runtime;
 using HostLoom.DataGrid.Storage;
 using HostLoom.DataGrid.Transport;
 
-if (!OperatingSystem.IsLinux() || args.Length is not (9 or 10))
+var marker = Array.LastIndexOf(args, "owned-test");
+var memberCount = marker - 5; // directory, member, epoch, peer ports, client port, clock, marker
+if (
+    !OperatingSystem.IsLinux()
+    || memberCount is < 1 or > DataGridBootstrapConfiguration.MaxMemberCount
+    || args.Length - marker is not (1 or 2)
+)
     throw new InvalidOperationException(
-        "Owned Linux process-test harness requires nine arguments and an optional storage pause."
+        "Owned Linux process-test harness requires one port per voter, an ownership marker and an optional storage pause."
     );
 var directory = args[0];
 var member = int.Parse(args[1], CultureInfo.InvariantCulture);
 var epoch = long.Parse(args[2], CultureInfo.InvariantCulture);
 var feasibility = Environment.GetEnvironmentVariable("HOSTLOOM_GRID_FEASIBILITY_MEMBER") == "1";
 var config = ProbeConfiguration.Create(
-    args.Skip(3).Take(3).Select(s => int.Parse(s, CultureInfo.InvariantCulture)).ToArray(),
+    args.Skip(3)
+        .Take(memberCount)
+        .Select(s => int.Parse(s, CultureInfo.InvariantCulture))
+        .ToArray(),
     feasibility
 );
-var port = int.Parse(args[6], CultureInfo.InvariantCulture);
-var clock = new ProbeClock(long.Parse(args[7], CultureInfo.InvariantCulture));
-if (args[8] != "owned-test")
-    throw new InvalidOperationException("Test ownership marker required.");
+var port = int.Parse(args[marker - 2], CultureInfo.InvariantCulture);
+var clock = new ProbeClock(long.Parse(args[marker - 1], CultureInfo.InvariantCulture));
 using var lifetime = new CancellationTokenSource(TimeSpan.FromMinutes(feasibility ? 15 : 3));
 var token = lifetime.Token;
 using var root = X509CertificateLoader.LoadCertificateFromFile(Path.Combine(directory, "root.cer"));
@@ -37,7 +44,7 @@ using var certificate = X509CertificateLoader.LoadPkcs12FromFile(
     X509KeyStorageFlags.EphemeralKeySet
 );
 var fingerprints = Enumerable
-    .Range(0, 3)
+    .Range(0, memberCount)
     .Select(i => SHA256.HashData(File.ReadAllBytes(Path.Combine(directory, $"member-{i}.cer"))))
     .ToArray();
 using var client = X509CertificateLoader.LoadCertificateFromFile(
@@ -53,8 +60,8 @@ var credentials = new DataGridPeerCredentials(
 );
 var output = new ProbeOutput();
 DataGridStorageStep? pauseStep =
-    args.Length == 10
-        ? (DataGridStorageStep)int.Parse(args[9], CultureInfo.InvariantCulture)
+    args.Length == marker + 2
+        ? (DataGridStorageStep)int.Parse(args[^1], CultureInfo.InvariantCulture)
         : null;
 if (
     pauseStep
@@ -203,7 +210,7 @@ DataGridPeerRuntime OpenRuntime()
                 IPAddress.Parse($"127.0.0.{2 + member}"),
                 config.GetMember(member).Port
             ),
-            Enumerable.Repeat(IPAddress.Parse($"127.0.0.{10 + member}"), 3).ToArray(),
+            Enumerable.Repeat(IPAddress.Parse($"127.0.0.{10 + member}"), memberCount).ToArray(),
             epoch,
             feasibility ? TimeProvider.System : clock,
             security

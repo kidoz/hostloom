@@ -32,7 +32,7 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
     private readonly CancellationTokenSource _stop = new();
     private readonly SemaphoreSlim _handshakes = new(4, 4);
     private readonly SemaphoreSlim _connections = new(16, 16);
-    private readonly SemaphoreSlim[] _members = [new(2, 2), new(2, 2), new(2, 2)];
+    private readonly SemaphoreSlim[] _members;
     private readonly SemaphoreSlim _transfer = new(1, 1);
     private readonly object _sync = new();
     private readonly Dictionary<long, Task> _sessions = [];
@@ -90,6 +90,7 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
         _local = security.LocalMember;
         _listener = listener;
         _addresses = peerAddresses.ToArray();
+        _members = _addresses.Select(_ => new SemaphoreSlim(2, 2)).ToArray();
         _receiver = receiver;
     }
 
@@ -124,10 +125,12 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(addresses);
         ArgumentNullException.ThrowIfNull(receiver);
         if (
-            addresses.Count != 3
+            addresses.Count != configuration.MemberCount
             || ((IPEndPoint)listener.LocalEndpoint).Port != configuration.GetMember(local).Port
         )
-            throw new ArgumentException("Three routes and the configured listener port required.");
+            throw new ArgumentException(
+                "One route per configured member and the configured listener port are required."
+            );
     }
 
     internal int RejectedConnections => Volatile.Read(ref _rejected);
@@ -222,7 +225,8 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
         if (
             !message.Matches(_config)
             || message.From != _local
-            || message.To is < 0 or > 2
+            || message.To < 0
+            || message.To >= _config.MemberCount
             || message.To == _local
         )
             throw new InvalidDataException("Invalid outgoing peer route.");
@@ -477,7 +481,8 @@ internal sealed class DataGridPeerTransport : IAsyncDisposable
         security.Check();
         var credentials = security.Material.Member;
         if (
-            remote is < 0 or > 2
+            remote < 0
+            || remote >= _config.MemberCount
             || remote == _local
             || !tls.IsMutuallyAuthenticated
             || !tls.IsEncrypted

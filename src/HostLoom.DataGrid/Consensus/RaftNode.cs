@@ -1,6 +1,6 @@
 namespace HostLoom.DataGrid.Consensus;
 
-/// <summary>Single-owner deterministic three-voter model. No clock, I/O, transport or lease authority.</summary>
+/// <summary>Single-owner deterministic fixed-membership model. No clock, I/O, transport or lease authority.</summary>
 internal sealed class RaftNode
 {
     private readonly DataGridBootstrapConfiguration _configuration;
@@ -11,9 +11,9 @@ internal sealed class RaftNode
     private readonly Dictionary<int, RpcWait> _rpcs = [];
     private readonly Dictionary<int, RaftToken> _votes = [];
     private readonly HashSet<int> _granted = [];
-    private readonly long[] _matched = new long[3];
-    private readonly bool[] _acknowledged = new bool[3];
-    private readonly long[] _next = new long[3];
+    private readonly long[] _matched;
+    private readonly bool[] _acknowledged;
+    private readonly long[] _next;
     private long _sequence;
     private RaftToken _mainTimer;
     private RaftWrite? _pending;
@@ -30,9 +30,12 @@ internal sealed class RaftNode
         RaftDurableImage durable
     )
     {
-        if (id is < 0 or > 2 || epoch <= 0)
+        if (id < 0 || id >= configuration.MemberCount || epoch <= 0)
             throw new ArgumentOutOfRangeException(nameof(id));
         _configuration = configuration;
+        _matched = new long[configuration.MemberCount];
+        _acknowledged = new bool[configuration.MemberCount];
+        _next = new long[configuration.MemberCount];
         _id = id;
         _epoch = epoch;
         _durable = durable;
@@ -55,7 +58,7 @@ internal sealed class RaftNode
     internal (bool Acknowledged, long MatchedIndex) ReplicationProgress(int peer)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(peer);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(peer, 2);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(peer, _configuration.MemberCount);
         return Role == RaftRole.Leader ? (_acknowledged[peer], _matched[peer]) : (false, 0);
     }
 
@@ -85,7 +88,8 @@ internal sealed class RaftNode
             _eventTime = time;
             if (
                 message.To != _id
-                || message.From is < 0 or > 2
+                || message.From < 0
+                || message.From >= _configuration.MemberCount
                 || message.From == _id
                 || message.Term < 0
                 || message.Token.Epoch <= 0
@@ -152,6 +156,11 @@ internal sealed class RaftNode
                 Image(CurrentTerm, _id),
                 () =>
                 {
+                    if (_granted.Count >= _configuration.Majority)
+                    {
+                        BecomeLeader();
+                        return;
+                    }
                     foreach (var peer in Peers())
                     {
                         var request = NewToken();
@@ -463,7 +472,7 @@ internal sealed class RaftNode
                 )
                 {
                     _granted.Add(message.From);
-                    if (_granted.Count >= 2)
+                    if (_granted.Count >= _configuration.Majority)
                         BecomeLeader();
                 }
                 break;
@@ -487,7 +496,7 @@ internal sealed class RaftNode
         Role = RaftRole.Leader;
         LeaderId = _id;
         _votes.Clear();
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < _configuration.MemberCount; i++)
         {
             _matched[i] = i == _id ? _durable.LastIndex : 0;
             _acknowledged[i] = i == _id;
@@ -676,7 +685,7 @@ internal sealed class RaftNode
         for (var index = _durable.LastIndex; index > _durable.CommitIndex; index--)
             if (
                 _durable.TermAt(index) == CurrentTerm
-                && _matched.Count(matched => matched >= index) >= 2
+                && _matched.Count(matched => matched >= index) >= _configuration.Majority
             )
             {
                 Persist(
@@ -905,7 +914,8 @@ internal sealed class RaftNode
 
     private void Send(RaftMessage message) => _effects.Add(new RaftSend(message));
 
-    private IEnumerable<int> Peers() => Enumerable.Range(0, 3).Where(peer => peer != _id);
+    private IEnumerable<int> Peers() =>
+        Enumerable.Range(0, _configuration.MemberCount).Where(peer => peer != _id);
 
     private RaftToken NewToken() => new(_epoch, checked(++_sequence));
 

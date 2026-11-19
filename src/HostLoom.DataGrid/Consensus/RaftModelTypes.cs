@@ -104,7 +104,13 @@ internal sealed class RaftDurableImage
         DataGridLocalSnapshot? snapshot = null
     )
     {
-        if (term < 0 || vote is < 0 or > 2 || (term == 0 && vote is not null))
+        ArgumentNullException.ThrowIfNull(configuration);
+        if (
+            term < 0
+            || vote < 0
+            || vote >= configuration.MemberCount
+            || (term == 0 && vote is not null)
+        )
             throw new InvalidDataException("Invalid persistent term/vote.");
         Term = term;
         Vote = vote;

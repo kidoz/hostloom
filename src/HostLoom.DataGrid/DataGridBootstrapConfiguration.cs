@@ -130,6 +130,7 @@ public sealed class DataGridMapConfiguration
 /// <remarks>This encoder validates declarations, not endpoint reachability, ACLs or storage recovery.</remarks>
 public sealed class DataGridBootstrapConfiguration
 {
+    public const int MaxMemberCount = 3;
     public const int MaxEncodedByteCount = 16384;
     private readonly DataGridMemberConfiguration[] _members;
     private readonly DataGridMapConfiguration[] _maps;
@@ -145,9 +146,11 @@ public sealed class DataGridBootstrapConfiguration
             throw new ArgumentException("An incarnation is required.", nameof(incarnationId));
         ArgumentNullException.ThrowIfNull(members);
         ArgumentNullException.ThrowIfNull(maps);
-        if (members.Count != 3 || maps.Count is < 1 or > 16)
-            throw new ArgumentException("V1 requires three members and one to sixteen maps.");
-        _members = new DataGridMemberConfiguration[3];
+        if (members.Count is < 1 or > MaxMemberCount || maps.Count is < 1 or > 16)
+            throw new ArgumentException(
+                "V1 requires one to three members and one to sixteen maps."
+            );
+        _members = new DataGridMemberConfiguration[members.Count];
         _maps = new DataGridMapConfiguration[maps.Count];
         for (var i = 0; i < _members.Length; i++)
             _members[i] =
@@ -190,7 +193,7 @@ public sealed class DataGridBootstrapConfiguration
         WriteInteger(stream, 1, 2);
         WriteInteger(stream, 0, 2);
         WriteId(stream, incarnationId);
-        WriteInteger(stream, 3, 2);
+        WriteInteger(stream, (ulong)_members.Length, 2);
         WriteInteger(stream, (ulong)_maps.Length, 2);
         foreach (var member in _members)
         {
@@ -219,6 +222,8 @@ public sealed class DataGridBootstrapConfiguration
     }
 
     public Guid IncarnationId { get; }
+    public int MemberCount => _members.Length;
+    public int Majority => MemberCount / 2 + 1;
     public int MapCount => _maps.Length;
 
     public DataGridMemberConfiguration GetMember(int index) => _members[index];

@@ -101,7 +101,7 @@ internal static class ProbeConfiguration
         new(
             Cluster,
             Enumerable
-                .Range(0, 3)
+                .Range(0, peerPorts.Count)
                 .Select(i => new DataGridMemberConfiguration(
                     new Guid(i + 1, 0, 0, new byte[8]),
                     $"node-{(char)('a' + i)}.example",

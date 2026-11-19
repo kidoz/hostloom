@@ -16,7 +16,7 @@ HOSTLOOM_DATA_GRID_PROCESSES=1 dotnet test \
   -- --filter-class '*DataGridProcessTests'
 ```
 
-The tests create three members with separate directories and ephemeral loopback ports, private
+The whole-group restart case runs with one, two, and three voters. The other cases create three members with separate directories and ephemeral loopback ports, private
 short-lived test credentials under an owner-only temporary directory, and monotonically increasing
 process epochs on restart. They pass all paths/routes explicitly. They never select an existing
 service, shared credentials, production endpoint, or alternate backend. The parent owns startup,
@@ -39,7 +39,7 @@ status includes the snapshot index. No path or payload is accepted through these
 Status is observed on a bounded polling timer; recovery is accepted through SDK results/history,
 not merely an internal leader diagnostic. Any runtime/listener fault aborts status checks.
 
-The thirteen cases cover acknowledged data and retained identity after leader kill/full-group
+The cases cover acknowledged data and retained identity after leader kill/full-group
 restart, unknown outcome after commit-before-reply kill, minority unavailability/recovery,
 absolute expiry after failover, a healed peer partition, relative TTL/replay with close, and
 session expiry without allocator number reuse. Three cases kill a catching-up follower at snapshot

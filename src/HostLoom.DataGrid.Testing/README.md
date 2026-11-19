@@ -1,6 +1,6 @@
 # HostLoom.DataGrid.Testing
 
-Non-packable deterministic fixtures for the local application and fixed three-member Raft
+Non-packable deterministic fixtures for the local application and fixed-membership Raft
 models. No sockets, processes or files are started; modeled persistence is memory retained by
 the test controller. TLS and device durability are unverified.
 
@@ -23,8 +23,8 @@ configuration and Seed when reproducing a failing trace. These are fixture limit
 node memory/performance budgets. All APIs require serialized test-driver ownership.
 
 
-`DataGridRaftSimulation(configuration, seed)` drives three single-owner Raft actors with one
-atomic memory store per member. Step orders writes, packets and timer expirations using a seeded
+`DataGridRaftSimulation(configuration, seed)` drives one single-owner Raft actor and one
+atomic memory store per configured voter. Step orders writes, packets and timer expirations using a seeded
 scheduler; UtcTime is the simulated tick converted to UTC ticks. Election intervals are seeded
 500–1000 ms, heartbeat 100 ms, peer retry 200 ms, and client deadline 5000 ms. These are fixture
 settings, not workload NFRs. All driver APIs require serialized ownership.

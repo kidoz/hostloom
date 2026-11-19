@@ -5,7 +5,7 @@ Experimental, non-packable TLS peer and client transport. It references only the
 [client SDK](../HostLoom.DataGrid.Client/README.md) now exist. There is no deployment API.
 
 The prototype requires Linux and TLS 1.3, mutual authentication, private custom trust, valid
-chains/expiry/EKU, exact DNS SANs, and SHA-256 leaf-certificate bindings to three configured
+chains/expiry/EKU, exact DNS SANs, and SHA-256 leaf-certificate bindings to the configured
 members. Trusted certificates grant no membership without an explicit binding. Wildcard/common-
 name fallback is disabled. A local denylist and expiry apply; there is no implicit online CRL
 dependency. Construction captures owned certificate handles and public-only root copies; the

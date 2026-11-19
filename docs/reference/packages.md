@@ -200,7 +200,11 @@ make no general Native AOT claim.
 ## Experimental DataGrid
 
 The `HostLoom.DataGrid*` projects are non-packable prototypes and are excluded from the NuGet
-inventory above. Their public runtime, storage, transport, and client contracts are documented
+inventory above. Bootstrap a fixed group of one, two, or three voters. The corresponding
+majorities for elections, writes, and strong reads are one, two, and two. Only the three-voter
+group can continue serving requests after losing one voter. See the
+[kernel source guide](https://github.com/kidoz/hostloom/tree/main/src/HostLoom.DataGrid) for configuration and recovery boundaries.
+Their public runtime, storage, transport, and client contracts are documented
 in the [runtime source guide](https://github.com/kidoz/hostloom/tree/main/src/HostLoom.DataGrid.Runtime).
 The [resource inventory](https://github.com/kidoz/hostloom/blob/main/src/HostLoom.DataGrid.Runtime/RESOURCE_LIMITS.md)
 distinguishes queued, executing, and retained ownership; logical byte quotas are not heap limits.

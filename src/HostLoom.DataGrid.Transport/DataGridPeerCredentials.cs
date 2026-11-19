@@ -33,9 +33,10 @@ internal sealed class DataGridPeerCredentials
         ArgumentNullException.ThrowIfNull(certificate);
         ArgumentNullException.ThrowIfNull(root);
         if (
-            localMember is < 0 or > 2
+            localMember < 0
+            || localMember >= configuration.MemberCount
             || !certificate.HasPrivateKey
-            || memberFingerprints.Count != 3
+            || memberFingerprints.Count != configuration.MemberCount
             || buildDigest.Length != 32
         )
             throw new ArgumentException("Invalid member credentials.");
@@ -54,7 +55,10 @@ internal sealed class DataGridPeerCredentials
                     )
             )
             .ToArray();
-        if (_fingerprints.Select(Convert.ToHexString).Distinct(StringComparer.Ordinal).Count() != 3)
+        if (
+            _fingerprints.Select(Convert.ToHexString).Distinct(StringComparer.Ordinal).Count()
+            != configuration.MemberCount
+        )
             throw new ArgumentException(
                 "Each certificate binds exactly one member.",
                 nameof(memberFingerprints)
@@ -95,7 +99,7 @@ internal sealed class DataGridPeerCredentials
             || certificate.NotAfter.ToUniversalTime() <= DateTime.UtcNow
         )
             return -1;
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < _fingerprints.Length; i++)
             if (
                 CryptographicOperations.FixedTimeEquals(digest, _fingerprints[i])
                 && certificate.MatchesHostname(

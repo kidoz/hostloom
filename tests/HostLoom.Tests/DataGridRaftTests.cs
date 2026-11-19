@@ -93,6 +93,44 @@ public sealed class DataGridRaftTests
     }
 
     [Fact]
+    public void SingleVoterRecoversCommittedValueAndRequiresAFreshReadBarrier()
+    {
+        var sim = new DataGridRaftSimulation(Configuration(1), 19);
+        sim.RunUntil(s => s.Status(0).Ready);
+        var session = Open(sim, 0);
+        var stored = Applied(sim, 0, Mutation(sim, session, 1, [7]));
+        sim.Stop(0);
+        sim.Restart(0);
+        sim.RunUntil(s => s.Status(0).Ready);
+        Assert.Equal(0, sim.PendingMessageCount);
+        var read = Done(sim, sim.Read(0, Map, Key));
+        Assert.True(read.Index > stored.Index);
+        Assert.Equal(stored.Result!.GetItem(0).Version, read.Entry!.Version);
+        Assert.Equal(new byte[] { 7 }, read.Entry.GetValue());
+    }
+
+    [Fact]
+    public void TwoVotersRequireBothForElectionMutationAndStrongRead()
+    {
+        var sim = new DataGridRaftSimulation(Configuration(2), 7);
+        sim.Stop(1);
+        sim.Advance(3000);
+        Assert.Equal(DataGridRaftRole.Candidate, sim.Status(0).Role);
+        sim.Restart(1);
+        sim.RunUntil(s => s.Status(0).Ready || s.Status(1).Ready);
+        var leader = sim.Status(0).Ready ? 0 : 1;
+        var session = Open(sim, leader);
+        sim.Stop(1 - leader);
+        var commit = sim.Status(leader).CommitIndex;
+        var write = sim.Propose(leader, Mutation(sim, session, 1, [7]));
+        sim.RunUntil(s => !s.Status(leader).Busy);
+        var read = sim.Read(leader, Map, Key);
+        Assert.Equal(DataGridRaftOutcomeKind.OutcomeUnknown, Done(sim, write).Kind);
+        Assert.Equal(DataGridRaftOutcomeKind.Unavailable, Done(sim, read).Kind);
+        Assert.Equal(commit, sim.Status(leader).CommitIndex);
+    }
+
+    [Fact]
     public void MajorityPersistsWritesAndReadCapturesItsCommittedBarrier()
     {
         var sim = new DataGridRaftSimulation(Configuration(), 1);
@@ -814,14 +852,17 @@ public sealed class DataGridRaftTests
             conflict
         );
 
-    private static DataGridBootstrapConfiguration Configuration() =>
+    private static DataGridBootstrapConfiguration Configuration(int memberCount = 3) =>
         new(
             Cluster,
-            [
-                new(new Guid(1, 0, 0, new byte[8]), "node-a.example", 7400),
-                new(new Guid(2, 0, 0, new byte[8]), "node-b.example", 7400),
-                new(new Guid(3, 0, 0, new byte[8]), "node-c.example", 7400),
-            ],
+            Enumerable
+                .Range(0, memberCount)
+                .Select(i => new DataGridMemberConfiguration(
+                    new Guid(i + 1, 0, 0, new byte[8]),
+                    $"node-{(char)('a' + i)}.example",
+                    7400
+                ))
+                .ToArray(),
             [
                 new(
                     Map,

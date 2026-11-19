@@ -1116,7 +1116,7 @@ internal sealed class DataGridPeerRuntime
             .Select(_node.Machine.GetMapUsage)
             .ToArray();
         var replicas = Enumerable
-            .Range(0, 3)
+            .Range(0, _configuration.MemberCount)
             .Where(peer => peer != _memberOrdinal)
             .Select(peer =>
             {

@@ -526,6 +526,16 @@ public sealed class DataGridFileStorageTests
         Assert.Throws<InvalidDataException>(() =>
             DataGridFileStore.Open(directory.Path, Configuration(999), 0)
         );
+        var singleton = new DataGridBootstrapConfiguration(
+            config.IncarnationId,
+            [config.GetMember(0)],
+            [config.GetMap(0)]
+        );
+        Assert.Throws<InvalidDataException>(() =>
+            DataGridFileStore.Open(directory.Path, singleton, 0)
+        );
+        using (var reopened = DataGridFileStore.Open(directory.Path, config, 0))
+            Assert.Equal(2, reopened.Image.CommitIndex);
         var path = System.IO.Path.Combine(directory.Path, $"snapshot-{Nonce:N}.bin");
         var bytes = File.ReadAllBytes(path);
         bytes[^1] ^= 1;

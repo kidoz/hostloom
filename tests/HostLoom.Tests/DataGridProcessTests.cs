@@ -258,12 +258,15 @@ public sealed class DataGridProcessTests
         AssertHistoryRejectsStaleRead(history, baseline.Reply.Read!.GetItem(0)!);
     }
 
-    [Fact(Timeout = 90000)]
-    public async Task AbruptWholeGroupKillPreservesUnknownCasAndRetainedIdentity()
+    [Theory(Timeout = 90000)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task AbruptWholeGroupKillPreservesUnknownCasAndRetainedIdentity(int memberCount)
     {
         RequireFixture();
         using var timeout = Deadline(TestContext.Current.CancellationToken);
-        await using var cluster = new ProcessCluster();
+        await using var cluster = new ProcessCluster(memberCount: memberCount);
         await cluster.StartAll(timeout.Token);
         var leader = await cluster.Leader(timeout.Token);
         await using var opener = cluster.Client(leader);
@@ -298,7 +301,7 @@ public sealed class DataGridProcessTests
             (await cluster.Nodes[leader]!.Status(timeout.Token)).Commit,
             timeout.Token
         );
-        await Task.WhenAll(Enumerable.Range(0, 3).Select(cluster.Kill));
+        await Task.WhenAll(Enumerable.Range(0, memberCount).Select(cluster.Kill));
         await cluster.StartAll(timeout.Token);
         var replacement = await cluster.Leader(timeout.Token);
         await using var restarted = cluster.Client(replacement, history);
@@ -764,18 +767,24 @@ public sealed class DataGridProcessTests
         );
         private readonly int[] _ports;
         private readonly Dictionary<(int From, int To), DataGridPeerFaultProxy> _links = [];
-        private readonly long[] _epochs = new long[3];
+        private readonly long[] _epochs;
         private readonly DataGridBootstrapConfiguration _config;
-        internal ProcessNode?[] Nodes { get; } = new ProcessNode?[3];
+        internal ProcessNode?[] Nodes { get; }
         internal long Clock { get; private set; } = DateTimeOffset.UtcNow.Ticks;
 
         internal string DirectoryPath => _directory;
         internal DataGridBootstrapConfiguration Configuration => _config;
 
-        internal ProcessCluster(bool feasibility = false)
+        internal ProcessCluster(bool feasibility = false, int memberCount = 3)
         {
             _feasibility = feasibility;
-            _fixture = new(feasibility ? 100000 : 1000, feasibility ? 128L * 1024 * 1024 : 1048576);
+            Nodes = new ProcessNode?[memberCount];
+            _epochs = new long[memberCount];
+            _fixture = new(
+                feasibility ? 100000 : 1000,
+                feasibility ? 128L * 1024 * 1024 : 1048576,
+                memberCount
+            );
             if (!OperatingSystem.IsLinux())
                 throw new PlatformNotSupportedException();
             Directory.CreateDirectory(
@@ -784,7 +793,7 @@ public sealed class DataGridProcessTests
             );
             _config = ProbeConfiguration.Create(
                 Enumerable
-                    .Range(0, 3)
+                    .Range(0, Nodes.Length)
                     .Select(i => (int)_fixture.Configuration.GetMember(i).Port)
                     .ToArray(),
                 feasibility
@@ -807,7 +816,7 @@ public sealed class DataGridProcessTests
                     _setupClient.Export(X509ContentType.Cert)
                 );
             }
-            for (var i = 0; i < 3; i++)
+            for (var i = 0; i < Nodes.Length; i++)
             {
                 File.WriteAllBytes(
                     Path.Combine(_directory, $"member-{i}.pfx"),
@@ -822,7 +831,7 @@ public sealed class DataGridProcessTests
                 using var store = DataGridFileStore.Bootstrap(node, _config, i);
             }
             var listeners = Enumerable
-                .Range(0, 3)
+                .Range(0, Nodes.Length)
                 .Select(_ => new TcpListener(IPAddress.Loopback, 0))
                 .ToArray();
             try
@@ -840,8 +849,8 @@ public sealed class DataGridProcessTests
             }
             foreach (var listener in _fixture.Listeners)
                 listener.Stop();
-            for (var source = 0; source < 3; source++)
-            for (var target = 0; target < 3; target++)
+            for (var source = 0; source < Nodes.Length; source++)
+            for (var target = 0; target < Nodes.Length; target++)
                 if (source != target)
                     _links.Add(
                         (source, target),
@@ -851,7 +860,7 @@ public sealed class DataGridProcessTests
 
         internal async Task StartAll(CancellationToken token)
         {
-            for (var i = 0; i < 3; i++)
+            for (var i = 0; i < Nodes.Length; i++)
                 await Start(i, token);
         }
 
@@ -904,7 +913,7 @@ public sealed class DataGridProcessTests
 
         internal async Task StopAll(CancellationToken token)
         {
-            for (var i = 0; i < 3; i++)
+            for (var i = 0; i < Nodes.Length; i++)
                 if (Nodes[i] is { } node)
                 {
                     await node.Stop(token);
@@ -918,7 +927,7 @@ public sealed class DataGridProcessTests
             using var poll = new PeriodicTimer(TimeSpan.FromMilliseconds(50));
             do
             {
-                for (var i = 0; i < 3; i++)
+                for (var i = 0; i < Nodes.Length; i++)
                     if (
                         i != excluded
                         && Nodes[i] is { } node
@@ -982,7 +991,7 @@ public sealed class DataGridProcessTests
                     setup ? _setupClient! : _client,
                     _fixture.Root,
                     Enumerable
-                        .Range(0, 3)
+                        .Range(0, Nodes.Length)
                         .Select(i => new DataGridClientEndpoint(
                             _config.GetMember(i).MemberId,
                             _config.GetMember(i).DnsName,
@@ -1065,21 +1074,16 @@ public sealed class DataGridProcessTests
             start.ArgumentList.Add(
                 Path.Combine(AppContext.BaseDirectory, "HostLoom.DataGrid.ProcessProbe.dll")
             );
-            foreach (
-                var argument in new[]
-                {
-                    directory,
-                    member.ToString(CultureInfo.InvariantCulture),
-                    epoch.ToString(CultureInfo.InvariantCulture),
-                    config.GetMember(0).Port.ToString(CultureInfo.InvariantCulture),
-                    config.GetMember(1).Port.ToString(CultureInfo.InvariantCulture),
-                    config.GetMember(2).Port.ToString(CultureInfo.InvariantCulture),
-                    clientPort.ToString(CultureInfo.InvariantCulture),
-                    clock.ToString(CultureInfo.InvariantCulture),
-                    "owned-test",
-                }
-            )
-                start.ArgumentList.Add(argument);
+            start.ArgumentList.Add(directory);
+            start.ArgumentList.Add(member.ToString(CultureInfo.InvariantCulture));
+            start.ArgumentList.Add(epoch.ToString(CultureInfo.InvariantCulture));
+            for (var i = 0; i < config.MemberCount; i++)
+                start.ArgumentList.Add(
+                    config.GetMember(i).Port.ToString(CultureInfo.InvariantCulture)
+                );
+            start.ArgumentList.Add(clientPort.ToString(CultureInfo.InvariantCulture));
+            start.ArgumentList.Add(clock.ToString(CultureInfo.InvariantCulture));
+            start.ArgumentList.Add("owned-test");
             if (pause is { } step)
                 start.ArgumentList.Add(((int)step).ToString(CultureInfo.InvariantCulture));
             _process = Process.Start(start)!;

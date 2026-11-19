@@ -65,7 +65,7 @@ public sealed class DataGridClient : IAsyncDisposable
                 .SequenceEqual(_configuration.ComputeDigest())
             || !options.Build.AsSpan().SequenceEqual(_build)
             || Enumerable
-                .Range(0, 3)
+                .Range(0, _routes.Count)
                 .Any(i =>
                     options.Endpoints[i].Port != _routes[i].Port
                     || !Equals(options.Endpoints[i].Address, _routes[i].Address)
@@ -341,7 +341,7 @@ public sealed class DataGridClient : IAsyncDisposable
                     RecordAttempt();
                     if (failure.Code == DataGridClientFailureCode.Redirect && ++redirects <= 2)
                         member = Enumerable
-                            .Range(0, 3)
+                            .Range(0, _routes.Count)
                             .First(i => options.Endpoints[i].MemberId == failure.RedirectMember);
                     else if (
                         failure.Code
@@ -350,7 +350,7 @@ public sealed class DataGridClient : IAsyncDisposable
                         || failure.Code == DataGridClientFailureCode.CapacityExceeded
                             && !failure.MayHaveBeenAdmitted
                     )
-                        member = (member + 1) % 3;
+                        member = (member + 1) % _routes.Count;
                     else
                         return Finish(reply);
                     if (attempt == 2)
@@ -396,7 +396,7 @@ public sealed class DataGridClient : IAsyncDisposable
                 catch (Exception exception) when (exception is IOException or SocketException)
                 {
                     mayHaveBeenAdmitted |= submitted && !replyValidated;
-                    member = (member + 1) % 3;
+                    member = (member + 1) % _routes.Count;
                     if (attempt < 2)
                     {
                         try

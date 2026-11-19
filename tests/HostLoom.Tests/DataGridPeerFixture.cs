@@ -16,7 +16,7 @@ internal sealed class DataGridPeerFixture : IDisposable
     internal static readonly Guid Nonce = new("40112233-4455-6677-8899-aabbccddeeff");
     internal static readonly DataGridKey Key = DataGridKey.FromUtf8("catalog:eu");
 
-    internal DataGridPeerFixture(int mapKeys = 1000, long mapBytes = 1048576)
+    internal DataGridPeerFixture(int mapKeys = 1000, long mapBytes = 1048576, int memberCount = 3)
     {
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var request = new CertificateRequest(
@@ -36,11 +36,11 @@ internal sealed class DataGridPeerFixture : IDisposable
             DateTimeOffset.UtcNow.AddDays(30)
         );
         Certificates = Enumerable
-            .Range(0, 3)
+            .Range(0, memberCount)
             .Select(i => Issue($"node-{(char)('a' + i)}.example"))
             .ToArray();
         Listeners = Enumerable
-            .Range(0, 3)
+            .Range(0, memberCount)
             .Select(_ => new TcpListener(IPAddress.Loopback, 0))
             .ToArray();
         foreach (var listener in Listeners)
@@ -48,7 +48,7 @@ internal sealed class DataGridPeerFixture : IDisposable
         Configuration = new(
             Cluster,
             Enumerable
-                .Range(0, 3)
+                .Range(0, memberCount)
                 .Select(i => new DataGridMemberConfiguration(
                     new Guid(i + 1, 0, 0, new byte[8]),
                     $"node-{(char)('a' + i)}.example",

@@ -50,17 +50,17 @@ public sealed record DataGridRaftOutcome(
     DataGridLocalEntry? Entry
 );
 
-/// <summary>Three-node deterministic Raft experiment. Durable writes are atomic memory transactions.</summary>
+/// <summary>Fixed-membership deterministic Raft experiment. Durable writes are atomic memory transactions.</summary>
 /// <remarks>This is not the v1 TLS/WAL transport or evidence of filesystem durability.</remarks>
 public sealed class DataGridRaftSimulation
 {
     private readonly DataGridBootstrapConfiguration _configuration;
-    private readonly RaftNode?[] _nodes = new RaftNode?[3];
-    private readonly RaftDurableImage[] _stores = new RaftDurableImage[3];
-    private readonly long[] _epochs = new long[3];
-    private readonly bool[][] _links = [new bool[3], new bool[3], new bool[3]];
-    private readonly bool[] _held = new bool[3];
-    private readonly DataGridJournalFault[] _faults = new DataGridJournalFault[3];
+    private readonly RaftNode?[] _nodes;
+    private readonly RaftDurableImage[] _stores;
+    private readonly long[] _epochs;
+    private readonly bool[][] _links;
+    private readonly bool[] _held;
+    private readonly DataGridJournalFault[] _faults;
     private readonly SortedDictionary<(long Due, long Order), Scheduled> _events = [];
     private readonly Dictionary<(int Node, RaftToken Token), (long Due, long Order)> _timers = [];
     private readonly Dictionary<Guid, Request> _requests = [];
@@ -81,13 +81,21 @@ public sealed class DataGridRaftSimulation
     {
         ArgumentNullException.ThrowIfNull(configuration);
         _configuration = configuration;
+        var count = configuration.MemberCount;
+        _nodes = new RaftNode?[count];
+        _stores = new RaftDurableImage[count];
+        _epochs = new long[count];
+        _links = new bool[count][];
+        _held = new bool[count];
+        _faults = new DataGridJournalFault[count];
         Seed = seed;
         _random = seed;
         _reference = new(configuration);
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < _nodes.Length; i++)
         {
             _stores[i] = new(configuration);
-            for (var j = 0; j < 3; j++)
+            _links[i] = new bool[count];
+            for (var j = 0; j < _nodes.Length; j++)
                 _links[i][j] = i != j;
             Restart(i);
         }
@@ -171,7 +179,7 @@ public sealed class DataGridRaftSimulation
     public void Isolate(int node, bool isolated = true)
     {
         CheckNode(node);
-        for (var other = 0; other < 3; other++)
+        for (var other = 0; other < _nodes.Length; other++)
             if (other != node)
                 SetLink(node, other, !isolated);
     }
@@ -347,7 +355,7 @@ public sealed class DataGridRaftSimulation
     /// <summary>Checks committed-prefix consistency, election uniqueness and local application history.</summary>
     public void CheckInvariants()
     {
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < _nodes.Length; i++)
         {
             var actor = _nodes[i];
             if (actor is null || actor.Role == RaftRole.Faulted)
@@ -510,7 +518,7 @@ public sealed class DataGridRaftSimulation
                 Fail("Success used a prefix committed before invocation.");
             if (
                 !_committed.TryGetValue(completion.Index, out var entry)
-                || !_stores.Where(store => Contains(store, entry)).Skip(1).Any()
+                || _stores.Count(store => Contains(store, entry)) <= _stores.Length / 2
             )
                 Fail("Success preceded majority persistence.");
             var reference = Replay(completion.Index, out var expectedResult);
@@ -659,9 +667,9 @@ public sealed class DataGridRaftSimulation
         return _nodes[node] ?? throw new InvalidOperationException("Node is stopped.");
     }
 
-    private static void CheckNode(int node)
+    private void CheckNode(int node)
     {
-        if (node is < 0 or > 2)
+        if (node < 0 || node >= _nodes.Length)
             throw new ArgumentOutOfRangeException(nameof(node));
     }
 
