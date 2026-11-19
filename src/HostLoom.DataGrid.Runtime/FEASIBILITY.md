@@ -288,6 +288,10 @@ The run recorded zero member faults or OOMs.
 At concurrency 1 and seed 43, batches 1, 32 and 128 each delivered about two successful
 requests/s on the same executable inputs and fixture. They processed 2.00, 63.89 and
 253.01 items/s, respectively. All three runs verified both recovery checks and recorded
-one sample refusal and zero unresolved mutations. Five of 27 workload combinations have
-completed on this build. Matrix coverage, contextual measurements and target decisions remain
-open.
+one sample refusal and zero unresolved mutations.
+
+At concurrency 16 and seed 43, batch 32 delivered 7.93 successful requests/s and 253.87
+items/s. Batch 128 delivered 8.00 requests/s and 1024.00 items/s. Batch 32 recorded 1990
+refusals out of 4373 calls and one unknown outcome during the sample. Both runs settled
+all pending mutations and verified both recovery checks. Six of 27 workload combinations have
+completed on this build. Matrix coverage, contextual measurements and target decisions remain open.
