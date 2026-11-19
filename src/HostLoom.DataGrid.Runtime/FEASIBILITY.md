@@ -290,8 +290,11 @@ requests/s on the same executable inputs and fixture. They processed 2.00, 63.89
 253.01 items/s, respectively. All three runs verified both recovery checks and recorded
 one sample refusal and zero unresolved mutations.
 
-At concurrency 16 and seed 43, batch 32 delivered 7.93 successful requests/s and 253.87
-items/s. Batch 128 delivered 8.00 requests/s and 1024.00 items/s. Batch 32 recorded 1990
-refusals out of 4373 calls and one unknown outcome during the sample. Both runs settled
-all pending mutations and verified both recovery checks. Six of 27 workload combinations have
-completed on this build. Matrix coverage, contextual measurements and target decisions remain open.
+At concurrency 16 and seed 43, batches 1, 32 and 128 delivered 7.97, 7.93 and 8.00
+successful requests/s and processed 7.97, 253.87 and 1024.00 items/s, respectively.
+Refusal rates were 45.96%, 45.51% and 44.73%. Batch 32 recorded one unknown outcome.
+All three runs settled pending mutations and verified both recovery checks.
+
+Seven of 27 workload combinations completed on the archived build that required three
+voters. A baseline on the current build with configurable voter counts, further matrix
+coverage, contextual measurements and target decisions remain open.
