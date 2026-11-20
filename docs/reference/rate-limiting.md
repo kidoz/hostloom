@@ -1,9 +1,8 @@
 # Rate limiting
 
 HostLoom rate limiting supplies an asynchronous token-bucket `RateLimiter`, an in-process
-reference store, Redis and standalone Valkey backends, and an outgoing `HttpClient` handler. The
-same kernel can be used by a future incoming policy; this page currently documents outgoing HTTP
-support only.
+reference store, Redis and standalone Valkey backends, ASP.NET Core endpoint policies, and an
+outgoing `HttpClient` handler.
 
 ## Register a limiter and client
 
@@ -72,6 +71,68 @@ does not report current remote availability. Token-bucket lease disposal does no
 A successful lease can report `RateLimitMetadata.RemainingPermits`. An exhausted lease can carry
 `MetadataName.RetryAfter`. There is no background replenisher and no globally ordered queue.
 
+## Incoming endpoint policies
+
+Reference `HostLoom.AspNetCore.RateLimiting` and the selected store package in the web application.
+This example gives each tenant a burst of 100 requests with one permit replenished every 600 ms.
+
+```csharp
+using HostLoom.AspNetCore.RateLimiting;
+using HostLoom.RateLimiting.DependencyInjection;
+using HostLoom.Redis;
+
+builder.Services.AddHostLoomRateLimiting("orders-read", options =>
+{
+    options.Namespace = "orders";
+    options.TokenBucket.TokenLimit = 100;
+    options.TokenBucket.TokensPerPeriod = 1;
+    options.TokenBucket.ReplenishmentPeriod = TimeSpan.FromMilliseconds(600);
+})
+.UseRedis(redis => redis.Configuration = builder.Configuration.GetConnectionString("Redis")!)
+.AddTenantRateLimitPolicy("tenant_id");
+```
+
+With MVC, authentication, and authorization services configured, use this pipeline order.
+
+```csharp
+app.UseRouting();
+app.UseAuthentication();
+app.UseAuthorization();
+app.UseRateLimiter();
+app.MapControllers();
+```
+
+Apply `[EnableRateLimiting("orders-read")]` to a controller or action, or
+`.RequireRateLimiting("orders-read")` to a Minimal API endpoint. The tenant helper selects
+the configured claim on the primary authenticated identity. Anonymous requests receive 401.
+A missing, conflicting, or invalid tenant ID receives 403. Both responses precede any store call.
+
+For operator or anonymous quotas, register `AddEndpointRateLimitPolicy(context => ...)`
+on a named profile. Return a stable, bounded store key. Applications with multiple issuers
+can canonicalize the validated issuer and subject (including mapped subject claims), then
+HMAC the unambiguously encoded pair with a shared application key. The selector can return
+a reserved fallback partition when a subject is missing. Give anonymous identities a separate
+profile or key domain. For per-IP quotas, configure trusted proxies or networks and run
+forwarded headers middleware before rate limiting, then read `Connection.RemoteIpAddress`.
+Use a shared anonymous key when ingress trust is unconfigured.
+
+Exhaustion returns 429 and rounds a positive retry delay up to whole seconds. A backend failure
+under default `Deny` returns 503. Explicit `Allow` admits the request and records a degraded
+acquisition. Supply the optional `onRejected` callback on either registration to read
+`OnRejectedContext.Lease` metadata or customize the response. Apply `[DisableRateLimiting]`
+or `.DisableRateLimiting()` to exempt an endpoint even during a store outage.
+
+Use the endpoint policy alone for a single token budget. In ASP.NET Core 10, combining an
+asynchronous endpoint policy with a synchronous nonrefundable `GlobalLimiter` can consume
+two global permits on one request. The middleware attempts the global limiter again when
+the endpoint requires asynchronous acquisition. [ASP.NET Core middleware source](https://github.com/dotnet/aspnetcore/blob/release/10.0/src/Middleware/RateLimiting/src/RateLimitingMiddleware.cs)
+
+Every Kubernetes replica sharing a quota must use the same store database, namespace,
+profile name, partition key derivation, and token-bucket settings. Separate environments
+with distinct namespaces. During migration from a process-local limiter, the shared policy
+covers all traffic once the last old replica drains. ASP.NET Core caches one local limiter
+per named policy. Partition state resides in the store.
+
 ## Outgoing HTTP behavior
 
 Synchronous `HttpClient.Send` throws `NotSupportedException` before dispatch.
@@ -101,10 +162,7 @@ construct `RateLimitedHttpMessageHandler` over any `RateLimiter` and optional
 
 ## Failure and consistency limits
 
-Quota exhaustion is an ordinary decision. Backend failure is not: `Deny` produces unavailable
-metadata and the HTTP backend exception, while `Allow` produces an acquired degraded lease. A
-future incoming adapter should map these differently—normally 429 for exhaustion and 503 for a
-denied backend outage.
+On backend failure, `Deny` produces unavailable metadata and `Allow` produces an acquired degraded lease.
 
 Caller cancellation ends the wait. A script already dispatched can still have consumed a permit;
 HostLoom never replays or refunds an ambiguous result. Valkey preserves its non-replay rule for

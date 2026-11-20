@@ -219,6 +219,7 @@ jobs:
           HostLoom.RateLimiting
           HostLoom.RateLimiting.DependencyInjection
           HostLoom.RateLimiting.HttpClient
+          HostLoom.AspNetCore.RateLimiting
           HostLoom.NodeLeasing
           HostLoom.NodeLeasing.DependencyInjection
           HostLoom.NodeLeasing.Testing

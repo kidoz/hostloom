@@ -33,6 +33,7 @@ recorded in `CHANGELOG.md`.
 | `HostLoom.Locking.Pipelines` | Distributed-lock filter for HostLoom pipelines |
 | `HostLoom.RateLimiting` | Asynchronous token-bucket limiter, in-process store, and backend-neutral contracts |
 | `HostLoom.RateLimiting.DependencyInjection` | Named limiter profiles, store registration, options validation, and readiness |
+| `HostLoom.AspNetCore.RateLimiting` | Per-identity incoming MVC and Minimal API quotas over a named store profile |
 | `HostLoom.RateLimiting.HttpClient` | Per-attempt outgoing HTTP handler with bounded local waiting |
 | `HostLoom.Scheduling` | Cron, fixed-rate, and fixed-delay schedules over `TimeProvider`, sequential runs, guard contract |
 | `HostLoom.Scheduling.DependencyInjection` | Schedule registration, per-run scopes, options validation, and hosting |
@@ -135,6 +136,7 @@ The package's conformance tests consume the schema and exact fixtures from
   `System.Threading.RateLimiting` and logging abstractions, with no container or backend SDK.
   `HostLoom.RateLimiting.DependencyInjection` adds registration, options, and health checks;
   `HostLoom.RateLimiting.HttpClient` depends on the kernel and `Microsoft.Extensions.Http`.
+  `HostLoom.AspNetCore.RateLimiting` references the rate-limiting DI package and the ASP.NET Core shared framework.
 - [`HostLoom.Generators`](generators.md) is dependency-free (pure BCL) and independent of the
   messaging core; `HostLoom.Generators.Testing` depends on it alone and adds the deterministic
   `IRandomSource` fakes, without a test framework dependency.

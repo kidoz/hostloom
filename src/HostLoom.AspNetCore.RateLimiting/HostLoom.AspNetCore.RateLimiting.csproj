@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>ASP.NET Core endpoint policies for distributed per-identity rate limits.</Description>
+    <PackageId>HostLoom.AspNetCore.RateLimiting</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>hostloom;aspnetcore;rate-limiting;http</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="HostLoom.Tests" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../HostLoom.RateLimiting.DependencyInjection/HostLoom.RateLimiting.DependencyInjection.csproj" />
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+</Project>

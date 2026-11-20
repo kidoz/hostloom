@@ -23,6 +23,7 @@
     <ProjectReference Include="../../src/HostLoom.DataGrid.Runtime/HostLoom.DataGrid.Runtime.csproj" />
     <ProjectReference Include="../../src/HostLoom.DataGrid.Storage/HostLoom.DataGrid.Storage.csproj" />
     <ProjectReference Include="../../src/HostLoom.DataGrid.Testing/HostLoom.DataGrid.Testing.csproj" />
+    <ProjectReference Include="../../src/HostLoom.AspNetCore.RateLimiting/HostLoom.AspNetCore.RateLimiting.csproj" />
     <ProjectReference Include="../../src/HostLoom.AspNetCore.WebSockets/HostLoom.AspNetCore.WebSockets.csproj" />
     <ProjectReference Include="../../src/HostLoom.AspNetCore.WebSockets.Testing/HostLoom.AspNetCore.WebSockets.Testing.csproj" />
     <ProjectReference Include="../../src/HostLoom.Caching.DependencyInjection/HostLoom.Caching.DependencyInjection.csproj" />

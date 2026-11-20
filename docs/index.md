@@ -47,8 +47,8 @@ real broker with [RabbitMQ](how-to/use-rabbitmq.md) or
 [migration guide](how-to/migrate-composition.md), and review
 [measured startup and compiler costs](reference/composition-performance.md).
 
-**Protecting an outgoing API quota?** Configure a shared token bucket and an `HttpClient` handler
-in the [rate-limiting reference](reference/rate-limiting.md).
+**Sharing an API quota across pods?** Configure an [incoming endpoint policy](reference/rate-limiting.md#incoming-endpoint-policies)
+or an [outgoing HTTP handler](reference/rate-limiting.md#outgoing-http-behavior).
 
 ## How this documentation is organized
 

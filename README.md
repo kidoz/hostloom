@@ -24,8 +24,8 @@ implements:
 - a two-tier cache with per-key single-flight, cross-instance invalidation, and
   fail-open reads, and a distributed lock with leases, owner tokens, bounded
   retry, and lost-lease detection, backed by Redis or standalone Valkey;
-- asynchronous token-bucket rate limiting for outgoing `HttpClient` calls, with
-  bounded local waits and shared Redis or standalone Valkey quotas;
+- shared Redis or standalone Valkey token buckets for incoming ASP.NET Core endpoint policies
+  and outgoing `HttpClient` calls, with bounded local waits for outgoing attempts;
 - scheduled jobs on cron, fixed-rate, and fixed-delay triggers over
   `TimeProvider`, run sequentially per schedule and, when marked exclusive, on
   one instance at a time through the distributed lock;
@@ -111,6 +111,7 @@ packages are versioned together:
 | `HostLoom.Locking.Pipelines` | Distributed-lock filter for HostLoom pipelines |
 | `HostLoom.RateLimiting` | Asynchronous token-bucket limiter, in-process store, and backend-neutral contracts |
 | `HostLoom.RateLimiting.DependencyInjection` | Named limiter profiles, store registration, options validation, and readiness |
+| `HostLoom.AspNetCore.RateLimiting` | Per-identity incoming MVC and Minimal API quotas over a named store profile |
 | `HostLoom.RateLimiting.HttpClient` | Per-attempt outgoing HTTP handler with bounded local waiting |
 | `HostLoom.Scheduling` | Cron, fixed-rate, and fixed-delay schedules over `TimeProvider`, sequential runs, guard contract |
 | `HostLoom.Scheduling.DependencyInjection` | Schedule registration, per-run scopes, options validation, and hosting |
@@ -592,7 +593,13 @@ cache paths, and against Medallion `DistributedLock.Redis` for Redis locking. Th
 HostLoom-only cases have a committed, machine-checked 10% regression gate. See the
 [benchmark guide](benchmarks/HostLoom.Benchmarks/README.md).
 
-## Outgoing rate limiting
+## HTTP rate limiting
+
+For incoming MVC and Minimal API requests, register a named HostLoom profile with
+`.UseRedis(...).AddTenantRateLimitPolicy("tenant_id")` and apply
+`[EnableRateLimiting("orders-read")]` with the same profile name. Use
+`AddEndpointRateLimitPolicy` for an application-defined partition selector and rejection handler.
+See [incoming endpoint policies](docs/reference/rate-limiting.md#incoming-endpoint-policies) for middleware order and exemptions.
 
 `HostLoom.RateLimiting` supplies an asynchronous token-bucket `RateLimiter`, an in-process store,
 and backend-neutral contracts. Redis and standalone Valkey stores share one quota across service
@@ -1138,6 +1145,7 @@ src/HostLoom.Locking.Testing/    container-free lock composition, scripted, reco
 src/HostLoom.Locking.Pipelines/  distributed-lock filter for generic pipelines
 src/HostLoom.RateLimiting/       token-bucket kernel, in-process store, and lease contracts
 src/HostLoom.RateLimiting.DependencyInjection/ named limiter registration and readiness
+src/HostLoom.AspNetCore.RateLimiting/ incoming MVC and Minimal API rate-limit policies
 src/HostLoom.RateLimiting.HttpClient/ per-attempt outgoing HTTP handler and bounded waits
 src/HostLoom.Generators/         dependency-free secure random strings, codes, tokens, and identifiers
 src/HostLoom.Generators.Testing/ deterministic seeded/scripted random sources and a numeric test sequence

@@ -4,6 +4,7 @@ Backend-neutral asynchronous token-bucket rate limiting over
 `System.Threading.RateLimiting.RateLimiter`. The package includes an in-process reference store;
 `HostLoom.Redis` and `HostLoom.Valkey` provide shared stores, and
 `HostLoom.RateLimiting.HttpClient` integrates outgoing HTTP clients.
+`HostLoom.AspNetCore.RateLimiting` applies per-identity quotas to incoming MVC and Minimal API requests.
 
 ```csharp
 var store = new InMemoryRateLimitStore();
