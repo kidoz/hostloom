@@ -10,6 +10,9 @@ are derived from release tags at publish time.
 
 ### Added
 
+- Share one rate-limit bucket per identity across ASP.NET Core MVC and Minimal API replicas with
+  named endpoint policies, application-selected keys, exemptions, and customizable rejection responses.
+
 - Add `AddHub` as a protocol-compatible WebSocket registration facade for prefixed typed requests
   and keyed snapshot-plus-live channels, with existing authorization, credit, and cleanup behavior.
 - Add opt-in strict cache removal and routine pull-request/main .NET verification with required
@@ -18,6 +21,8 @@ are derived from release tags at publish time.
 
 ### Changed
 
+- Rate-limit keys reject unpaired UTF-16 surrogates to keep distinct identifiers from addressing
+  the same UTF-8 store key.
 - Custom outbox stores now return a fresh ownership token with each claimed message and compare it
   on every mark. Releasing inbox stores now record and compare a per-delivery token. Migrate the
   stored claims and drain older workers as described in the [messaging reference](docs/reference/messaging.md#outbox).
