@@ -302,5 +302,11 @@ The current build with configurable voter counts completed its first workload co
 with three voters, batch 128, concurrency 16 and seed 43. Both builds delivered 8.00
 successful requests/s and verified recovery after leader loss and whole-group restart.
 The current run recorded 45.75% refusals and 18455 cgroup memory-limit events, compared with
-44.73% and 3974 in the archived run. Both recorded zero OOMs or member faults. Further
-matrix coverage, contextual measurements and target decisions remain open.
+44.73% and 3974 in the archived run. Both recorded zero OOMs or member faults.
+
+Batch 32 completed with three voters and the same executable inputs, concurrency and
+seed. It delivered 7.98 successful requests/s and 255.47 items/s with 45.81% refusals.
+It settled all eight pending mutations and verified both recovery checks. It recorded
+6227 cgroup memory-limit events and zero OOMs or member faults. Two workload combinations
+have completed on the configurable voter count build with three voters. Further matrix
+coverage, contextual measurements and target decisions remain open.
