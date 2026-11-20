@@ -16,7 +16,18 @@ are derived from release tags at publish time.
   brokers and execution of all six Native AOT samples. Release checks also execute packed
   composition consumers natively.
 
+### Changed
+
+- Custom outbox stores now return a fresh ownership token with each claimed message and compare it
+  on every mark. Releasing inbox stores now record and compare a per-delivery token. Migrate the
+  stored claims and drain older workers as described in the [messaging reference](docs/reference/messaging.md#outbox).
+
 ### Fixed
+
+- Bind WebSocket topic and session subjects to the primary authenticated identity. Reject synchronous
+  sends through the outgoing HTTP rate limiter and honor receive kill-switch trips on successful
+  completions. Skip outbox batch entries with insufficient lease time.
+- Update the benchmark-only AutoMapper dependency to 16.3.0 to clear two high-severity advisories.
 
 - Conditional cache encoding and size failures now throw `CacheUnavailableException` instead of
   reporting a duplicate, including under `ReturnFalse`. Explicit writes supersede older local
