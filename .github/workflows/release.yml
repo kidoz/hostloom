@@ -234,6 +234,7 @@ jobs:
           HostLoom.Generators
           HostLoom.Generators.Testing
           HostLoom.Redis
+          HostLoom.AspNetCore.DataProtection
           HostLoom.Valkey
           LIST
 

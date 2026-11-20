@@ -46,6 +46,8 @@ real broker with [RabbitMQ](how-to/use-rabbitmq.md) or
 [migration guide](how-to/migrate-composition.md), and review
 [measured startup and compiler costs](reference/composition-performance.md).
 
+**Sharing sign-in cookies across pods?** Configure a [shared Data Protection key ring](how-to/share-data-protection-keys.md).
+
 **Sharing an API quota across pods?** Configure an [incoming endpoint policy](reference/rate-limiting.md#incoming-endpoint-policies)
 or an [outgoing HTTP handler](reference/rate-limiting.md#outgoing-http-behavior).
 

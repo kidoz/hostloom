@@ -111,6 +111,7 @@ packages are versioned together:
 | `HostLoom.Locking.Pipelines` | Distributed-lock filter for HostLoom pipelines |
 | `HostLoom.RateLimiting` | Asynchronous token-bucket limiter, in-process store, and backend-neutral contracts |
 | `HostLoom.RateLimiting.DependencyInjection` | Named limiter profiles, store registration, options validation, and readiness |
+| `HostLoom.AspNetCore.DataProtection` | Certificate-protected ASP.NET Core key rings on a default or named Redis connection |
 | `HostLoom.AspNetCore.RateLimiting` | Per-identity incoming MVC and Minimal API quotas over a named store profile |
 | `HostLoom.RateLimiting.HttpClient` | Per-attempt outgoing HTTP handler with bounded local waiting |
 | `HostLoom.Scheduling` | Cron, fixed-rate, and fixed-delay schedules over `TimeProvider`, sequential runs, guard contract |
@@ -1145,6 +1146,7 @@ src/HostLoom.Locking.Testing/    container-free lock composition, scripted, reco
 src/HostLoom.Locking.Pipelines/  distributed-lock filter for generic pipelines
 src/HostLoom.RateLimiting/       token-bucket kernel, in-process store, and lease contracts
 src/HostLoom.RateLimiting.DependencyInjection/ named limiter registration and readiness
+src/HostLoom.AspNetCore.DataProtection/ certificate-protected ASP.NET Core keys in Redis
 src/HostLoom.AspNetCore.RateLimiting/ incoming MVC and Minimal API rate-limit policies
 src/HostLoom.RateLimiting.HttpClient/ per-attempt outgoing HTTP handler and bounded waits
 src/HostLoom.Generators/         dependency-free secure random strings, codes, tokens, and identifiers

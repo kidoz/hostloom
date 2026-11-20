@@ -13,6 +13,7 @@
     </PackageReference>
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="../../src/HostLoom.AspNetCore.DataProtection/HostLoom.AspNetCore.DataProtection.csproj" />
     <ProjectReference Include="../../src/HostLoom.AspNetCore.RateLimiting/HostLoom.AspNetCore.RateLimiting.csproj" />
     <ProjectReference Include="../../src/HostLoom.Transport.Kafka/HostLoom.Transport.Kafka.csproj" />
     <ProjectReference Include="../../src/HostLoom.Transport.RabbitMq/HostLoom.Transport.RabbitMq.csproj" />

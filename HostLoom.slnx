@@ -25,6 +25,7 @@
     <Project Path="src/HostLoom.DataGrid.Storage/HostLoom.DataGrid.Storage.csproj" />
     <Project Path="src/HostLoom.DataGrid.Testing/HostLoom.DataGrid.Testing.csproj" />
     <Project Path="src/HostLoom.Analyzers/HostLoom.Analyzers.csproj" />
+    <Project Path="src/HostLoom.AspNetCore.DataProtection/HostLoom.AspNetCore.DataProtection.csproj" />
     <Project Path="src/HostLoom.AspNetCore.RateLimiting/HostLoom.AspNetCore.RateLimiting.csproj" />
     <Project Path="src/HostLoom.AspNetCore.WebSockets/HostLoom.AspNetCore.WebSockets.csproj" />
     <Project Path="src/HostLoom.AspNetCore.WebSockets.Testing/HostLoom.AspNetCore.WebSockets.Testing.csproj" />

@@ -17,6 +17,11 @@ services
     .AddHealthChecks();
 ```
 
+`AddHostLoomRedisConnection` registers a connection on its own or attaches to a configured
+profile. The optional `HostLoom.AspNetCore.DataProtection` package uses the same connection
+and database to persist a certificate-protected ASP.NET Core key ring.
+
+
 `UseRedis` on a caching, locking, or rate-limiting builder registers `RedisOptions`, validates them
 at startup, and creates the connection lazily on first use; calling it on several builders with the
 same profile shares that connection. `RedisOptions`

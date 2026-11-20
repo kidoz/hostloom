@@ -33,6 +33,7 @@ recorded in `CHANGELOG.md`.
 | `HostLoom.Locking.Pipelines` | Distributed-lock filter for HostLoom pipelines |
 | `HostLoom.RateLimiting` | Asynchronous token-bucket limiter, in-process store, and backend-neutral contracts |
 | `HostLoom.RateLimiting.DependencyInjection` | Named limiter profiles, store registration, options validation, and readiness |
+| `HostLoom.AspNetCore.DataProtection` | Certificate-protected ASP.NET Core key rings on a default or named Redis connection |
 | `HostLoom.AspNetCore.RateLimiting` | Per-identity incoming MVC and Minimal API quotas over a named store profile |
 | `HostLoom.RateLimiting.HttpClient` | Per-attempt outgoing HTTP handler with bounded local waiting |
 | `HostLoom.Scheduling` | Cron, fixed-rate, and fixed-delay schedules over `TimeProvider`, sequential runs, guard contract |
@@ -132,6 +133,7 @@ The package's conformance tests consume the schema and exact fixtures from
   `HostLoom.Caching`; `HostLoom.Locking.Pipelines` on `HostLoom.Pipelines`
   and `HostLoom.Locking`. Neither references a `DependencyInjection` package
   or the messaging core.
+- [`HostLoom.AspNetCore.DataProtection`](../how-to/share-data-protection-keys.md) uses `HostLoom.Redis` and Microsoft's StackExchange.Redis Data Protection repository. The web application supplies its certificate.
 - [`HostLoom.RateLimiting`](rate-limiting.md) depends on
   `System.Threading.RateLimiting` and logging abstractions, with no container or backend SDK.
   `HostLoom.RateLimiting.DependencyInjection` adds registration, options, and health checks;

@@ -56,6 +56,7 @@ nav:
       - Publish and subscribe: tutorials/publish-subscribe.md
       - Building a standalone pipeline: tutorials/first-pipeline.md
   - How-to guides:
+      - Share Data Protection keys: how-to/share-data-protection-keys.md
       - Stream process-local events to WebSockets: how-to/stream-process-local-events-to-websockets.md
       - Run over RabbitMQ: how-to/use-rabbitmq.md
       - Run over Kafka: how-to/use-kafka.md

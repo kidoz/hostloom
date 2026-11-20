@@ -8,6 +8,10 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Added
+
+- Add `HostLoom.AspNetCore.DataProtection` for sharing ASP.NET Core cookie and SSO protection keys across replicas. It uses Microsoft's Redis list format, certificate encryption at rest, and the database selected by a HostLoom Redis connection profile.
+
 ## [0.21.0] - 2026-11-20
 
 The twenty-fourth release of **HostLoom**. It adds incoming ASP.NET Core endpoint rate limiting,
