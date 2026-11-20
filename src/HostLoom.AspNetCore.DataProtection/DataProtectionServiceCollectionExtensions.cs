@@ -8,21 +8,21 @@ using StackExchange.Redis;
 
 namespace HostLoom.AspNetCore.DataProtection;
 
-/// <summary>Configures ASP.NET Core Data Protection to share a certificate-protected key ring through Redis.</summary>
+/// <summary>Configures ASP.NET Core Data Protection to share a key ring through Redis with optional certificate encryption.</summary>
 public static class DataProtectionServiceCollectionExtensions
 {
-    /// <summary>Uses Microsoft's Redis key repository on a HostLoom connection profile and encrypts newly generated keys with the supplied certificate.</summary>
+    /// <summary>Uses Microsoft's Redis key repository on a HostLoom connection profile and optionally encrypts newly generated keys with a certificate.</summary>
     /// <param name="services">The application's services.</param>
     /// <param name="applicationName">Stable Data Protection application discriminator shared by compatible replicas.</param>
     /// <param name="redisKey">Exact Redis list key for the ring in the profile's configured database.</param>
-    /// <param name="keyEncryptionCertificate">Application-owned RSA certificate. Replicas need access to the private key for decryption.</param>
+    /// <param name="keyEncryptionCertificate">Optional application-owned RSA certificate for encrypting new key-ring entries. When omitted, the application's Data Protection key-encryption configuration applies.</param>
     /// <param name="redisProfile">Existing or new named connection profile, or null for the default connection.</param>
     /// <param name="configureRedis">Connection settings when configuring this profile here. Omit when attaching to a configured profile.</param>
     public static IDataProtectionBuilder AddHostLoomDataProtection(
         this IServiceCollection services,
         string applicationName,
         string redisKey,
-        X509Certificate2 keyEncryptionCertificate,
+        X509Certificate2? keyEncryptionCertificate = null,
         string? redisProfile = null,
         Action<RedisOptions>? configureRedis = null
     )
@@ -30,13 +30,13 @@ public static class DataProtectionServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(applicationName);
         ArgumentException.ThrowIfNullOrWhiteSpace(redisKey);
-        ArgumentNullException.ThrowIfNull(keyEncryptionCertificate);
 
         services.AddHostLoomRedisConnection(redisProfile, configureRedis);
-        var builder = services
-            .AddDataProtection()
-            .SetApplicationName(applicationName)
-            .ProtectKeysWithCertificate(keyEncryptionCertificate);
+        var builder = services.AddDataProtection().SetApplicationName(applicationName);
+        if (keyEncryptionCertificate is not null)
+        {
+            builder.ProtectKeysWithCertificate(keyEncryptionCertificate);
+        }
         services
             .AddOptions<KeyManagementOptions>()
             .Configure<IServiceProvider>(

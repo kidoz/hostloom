@@ -11,9 +11,12 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.DataProtection.KeyManagement;
+using Microsoft.AspNetCore.DataProtection.XmlEncryption;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using NSubstitute;
 using StackExchange.Redis;
 using Xunit;
 
@@ -26,14 +29,35 @@ public sealed class RedisDataProtectionTests
     private const int Database = 6;
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
+    [Fact]
+    public async Task OmittedCertificatePreservesApplicationKeyEncryptor()
+    {
+        var services = new ServiceCollection();
+        var encryptor = Substitute.For<IXmlEncryptor>();
+        services.Configure<KeyManagementOptions>(options => options.XmlEncryptor = encryptor);
+        services.AddHostLoomDataProtection(
+            Profile,
+            "catalog:data-protection",
+            configureRedis: options => options.Configuration = RedisAvailability.Configuration
+        );
+        await using var provider = services.BuildServiceProvider();
+        Assert.Same(
+            encryptor,
+            provider.GetRequiredService<IOptions<KeyManagementOptions>>().Value.XmlEncryptor
+        );
+    }
+
     [Theory(Skip = RedisAvailability.Skip, SkipUnless = nameof(Available))]
-    [InlineData(true)]
-    [InlineData(false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
     public async Task CookieSurvivesReplacementAndInteroperatesWithMicrosoft(
-        bool hostLoomWritesFirst
+        bool hostLoomWritesFirst,
+        bool useCertificate
     )
     {
-        using var certificate = CreateCertificate();
+        using var certificate = useCertificate ? CreateCertificate() : null;
         using var redis = await ConnectionMultiplexer.ConnectAsync(RedisAvailability.Configuration);
         var db = redis.GetDatabase(Database);
         var key = $"catalog:test:data-protection:{Guid.NewGuid():N}";
@@ -61,8 +85,14 @@ public sealed class RedisDataProtectionTests
 
             var stored = await db.ListRangeAsync(key);
             var xml = XElement.Parse((string)Assert.Single(stored)!);
-            Assert.Contains(xml.Descendants(), e => e.Name.LocalName == "EncryptedData");
-            Assert.DoesNotContain(xml.Descendants(), e => e.Name.LocalName == "masterKey");
+            Assert.Equal(
+                useCertificate,
+                xml.Descendants().Any(e => e.Name.LocalName == "EncryptedData")
+            );
+            Assert.Equal(
+                !useCertificate,
+                xml.Descendants().Any(e => e.Name.LocalName == "masterKey")
+            );
             Assert.Null(await db.KeyTimeToLiveAsync(key));
 
             await using var reader = await StartAsync(
@@ -198,7 +228,7 @@ public sealed class RedisDataProtectionTests
         bool useHostLoom,
         string key,
         string appName,
-        X509Certificate2 certificate,
+        X509Certificate2? certificate,
         ConnectionMultiplexer redis
     )
     {
@@ -214,20 +244,24 @@ public sealed class RedisDataProtectionTests
                     o.Configuration = RedisAvailability.Configuration;
                     o.DatabaseIndex = Database;
                 });
-            builder.Services.AddHostLoomDataProtection(
-                appName,
-                key,
-                certificate,
-                redisProfile: Profile
-            );
+            if (certificate is null)
+                builder.Services.AddHostLoomDataProtection(appName, key, redisProfile: Profile);
+            else
+                builder.Services.AddHostLoomDataProtection(
+                    appName,
+                    key,
+                    certificate,
+                    redisProfile: Profile
+                );
         }
         else
         {
-            builder
+            var protection = builder
                 .Services.AddDataProtection()
                 .SetApplicationName(appName)
-                .PersistKeysToStackExchangeRedis(() => redis.GetDatabase(Database), key)
-                .ProtectKeysWithCertificate(certificate);
+                .PersistKeysToStackExchangeRedis(() => redis.GetDatabase(Database), key);
+            if (certificate is not null)
+                protection.ProtectKeysWithCertificate(certificate);
         }
         builder
             .Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
