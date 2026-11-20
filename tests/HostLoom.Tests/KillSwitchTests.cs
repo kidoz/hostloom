@@ -58,8 +58,13 @@ public sealed class KillSwitchTests
         Assert.Equal(3, state.Attempts);
     }
 
-    [Fact]
-    public async Task One_failure_below_the_activation_count_does_not_pause()
+    [Theory]
+    [InlineData(1, false)]
+    [InlineData(0.4, true)]
+    public async Task A_success_at_the_activation_count_applies_the_window_ratio(
+        double threshold,
+        bool expectedPause
+    )
     {
         var clock = new ManualTimeProvider();
         var state = new State();
@@ -68,7 +73,7 @@ public sealed class KillSwitchTests
             state,
             new KillSwitchPolicy(
                 activationThreshold: 2,
-                tripThreshold: 1,
+                tripThreshold: threshold,
                 trackingPeriod: TimeSpan.FromMinutes(1),
                 restartTimeout: TimeSpan.FromMinutes(1)
             )
@@ -91,6 +96,11 @@ public sealed class KillSwitchTests
         );
         Assert.Equal("ok", done.Value);
         Assert.Equal(2, state.Attempts);
+        Assert.Equal(
+            expectedPause,
+            host.Services.GetRequiredService<ReceiveAdmission>()
+                .TryGetSuspension(new ReceiveDestination("work", null), clock.GetUtcNow(), out _)
+        );
     }
 
     [Fact]

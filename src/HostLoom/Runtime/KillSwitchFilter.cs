@@ -101,29 +101,33 @@ internal sealed class KillSwitchFilter : IFilter<ReceiveContext>
         try
         {
             await next.SendAsync(context).ConfigureAwait(false);
-            Record(destination, failed: false);
         }
         catch (Exception exception) when (Counts(exception))
         {
-            if (Record(destination, failed: true))
-            {
-                var resume = _clock.GetUtcNow() + _policy.RestartTimeout;
-                _admission.Suspend(destination, resume);
-                HostLoomDiagnostics.ReceiveSuspensions.Add(
-                    1,
-                    new System.Diagnostics.TagList
-                    {
-                        { "messaging.destination.name", destination.Address },
-                    }
-                );
-                _logger.LogWarning(
-                    "Receive destination '{Destination}' paused until {ResumeAt} after its failure ratio tripped.",
-                    destination.Address,
-                    resume
-                );
-            }
-
+            RecordOutcome(destination, failed: true);
             throw;
+        }
+        RecordOutcome(destination, failed: false);
+    }
+
+    private void RecordOutcome(ReceiveDestination destination, bool failed)
+    {
+        if (Record(destination, failed))
+        {
+            var resume = _clock.GetUtcNow() + _policy.RestartTimeout;
+            _admission.Suspend(destination, resume);
+            HostLoomDiagnostics.ReceiveSuspensions.Add(
+                1,
+                new System.Diagnostics.TagList
+                {
+                    { "messaging.destination.name", destination.Address },
+                }
+            );
+            _logger.LogWarning(
+                "Receive destination '{Destination}' paused until {ResumeAt} after its failure ratio tripped.",
+                destination.Address,
+                resume
+            );
         }
     }
 
