@@ -290,12 +290,7 @@ builder.Services
     .AddHostLoom()
     .UseRabbitMq()
     .UseOutbox<OrdersOutboxStore>()                  // IOutboxStore over the orders database
-    .UseInbox(
-        provider => InboxStore.FromClaim(
-            (key, window, token) => provider.GetRequiredService<ICache>().SetIfAbsentAsync(
-                key, key, new CacheEntryOptions(window) { OnUnavailable = UnavailableBehavior.Throw }, token),
-            (key, token) => provider.GetRequiredService<ICache>().RemoveAsync(key, token)),
-        TimeSpan.FromDays(1))
+    .UseInbox<OrdersInboxStore>(TimeSpan.FromDays(1)) // IInboxStore over shared delivery claims
     .AddSubscriber<OrderPlaced, ShippingHandler>("orders", subscription: "shipping");
 ```
 

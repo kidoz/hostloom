@@ -19,6 +19,7 @@ public sealed class InboxTests
         Assert.True(
             await store.TryRecordAsync(
                 "k",
+                Guid.NewGuid(),
                 TimeSpan.FromHours(1),
                 TestContext.Current.CancellationToken
             )
@@ -26,6 +27,7 @@ public sealed class InboxTests
         Assert.False(
             await store.TryRecordAsync(
                 "k",
+                Guid.NewGuid(),
                 TimeSpan.FromHours(1),
                 TestContext.Current.CancellationToken
             )
@@ -35,13 +37,37 @@ public sealed class InboxTests
         Assert.True(
             await store.TryRecordAsync(
                 "k",
+                Guid.NewGuid(),
                 TimeSpan.FromHours(1),
                 TestContext.Current.CancellationToken
             )
         );
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
-            await store.TryRecordAsync("k", TimeSpan.Zero, TestContext.Current.CancellationToken)
+            await store.TryRecordAsync(
+                "k",
+                Guid.NewGuid(),
+                TimeSpan.Zero,
+                TestContext.Current.CancellationToken
+            )
         );
+    }
+
+    [Fact]
+    public async Task Late_release_preserves_the_replacement_delivery()
+    {
+        var clock = new TestClock();
+        var store = new InMemoryInboxStore(clock);
+        var expired = Guid.NewGuid();
+        var current = Guid.NewGuid();
+        var window = TimeSpan.FromMinutes(1);
+        var ct = TestContext.Current.CancellationToken;
+        Assert.True(await store.TryRecordAsync("order", expired, window, ct));
+        clock.Advance(window);
+        Assert.True(await store.TryRecordAsync("order", current, window, ct));
+        await store.ReleaseAsync("order", expired, ct);
+        Assert.False(await store.TryRecordAsync("order", Guid.NewGuid(), window, ct));
+        await store.ReleaseAsync("order", current, ct);
+        Assert.True(await store.TryRecordAsync("order", Guid.NewGuid(), window, ct));
     }
 
     [Fact]
@@ -144,20 +170,23 @@ public sealed class InboxTests
     {
         var store = new InMemoryInboxStore(new TestClock());
 
+        var owner = Guid.NewGuid();
         Assert.True(
             await store.TryRecordAsync(
                 "k",
+                owner,
                 TimeSpan.FromHours(1),
                 TestContext.Current.CancellationToken
             )
         );
-        await store.ReleaseAsync("k", TestContext.Current.CancellationToken);
-        await store.ReleaseAsync("absent", TestContext.Current.CancellationToken);
+        await store.ReleaseAsync("k", owner, TestContext.Current.CancellationToken);
+        await store.ReleaseAsync("absent", owner, TestContext.Current.CancellationToken);
 
         Assert.Equal(0, store.Count);
         Assert.True(
             await store.TryRecordAsync(
                 "k",
+                Guid.NewGuid(),
                 TimeSpan.FromHours(1),
                 TestContext.Current.CancellationToken
             )
@@ -212,10 +241,10 @@ public sealed class InboxTests
                         _ =>
                             InboxStore.FromClaim(
                                 inner.TryRecordAsync,
-                                (key, token) =>
+                                (key, claimToken, token) =>
                                 {
                                     released.Add((key, token.IsCancellationRequested));
-                                    return inner.ReleaseAsync(key, token);
+                                    return inner.ReleaseAsync(key, claimToken, token);
                                 }
                             ),
                         TimeSpan.FromHours(1)
@@ -302,7 +331,8 @@ public sealed class InboxTests
                         _ =>
                             InboxStore.FromClaim(
                                 inner.TryRecordAsync,
-                                static (_, _) => throw new InvalidOperationException("release down")
+                                static (_, _, _) =>
+                                    throw new InvalidOperationException("release down")
                             ),
                         TimeSpan.FromHours(1)
                     )
@@ -376,10 +406,10 @@ public sealed class InboxTests
                         _ =>
                             InboxStore.FromClaim(
                                 inner.TryRecordAsync,
-                                (key, token) =>
+                                (key, claimToken, token) =>
                                 {
                                     released.Add(key);
-                                    return inner.ReleaseAsync(key, token);
+                                    return inner.ReleaseAsync(key, claimToken, token);
                                 }
                             ),
                         TimeSpan.FromHours(1)
@@ -553,6 +583,7 @@ public sealed class InboxTests
     {
         public ValueTask<bool> TryRecordAsync(
             string key,
+            Guid claimToken,
             TimeSpan window,
             CancellationToken cancellationToken = default
         ) => ValueTask.FromResult(keys.TryAdd(key, 0));

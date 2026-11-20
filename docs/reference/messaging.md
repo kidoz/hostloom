@@ -295,34 +295,21 @@ take every delivery the first recorded for a duplicate and run no handler.
 
 | `IInboxStore` member | Contract |
 | --- | --- |
-| `TryRecordAsync(key, window, ct)` | atomic set-if-absent: `true` when the key was not present and is now recorded for the window, `false` when it was; throw when the backend cannot answer |
-| `ReleaseAsync(key, ct)` | forget a key recorded for a run that did not complete; succeed when the key is already gone |
+| `TryRecordAsync(key, claimToken, window, ct)` | atomically store the token with the window expiry when the key is absent or expired, returning true on insertion |
+| `ReleaseAsync(key, claimToken, ct)` | atomically delete only a matching token. A missing key or different token completes successfully |
 
-`ReleaseAsync` has a default implementation that does nothing, so a store
-written against `TryRecordAsync` alone still compiles. Such a store keeps a
-failed run's key: every redelivery of that event inside the window is then
-acknowledged as a duplicate without running the handlers, which loses the
-event. Implement `ReleaseAsync` in every store that can delete a key.
-`InMemoryInboxStore` implements both. `InboxStore.FromClaim` wraps delegates,
-so a cache's set-if-absent with the key as its own value, and its remove, are a
-store:
+The filter generates a fresh GUID per delivery. To migrate a releasing store, save this
+GUID as the record value and compare it in the delete operation. A separate read followed
+by an unconditional delete can remove a replacement delivery's claim. Drain older consumers
+before enabling token-aware release. Existing records without tokens suppress duplicates
+until their original expiry.
 
-```csharp
-.UseInbox(
-    provider => InboxStore.FromClaim(
-        (key, window, token) => provider.GetRequiredService<ICache>().SetIfAbsentAsync(
-            key, key, new CacheEntryOptions(window) { OnUnavailable = UnavailableBehavior.Throw }, token),
-        (key, token) => provider.GetRequiredService<ICache>().RemoveAsync(key, UnavailableBehavior.Throw, token)),
-    TimeSpan.FromDays(1))
-```
-
-The strict removal overload makes a failed distributed release visible to the inbox logger.
-It is implemented by `TieredCache`; a custom `ICache` must implement it explicitly.
-For durable processing guarantees, use an application-owned inbox with claim/completion
-state and recovery coordinated with the handler's transaction.
-
-The single-delegate `FromClaim(tryRecord)` overload remains and builds a store
-that cannot release.
+`InMemoryInboxStore` implements both operations. The two-delegate
+`InboxStore.FromClaim` overload accepts the same token-aware operations. The
+single-delegate overload supports a record-only backend. A record-only store keeps
+failed deliveries until expiry, so redelivery in that window skips the handlers.
+For durable processing guarantees, coordinate an application-owned inbox with the
+handler's transaction.
 
 A store that throws from `TryRecordAsync` lets the handlers run with an
 `InboxSkipped` payload on the context and a warning in the log: processing

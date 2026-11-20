@@ -39,9 +39,7 @@ public static class InboxHostLoomBuilderExtensions
     /// <summary>
     /// Skips redeliveries of an event whose handlers completed for the same (topic, subscription,
     /// message id) inside <paramref name="window"/>, recording deliveries in the store
-    /// <paramref name="store"/> resolves, for example
-    /// <see cref="InboxStore.FromClaim(Func{string, TimeSpan, CancellationToken, ValueTask{bool}}, Func{string, CancellationToken, ValueTask})"/>
-    /// over a cache.
+    /// <paramref name="store"/> resolves.
     /// </summary>
     /// <exception cref="InvalidOperationException">The inbox is already enabled.</exception>
     public static HostLoomBuilder UseInbox(

@@ -9,7 +9,9 @@ public sealed class InMemoryInboxStore(TimeProvider? timeProvider = null) : IInb
 {
     private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
     private readonly Lock _gate = new();
-    private readonly Dictionary<string, DateTimeOffset> _seen = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (Guid Token, DateTimeOffset ExpiresAt)> _seen = new(
+        StringComparer.Ordinal
+    );
 
     /// <summary>Keys currently remembered and unexpired.</summary>
     public int Count
@@ -19,7 +21,7 @@ public sealed class InMemoryInboxStore(TimeProvider? timeProvider = null) : IInb
             lock (_gate)
             {
                 var now = _clock.GetUtcNow();
-                return _seen.Values.Count(expiry => expiry > now);
+                return _seen.Values.Count(entry => entry.ExpiresAt > now);
             }
         }
     }
@@ -27,6 +29,7 @@ public sealed class InMemoryInboxStore(TimeProvider? timeProvider = null) : IInb
     /// <inheritdoc />
     public ValueTask<bool> TryRecordAsync(
         string key,
+        Guid claimToken,
         TimeSpan window,
         CancellationToken cancellationToken = default
     )
@@ -37,7 +40,7 @@ public sealed class InMemoryInboxStore(TimeProvider? timeProvider = null) : IInb
         lock (_gate)
         {
             var now = _clock.GetUtcNow();
-            if (_seen.TryGetValue(key, out var expiry) && expiry > now)
+            if (_seen.TryGetValue(key, out var entry) && entry.ExpiresAt > now)
             {
                 return ValueTask.FromResult(false);
             }
@@ -48,7 +51,7 @@ public sealed class InMemoryInboxStore(TimeProvider? timeProvider = null) : IInb
             {
                 foreach (
                     var stale in _seen
-                        .Where(pair => pair.Value <= now)
+                        .Where(pair => pair.Value.ExpiresAt <= now)
                         .Select(pair => pair.Key)
                         .ToArray()
                 )
@@ -57,19 +60,24 @@ public sealed class InMemoryInboxStore(TimeProvider? timeProvider = null) : IInb
                 }
             }
 
-            _seen[key] = now + window;
+            _seen[key] = (claimToken, now + window);
             return ValueTask.FromResult(true);
         }
     }
 
     /// <inheritdoc />
-    public ValueTask ReleaseAsync(string key, CancellationToken cancellationToken = default)
+    public ValueTask ReleaseAsync(
+        string key,
+        Guid claimToken,
+        CancellationToken cancellationToken = default
+    )
     {
         ArgumentException.ThrowIfNullOrEmpty(key);
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
-            _seen.Remove(key);
+            if (_seen.TryGetValue(key, out var entry) && entry.Token == claimToken)
+                _seen.Remove(key);
         }
 
         return ValueTask.CompletedTask;

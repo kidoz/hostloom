@@ -101,11 +101,12 @@ public sealed class InboxFilter : IFilter<ReceiveContext>
         }
 
         var key = KeyFor(eventContext);
+        var claimToken = Guid.NewGuid();
         bool first;
         try
         {
             first = await _store
-                .TryRecordAsync(key, _window, context.CancellationToken)
+                .TryRecordAsync(key, claimToken, _window, context.CancellationToken)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
@@ -158,7 +159,7 @@ public sealed class InboxFilter : IFilter<ReceiveContext>
         {
             // Every failure, cancellation included: the key was recorded for a run that did not
             // complete, and keeping it would turn the transport's redelivery into a duplicate.
-            await ReleaseAsync(key).ConfigureAwait(false);
+            await ReleaseAsync(key, claimToken).ConfigureAwait(false);
             throw;
         }
     }
@@ -177,12 +178,12 @@ public sealed class InboxFilter : IFilter<ReceiveContext>
     /// Forgets <paramref name="key"/> after a run that did not complete, best-effort. A failure
     /// here is logged and swallowed, so the handlers' own exception is the one the transport sees.
     /// </summary>
-    private async ValueTask ReleaseAsync(string key)
+    private async ValueTask ReleaseAsync(string key, Guid claimToken)
     {
         using var timeout = new CancellationTokenSource(ReleaseTimeout);
         try
         {
-            await _store.ReleaseAsync(key, timeout.Token).ConfigureAwait(false);
+            await _store.ReleaseAsync(key, claimToken, timeout.Token).ConfigureAwait(false);
         }
         catch (Exception exception)
         {

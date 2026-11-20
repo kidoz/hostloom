@@ -52,9 +52,8 @@ must be able to serialize `string`.
 
 This filter is offered for generic pipelines. The messaging receive pipeline has its own
 idempotent consumer, `UseInbox` in the `HostLoom` package, which keys on the topic, subscription,
-and message id; `InboxStore.FromClaim` turns this cache's `SetIfAbsentAsync` and `RemoveAsync`
-into its store, the remove releasing the key of a run whose handlers failed, and a database inbox
-remains the answer where a platform's concurrency rules require one.
+and message id. A releasing inbox needs an atomic compare-and-delete on the delivery's
+claim token. The generic cache's unconditional remove cannot implement that operation.
 
 ## From the container
 
