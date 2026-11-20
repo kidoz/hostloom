@@ -8,6 +8,40 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-11-20
+
+The twenty-fifth release of **HostLoom**. One thread runs through it, and it is a new package: a
+shared, certificate-protected ASP.NET Core Data Protection key ring stored on the Redis connection
+a HostLoom profile already provides.
+
+`HostLoom.AspNetCore.DataProtection` registers Microsoft's Redis XML repository as the ring's
+storage and encrypts every newly generated key with an application-supplied certificate.
+`AddHostLoomDataProtection` takes the stable application name, the exact Redis list key, and an RSA
+certificate whose private key every replica can read; the profile selects the connection and its
+configured database. When a cache, lock, or rate limiter already configures that profile, omit
+`configureRedis` and the package attaches to it; omit the profile to use the default connection.
+`HostLoom.Redis` exposes the same attachment point as `AddHostLoomRedisConnection`, which registers
+or joins a default or named connection under the options validation, sharing, and ownership rules
+of `UseRedis`. Cold connection creation does not deadlock an application-supplied asynchronous
+factory. The stored list holds certificate-encrypted key XML with no master key and no expiry, so
+Redis persistence, backups, and eviction policy remain the application's responsibility: losing
+the list invalidates every cookie issued from that ring.
+
+The storage format is Microsoft's, so a ring written by
+`Microsoft.AspNetCore.DataProtection.StackExchangeRedis` can be adopted by pointing at the same
+database and list key, and Microsoft's provider can read a ring this package writes. The
+application name remains the discriminator: replicas configured with a different name cannot read
+each other's protected data. Certificate rotation passes the new certificate for encryption and
+older certificates to `UnprotectKeysWithAnyCertificate` on the returned builder while protected
+data still depends on them.
+
+Upgrading from 0.21.0 is additive: the package and `AddHostLoomRedisConnection` are opt-in, and no
+existing signature changes. `HostLoom.AspNetCore.DataProtection` is published for the first time,
+so the published set is 45 packages; the other packages carry only the Redis registration addition
+above. The package references the ASP.NET Core shared framework and makes no Native AOT or
+trimming claim. `@hostloom/websocket-client` is not part of this NuGet set and stays at 0.4.0 with
+unreleased changes in its own changelog.
+
 ### Added
 
 - Add `HostLoom.AspNetCore.DataProtection` for sharing ASP.NET Core cookie and SSO protection keys across replicas. It uses Microsoft's Redis list format, certificate encryption at rest, and the database selected by a HostLoom Redis connection profile.
@@ -2533,7 +2567,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/kidoz/hostloom/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/kidoz/hostloom/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/kidoz/hostloom/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/kidoz/hostloom/compare/v0.19.0...v0.19.1
