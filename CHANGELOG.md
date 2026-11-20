@@ -8,6 +8,23 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-11-20
+
+The twenty-sixth release of **HostLoom**. It removes the one required argument from
+`AddHostLoomDataProtection`: sharing a Data Protection key ring through Redis no longer needs a
+certificate.
+
+`keyEncryptionCertificate` is optional on `AddHostLoomDataProtection`. Omitting the argument,
+or passing `null`, leaves the choice of key encryption to the application's ASP.NET Core Data
+Protection configuration; with Redis persistence alone, new key-ring entries are written
+without XML encryption, and Redis access controls, persistence, backups, and eviction policy
+are the only protection for the stored keys. Supplying the argument behaves exactly as in
+0.22.0, so existing registrations compile and run unchanged.
+
+No package is published for the first time; the whole set publishes at 0.22.1.
+`@hostloom/websocket-client` is not part of this NuGet set and stays at 0.4.0 with no changes
+since its release.
+
 ### Changed
 
 - Make `keyEncryptionCertificate` optional on `AddHostLoomDataProtection`. Omitting it or
@@ -2573,7 +2590,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/kidoz/hostloom/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/kidoz/hostloom/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/kidoz/hostloom/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/kidoz/hostloom/compare/v0.19.1...v0.20.0
