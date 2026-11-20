@@ -84,7 +84,7 @@ the two libraries are not doing the same thing:
 AutoMapper is referenced by this benchmark project only. Nothing under `src/` depends on it and
 the project is `IsPackable=false`, so it never reaches a shipped package.
 
-`Directory.Packages.props` pins AutoMapper 16.3.0, the 16.x release that fixes the
+`Directory.Packages.props` pins AutoMapper 17.0.0, which carries the fixes for the
 constructor-recursion and depth-limit advisories affecting 16.2.0.
 [Constructor recursion](https://github.com/advisories/GHSA-6vhm-j9h7-f9gh) ·
 [Depth-limit advisory](https://github.com/advisories/GHSA-gpwp-5797-mjff).
