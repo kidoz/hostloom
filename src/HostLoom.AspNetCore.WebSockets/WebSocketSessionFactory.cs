@@ -30,11 +30,7 @@ internal sealed class WebSocketSessionFactory(
             credentialExpiresAt is { } expiration && expiration < maximumExpiration
                 ? expiration
                 : maximumExpiration;
-        var subject = user.FindFirstValue(configuration.Options.SubjectClaimType);
-        if (string.IsNullOrWhiteSpace(subject))
-        {
-            subject = null;
-        }
+        var subject = TopicKeyPolicy.ResolveSubject(user, configuration.Options.SubjectClaimType);
         return new(
             socket,
             protocol,

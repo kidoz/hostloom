@@ -169,7 +169,7 @@ The topic resource includes the exact client-selected `Key`.
 
 `TopicKeyPolicy.SubjectOnly` is the built-in own-channel policy. Pass it as a topic's
 `authorizationPolicy` to require an authenticated principal and an ordinal match between a
-nonempty key and the first claim named by `SubjectClaimType`. A mismatch returns `forbidden` before
+nonempty key and the first claim named by `SubjectClaimType` on the primary authenticated identity. A mismatch returns `forbidden` before
 the subscription is registered. Applications that also require a scope or role define a normal
 composite ASP.NET Core policy and inspect `WebSocketTopicResource.Key` in that policy. A policy
 handler that throws denies the caller with `forbidden` and logs `WebSocketAuthorizationFailed`.

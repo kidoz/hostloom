@@ -933,6 +933,68 @@ public sealed partial class WebSocketGatewayTests
         );
     }
 
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData(null, "secondary")]
+    [InlineData("customer-1", "secondary")]
+    public async Task Topic_and_session_subject_come_from_the_primary_authenticated_identity(
+        string? primarySubject,
+        string? secondaryScheme
+    )
+    {
+        var services = new ServiceCollection();
+        services
+            .AddHostLoom()
+            .UseInMemory()
+            .AddWebSocketGateway()
+            .AddTopic<OrderChanged>(
+                "orders.changed",
+                "orders",
+                value => value.CustomerId,
+                authorizationPolicy: TopicKeyPolicy.SubjectOnly
+            );
+        await using var provider = services.BuildServiceProvider();
+        var primary = new ClaimsIdentity("primary");
+        if (primarySubject is not null)
+            primary.AddClaim(new Claim(ClaimTypes.NameIdentifier, primarySubject));
+        var user = new ClaimsPrincipal(
+            new[]
+            {
+                primary,
+                new ClaimsIdentity(
+                    [new Claim(ClaimTypes.NameIdentifier, "customer-2")],
+                    secondaryScheme
+                ),
+            }
+        );
+        var configuration = provider.GetRequiredService<GatewayConfiguration>();
+        Assert.True(configuration.TryGetTopic("orders.changed", out var topic));
+        var router = provider.GetRequiredService<WebSocketRequestRouter>();
+        Assert.False(await router.AuthorizeTopicAsync(topic, "customer-2", user));
+        Assert.Equal(
+            primarySubject is not null,
+            await router.AuthorizeTopicAsync(topic, "customer-1", user)
+        );
+
+        using var socket = new ScriptedWebSocket();
+        var session = provider
+            .GetRequiredService<WebSocketSessionFactory>()
+            .Create(socket, new JsonWebSocketHubProtocol(), user);
+        var run = session.RunAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            _ = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
+            var directory = provider.GetRequiredService<IWebSocketSessionDirectory>();
+            Assert.Equal(primarySubject, Assert.Single(directory.GetSessions()).Subject);
+            Assert.Empty(directory.GetSessionsBySubject("customer-2"));
+        }
+        finally
+        {
+            socket.EnqueueClose();
+            await run;
+        }
+    }
+
     [Fact]
     public void Registry_enforces_the_optional_session_cap_and_allows_readmission()
     {

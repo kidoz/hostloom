@@ -124,7 +124,7 @@ scope or role requirements. For the common "own channel" case, use the built-in 
 ```
 
 `TopicKeyPolicy.SubjectOnly` requires an authenticated principal, a nonempty subscription key, and
-an ordinal match between that key and the first `SubjectClaimType` claim (by default
+an ordinal match between that key and the first `SubjectClaimType` claim on the primary authenticated identity (by default
 `ClaimTypes.NameIdentifier`). Missing subjects, missing keys, and differently cased values are
 denied with a `forbidden` fault before the subscription enters session state. Define an ordinary
 ASP.NET Core policy over `WebSocketTopicResource` when subject ownership must be combined with
@@ -237,7 +237,7 @@ wait; the gateway waits in chunks. Should the expiry timer itself fail, the sess
 ordinary teardown and logs `WebSocketSessionExpiryFailed`.
 
 `IWebSocketSessionDirectory` exposes read-only point-in-time session metadata and can filter by the
-configured `SubjectClaimType`. It does not expose credentials. Application logout and role-change
+configured `SubjectClaimType` on the primary authenticated identity. It does not expose credentials. Application logout and role-change
 handlers can use `IWebSocketSessionControl`:
 
 ```csharp

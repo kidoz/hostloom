@@ -13,7 +13,10 @@ internal sealed class TopicKeySubjectAuthorizationHandler(GatewayConfiguration c
         WebSocketTopicResource resource
     )
     {
-        var subject = context.User.FindFirst(configuration.Options.SubjectClaimType)?.Value;
+        var subject = TopicKeyPolicy.ResolveSubject(
+            context.User,
+            configuration.Options.SubjectClaimType
+        );
         if (
             !string.IsNullOrWhiteSpace(resource.Key)
             && !string.IsNullOrWhiteSpace(subject)
