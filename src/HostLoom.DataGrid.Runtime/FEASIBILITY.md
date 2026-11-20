@@ -307,6 +307,11 @@ The current run recorded 45.75% refusals and 18455 cgroup memory-limit events, c
 Batch 32 completed with three voters and the same executable inputs, concurrency and
 seed. It delivered 7.98 successful requests/s and 255.47 items/s with 45.81% refusals.
 It settled all eight pending mutations and verified both recovery checks. It recorded
-6227 cgroup memory-limit events and zero OOMs or member faults. Two workload combinations
-have completed on the configurable voter count build with three voters. Further matrix
-coverage, contextual measurements and target decisions remain open.
+6227 cgroup memory-limit events and zero OOMs or member faults.
+
+Batch 1 completed with the same executable inputs, three voters, concurrency 16 and seed
+43. It delivered 8.00 successful requests/s and 8.00 items/s with 46.60% refusals and
+7958 cgroup memory-limit events. It settled all six pending mutations and verified both
+recovery checks. Three workload combinations have completed on the configurable voter
+count build with three voters. Further matrix coverage, contextual measurements and
+target decisions remain open.
