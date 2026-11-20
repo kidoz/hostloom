@@ -8,6 +8,12 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+### Changed
+
+- Make `keyEncryptionCertificate` optional on `AddHostLoomDataProtection`. Omitting it or
+  passing `null` uses the application's Data Protection key-encryption configuration. With
+  Redis persistence alone, new ring entries are stored without XML encryption.
+
 ## [0.22.0] - 2026-11-20
 
 The twenty-fifth release of **HostLoom**. One thread runs through it, and it is a new package: a
