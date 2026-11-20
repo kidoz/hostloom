@@ -6,7 +6,7 @@
     <!-- AutoMapper is a benchmark comparison target only; nothing under src/ references it.
        15.0.0 and later are licensed RPL-1.5 or commercial rather than MIT, and every version
        below 15.1.1 carries GHSA-rvv3-g6hj-g44x, so there is no unaffected MIT version left. -->
-    <PackageVersion Include="AutoMapper" Version="16.2.0" />
+    <PackageVersion Include="AutoMapper" Version="16.3.0" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
     <!-- 2.16.0 bundles librdkafka 2.16.0, whose re-bootstrap decommissions bootstrap and
        learned brokers with requests in flight. Every integration run fails topic create and

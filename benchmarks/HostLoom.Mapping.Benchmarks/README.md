@@ -84,12 +84,14 @@ the two libraries are not doing the same thing:
 AutoMapper is referenced by this benchmark project only. Nothing under `src/` depends on it and
 the project is `IsPackable=false`, so it never reaches a shipped package.
 
-Version 16.2.0 is pinned in `Directory.Packages.props` for two reasons that cannot both be
-satisfied. AutoMapper 14.0.0 is the last MIT release, but every version below 15.1.1 carries
-[GHSA-rvv3-g6hj-g44x](https://github.com/advisories/GHSA-rvv3-g6hj-g44x), a high-severity DoS
-advisory that fails this repository's `TreatWarningsAsErrors` build as `NU1903`. Every patched
-version is licensed RPL-1.5 or commercial. The pin takes the patched version and accepts the
-license, rather than suppressing a security advisory.
+`Directory.Packages.props` pins AutoMapper 16.3.0, the 16.x release that fixes the
+constructor-recursion and depth-limit advisories affecting 16.2.0.
+[Constructor recursion](https://github.com/advisories/GHSA-6vhm-j9h7-f9gh) ·
+[Depth-limit advisory](https://github.com/advisories/GHSA-gpwp-5797-mjff).
+
+AutoMapper 14.0.0 was the last MIT release. This benchmark uses the RPL-1.5 or commercially
+licensed version. Earlier MIT releases are affected by the
+[original recursion advisory](https://github.com/advisories/GHSA-rvv3-g6hj-g44x).
 
 ## Smoke run
 
