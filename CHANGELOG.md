@@ -8,11 +8,75 @@ are derived from release tags at publish time.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-20
+
+The twenty-fourth release of **HostLoom**. It adds incoming ASP.NET Core endpoint rate limiting,
+makes outbox and inbox claims ownership-checked, groups WebSocket registrations under a hub
+facade, and hardens the cache, transports, locking, browser client, analyzers, and logging
+boundaries.
+
+`HostLoom.AspNetCore.RateLimiting` gives MVC controllers and Minimal API endpoints one shared
+token bucket per request identity. `AddTenantRateLimitPolicy` reads a configured claim from the
+primary authenticated identity; `AddEndpointRateLimitPolicy` accepts an application-selected
+partition key and an optional rejection callback. Anonymous requests receive 401 and a missing,
+conflicting, or invalid identity receives 403, both before the store is contacted. Exhaustion
+returns 429 with `Retry-After` when the lease carries one, rounded up to whole seconds, and a
+store failure under the default `Deny` returns 503. `Allow` admits a degraded request, and
+`[DisableRateLimiting]` or `.DisableRateLimiting()` exempts an endpoint even during an outage.
+The policy partitions through `AcquirePartitionAsync`, whose store key is distinct from every
+fixed bucket, and rate-limit keys now reject unpaired UTF-16 surrogates that UTF-8 encoding would
+otherwise collapse onto one key. Use the endpoint policy alone for one token budget: combining it
+with a synchronous nonrefundable `GlobalLimiter` can charge two global permits on one request in
+ASP.NET Core 10.
+
+Custom outbox stores now return an `OutboxClaim` carrying a fresh ownership token for each lease,
+and every mark compares the message id and token and throws when the claim was superseded. A
+relay also applies the half-lease age check before each publish in a fresh batch. Releasing inbox
+stores record and compare a per-delivery token, so a release can delete only its own claim. Both
+are source-breaking for custom stores: add the token, compare it on every mark or delete, and
+drain older relays or consumers before enabling the new writers. The inbox remains
+claim-before-handler, which the reference now states does not guarantee at-least-once handler
+execution across release failure, process crash, or concurrent delivery.
+
+WebSocket registrations can be grouped under `AddHub`, which composes a public prefix such as
+`orders.get` or `orders.changed` over the existing request, keyed-topic, and snapshot
+registrations. A hub is a registration-time namespace only: it creates no runtime object,
+groups, presence, replay, or separate endpoint, and the direct registration methods remain.
+Topic and session subjects now resolve only from the primary authenticated identity, so a
+subject claim carried by a secondary identity no longer satisfies `TopicKeyPolicy.SubjectOnly`
+or populates the session directory.
+
+Cache conditional encoding and payload-size failures now raise `CacheUnavailableException`
+instead of reporting a duplicate, including under `ReturnFalse`; explicit writes supersede older
+local factory fills, and large bulk removals publish a constant-sized flush. `RemoveAsync` gains
+an opt-in strict overload that raises on distributed removal failure while the default stays
+fail-open. Kafka retries failed rewinds and receive-pause transitions before later records,
+RabbitMQ retries pause recovery and retires replaced channels, and in-memory disposal settles
+pending publications. Lock ownership and heartbeat retries use monotonic lease deadlines, early
+expiry timers rearm, and ambiguous Valkey acquisitions receive owner-checked cleanup. The
+browser client paces control frames against a per-frame budget, rejects duplicate JSON
+properties, bounds dispatcher responses and faults, and terminates or faults a session whose
+encoding or writer fails. Cron wildcard-step day matching, asynchronous-blocking, factory-method
+and mapping-deconstruction analysis, numeric `LogFast` fields, bootstrap flush failure policy,
+synchronous sends through the rate-limited HTTP handler, and receive kill-switch outcomes on
+successful completions are corrected.
+
+Upgrading from 0.20.0 requires action only for custom outbox and releasing inbox stores, as
+described in the [messaging reference](docs/reference/messaging.md#outbox). Everything else
+compiles unchanged; the endpoint policy, `AddHub`, the strict cache overload, and the identity
+resolution are additive, but an application whose subject claim lives only on a secondary
+identity must move it to the primary identity. Dependencies move to `Microsoft.Extensions.*`,
+`Microsoft.AspNetCore.TestHost`, and `System.Threading.RateLimiting` 10.0.15,
+`Microsoft.Extensions.Caching.Hybrid` 10.11.1, `StackExchange.Redis` 3.4.35, `ValkeyDotNet`
+1.2.1, and `xunit.v3` 4.0.3, with the benchmark-only AutoMapper pin at 17.0.0;
+`Confluent.Kafka` remains at 2.15.1. `HostLoom.AspNetCore.RateLimiting` is published for the
+first time; the remaining packages carry the changes above. `@hostloom/websocket-client` is not
+part of this NuGet set and stays at 0.4.0 with unreleased changes in its own changelog.
+
 ### Added
 
 - Share one rate-limit bucket per identity across ASP.NET Core MVC and Minimal API replicas with
   named endpoint policies, application-selected keys, exemptions, and customizable rejection responses.
-
 - Add `AddHub` as a protocol-compatible WebSocket registration facade for prefixed typed requests
   and keyed snapshot-plus-live channels, with existing authorization, credit, and cleanup behavior.
 - Add opt-in strict cache removal and routine pull-request/main .NET verification with required
@@ -26,14 +90,18 @@ are derived from release tags at publish time.
 - Custom outbox stores now return a fresh ownership token with each claimed message and compare it
   on every mark. Releasing inbox stores now record and compare a per-delivery token. Migrate the
   stored claims and drain older workers as described in the [messaging reference](docs/reference/messaging.md#outbox).
+- Update `Microsoft.Extensions.*`, `Microsoft.AspNetCore.TestHost`, and
+  `System.Threading.RateLimiting` from 10.0.14 to 10.0.15, `Microsoft.Extensions.Caching.Hybrid`
+  from 10.11.0 to 10.11.1, `StackExchange.Redis` from 3.4.20 to 3.4.35, `ValkeyDotNet` from
+  1.2.0 to 1.2.1, and `xunit.v3` from 4.0.2 to 4.0.3. The benchmark-only AutoMapper pin moves
+  from 16.3.0 to 17.0.0, which carries the two high-severity advisory fixes. `Confluent.Kafka`
+  remains at 2.15.1 for the topic-administration failure noted in 0.15.1.
 
 ### Fixed
 
 - Bind WebSocket topic and session subjects to the primary authenticated identity. Reject synchronous
   sends through the outgoing HTTP rate limiter and honor receive kill-switch trips on successful
   completions. Skip outbox batch entries with insufficient lease time.
-- Update the benchmark-only AutoMapper dependency to 16.3.0 to clear two high-severity advisories.
-
 - Conditional cache encoding and size failures now throw `CacheUnavailableException` instead of
   reporting a duplicate, including under `ReturnFalse`. Explicit writes supersede older local
   factory results, and large bulk removals publish bounded invalidations.
@@ -2461,7 +2529,8 @@ is a build break on upgrade rather than a silent change.
 - RabbitMQ and Kafka are optional transport packages. Core pipelines and the in-memory transport
   do not require an external broker.
 
-[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/kidoz/hostloom/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/kidoz/hostloom/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/kidoz/hostloom/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/kidoz/hostloom/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/kidoz/hostloom/compare/v0.18.0...v0.19.0

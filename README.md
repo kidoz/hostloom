@@ -147,7 +147,7 @@ without a stored write token; ordinary .NET `vX.Y.Z` releases remain independent
 Install only the runtime and transport needed by the application, for example:
 
 ```text
-dotnet add package HostLoom.Transport.RabbitMq --version 0.20.0
+dotnet add package HostLoom.Transport.RabbitMq --version 0.21.0
 ```
 
 The analyzer package is optional and has no runtime dependency:
