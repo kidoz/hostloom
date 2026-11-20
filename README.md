@@ -4,7 +4,7 @@
 [![.NET SDK](https://img.shields.io/badge/.NET%20SDK-10.0.400-512BD4)](https://github.com/kidoz/hostloom/blob/main/global.json)
 [![License](https://img.shields.io/badge/license-MIT-blue)](https://github.com/kidoz/hostloom/blob/main/LICENSE)
 
-**HostLoom** — an experimental, Spring-inspired application framework for
+**HostLoom** is a Spring-inspired application framework for
 .NET 10 and C# 14. It began as typed request/response messaging over
 interchangeable transports, carried by a transport-neutral asynchronous
 middleware pipeline, and now also covers caching, distributed locking, explicit

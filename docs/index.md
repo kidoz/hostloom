@@ -16,9 +16,8 @@ Use it to build:
   timeouts, and conditional branches composed as filters, with or without
   a message broker, testable without real waiting.
 
-It targets .NET 10 / C# 14 and is experimental: the messaging slice is
-small and deliberate, and the [architecture page](explanation/architecture.md)
-is candid about where the roadmap still runs.
+HostLoom targets .NET 10 and C# 14 and is used in production. Each application
+can choose the packages it needs. See the [architecture overview](explanation/architecture.md).
 
 ```csharp
 builder.Services

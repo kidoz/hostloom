@@ -1,8 +1,8 @@
 # Architecture and package layering
 
-HostLoom is an experiment in building a Spring-like application framework
-for .NET as a set of small, honest layers rather than one large runtime.
-This page explains the layering and the reasoning behind it.
+HostLoom is a Spring-inspired application framework for .NET. Its packages
+separate pipeline composition, messaging contracts, and transport integration
+so applications can use each layer independently of the layers above it.
 
 ## Two borrowed ideas
 
