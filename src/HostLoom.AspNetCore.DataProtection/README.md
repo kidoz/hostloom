@@ -9,12 +9,17 @@ using HostLoom.AspNetCore.DataProtection;
 builder.Services.AddHostLoomDataProtection(
     applicationName: "catalog-web",
     redisKey: "catalog:production:data-protection",
-    keyEncryptionCertificate: certificate,
     redisProfile: "catalog",
     configureRedis: redis => redis.Configuration = builder.Configuration.GetConnectionString("Redis"));
 ```
 
-Supply an application-owned RSA certificate with access to its private key on every replica.
+Version 0.22.0 requires a certificate. In the current source, the certificate is optional.
+To encrypt newly generated key-ring entries with an RSA certificate, pass `keyEncryptionCertificate: certificate`
+and make its private key available to every replica. Omitting the argument (or passing
+`null`) leaves the choice of key encryption to the application. With Redis persistence
+alone, Data Protection still protects cookies and writes unencrypted key material to Redis.
+[Microsoft key storage guidance](https://learn.microsoft.com/en-us/aspnet/core/security/data-protection/implementation/key-storage-providers?view=aspnetcore-10.0#redis)
+
 Omit `configureRedis` to reuse a profile already configured with `UseRedis`, or omit
 `redisProfile` to use the default connection. The profile selects the connection and database.
 The supplied Redis key is used verbatim. Use distinct keys and permissions for separate trust domains.
