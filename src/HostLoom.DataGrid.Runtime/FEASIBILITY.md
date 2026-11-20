@@ -296,5 +296,11 @@ Refusal rates were 45.96%, 45.51% and 44.73%. Batch 32 recorded one unknown outc
 All three runs settled pending mutations and verified both recovery checks.
 
 Seven of 27 workload combinations completed on the archived build that required three
-voters. A baseline on the current build with configurable voter counts, further matrix
-coverage, contextual measurements and target decisions remain open.
+voters.
+
+The current build with configurable voter counts completed its first workload combination
+with three voters, batch 128, concurrency 16 and seed 43. Both builds delivered 8.00
+successful requests/s and verified recovery after leader loss and whole-group restart.
+The current run recorded 45.75% refusals and 18455 cgroup memory-limit events, compared with
+44.73% and 3974 in the archived run. Both recorded zero OOMs or member faults. Further
+matrix coverage, contextual measurements and target decisions remain open.
