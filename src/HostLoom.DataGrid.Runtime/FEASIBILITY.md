@@ -312,6 +312,11 @@ It settled all eight pending mutations and verified both recovery checks. It rec
 Batch 1 completed with the same executable inputs, three voters, concurrency 16 and seed
 43. It delivered 8.00 successful requests/s and 8.00 items/s with 46.60% refusals and
 7958 cgroup memory-limit events. It settled all six pending mutations and verified both
-recovery checks. Three workload combinations have completed on the configurable voter
-count build with three voters. Further matrix coverage, contextual measurements and
-target decisions remain open.
+recovery checks.
+
+Batch 128 also completed at concurrency 64 with three voters and seed 43 on the same
+inputs. It matched concurrency 16 at 8.00 successful requests/s, with 11750 refusals out
+of 14150 calls (83.04%). It settled all 58 pending mutations and verified both recovery
+checks with zero OOMs or member faults. Four workload combinations have completed on
+the configurable voter count build with three voters. Further matrix coverage, contextual
+measurements and target decisions remain open.
