@@ -29,7 +29,7 @@ public static class RateLimitKey
         return Convert.ToHexStringLower(hash[..16]);
     }
 
-    /// <summary>Rejects an empty, overlong, whitespace-containing, or control-character key.</summary>
+    /// <summary>Rejects empty, overlong, or malformed keys and keys containing whitespace or control characters.</summary>
     public static void Validate(string key, int maxKeyLength = 512)
     {
         ArgumentException.ThrowIfNullOrEmpty(key);
@@ -44,7 +44,7 @@ public static class RateLimitKey
         if (!HasOnlyAllowedCharacters(key))
         {
             throw new ArgumentException(
-                "A rate-limit key must not contain whitespace or control characters.",
+                "A rate-limit key must contain valid Unicode text without whitespace or control characters.",
                 nameof(key)
             );
         }
@@ -75,16 +75,29 @@ public static class RateLimitKey
         return true;
     }
 
+    internal static bool IsValid(string? key, int maxKeyLength) =>
+        key is { Length: > 0 } && key.Length <= maxKeyLength && HasOnlyAllowedCharacters(key);
+
     private static bool HasOnlyAllowedCharacters(string key)
     {
-        foreach (var character in key)
+        for (var i = 0; i < key.Length; i++)
         {
+            char character = key[i];
             if (char.IsWhiteSpace(character) || char.IsControl(character))
             {
                 return false;
             }
-        }
 
+            // UTF-8 stores replace unpaired surrogates, which would alias distinct keys.
+            if (char.IsSurrogate(character))
+            {
+                if (!char.IsSurrogatePair(key, i))
+                {
+                    return false;
+                }
+                i++;
+            }
+        }
         return true;
     }
 }

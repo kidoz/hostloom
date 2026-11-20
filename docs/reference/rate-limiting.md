@@ -118,8 +118,10 @@ work. These backends provide shared coordination, not a strict quota guarantee d
 
 Use bounded, non-secret consumer keys. `RateLimitKey.FromSensitive` hashes high-entropy values or
 uses HMAC for low-entropy secrets. Namespaces match `[a-z0-9-]+`; keys reject whitespace and
-control characters. Rate-limit keys use their own `:rate:` domain and cannot collide with cache or
-lock keys.
+control characters. Fixed buckets use `{namespace}:rate:{key}`.
+`DistributedRateLimiter.AcquirePartitionAsync` uses `{namespace}:rate-partition:{profileLength}:{profile}:{partition}`,
+where the length counts UTF-16 code units. The profile and partition each obey `MaxKeyLength`.
+Partition IDs must be well-formed Unicode. Fixed, partitioned, cache, and lock keys occupy distinct domains.
 
 `AddHealthChecks()` registers readiness only. The default name is `hostloom-ratelimit-ready`, and a
 named profile appends `-{profile}`. A store without a health probe is reported as unknown-but-

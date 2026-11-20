@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Threading.RateLimiting;
 using HostLoom.RateLimiting.Internal;
 using Microsoft.Extensions.Logging;
@@ -13,6 +14,7 @@ public sealed class DistributedRateLimiter : RateLimiter
     private static readonly EventId StoreFailed = new(1601, "RateLimitStoreFailed");
     private readonly RateLimitingOptions _options;
     private readonly string _storeKey;
+    private readonly string _partitionPrefix;
     private readonly IRateLimitStore _store;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<DistributedRateLimiter>? _logger;
@@ -34,6 +36,10 @@ public sealed class DistributedRateLimiter : RateLimiter
         ArgumentNullException.ThrowIfNull(store);
         _options = options.Snapshot();
         _storeKey = $"{_options.Namespace}:rate:{key}";
+        // Distinct from every fixed bucket, even when profile and partition keys contain colons.
+        _partitionPrefix = FormattableString.Invariant(
+            $"{_options.Namespace}:rate-partition:{key.Length}:{key}:"
+        );
         _store = store;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _logger = logger;
@@ -53,7 +59,36 @@ public sealed class DistributedRateLimiter : RateLimiter
         DistributedRateLimitLease.SynchronousFailure;
 
     /// <inheritdoc />
-    protected override async ValueTask<RateLimitLease> AcquireAsyncCore(
+    protected override ValueTask<RateLimitLease> AcquireAsyncCore(
+        int permitCount,
+        CancellationToken cancellationToken
+    ) => AcquireFromStoreAsync(_storeKey, permitCount, cancellationToken);
+
+    /// <summary>Whether a partition identifier is accepted by this limiter profile.</summary>
+    public bool IsValidPartitionKey([NotNullWhen(true)] string? key) =>
+        RateLimitKey.IsValid(key, _options.MaxKeyLength);
+
+    /// <summary>Acquires from an independent bucket within this limiter's profile. Partition state belongs to the store.</summary>
+    public ValueTask<RateLimitLease> AcquirePartitionAsync(
+        string partitionKey,
+        int permitCount = 1,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(partitionKey);
+        if (!IsValidPartitionKey(partitionKey))
+            throw new ArgumentException("Invalid rate-limit partition key.", nameof(partitionKey));
+        ArgumentOutOfRangeException.ThrowIfNegative(permitCount);
+        cancellationToken.ThrowIfCancellationRequested();
+        return AcquireFromStoreAsync(
+            _partitionPrefix + partitionKey,
+            permitCount,
+            cancellationToken
+        );
+    }
+
+    private async ValueTask<RateLimitLease> AcquireFromStoreAsync(
+        string storeKey,
         int permitCount,
         CancellationToken cancellationToken
     )
@@ -66,7 +101,7 @@ public sealed class DistributedRateLimiter : RateLimiter
         try
         {
             var decision = await _store
-                .AcquireAsync(_storeKey, _options.TokenBucket, permitCount, cancellationToken)
+                .AcquireAsync(storeKey, _options.TokenBucket, permitCount, cancellationToken)
                 .ConfigureAwait(false);
             RateLimitingDiagnostics.Record(
                 Namespace,

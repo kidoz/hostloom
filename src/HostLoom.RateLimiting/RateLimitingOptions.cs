@@ -13,7 +13,7 @@ public enum RateLimitUnavailableBehavior
 /// <summary>Configuration for one named rate limiter.</summary>
 public sealed class RateLimitingOptions
 {
-    /// <summary>Required. Prefixes every store key as <c>{namespace}:rate:{key}</c>.</summary>
+    /// <summary>Required. Prefixes fixed and partitioned store keys.</summary>
     public string Namespace { get; set; } = "";
 
     /// <summary>Longest consumer key accepted before the namespace prefix.</summary>
