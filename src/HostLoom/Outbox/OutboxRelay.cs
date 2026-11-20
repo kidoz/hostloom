@@ -232,7 +232,7 @@ public sealed class OutboxRelay : IAsyncDisposable
             var queue = new List<Claimed>(batch.Count);
             foreach (var message in batch)
             {
-                queue.Add(new Claimed(message, claimedAt, Carried: false));
+                queue.Add(new Claimed(message, claimedAt));
             }
 
             Unhold(queue);
@@ -249,17 +249,19 @@ public sealed class OutboxRelay : IAsyncDisposable
             }
 
             var unmarked = false;
+            var leaseTooOld = false;
             for (var index = 0; index < queue.Count; index++)
             {
                 var entry = queue[index];
-                if (entry.Carried && !MayStillPublish(entry))
+                if (!MayStillPublish(entry))
                 {
                     // Too little of its lease is left to publish it safely; lease expiry returns
                     // it to the store for whichever relay claims it next.
+                    leaseTooOld = true;
                     continue;
                 }
 
-                switch (await PublishAsync(entry.Message, cancellationToken).ConfigureAwait(false))
+                switch (await PublishAsync(entry.Claim, cancellationToken).ConfigureAwait(false))
                 {
                     case PublishOutcome.Published:
                         published++;
@@ -285,7 +287,7 @@ public sealed class OutboxRelay : IAsyncDisposable
 
             // A short batch means the store is drained; a mark that failed means the store is
             // unwell, and hammering it from a tight loop helps nobody.
-            if (unmarked || (!probing && batch.Count < _options.BatchSize))
+            if (leaseTooOld || unmarked || (!probing && batch.Count < _options.BatchSize))
             {
                 return (published, null);
             }
@@ -304,7 +306,7 @@ public sealed class OutboxRelay : IAsyncDisposable
     /// drain of an outage and be dead-lettered for it, and a message that can never be published
     /// would hold up every message behind it until it was dead-lettered.
     /// </summary>
-    private async ValueTask<IReadOnlyList<OutboxMessage>> ClaimProbeAsync(
+    private async ValueTask<IReadOnlyList<OutboxClaim>> ClaimProbeAsync(
         CancellationToken cancellationToken
     )
     {
@@ -317,7 +319,7 @@ public sealed class OutboxRelay : IAsyncDisposable
             lastFailure = _lastFailure;
         }
 
-        if (claimed.Count != 1 || claimed[0].MessageId != lastFailure)
+        if (claimed.Count != 1 || claimed[0].Message.MessageId != lastFailure)
         {
             return claimed;
         }
@@ -336,8 +338,11 @@ public sealed class OutboxRelay : IAsyncDisposable
     /// RabbitMQ transport's default publish timeout. The relay cannot know a transport's own
     /// bound, so the margin scales with the lease the operator sized for claim, publish, and mark.
     /// </summary>
-    private bool MayStillPublish(Claimed entry) =>
-        _clock.GetElapsedTime(entry.ClaimedAt) < _options.ClaimLease / 2;
+    private bool MayStillPublish(Claimed entry)
+    {
+        var elapsed = _clock.GetElapsedTime(entry.ClaimedAt);
+        return elapsed < _options.ClaimLease - elapsed;
+    }
 
     /// <summary>
     /// Keeps the entries of <paramref name="queue"/> from <paramref name="start"/> on, which a
@@ -361,7 +366,7 @@ public sealed class OutboxRelay : IAsyncDisposable
                 _held.RemoveAll(held => held.Message.MessageId == entry.Message.MessageId);
                 if (MayStillPublish(entry))
                 {
-                    _held.Add(entry with { Carried = true });
+                    _held.Add(entry);
                 }
             }
 
@@ -438,10 +443,11 @@ public sealed class OutboxRelay : IAsyncDisposable
     /// backoff even when the store then fails to mark the message.
     /// </summary>
     private async Task<PublishOutcome> PublishAsync(
-        OutboxMessage message,
+        OutboxClaim claim,
         CancellationToken cancellationToken
     )
     {
+        var message = claim.Message;
         var tags = new TagList { { "messaging.destination.name", message.Topic } };
         try
         {
@@ -455,7 +461,7 @@ public sealed class OutboxRelay : IAsyncDisposable
         }
         catch (Exception exception)
         {
-            await RecordFailureAsync(message, exception, tags, cancellationToken)
+            await RecordFailureAsync(claim, exception, tags, cancellationToken)
                 .ConfigureAwait(false);
             return PublishOutcome.Failed;
         }
@@ -463,9 +469,7 @@ public sealed class OutboxRelay : IAsyncDisposable
         Recover();
         try
         {
-            await _store
-                .MarkPublishedAsync(message.MessageId, cancellationToken)
-                .ConfigureAwait(false);
+            await _store.MarkPublishedAsync(claim, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -570,12 +574,13 @@ public sealed class OutboxRelay : IAsyncDisposable
 
     /// <summary>Counts a failed publish attempt and backs the message off or dead-letters it.</summary>
     private async ValueTask RecordFailureAsync(
-        OutboxMessage message,
+        OutboxClaim claim,
         Exception exception,
         TagList tags,
         CancellationToken cancellationToken
     )
     {
+        var message = claim.Message;
         Interlocked.Increment(ref _failed);
         HostLoomDiagnostics.OutboxFailed.Add(1, tags);
         var attempts = message.Attempts + 1;
@@ -583,12 +588,12 @@ public sealed class OutboxRelay : IAsyncDisposable
         {
             if (attempts >= _options.MaxAttempts)
             {
-                await DeadLetterAsync(message, attempts, exception, tags, cancellationToken)
+                await DeadLetterAsync(claim, attempts, exception, tags, cancellationToken)
                     .ConfigureAwait(false);
             }
             else
             {
-                await HoldBackAsync(message, attempts, exception, cancellationToken)
+                await HoldBackAsync(claim, attempts, exception, cancellationToken)
                     .ConfigureAwait(false);
             }
         }
@@ -609,12 +614,13 @@ public sealed class OutboxRelay : IAsyncDisposable
     }
 
     private async ValueTask HoldBackAsync(
-        OutboxMessage message,
+        OutboxClaim claim,
         int attempts,
         Exception exception,
         CancellationToken cancellationToken
     )
     {
+        var message = claim.Message;
         var delay = _options.GetRetryDelay(attempts);
         var nextAttemptAt = _clock.GetUtcNow() + delay;
         _logger.LogWarning(
@@ -628,23 +634,22 @@ public sealed class OutboxRelay : IAsyncDisposable
             delay
         );
         await _store
-            .MarkFailedAsync(
-                message.MessageId,
-                Describe(exception),
-                nextAttemptAt,
-                cancellationToken
-            )
+            .MarkFailedAsync(claim, Describe(exception), nextAttemptAt, cancellationToken)
             .ConfigureAwait(false);
     }
 
     private async ValueTask DeadLetterAsync(
-        OutboxMessage message,
+        OutboxClaim claim,
         int attempts,
         Exception exception,
         TagList tags,
         CancellationToken cancellationToken
     )
     {
+        var message = claim.Message;
+        await _store
+            .MarkDeadLetteredAsync(claim, Describe(exception), cancellationToken)
+            .ConfigureAwait(false);
         _logger.LogError(
             OutboxEvents.DeadLettered,
             exception,
@@ -654,9 +659,6 @@ public sealed class OutboxRelay : IAsyncDisposable
             attempts,
             _options.MaxAttempts
         );
-        await _store
-            .MarkDeadLetteredAsync(message.MessageId, Describe(exception), cancellationToken)
-            .ConfigureAwait(false);
         Interlocked.Increment(ref _deadLettered);
         HostLoomDiagnostics.OutboxDeadLettered.Add(1, tags);
     }
@@ -763,8 +765,10 @@ public sealed class OutboxRelay : IAsyncDisposable
     }
 
     /// <summary>
-    /// A message this relay claimed, with a timestamp taken just before the claim and whether a
-    /// stopped drain carried it over, untried, to a later one.
+    /// A store claim paired with the local monotonic timestamp taken before acquisition.
     /// </summary>
-    private readonly record struct Claimed(OutboxMessage Message, long ClaimedAt, bool Carried);
+    private readonly record struct Claimed(OutboxClaim Claim, long ClaimedAt)
+    {
+        public OutboxMessage Message => Claim.Message;
+    }
 }

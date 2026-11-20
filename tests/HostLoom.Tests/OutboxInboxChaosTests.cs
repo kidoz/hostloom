@@ -632,7 +632,7 @@ public sealed class OutboxInboxChaosTests
             CancellationToken cancellationToken = default
         ) => inner.AppendAsync(message, cancellationToken);
 
-        public ValueTask<IReadOnlyList<OutboxMessage>> ClaimAsync(
+        public ValueTask<IReadOnlyList<OutboxClaim>> ClaimAsync(
             int batchSize,
             TimeSpan lease,
             CancellationToken cancellationToken = default
@@ -643,27 +643,27 @@ public sealed class OutboxInboxChaosTests
         }
 
         public ValueTask MarkPublishedAsync(
-            Guid messageId,
+            OutboxClaim claim,
             CancellationToken cancellationToken = default
         ) =>
             FailMarkPublished
                 ? ValueTask.FromException(new IOException("the outbox database refused the update"))
-                : inner.MarkPublishedAsync(messageId, cancellationToken);
+                : inner.MarkPublishedAsync(claim, cancellationToken);
 
         public ValueTask MarkFailedAsync(
-            Guid messageId,
+            OutboxClaim claim,
             string error,
             DateTimeOffset nextAttemptAt,
             CancellationToken cancellationToken = default
         ) =>
             FailMarkFailed
                 ? ValueTask.FromException(new IOException("the outbox database refused the update"))
-                : inner.MarkFailedAsync(messageId, error, nextAttemptAt, cancellationToken);
+                : inner.MarkFailedAsync(claim, error, nextAttemptAt, cancellationToken);
 
         public ValueTask MarkDeadLetteredAsync(
-            Guid messageId,
+            OutboxClaim claim,
             string error,
             CancellationToken cancellationToken = default
-        ) => inner.MarkDeadLetteredAsync(messageId, error, cancellationToken);
+        ) => inner.MarkDeadLetteredAsync(claim, error, cancellationToken);
     }
 }

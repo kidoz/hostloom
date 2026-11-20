@@ -120,7 +120,7 @@ public sealed class InMemoryOutboxStore(TimeProvider? timeProvider = null) : IOu
     }
 
     /// <inheritdoc />
-    public ValueTask<IReadOnlyList<OutboxMessage>> ClaimAsync(
+    public ValueTask<IReadOnlyList<OutboxClaim>> ClaimAsync(
         int batchSize,
         TimeSpan lease,
         CancellationToken cancellationToken = default
@@ -132,7 +132,7 @@ public sealed class InMemoryOutboxStore(TimeProvider? timeProvider = null) : IOu
         lock (_gate)
         {
             var now = _clock.GetUtcNow();
-            List<OutboxMessage> claimed = [];
+            List<OutboxClaim> claimed = [];
             foreach (var entry in _entries.Values.OrderBy(static entry => entry.Sequence))
             {
                 if (entry.LeasedUntil > now || entry.Message.NextAttemptAt > now)
@@ -141,27 +141,30 @@ public sealed class InMemoryOutboxStore(TimeProvider? timeProvider = null) : IOu
                 }
 
                 entry.LeasedUntil = now + lease;
-                claimed.Add(entry.Message);
+                entry.Token = Guid.NewGuid();
+                claimed.Add(new OutboxClaim(entry.Message, entry.Token));
                 if (claimed.Count == batchSize)
                 {
                     break;
                 }
             }
 
-            return ValueTask.FromResult<IReadOnlyList<OutboxMessage>>(claimed);
+            return ValueTask.FromResult<IReadOnlyList<OutboxClaim>>(claimed);
         }
     }
 
     /// <inheritdoc />
     public ValueTask MarkPublishedAsync(
-        Guid messageId,
+        OutboxClaim claim,
         CancellationToken cancellationToken = default
     )
     {
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
-            if (_entries.Remove(messageId, out var entry) && PublishedCapacity > 0)
+            var entry = RequireOwner(claim);
+            _entries.Remove(entry.Message.MessageId);
+            if (PublishedCapacity > 0)
             {
                 if (_published.Count == PublishedCapacity)
                 {
@@ -177,7 +180,7 @@ public sealed class InMemoryOutboxStore(TimeProvider? timeProvider = null) : IOu
 
     /// <inheritdoc />
     public ValueTask MarkFailedAsync(
-        Guid messageId,
+        OutboxClaim claim,
         string error,
         DateTimeOffset nextAttemptAt,
         CancellationToken cancellationToken = default
@@ -186,16 +189,15 @@ public sealed class InMemoryOutboxStore(TimeProvider? timeProvider = null) : IOu
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
-            if (_entries.TryGetValue(messageId, out var entry))
+            var entry = RequireOwner(claim);
+            entry.Token = Guid.Empty;
+            entry.Message = entry.Message with
             {
-                entry.Message = entry.Message with
-                {
-                    Attempts = entry.Message.Attempts + 1,
-                    NextAttemptAt = nextAttemptAt,
-                };
-                entry.LeasedUntil = DateTimeOffset.MinValue;
-                LastError = error;
-            }
+                Attempts = entry.Message.Attempts + 1,
+                NextAttemptAt = nextAttemptAt,
+            };
+            entry.LeasedUntil = DateTimeOffset.MinValue;
+            LastError = error;
         }
 
         return ValueTask.CompletedTask;
@@ -203,7 +205,7 @@ public sealed class InMemoryOutboxStore(TimeProvider? timeProvider = null) : IOu
 
     /// <inheritdoc />
     public ValueTask MarkDeadLetteredAsync(
-        Guid messageId,
+        OutboxClaim claim,
         string error,
         CancellationToken cancellationToken = default
     )
@@ -211,24 +213,23 @@ public sealed class InMemoryOutboxStore(TimeProvider? timeProvider = null) : IOu
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
-            if (_entries.Remove(messageId, out var entry))
+            var entry = RequireOwner(claim);
+            _entries.Remove(entry.Message.MessageId);
+            if (DeadLetteredCapacity > 0)
             {
-                if (DeadLetteredCapacity > 0)
+                if (_deadLettered.Count == DeadLetteredCapacity)
                 {
-                    if (_deadLettered.Count == DeadLetteredCapacity)
-                    {
-                        _deadLettered.RemoveAt(0);
-                    }
-                    _deadLettered.Add(
-                        entry.Message with
-                        {
-                            Attempts = entry.Message.Attempts + 1,
-                            NextAttemptAt = null,
-                        }
-                    );
+                    _deadLettered.RemoveAt(0);
                 }
-                LastError = error;
+                _deadLettered.Add(
+                    entry.Message with
+                    {
+                        Attempts = entry.Message.Attempts + 1,
+                        NextAttemptAt = null,
+                    }
+                );
             }
+            LastError = error;
         }
 
         return ValueTask.CompletedTask;
@@ -256,9 +257,24 @@ public sealed class InMemoryOutboxStore(TimeProvider? timeProvider = null) : IOu
         }
     }
 
+    // Called under _gate, in the same critical section as the mark.
+    private Entry RequireOwner(OutboxClaim claim)
+    {
+        ArgumentNullException.ThrowIfNull(claim);
+        if (
+            claim.Token == Guid.Empty
+            || !_entries.TryGetValue(claim.Message.MessageId, out var entry)
+            || entry.Token != claim.Token
+        )
+            throw new InvalidOperationException("The outbox claim is no longer current.");
+        return entry;
+    }
+
     private sealed class Entry(OutboxMessage message, long sequence)
     {
         public OutboxMessage Message { get; set; } = message;
+
+        public Guid Token { get; set; }
 
         public long Sequence { get; } = sequence;
 

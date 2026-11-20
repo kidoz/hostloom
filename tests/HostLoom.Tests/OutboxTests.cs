@@ -24,7 +24,7 @@ public sealed class OutboxTests
             TimeSpan.FromMinutes(1),
             TestContext.Current.CancellationToken
         );
-        Assert.Equal([first.MessageId, second.MessageId], claimed.Select(m => m.MessageId));
+        Assert.Equal([first.MessageId, second.MessageId], claimed.Select(m => m.Message.MessageId));
         Assert.Empty(
             await store.ClaimAsync(
                 10,
@@ -35,15 +35,30 @@ public sealed class OutboxTests
 
         clock.Advance(TimeSpan.FromMinutes(1));
         var again = await store.ClaimAsync(
-            1,
+            2,
             TimeSpan.FromMinutes(1),
             TestContext.Current.CancellationToken
         );
-        Assert.Equal([first.MessageId], again.Select(m => m.MessageId));
+        Assert.Equal([first.MessageId, second.MessageId], again.Select(m => m.Message.MessageId));
 
-        await store.MarkPublishedAsync(first.MessageId, TestContext.Current.CancellationToken);
+        var stale = claimed[0];
+        var ct = TestContext.Current.CancellationToken;
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await store.MarkFailedAsync(stale, "failed", clock.GetUtcNow(), ct)
+        );
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await store.MarkDeadLetteredAsync(stale, "failed", ct)
+        );
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await store.MarkPublishedAsync(stale, ct)
+        );
+        Assert.Equal(0, store.Pending[0].Attempts);
+        Assert.Empty(store.DeadLettered);
+        Assert.Empty(await store.ClaimAsync(2, TimeSpan.FromMinutes(1), ct));
+
+        await store.MarkPublishedAsync(again[0], TestContext.Current.CancellationToken);
         await store.MarkFailedAsync(
-            second.MessageId,
+            again[1],
             "System.IO.IOException",
             clock.GetUtcNow(),
             TestContext.Current.CancellationToken
@@ -64,6 +79,30 @@ public sealed class OutboxTests
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await store.AppendAsync(second, TestContext.Current.CancellationToken)
         );
+    }
+
+    [Fact]
+    public async Task A_slow_publish_leaves_the_rest_of_its_batch_for_a_new_lease()
+    {
+        var clock = new TestClock();
+        var store = new InMemoryOutboxStore(clock);
+        var lease = TimeSpan.FromSeconds(10);
+        var broker = new RecordingEventBroker { OnPublish = () => clock.Advance(lease / 2) };
+        var ct = TestContext.Current.CancellationToken;
+        await store.AppendAsync(Message("orders", clock), ct);
+        await store.AppendAsync(Message("orders", clock), ct);
+        await using var relay = new OutboxRelay(
+            store,
+            broker,
+            new OutboxOptions { BatchSize = 2, ClaimLease = lease },
+            clock
+        );
+        Assert.Equal(1, await relay.DrainAsync(ct));
+        Assert.Single(store.Pending);
+        Assert.Equal(0, await relay.DrainAsync(ct));
+        clock.Advance(lease / 2);
+        Assert.Equal(1, await relay.DrainAsync(ct));
+        Assert.Empty(store.Pending);
     }
 
     [Fact]
@@ -336,7 +375,13 @@ public sealed class OutboxTests
             {
                 await store.AppendAsync(message, TestContext.Current.CancellationToken);
                 await store.MarkPublishedAsync(
-                    message.MessageId,
+                    Assert.Single(
+                        await store.ClaimAsync(
+                            1,
+                            TimeSpan.FromMinutes(1),
+                            TestContext.Current.CancellationToken
+                        )
+                    ),
                     TestContext.Current.CancellationToken
                 );
             }
@@ -361,7 +406,13 @@ public sealed class OutboxTests
             var message = Message("orders", clock);
             await unbounded.AppendAsync(message, TestContext.Current.CancellationToken);
             await unbounded.MarkPublishedAsync(
-                message.MessageId,
+                Assert.Single(
+                    await unbounded.ClaimAsync(
+                        1,
+                        TimeSpan.FromMinutes(1),
+                        TestContext.Current.CancellationToken
+                    )
+                ),
                 TestContext.Current.CancellationToken
             );
         }
@@ -385,7 +436,13 @@ public sealed class OutboxTests
             {
                 await store.AppendAsync(message, TestContext.Current.CancellationToken);
                 await store.MarkDeadLetteredAsync(
-                    message.MessageId,
+                    Assert.Single(
+                        await store.ClaimAsync(
+                            1,
+                            TimeSpan.FromMinutes(1),
+                            TestContext.Current.CancellationToken
+                        )
+                    ),
                     "System.IO.IOException",
                     TestContext.Current.CancellationToken
                 );
@@ -409,7 +466,13 @@ public sealed class OutboxTests
             var message = Message("orders", clock);
             await unbounded.AppendAsync(message, TestContext.Current.CancellationToken);
             await unbounded.MarkDeadLetteredAsync(
-                message.MessageId,
+                Assert.Single(
+                    await unbounded.ClaimAsync(
+                        1,
+                        TimeSpan.FromMinutes(1),
+                        TestContext.Current.CancellationToken
+                    )
+                ),
                 "System.IO.IOException",
                 TestContext.Current.CancellationToken
             );
@@ -465,7 +528,7 @@ public sealed class OutboxTests
             return inner.AppendAsync(message, cancellationToken);
         }
 
-        public ValueTask<IReadOnlyList<OutboxMessage>> ClaimAsync(
+        public ValueTask<IReadOnlyList<OutboxClaim>> ClaimAsync(
             int batchSize,
             TimeSpan lease,
             CancellationToken cancellationToken = default
@@ -476,22 +539,22 @@ public sealed class OutboxTests
         }
 
         public ValueTask MarkPublishedAsync(
-            Guid messageId,
+            OutboxClaim claim,
             CancellationToken cancellationToken = default
-        ) => inner.MarkPublishedAsync(messageId, cancellationToken);
+        ) => inner.MarkPublishedAsync(claim, cancellationToken);
 
         public ValueTask MarkFailedAsync(
-            Guid messageId,
+            OutboxClaim claim,
             string error,
             DateTimeOffset nextAttemptAt,
             CancellationToken cancellationToken = default
-        ) => inner.MarkFailedAsync(messageId, error, nextAttemptAt, cancellationToken);
+        ) => inner.MarkFailedAsync(claim, error, nextAttemptAt, cancellationToken);
 
         public ValueTask MarkDeadLetteredAsync(
-            Guid messageId,
+            OutboxClaim claim,
             string error,
             CancellationToken cancellationToken = default
-        ) => inner.MarkDeadLetteredAsync(messageId, error, cancellationToken);
+        ) => inner.MarkDeadLetteredAsync(claim, error, cancellationToken);
     }
 
     internal sealed class RecordingEventBroker : IEventBroker
@@ -499,6 +562,8 @@ public sealed class OutboxTests
         private readonly Lock _gate = new();
         private readonly List<(RequestAddress Topic, ReadOnlyMemory<byte> Frame)> _published = [];
         private readonly SemaphoreSlim _signal = new(0);
+
+        public Action? OnPublish { get; init; }
 
         public Exception? FailNext { get; set; }
 
@@ -526,6 +591,7 @@ public sealed class OutboxTests
             CancellationToken cancellationToken
         )
         {
+            OnPublish?.Invoke();
             if (FailNext is { } failure)
             {
                 FailNext = null;

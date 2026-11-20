@@ -181,13 +181,20 @@ wakes the relay. Publishing completes when the append does.
 | --- | --- |
 | `AppendAsync(message, ct)` | store as pending, inside the caller's unit of work when the store has one |
 | `ClaimAsync(batchSize, lease, ct)` | the oldest pending messages not under an unexpired lease, leased and in enqueue order; atomic against concurrent relays |
-| `MarkPublishedAsync(id, ct)` | never claimed again |
-| `MarkFailedAsync(id, error, nextAttemptAt, ct)` | record the error (the exception's type name, never its message), increment `Attempts`, release the lease, and hold the message back until `nextAttemptAt` |
-| `MarkDeadLetteredAsync(id, error, ct)` | move the message to a dead-letter state that no claim returns; keep it for an operator to requeue |
+| `MarkPublishedAsync(claim, ct)` | never claimed again |
+| `MarkFailedAsync(claim, error, nextAttemptAt, ct)` | record the error (the exception's type name, never its message), increment `Attempts`, release the lease, and hold the message back until `nextAttemptAt` |
+| `MarkDeadLetteredAsync(claim, error, ct)` | move the message to a dead-letter state that no claim returns; keep it for an operator to requeue |
 
 `OutboxMessage` carries `MessageId`, `Topic`, `MessageType`, the encoded
 `Frame`, `EnqueuedAt`, `Attempts`, and `NextAttemptAt` (`null` when due at
 once). `ClaimAsync` must skip a message whose `NextAttemptAt` has not passed.
+Each claim returns an `OutboxClaim(Message, Token)`. To migrate a custom store,
+add a nullable claim-token column. Assign a fresh GUID atomically with every lease
+and compare both message ID and token in each mark update. Clear the token when
+releasing a failed claim. Throw if the update matched no current claim. Existing
+pending rows acquire a token on their next claim. Stop all ID-only relays before
+enabling the new writers, since older binaries can still update by message ID alone.
+
 Register the store scoped (the default)
 when it writes through the same unit of work as the handlers, which is what
 makes the outbox transactional; the relay resolves it from a scope of its own
@@ -213,7 +220,7 @@ clamped to `Outbox:MaxRetryDelay` (the same arithmetic as
 batch is neither tried nor charged an attempt. The relay holds it, up to
 `Outbox:BatchSize` messages, under the claim it was taken with, and publishes
 it, oldest first, as soon as a later publish succeeds, provided less than half
-of `Outbox:ClaimLease` has run since the claim. The other half is left for that
+of `Outbox:ClaimLease` has run since the claim. This age check also applies before each publish in a fresh batch. The other half is left for that
 publish and its mark to finish before another relay may claim the message. A
 held message past that point, and everything a relay holds when it stops, goes
 back to the store when its lease expires.

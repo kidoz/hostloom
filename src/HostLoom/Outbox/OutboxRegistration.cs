@@ -144,7 +144,7 @@ internal sealed class ScopedOutboxStore(IServiceScopeFactory scopeFactory) : IOu
         }
     }
 
-    public async ValueTask<IReadOnlyList<OutboxMessage>> ClaimAsync(
+    public async ValueTask<IReadOnlyList<OutboxClaim>> ClaimAsync(
         int batchSize,
         TimeSpan lease,
         CancellationToken cancellationToken = default
@@ -160,21 +160,19 @@ internal sealed class ScopedOutboxStore(IServiceScopeFactory scopeFactory) : IOu
     }
 
     public async ValueTask MarkPublishedAsync(
-        Guid messageId,
+        OutboxClaim claim,
         CancellationToken cancellationToken = default
     )
     {
         var scope = scopeFactory.CreateAsyncScope();
         await using (scope.ConfigureAwait(false))
         {
-            await Resolve(scope)
-                .MarkPublishedAsync(messageId, cancellationToken)
-                .ConfigureAwait(false);
+            await Resolve(scope).MarkPublishedAsync(claim, cancellationToken).ConfigureAwait(false);
         }
     }
 
     public async ValueTask MarkFailedAsync(
-        Guid messageId,
+        OutboxClaim claim,
         string error,
         DateTimeOffset nextAttemptAt,
         CancellationToken cancellationToken = default
@@ -184,13 +182,13 @@ internal sealed class ScopedOutboxStore(IServiceScopeFactory scopeFactory) : IOu
         await using (scope.ConfigureAwait(false))
         {
             await Resolve(scope)
-                .MarkFailedAsync(messageId, error, nextAttemptAt, cancellationToken)
+                .MarkFailedAsync(claim, error, nextAttemptAt, cancellationToken)
                 .ConfigureAwait(false);
         }
     }
 
     public async ValueTask MarkDeadLetteredAsync(
-        Guid messageId,
+        OutboxClaim claim,
         string error,
         CancellationToken cancellationToken = default
     )
@@ -199,7 +197,7 @@ internal sealed class ScopedOutboxStore(IServiceScopeFactory scopeFactory) : IOu
         await using (scope.ConfigureAwait(false))
         {
             await Resolve(scope)
-                .MarkDeadLetteredAsync(messageId, error, cancellationToken)
+                .MarkDeadLetteredAsync(claim, error, cancellationToken)
                 .ConfigureAwait(false);
         }
     }
