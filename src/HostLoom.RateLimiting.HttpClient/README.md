@@ -3,6 +3,7 @@
 Outgoing `HttpClient` integration for HostLoom rate limiter profiles. The handler acquires one
 permit per physical HTTP attempt, supports bounded local waiting, and throws typed exceptions for
 local rejection or backend denial instead of manufacturing HTTP 429 responses.
+Use asynchronous HTTP methods. Synchronous `HttpClient.Send` throws `NotSupportedException` before dispatch.
 
 ```csharp
 builder.Services

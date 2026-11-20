@@ -30,6 +30,12 @@ public sealed class RateLimitedHttpMessageHandler : DelegatingHandler
     }
 
     /// <inheritdoc />
+    protected override HttpResponseMessage Send(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken
+    ) => throw new NotSupportedException("Rate-limited HTTP requests require SendAsync.");
+
+    /// <inheritdoc />
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken

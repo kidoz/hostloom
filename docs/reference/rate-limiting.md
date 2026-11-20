@@ -74,6 +74,7 @@ A successful lease can report `RateLimitMetadata.RemainingPermits`. An exhausted
 
 ## Outgoing HTTP behavior
 
+Synchronous `HttpClient.Send` throws `NotSupportedException` before dispatch.
 The handler acquires one permit around each physical `SendAsync` call and holds the lease until
 the downstream attempt finishes. Register it after retry or hedging handlers, closest to the
 network, to charge every attempt. Registration before those handlers charges only the logical

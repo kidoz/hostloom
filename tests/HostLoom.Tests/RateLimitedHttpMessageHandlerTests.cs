@@ -12,6 +12,23 @@ namespace HostLoom.Tests;
 public sealed class RateLimitedHttpMessageHandlerTests
 {
     [Fact]
+    public void Synchronous_send_is_rejected_before_downstream_dispatch()
+    {
+        using var limiter = new ScriptedRateLimiter();
+        using var downstream = new StubHttpHandler(HttpStatusCode.OK);
+        using var client = Client(limiter, downstream);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            new Uri("https://catalog.example")
+        );
+        Assert.Throws<NotSupportedException>(() =>
+            client.Send(request, TestContext.Current.CancellationToken)
+        );
+        Assert.Equal(0, limiter.Calls);
+        Assert.Equal(0, downstream.Calls);
+    }
+
+    [Fact]
     public async Task ImmediateRejection_ThrowsWithoutSending()
     {
         using var limiter = new ScriptedRateLimiter(
@@ -343,6 +360,15 @@ public sealed class RateLimitedHttpMessageHandlerTests
         private readonly Queue<HttpStatusCode> _statuses = new(statuses);
 
         public int Calls { get; private set; }
+
+        protected override HttpResponseMessage Send(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            Calls++;
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
