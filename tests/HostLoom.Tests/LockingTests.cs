@@ -58,6 +58,24 @@ public sealed class LockingTests
         }
     }
 
+    [Fact]
+    public void Oversized_maximum_lease_fails_before_acquiring_a_key()
+    {
+        var provider = new InMemoryLockProvider();
+        var options = new LockingOptions
+        {
+            Namespace = "catalog",
+            MaxLease = TimeSpan.FromMilliseconds(uint.MaxValue - 1),
+        };
+        Assert.Empty(options.Validate());
+        options.MaxLease += TimeSpan.FromMilliseconds(1);
+        var failure = Assert.Throws<ArgumentException>(() =>
+            new DistributedLock(options, provider)
+        );
+        Assert.Contains("Locking:MaxLease", failure.Message, StringComparison.Ordinal);
+        Assert.Equal(0, provider.Count);
+    }
+
     [Theory]
     [InlineData("expiry")]
     [InlineData("extend")]

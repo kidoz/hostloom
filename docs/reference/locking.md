@@ -124,7 +124,7 @@ a 50 ms step with 50 ms of jitter, about three seconds in total.
 | `Locking:Namespace` | required | `[a-z0-9-]+`; keys become `{namespace}:lock:{key}` |
 | `Locking:Enabled` | `true` | `false` is single-instance mode: a startup warning, the gauge `hostloom.lock.enabled = 0`, actions run immediately, and `IsCoordinated` is `false` on the lock and on every handle so leadership and schedule guards can tell a placeholder from a lease |
 | `Locking:DefaultLease` | 30 s | lease when a call gives none |
-| `Locking:MaxLease` | 5 min | cap on any lease |
+| `Locking:MaxLease` | 5 min | cap on any lease, up to 4,294,967,294 milliseconds |
 | `Locking:MaxHold` | 10 min | bound on automatic extension |
 | `Locking:Retry` | linear, 10 × 50 ms, 50 ms jitter | default retry policy |
 | `Locking:AutoExtend` | `false` | heartbeat by default |

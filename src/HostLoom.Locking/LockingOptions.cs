@@ -21,7 +21,7 @@ public sealed class LockingOptions
     /// <summary>Lease length when a call gives none.</summary>
     public TimeSpan DefaultLease { get; set; } = TimeSpan.FromSeconds(30);
 
-    /// <summary>Upper bound on any lease, including extensions.</summary>
+    /// <summary>Upper bound on any lease, including extensions. The maximum supported value is 4294967294 milliseconds.</summary>
     public TimeSpan MaxLease { get; set; } = TimeSpan.FromMinutes(5);
 
     /// <summary>How long automatic extension keeps a lease alive before letting it expire.</summary>
@@ -73,6 +73,13 @@ public sealed class LockingOptions
         if (MaxLease < DefaultLease)
         {
             problems.Add("Locking:MaxLease must be at least Locking:DefaultLease.");
+        }
+
+        if (MaxLease > TimeSpan.FromMilliseconds(uint.MaxValue - 1))
+        {
+            problems.Add(
+                "Locking:MaxLease exceeds the maximum supported timer duration (4294967294 ms)."
+            );
         }
 
         if (MaxHold <= TimeSpan.Zero)
