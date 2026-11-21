@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Tasks.Sources;
 using HostLoom.Logging;
 using Microsoft.Extensions.Logging;
 using Xunit;
@@ -207,6 +208,52 @@ public sealed class LoggingProcessExitTests
         sink.Release();
         await provider.DisposeAsync();
         Assert.Equal(0, provider.Dropped);
+    }
+
+    [Fact]
+    public async Task Every_completed_source_backed_flush_is_consumed_once()
+    {
+        await using var sink = new SourceBackedSink();
+        await using var provider = new HostLoomLoggerProvider(new JsonLogFormatter(), sink, new());
+        Assert.True(provider.Flush(TimeSpan.FromSeconds(5)));
+        Assert.True(provider.Flush(TimeSpan.FromSeconds(5)));
+        await provider.DisposeAsync();
+        Assert.Equal(3, sink.Flushes);
+        Assert.Equal(3, sink.Consumed);
+    }
+
+    private sealed class SourceBackedSink : ILogSink, IValueTaskSource
+    {
+        private ManualResetValueTaskSourceCore<bool> _source;
+        public int Flushes { get; private set; }
+        public int Consumed { get; private set; }
+
+        public void Write(ReadOnlySpan<byte> payload, CancellationToken cancellationToken) { }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask FlushAsync(CancellationToken cancellationToken)
+        {
+            _source.Reset();
+            _source.SetResult(true);
+            Flushes++;
+            return new ValueTask(this, _source.Version);
+        }
+
+        public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);
+
+        public void OnCompleted(
+            Action<object?> continuation,
+            object? state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags
+        ) => _source.OnCompleted(continuation, state, token, flags);
+
+        public void GetResult(short token)
+        {
+            _source.GetResult(token);
+            Consumed++;
+        }
     }
 
     private static string Message(string line)

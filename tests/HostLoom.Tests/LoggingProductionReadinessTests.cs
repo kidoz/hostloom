@@ -405,6 +405,43 @@ public sealed class LoggingProductionReadinessTests
         Assert.Equal(0, provider.Dropped);
     }
 
+    [Fact]
+    public async Task Abandoning_a_writer_releases_pending_and_future_infinite_flushes()
+    {
+        using var gate = new HeldOperation();
+        using var metrics = new ProviderMetrics();
+        await using var sink = new HeldSink(gate, hold: true);
+        await using var provider = metrics.Create(
+            new JsonLogFormatter(),
+            sink,
+            new() { QueueCapacity = 1, ShutdownTimeout = TimeSpan.FromMilliseconds(20) }
+        );
+        var deadline = TimeSpan.FromSeconds(5);
+        var cancellation = TestContext.Current.CancellationToken;
+        var logger = provider.CreateLogger("Drain");
+        logger.LogInformation("held");
+        await gate.Entered.Task.WaitAsync(deadline, cancellation);
+        try
+        {
+            var pending = Task.Run(() => provider.Flush(Timeout.InfiniteTimeSpan), cancellation);
+            // With the writer held, a full queue proves the pending marker was admitted.
+            Assert.True(SpinWait.SpinUntil(() => metrics.QueueDepth == 1, deadline));
+            var waitingForRoom = Task.Run(
+                () => provider.Flush(Timeout.InfiniteTimeSpan),
+                cancellation
+            );
+            await provider.DisposeAsync().AsTask().WaitAsync(deadline, cancellation);
+            Assert.False(await pending.WaitAsync(deadline, cancellation));
+            Assert.False(await waitingForRoom.WaitAsync(deadline, cancellation));
+            var late = Task.Run(() => provider.Flush(Timeout.InfiniteTimeSpan), cancellation);
+            Assert.False(await late.WaitAsync(deadline, cancellation));
+        }
+        finally
+        {
+            gate.Release.Set();
+        }
+    }
+
     [Theory]
     [InlineData(false, 0)]
     [InlineData(false, 3)]
@@ -454,8 +491,7 @@ public sealed class LoggingProductionReadinessTests
             gate.Release.Set();
         }
 
-        // A closed pipeline waits for the writer to finish before returning false. Its late
-        // cancellation cleanup must neither leak records nor count the abandoned ones twice.
+        // The abandoned pipeline stays terminal even when its writer later cooperates.
         Assert.False(provider.Flush(TimeSpan.FromSeconds(5)));
         Assert.Equal(4, provider.Dropped);
         logger.LogInformation("after disposal");
@@ -753,6 +789,15 @@ public sealed class LoggingProductionReadinessTests
         private long _dropped;
         private long _namesTooLong;
         private long _recordCapFields;
+        private int _queueDepth;
+        public int QueueDepth
+        {
+            get
+            {
+                _listener.RecordObservableInstruments();
+                return Volatile.Read(ref _queueDepth);
+            }
+        }
         public long NamesTooLong => Interlocked.Read(ref _namesTooLong);
         public long RecordCapFields => Interlocked.Read(ref _recordCapFields);
         public long CaptureFailures => Interlocked.Read(ref _captureFailures);
@@ -772,6 +817,8 @@ public sealed class LoggingProductionReadinessTests
             _listener.SetMeasurementEventCallback<long>(
                 (instrument, count, tags, _) =>
                 {
+                    if (instrument.Name == "hostloom.logging.queue.depth")
+                        Volatile.Write(ref _queueDepth, (int)count);
                     if (instrument.Name == "hostloom.logging.fields.dropped")
                         foreach (var tag in tags)
                         {

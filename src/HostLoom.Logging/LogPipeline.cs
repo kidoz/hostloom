@@ -83,6 +83,7 @@ internal sealed class LogPipeline : IAsyncDisposable
     // Monitor that flush callers wait on; the writer pulses it after each flush it completes.
     private readonly object _flushed = new();
     private long _flushesCompleted;
+    private bool _flushAbandoned;
 
     /// <summary>Whether the current batch ended at a flush marker. Writer-thread only.</summary>
     private bool _flushTaken;
@@ -439,7 +440,7 @@ internal sealed class LogPipeline : IAsyncDisposable
         }
 
         var started = Stopwatch.GetTimestamp();
-        long ticket;
+        long ticket = 0; // Zero waits for the final drain after the channel closes.
         while (!_flushGate.TryEnter(Budget(timeout, started)))
         {
             if (Budget(timeout, started) == 0)
@@ -456,16 +457,15 @@ internal sealed class LogPipeline : IAsyncDisposable
                 timeout == Timeout.InfiniteTimeSpan ? null : timeout,
                 started
             );
-            if (refused is not null)
+            if (refused is null)
             {
-                // Disposal already closed the queue and is draining it; waiting for that is the
-                // flush. A faulted or overdue pipeline has nothing left to wait for.
-                return refused == LoggingMetrics.ReasonProviderDisposed
-                    && WaitForCompletion(_completion.Task, timeout, started)
-                    && _drained;
+                ticket = ++_flushesRequested;
             }
-
-            ticket = ++_flushesRequested;
+            else if (refused != LoggingMetrics.ReasonProviderDisposed)
+            {
+                return false;
+            }
+            // A closed queue has no marker. In that case wait for the final drain instead.
         }
         finally
         {
@@ -474,7 +474,11 @@ internal sealed class LogPipeline : IAsyncDisposable
 
         lock (_flushed)
         {
-            while (_flushesCompleted < ticket && !_completion.Task.IsCompleted)
+            while (
+                !_flushAbandoned
+                && !_completion.Task.IsCompleted
+                && (ticket == 0 || _flushesCompleted < ticket)
+            )
             {
                 var wait = Budget(timeout, started);
                 if (wait == 0)
@@ -485,7 +489,7 @@ internal sealed class LogPipeline : IAsyncDisposable
                 Monitor.Wait(_flushed, wait);
             }
 
-            return _flushesCompleted >= ticket;
+            return ticket == 0 ? !_flushAbandoned && _drained : _flushesCompleted >= ticket;
         }
     }
 
@@ -583,7 +587,8 @@ internal sealed class LogPipeline : IAsyncDisposable
                     FlushSink();
                     lock (_flushed)
                     {
-                        _flushesCompleted++;
+                        if (!_flushAbandoned)
+                            _flushesCompleted++;
                         Monitor.PulseAll(_flushed);
                     }
                 }
@@ -617,11 +622,7 @@ internal sealed class LogPipeline : IAsyncDisposable
         _component = LoggingMetrics.ComponentSink;
         try
         {
-            var flush = _sink.FlushAsync(_shutdown.Token);
-            if (!flush.IsCompletedSuccessfully)
-            {
-                flush.AsTask().GetAwaiter().GetResult();
-            }
+            _sink.FlushAsync(_shutdown.Token).AsTask().GetAwaiter().GetResult();
         }
         catch (Exception) when (!_shutdown.IsCancellationRequested)
         {
@@ -922,6 +923,13 @@ internal sealed class LogPipeline : IAsyncDisposable
             // be inside Write, and the cancellation source stays undisposed for the same reason.
             // The abandoned thread is the pipeline's own dedicated background writer, never a
             // caller's, and it cannot keep the process alive.
+            lock (_flushed)
+            {
+                // Cancellation callbacks can outlive an already drained writer. Only an
+                // unfinished writer leaves its remaining flush tickets permanently incomplete.
+                _flushAbandoned = !_completion.Task.IsCompleted;
+                Monitor.PulseAll(_flushed);
+            }
             var stranded = Interlocked.Exchange(ref _outstanding, -1);
             _metrics.RecordFailure(LoggingMetrics.ComponentSink);
             if (stranded > 0)

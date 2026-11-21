@@ -149,6 +149,9 @@ queue waits on a monitor the writer signals, and the writer wakes as soon as a r
 With every pool thread busy, `EnqueueTimeout` and `ShutdownTimeout` still hold, and records
 still reach the sink.
 
+If shutdown abandons the writer, pending flushes whose markers it has not completed return
+`false`. A later flush also returns `false`, including one with an infinite timeout.
+
 Concurrent calls to `DisposeAsync` await the same bounded shutdown operation, including drain
 and sink disposal. Synchronous `Dispose` waits for that same completion.
 
