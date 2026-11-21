@@ -21,7 +21,7 @@ public sealed class ValkeyRateLimitStore : IRateLimitStore, IRateLimitStoreHealt
         local raw = redis.call('GET', key)
         if raw then
             local separator = string.find(raw, ':', 1, true)
-            tokens = tonumber(string.sub(raw, 1, separator - 1))
+            tokens = math.min(capacity, tonumber(string.sub(raw, 1, separator - 1)))
             last = tonumber(string.sub(raw, separator + 1))
             if last > now then last = now end
         end

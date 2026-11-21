@@ -42,7 +42,7 @@ The same profile and backend share a connection with caching and locking; differ
 isolate connections.
 
 The profile is also the consumer key. The physical store key is
-`catalog:rate:catalog-api` in this example. All instances sharing a key must use the same policy.
+`catalog:rate:catalog-api` in this example. All instances sharing a key must use the same policy. When a deployment lowers capacity, the next decision caps the stored balance at the new limit before spending or replenishing tokens.
 For manual composition, construct `DistributedRateLimiter` with `RateLimitingOptions`, a consumer
 key, and an `IRateLimitStore`.
 

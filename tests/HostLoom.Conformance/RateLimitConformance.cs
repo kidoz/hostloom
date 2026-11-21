@@ -30,6 +30,7 @@ public static class RateLimitConformance
         {
             [nameof(Capacity_WeightedPermitsAndCancellation)] =
                 Capacity_WeightedPermitsAndCancellation,
+            [nameof(ReducedCapacity_ClampsPersistedTokens)] = ReducedCapacity_ClampsPersistedTokens,
             [nameof(Refill_ClampsAtCapacity)] = Refill_ClampsAtCapacity,
             [nameof(Instances_ShareQuotaAndKeysStayIsolated)] =
                 Instances_ShareQuotaAndKeysStayIsolated,
@@ -74,6 +75,31 @@ public static class RateLimitConformance
         Assert.True(probe.IsAcquired);
         Assert.True(probe.TryGetMetadata(RateLimitMetadata.RemainingPermits, out int afterCancel));
         Assert.Equal(1, afterCancel);
+    }
+
+    public static async Task ReducedCapacity_ClampsPersistedTokens(
+        RateLimitConformanceFixture fixture
+    )
+    {
+        static TokenBucketRateLimitPolicy Policy(int capacity) =>
+            new()
+            {
+                TokenLimit = capacity,
+                TokensPerPeriod = 1,
+                ReplenishmentPeriod = TimeSpan.FromMinutes(1),
+            };
+        using var previous = fixture.CreateLimiter("reduced", Policy(100));
+        using var updated = fixture.CreateLimiter("reduced", Policy(2));
+        using var first = await previous.AcquireAsync();
+        Assert.True(first.IsAcquired);
+        using var last = await updated.AcquireAsync(2);
+        Assert.True(last.IsAcquired);
+        Assert.True(last.TryGetMetadata(RateLimitMetadata.RemainingPermits, out int remaining));
+        Assert.Equal(0, remaining);
+        using var denied = await updated.AcquireAsync();
+        Assert.False(denied.IsAcquired);
+        Assert.True(denied.TryGetMetadata(MetadataName.RetryAfter, out TimeSpan retry));
+        Assert.True(retry > TimeSpan.Zero);
     }
 
     public static async Task Refill_ClampsAtCapacity(RateLimitConformanceFixture fixture)

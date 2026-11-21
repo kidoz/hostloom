@@ -20,7 +20,7 @@ internal static class TokenBucketAlgorithm
         var lastRefill = nowMilliseconds;
         if (current is { } existing && nowMilliseconds < existing.ExpiresAtMilliseconds)
         {
-            tokens = existing.Tokens;
+            tokens = Math.Min(existing.Tokens, policy.TokenLimit);
             lastRefill = Math.Min(existing.LastRefillMilliseconds, nowMilliseconds);
         }
 
