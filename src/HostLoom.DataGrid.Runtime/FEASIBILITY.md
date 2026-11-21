@@ -317,6 +317,11 @@ recovery checks.
 Batch 128 also completed at concurrency 64 with three voters and seed 43 on the same
 inputs. It matched concurrency 16 at 8.00 successful requests/s, with 11750 refusals out
 of 14150 calls (83.04%). It settled all 58 pending mutations and verified both recovery
-checks with zero OOMs or member faults. Four workload combinations have completed on
-the configurable voter count build with three voters. Further matrix coverage, contextual
-measurements and target decisions remain open.
+checks with zero OOMs or member faults.
+
+At concurrency 1, batch 128 and seed 43 completed on the same three-voter inputs. It
+delivered 2.00 successful requests/s and 255.57 items/s with one refusal out of 600
+calls. It verified both recovery checks and recorded zero unresolved mutations, OOMs or
+member faults. Five workload combinations have completed on the configurable voter count
+build with three voters. Further matrix coverage, contextual measurements and target
+decisions remain open.
