@@ -16,6 +16,27 @@ namespace HostLoom.Tests;
 public sealed class LeadershipRegistrationTests
 {
     [Fact]
+    public void Reacquisition_from_a_loss_callback_keeps_notifications_in_term_order()
+    {
+        using var manual = new ManualLeadership("catalog");
+        var seen = new List<LeadershipChange>();
+        using var subscription = manual.OnChange(seen.Add);
+        manual.Acquire();
+        using var callback = manual.LeadershipToken.Register(() => manual.Acquire());
+        manual.Lose();
+        Assert.Equal(
+            new[]
+            {
+                (LeadershipChangeReason.Acquired, 1L),
+                (LeadershipChangeReason.Lost, 1L),
+                (LeadershipChangeReason.Acquired, 2L),
+            },
+            seen.Select(x => (x.Reason, x.Term))
+        );
+        Assert.Equal(seen, manual.Changes);
+    }
+
+    [Fact]
     public async Task AddRole_registers_a_keyed_elector_and_the_single_role_resolves_unkeyed()
     {
         var clock = new TestClock();

@@ -10,6 +10,9 @@ public sealed class ManualNodeLeasing(string pool) : INodeLeasing, IDisposable
     private readonly Lock _gate = new();
     private readonly HashSet<Action<NodeLeaseChange>> _listeners = [];
     private readonly List<NodeLeaseChange> _changes = [];
+    private readonly Queue<(NodeLeaseChange Change, Action<NodeLeaseChange>[] Listeners)> _pending =
+        new();
+    private bool _publishing;
     private TaskCompletionSource<int> _becameAssigned = new(
         TaskCreationOptions.RunContinuationsAsynchronously
     );
@@ -69,7 +72,7 @@ public sealed class ManualNodeLeasing(string pool) : INodeLeasing, IDisposable
     public void Assign(int id)
     {
         TaskCompletionSource<int> signal;
-        long term;
+        bool publish;
         lock (_gate)
         {
             if (_assignmentToken is not null)
@@ -79,15 +82,17 @@ public sealed class ManualNodeLeasing(string pool) : INodeLeasing, IDisposable
 
             _assignmentToken = new CancellationTokenSource();
             _nodeId = id;
-            term = Interlocked.Increment(ref _term);
+            var term = Interlocked.Increment(ref _term);
             signal = _becameAssigned;
             _becameAssigned = new TaskCompletionSource<int>(
                 TaskCreationOptions.RunContinuationsAsynchronously
             );
+            publish = Enqueue(new NodeLeaseChange(Pool, id, term, NodeLeaseChangeReason.Acquired));
         }
 
         signal.TrySetResult(id);
-        Raise(new NodeLeaseChange(Pool, id, term, NodeLeaseChangeReason.Acquired));
+        if (publish)
+            Publish();
     }
 
     /// <summary>Ends the assignment as a lost lease would: the token cancels and <see cref="NodeLeaseChangeReason.Lost"/> is raised.</summary>
@@ -137,37 +142,69 @@ public sealed class ManualNodeLeasing(string pool) : INodeLeasing, IDisposable
 
     private void End(NodeLeaseChangeReason reason)
     {
-        CancellationTokenSource? token;
+        CancellationTokenSource token;
+        bool publish;
         lock (_gate)
         {
+            if (_assignmentToken is null)
+                return;
             token = _assignmentToken;
             _assignmentToken = null;
             _nodeId = null;
+            publish = Enqueue(new NodeLeaseChange(Pool, null, _term, reason));
         }
-
-        if (token is null)
+        try
         {
-            return;
+            token.Cancel();
         }
-
-        token.Cancel();
-        token.Dispose();
-        Raise(new NodeLeaseChange(Pool, null, Term, reason));
+        finally
+        {
+            token.Dispose();
+            if (publish)
+                Publish();
+        }
     }
 
-    private void Raise(NodeLeaseChange change)
+    // The transition holds _gate. One publisher delivers snapshots in transition order,
+    // including changes triggered by cancellation callbacks and listeners.
+    private bool Enqueue(NodeLeaseChange change)
     {
-        Action<NodeLeaseChange>[] listeners;
-        lock (_gate)
-        {
-            _changes.Add(change);
-            listeners = [.. _listeners];
-        }
+        _changes.Add(change);
+        _pending.Enqueue((change, [.. _listeners]));
+        if (_publishing)
+            return false;
+        _publishing = true;
+        return true;
+    }
 
-        foreach (var listener in listeners)
+    private void Publish()
+    {
+        List<Exception>? failures = null;
+        while (true)
         {
-            listener(change);
+            (NodeLeaseChange Change, Action<NodeLeaseChange>[] Listeners) next;
+            lock (_gate)
+            {
+                if (!_pending.TryDequeue(out next))
+                {
+                    _publishing = false;
+                    break;
+                }
+            }
+            foreach (var listener in next.Listeners)
+            {
+                try
+                {
+                    listener(next.Change);
+                }
+                catch (Exception ex)
+                {
+                    (failures ??= []).Add(ex);
+                }
+            }
         }
+        if (failures is not null)
+            throw new AggregateException(failures);
     }
 
     private sealed class Subscription(ManualNodeLeasing owner, Action<NodeLeaseChange> listener)

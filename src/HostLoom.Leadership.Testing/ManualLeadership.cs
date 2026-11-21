@@ -10,6 +10,11 @@ public sealed class ManualLeadership(string role) : ILeadership, IDisposable
     private readonly Lock _gate = new();
     private readonly HashSet<Action<LeadershipChange>> _listeners = [];
     private readonly List<LeadershipChange> _changes = [];
+    private readonly Queue<(
+        LeadershipChange Change,
+        Action<LeadershipChange>[] Listeners
+    )> _pending = new();
+    private bool _publishing;
     private TaskCompletionSource _becameLeader = new(
         TaskCreationOptions.RunContinuationsAsynchronously
     );
@@ -68,7 +73,7 @@ public sealed class ManualLeadership(string role) : ILeadership, IDisposable
     public void Acquire()
     {
         TaskCompletionSource signal;
-        long term;
+        bool publish;
         lock (_gate)
         {
             if (_leaderToken is not null)
@@ -77,15 +82,19 @@ public sealed class ManualLeadership(string role) : ILeadership, IDisposable
             }
 
             _leaderToken = new CancellationTokenSource();
-            term = Interlocked.Increment(ref _term);
+            var term = Interlocked.Increment(ref _term);
             signal = _becameLeader;
             _becameLeader = new TaskCompletionSource(
                 TaskCreationOptions.RunContinuationsAsynchronously
             );
+            publish = Enqueue(
+                new LeadershipChange(Role, true, term, LeadershipChangeReason.Acquired)
+            );
         }
 
         signal.TrySetResult();
-        Raise(new LeadershipChange(Role, true, term, LeadershipChangeReason.Acquired));
+        if (publish)
+            Publish();
     }
 
     /// <summary>Ends leadership as a lost lease would: the token cancels and <see cref="LeadershipChangeReason.Lost"/> is raised.</summary>
@@ -135,36 +144,68 @@ public sealed class ManualLeadership(string role) : ILeadership, IDisposable
 
     private void End(LeadershipChangeReason reason)
     {
-        CancellationTokenSource? token;
+        CancellationTokenSource token;
+        bool publish;
         lock (_gate)
         {
+            if (_leaderToken is null)
+                return;
             token = _leaderToken;
             _leaderToken = null;
+            publish = Enqueue(new LeadershipChange(Role, false, _term, reason));
         }
-
-        if (token is null)
+        try
         {
-            return;
+            token.Cancel();
         }
-
-        token.Cancel();
-        token.Dispose();
-        Raise(new LeadershipChange(Role, false, Term, reason));
+        finally
+        {
+            token.Dispose();
+            if (publish)
+                Publish();
+        }
     }
 
-    private void Raise(LeadershipChange change)
+    // The transition holds _gate. One publisher delivers snapshots in transition order,
+    // including changes triggered by cancellation callbacks and listeners.
+    private bool Enqueue(LeadershipChange change)
     {
-        Action<LeadershipChange>[] listeners;
-        lock (_gate)
-        {
-            _changes.Add(change);
-            listeners = [.. _listeners];
-        }
+        _changes.Add(change);
+        _pending.Enqueue((change, [.. _listeners]));
+        if (_publishing)
+            return false;
+        _publishing = true;
+        return true;
+    }
 
-        foreach (var listener in listeners)
+    private void Publish()
+    {
+        List<Exception>? failures = null;
+        while (true)
         {
-            listener(change);
+            (LeadershipChange Change, Action<LeadershipChange>[] Listeners) next;
+            lock (_gate)
+            {
+                if (!_pending.TryDequeue(out next))
+                {
+                    _publishing = false;
+                    break;
+                }
+            }
+            foreach (var listener in next.Listeners)
+            {
+                try
+                {
+                    listener(next.Change);
+                }
+                catch (Exception ex)
+                {
+                    (failures ??= []).Add(ex);
+                }
+            }
         }
+        if (failures is not null)
+            throw new AggregateException(failures);
     }
 
     private sealed class Subscription(ManualLeadership owner, Action<LeadershipChange> listener)

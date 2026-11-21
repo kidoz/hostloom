@@ -14,6 +14,27 @@ namespace HostLoom.Tests;
 public sealed class NodeLeasingRegistrationTests
 {
     [Fact]
+    public void Reacquisition_from_a_loss_callback_keeps_notifications_in_term_order()
+    {
+        using var manual = new ManualNodeLeasing("catalog");
+        var seen = new List<NodeLeaseChange>();
+        using var subscription = manual.OnChange(seen.Add);
+        manual.Assign(1);
+        using var callback = manual.AssignmentToken.Register(() => manual.Assign(2));
+        manual.Lose();
+        Assert.Equal(
+            new[]
+            {
+                (NodeLeaseChangeReason.Acquired, 1L),
+                (NodeLeaseChangeReason.Lost, 1L),
+                (NodeLeaseChangeReason.Acquired, 2L),
+            },
+            seen.Select(x => (x.Reason, x.Term))
+        );
+        Assert.Equal(seen, manual.Changes);
+    }
+
+    [Fact]
     public async Task Generated_keys_must_fit_the_composed_locks_limit_at_registration()
     {
         var services = new ServiceCollection();
