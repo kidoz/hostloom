@@ -174,6 +174,7 @@ work. These backends provide shared coordination, not a strict quota guarantee d
 
 ## Keys, health, and metrics
 
+The partition-key helpers require well-formed Unicode text, including inputs to SHA-256 and HMAC.
 Use bounded, non-secret consumer keys. `RateLimitKey.FromSensitive` hashes high-entropy values or
 uses HMAC for low-entropy secrets. Namespaces match `[a-z0-9-]+`; keys reject whitespace and
 control characters. Fixed buckets use `{namespace}:rate:{key}`.

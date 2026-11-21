@@ -15,6 +15,40 @@ public sealed class SensitiveKeyTests
     private static readonly byte[] Pepper = "catalog-service-pepper"u8.ToArray();
 
     [Fact]
+    public void Key_helpers_reject_unpaired_surrogates_and_preserve_supplementary_scalars()
+    {
+        foreach (var malformed in new[] { "catalog\ud800", "\udc00catalog" })
+        {
+            Assert.Throws<EncoderFallbackException>(() => CacheKey.FromSensitive(malformed));
+            Assert.Throws<EncoderFallbackException>(() =>
+                CacheKey.FromSensitive(malformed, Pepper)
+            );
+            Assert.Throws<EncoderFallbackException>(() => LockKey.FromSensitive(malformed));
+            Assert.Throws<EncoderFallbackException>(() => LockKey.FromSensitive(malformed, Pepper));
+            Assert.Throws<EncoderFallbackException>(() =>
+                RateLimiting.RateLimitKey.FromSensitive(malformed)
+            );
+            Assert.Throws<EncoderFallbackException>(() =>
+                RateLimiting.RateLimitKey.FromSensitive(malformed, Pepper)
+            );
+            Assert.False(CacheKey.IsValid(malformed, 512));
+            Assert.Throws<ArgumentException>(() => LockKey.Validate(malformed));
+        }
+        const string valid = "catalog\U0001f4da";
+        var bytes = Encoding.UTF8.GetBytes(valid);
+        var expected = Convert.ToHexStringLower(SHA256.HashData(bytes))[..32];
+        var keyed = Convert.ToHexStringLower(HMACSHA256.HashData(Pepper, bytes))[..32];
+        Assert.True(CacheKey.IsValid(valid, 512));
+        LockKey.Validate(valid);
+        Assert.Equal(expected, CacheKey.FromSensitive(valid));
+        Assert.Equal(expected, LockKey.FromSensitive(valid));
+        Assert.Equal(expected, RateLimiting.RateLimitKey.FromSensitive(valid));
+        Assert.Equal(keyed, CacheKey.FromSensitive(valid, Pepper));
+        Assert.Equal(keyed, LockKey.FromSensitive(valid, Pepper));
+        Assert.Equal(keyed, RateLimiting.RateLimitKey.FromSensitive(valid, Pepper));
+    }
+
+    [Fact]
     public void KeyedHash_DiffersFromTheUnkeyedHashAndFromOtherKeys()
     {
         var unkeyed = CacheKey.FromSensitive("1234");

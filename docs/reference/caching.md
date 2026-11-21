@@ -52,6 +52,8 @@ its own time to live.
 | `NullExpiration` | Negative caching. A null factory result is remembered in both tiers for this long, so a lookup for something that does not exist stops reaching the source on every call. A remembered null is a hit: `TryGetAsync` reports `Found` with a null `Value`, get-or-create returns null without running the factory, and `GetManyAsync` includes the key with a null value. For a non-nullable value type the entry is a miss. `SetAsync` still rejects null. Unset means a null result is not stored. |
 | `StaleGrace` | Stale-while-revalidate for an outage. The in-process copy is kept for this long past its expiry; while the distributed store is unavailable and a get-or-create finds such a copy, one caller refreshes through the factory and every other caller receives the copy at once, with the `hit_stale` outcome. While the store answers, an expired entry is an ordinary miss. Has no effect without a distributed store. |
 
+Both sensitive-key overloads require well-formed Unicode text and reject unpaired UTF-16 surrogates.
+
 `CacheKey.FromSensitive(value)` hashes a high-entropy credential such as a
 bearer token, refresh token, or session id (SHA-256, 32 hex characters) so
 it never reaches a store, a log, or a span. The hash is unkeyed, so anyone

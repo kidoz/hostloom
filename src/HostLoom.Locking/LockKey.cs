@@ -6,6 +6,8 @@ namespace HostLoom.Locking;
 /// <summary>Key hygiene shared by every lock: validation and the one sanctioned way to key on a secret.</summary>
 public static class LockKey
 {
+    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+
     /// <summary>
     /// Hashes a high-entropy credential such as a bearer token, refresh token, session id, or
     /// API key (SHA-256, first 32 lowercase hex characters) so it never reaches the provider, a
@@ -17,7 +19,7 @@ public static class LockKey
     {
         ArgumentNullException.ThrowIfNull(value);
         Span<byte> hash = stackalloc byte[SHA256.HashSizeInBytes];
-        SHA256.HashData(Encoding.UTF8.GetBytes(value), hash);
+        SHA256.HashData(StrictUtf8.GetBytes(value), hash);
         return Convert.ToHexStringLower(hash[..16]);
     }
 
@@ -39,7 +41,7 @@ public static class LockKey
         }
 
         Span<byte> hash = stackalloc byte[HMACSHA256.HashSizeInBytes];
-        HMACSHA256.HashData(key, Encoding.UTF8.GetBytes(value), hash);
+        HMACSHA256.HashData(key, StrictUtf8.GetBytes(value), hash);
         return Convert.ToHexStringLower(hash[..16]);
     }
 
@@ -60,12 +62,22 @@ public static class LockKey
             );
         }
 
-        foreach (var character in key)
+        for (var index = 0; index < key.Length; index++)
         {
-            if (char.IsWhiteSpace(character) || char.IsControl(character))
+            var character = key[index];
+            if (char.IsSurrogatePair(key, index))
+            {
+                index++;
+                continue;
+            }
+            if (
+                char.IsSurrogate(character)
+                || char.IsWhiteSpace(character)
+                || char.IsControl(character)
+            )
             {
                 throw new ArgumentException(
-                    "Lock keys must not contain whitespace or control characters.",
+                    "Lock keys must contain valid Unicode text without whitespace or control characters.",
                     nameof(key)
                 );
             }

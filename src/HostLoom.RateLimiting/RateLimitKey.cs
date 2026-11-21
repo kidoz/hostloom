@@ -6,12 +6,14 @@ namespace HostLoom.RateLimiting;
 /// <summary>Validation and safe partition-key derivation for rate limiters.</summary>
 public static class RateLimitKey
 {
+    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+
     /// <summary>Hashes a high-entropy credential so the secret does not reach the store or telemetry.</summary>
     public static string FromSensitive(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
         Span<byte> hash = stackalloc byte[SHA256.HashSizeInBytes];
-        SHA256.HashData(Encoding.UTF8.GetBytes(value), hash);
+        SHA256.HashData(StrictUtf8.GetBytes(value), hash);
         return Convert.ToHexStringLower(hash[..16]);
     }
 
@@ -25,7 +27,7 @@ public static class RateLimitKey
         }
 
         Span<byte> hash = stackalloc byte[HMACSHA256.HashSizeInBytes];
-        HMACSHA256.HashData(key, Encoding.UTF8.GetBytes(value), hash);
+        HMACSHA256.HashData(key, StrictUtf8.GetBytes(value), hash);
         return Convert.ToHexStringLower(hash[..16]);
     }
 

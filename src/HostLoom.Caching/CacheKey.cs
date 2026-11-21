@@ -6,6 +6,8 @@ namespace HostLoom.Caching;
 /// <summary>Helpers for building and validating cache keys.</summary>
 public static class CacheKey
 {
+    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+
     /// <summary>
     /// Hashes a high-entropy credential such as a bearer token, refresh token, or session id
     /// (SHA-256, first 32 lowercase hex characters) so the secret itself never reaches the store,
@@ -17,7 +19,7 @@ public static class CacheKey
     {
         ArgumentNullException.ThrowIfNull(value);
         Span<byte> hash = stackalloc byte[SHA256.HashSizeInBytes];
-        SHA256.HashData(Encoding.UTF8.GetBytes(value), hash);
+        SHA256.HashData(StrictUtf8.GetBytes(value), hash);
         return Convert.ToHexStringLower(hash[..16]);
     }
 
@@ -38,7 +40,7 @@ public static class CacheKey
         }
 
         Span<byte> hash = stackalloc byte[HMACSHA256.HashSizeInBytes];
-        HMACSHA256.HashData(key, Encoding.UTF8.GetBytes(value), hash);
+        HMACSHA256.HashData(key, StrictUtf8.GetBytes(value), hash);
         return Convert.ToHexStringLower(hash[..16]);
     }
 
@@ -78,7 +80,7 @@ public static class CacheKey
         if (!HasOnlyAllowedCharacters(key))
         {
             throw new ArgumentException(
-                "A cache key must not contain whitespace or control characters.",
+                "A cache key must contain valid Unicode text without whitespace or control characters.",
                 parameterName
             );
         }
@@ -95,9 +97,19 @@ public static class CacheKey
 
     private static bool HasOnlyAllowedCharacters(string key)
     {
-        foreach (var character in key)
+        for (var index = 0; index < key.Length; index++)
         {
-            if (char.IsWhiteSpace(character) || char.IsControl(character))
+            var character = key[index];
+            if (char.IsSurrogatePair(key, index))
+            {
+                index++;
+                continue;
+            }
+            if (
+                char.IsSurrogate(character)
+                || char.IsWhiteSpace(character)
+                || char.IsControl(character)
+            )
             {
                 return false;
             }

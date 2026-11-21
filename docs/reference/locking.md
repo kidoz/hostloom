@@ -129,6 +129,7 @@ a 50 ms step with 50 ms of jitter, about three seconds in total.
 
 `Validate()` returns every violation naming its option key; the
 `DependencyInjection` package runs it at startup.
+Both sensitive-key overloads require well-formed Unicode text and reject unpaired UTF-16 surrogates.
 `LockKey.FromSensitive(value)` hashes a high-entropy credential such as a
 token, session id, or API key (SHA-256, 32 hex characters) so it never
 reaches the provider or a log. The hash is unkeyed, so a low-entropy secret
