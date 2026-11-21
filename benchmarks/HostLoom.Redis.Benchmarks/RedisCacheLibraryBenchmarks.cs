@@ -48,10 +48,9 @@ public class RedisCacheLibraryBenchmarks
             TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
         };
 
-        _hostLoomMultiplexer = await StackExchange
-            .Redis.ConnectionMultiplexer.ConnectAsync(configuration)
+        _hostLoomMultiplexer = await RedisBenchmarkConfiguration
+            .ConnectAsync()
             .ConfigureAwait(false);
-        await RedisBenchmarkConfiguration.VerifyAsync(_hostLoomMultiplexer).ConfigureAwait(false);
 
         _hostLoomStore = new RedisCacheStore(_hostLoomMultiplexer);
         var hostLoomOptions = new CachingOptions { Namespace = "bench-hostloom-redis" };

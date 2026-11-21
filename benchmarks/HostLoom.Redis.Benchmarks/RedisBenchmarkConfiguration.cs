@@ -9,17 +9,21 @@ internal static class RedisBenchmarkConfiguration
     internal static string Value =>
         Environment.GetEnvironmentVariable(Variable) ?? "localhost:6379";
 
-    internal static async Task VerifyAsync(IConnectionMultiplexer multiplexer)
+    internal static async Task<ConnectionMultiplexer> ConnectAsync()
     {
+        ConnectionMultiplexer? multiplexer = null;
         try
         {
+            multiplexer = await ConnectionMultiplexer.ConnectAsync(Value).ConfigureAwait(false);
             await multiplexer.GetDatabase().PingAsync().ConfigureAwait(false);
+            return multiplexer;
         }
         catch (Exception exception)
         {
+            if (multiplexer is not null)
+                await multiplexer.DisposeAsync().ConfigureAwait(false);
             throw new InvalidOperationException(
-                $"Redis benchmark endpoint '{Value}' is unavailable. Start Redis or set {Variable}.",
-                exception
+                $"Redis benchmark connection failed ({exception.GetType().Name}). Start Redis or check {Variable}."
             );
         }
     }

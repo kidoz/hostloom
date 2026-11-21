@@ -23,10 +23,7 @@ public class RedisLockLibraryBenchmarks
     [GlobalSetup]
     public async Task Setup()
     {
-        _multiplexer = await ConnectionMultiplexer
-            .ConnectAsync(RedisBenchmarkConfiguration.Value)
-            .ConfigureAwait(false);
-        await RedisBenchmarkConfiguration.VerifyAsync(_multiplexer).ConfigureAwait(false);
+        _multiplexer = await RedisBenchmarkConfiguration.ConnectAsync().ConfigureAwait(false);
 
         _provider = new RedisLockProvider(_multiplexer);
         _hostLoom = new HostLoom.Locking.DistributedLock(
