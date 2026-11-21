@@ -29,6 +29,7 @@ public sealed class HostLoomBootstrapLogger : ILogger, IDisposable
     private readonly StaticField[] _staticFields;
     private readonly ArrayBufferWriter<byte> _buffer = new(4 * 1024);
     private readonly Lock _gate = new();
+    private readonly LogCaptureLimits _captureLimits;
     private int _disposed;
 
     /// <param name="options">Shared with the future hosted provider so both emit identically;
@@ -63,6 +64,7 @@ public sealed class HostLoomBootstrapLogger : ILogger, IDisposable
             _formatter is not JsonLogFormatter
         );
         _staticFields = LogPipeline.BuildStaticFields(_options);
+        _captureLimits = LogCaptureLimits.Register(_options);
     }
 
     public IDisposable? BeginScope<TState>(TState state)
@@ -189,6 +191,7 @@ public sealed class HostLoomBootstrapLogger : ILogger, IDisposable
             return;
         }
 
+        _captureLimits.Unregister();
         lock (_gate)
         {
             try

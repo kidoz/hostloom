@@ -141,9 +141,14 @@ internal sealed class LogEntry
     public void ApplyCaps(HostLoomLoggerOptions options)
     {
         _maxFieldNameLength = options.MaxFieldNameLength;
-        _maxMessageLength = options.MaxMessageLength;
-        _maxTextFieldLength = options.MaxTextFieldLength;
-        _maxCapturedFields = CaptureCeiling(options.MaxFieldsPerRecord);
+        ApplyCaptureLimits(LogCaptureLimits.From(options));
+    }
+
+    public void ApplyCaptureLimits(LogCaptureLimits limits)
+    {
+        _maxMessageLength = limits.Message;
+        _maxTextFieldLength = limits.Text;
+        _maxCapturedFields = CaptureCeiling(limits.Fields);
     }
 
     /// <summary>
@@ -398,7 +403,7 @@ internal sealed class LogEntry
 
     /// <summary>Caller formatting may fail or refuse every buffer. Neither can grow storage
     /// beyond the budget; partially written bytes are never committed.</summary>
-    private static bool TryFormatBounded<T>(
+    internal static bool TryFormatBounded<T>(
         ref byte[] buffer,
         int start,
         int budget,

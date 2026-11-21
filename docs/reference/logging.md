@@ -402,8 +402,13 @@ boolean values so their JSON types match the direct HostLoom path. Text fields r
 This changes the previous handoff behavior, which emitted every field as a string; update
 downstream mappings that were configured for those string values.
 
-Wrapped logging passes field names by reference during the synchronous handoff, so each HostLoom
-provider applies its own `MaxFieldNameLength`, including limits above 128 bytes. Before enqueueing,
+Each HostLoom provider applies its own message, text, field-count, and name limits during
+wrapped `LogFast` dispatch. This includes limits above the defaults. Other MEL providers
+receive the default-capped structured snapshot. Signed and unsigned 128-bit integer fields
+preserve their exact values on both paths. During interpolation, wrapped logging prepares one
+bounded snapshot per distinct combination of message, text, and field-count limits among
+live HostLoom loggers, plus the default view. Providers with identical limits share that work.
+Wrapped logging passes field names by reference. Before enqueueing,
 the provider removes rejected fields and releases those name references. Rejected names are never
 UTF-8 encoded or copied to strip `@` or `$`; their captured values remain available for masked
 message and scope rendering within the existing capture limits.

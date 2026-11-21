@@ -23,6 +23,7 @@ namespace HostLoom.Logging;
 public ref struct LogMessageHandler
 {
     internal LogEntry? Entry;
+    internal LogFastCapture? Wrapped;
 
     public LogMessageHandler(
         int literalLength,
@@ -40,45 +41,51 @@ public ref struct LogMessageHandler
             return;
         }
 
-        Entry = LogEntryPool.Rent();
         if (logger is HostLoomLogger own)
         {
+            Entry = LogEntryPool.Rent();
+            Entry.Level = level;
             Entry.ApplyCaps(own.Options);
         }
         else
         {
-            Entry.DeferNameValidation();
+            Wrapped = new LogFastCapture();
         }
 
-        Entry.Level = level;
         shouldAppend = true;
     }
 
-    public void AppendLiteral(string value) => Entry?.AppendLiteral(value);
+    public void AppendLiteral(string value) => AppendFormatted(value.AsSpan(), name: null);
 
     public void AppendFormatted(
         string? value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendText(value ?? string.Empty, name);
+    ) => AppendFormatted(value.AsSpan(), name: name);
 
     public void AppendFormatted(
         ReadOnlySpan<char> value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendText(value, name);
+    )
+    {
+        if (Wrapped is not null)
+            foreach (var entry in Wrapped.Entries)
+                entry.AppendText(value, name);
+        Entry?.AppendText(value, name);
+    }
 
     public void AppendFormatted(
         int value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendFormattable(value, format, name, LogFieldKind.Number);
+    ) => AppendValue(value, format, name, LogFieldKind.Number);
 
     public void AppendFormatted(
         long value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendFormattable(value, format, name, LogFieldKind.Number);
+    ) => AppendValue(value, format, name, LogFieldKind.Number);
 
     /// <summary>NaN and the infinities are not JSON numbers, so they degrade to text fields.</summary>
     public void AppendFormatted(
@@ -86,7 +93,7 @@ public ref struct LogMessageHandler
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
     ) =>
-        Entry?.AppendFormattable(
+        AppendValue(
             value,
             format,
             name,
@@ -97,32 +104,38 @@ public ref struct LogMessageHandler
         decimal value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendFormattable(value, format, name, LogFieldKind.Number);
+    ) => AppendValue(value, format, name, LogFieldKind.Number);
 
     public void AppendFormatted(
         bool value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendBoolean(value, name);
+    )
+    {
+        if (Wrapped is not null)
+            foreach (var entry in Wrapped.Entries)
+                entry.AppendBoolean(value, name);
+        Entry?.AppendBoolean(value, name);
+    }
 
     public void AppendFormatted(
         Guid value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendFormattable(value, format, name, LogFieldKind.Text);
+    ) => AppendValue(value, format, name, LogFieldKind.Text);
 
     /// <summary>Defaults to ISO-8601 ("O"), the canonical timestamp shape for JSON consumers.</summary>
     public void AppendFormatted(
         DateTimeOffset value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendFormattable(value, format, name, LogFieldKind.Text, "O");
+    ) => AppendValue(value, format, name, LogFieldKind.Text, "O");
 
     public void AppendFormatted(
         TimeSpan value,
         string? format = null,
         [CallerArgumentExpression(nameof(value))] string? name = null
-    ) => Entry?.AppendFormattable(value, format, name, LogFieldKind.Text);
+    ) => AppendValue(value, format, name, LogFieldKind.Text);
 
     /// <summary>Fallback for types with no UTF-8 formatter. Allocates, and is meant to.</summary>
     public void AppendFormatted<T>(
@@ -131,7 +144,7 @@ public ref struct LogMessageHandler
         [CallerArgumentExpression(nameof(value))] string? name = null
     )
     {
-        if (Entry is null)
+        if (Entry is null && Wrapped is null)
         {
             return;
         }
@@ -151,10 +164,28 @@ public ref struct LogMessageHandler
         }
         catch (Exception)
         {
-            Entry.AppendCaptureFailure(name);
+            if (Wrapped is not null)
+                foreach (var entry in Wrapped.Entries)
+                    entry.AppendCaptureFailure(name);
+            Entry?.AppendCaptureFailure(name);
             return;
         }
-        Entry.AppendText(text ?? string.Empty, name);
+        AppendFormatted(text.AsSpan(), name: name);
+    }
+
+    private readonly void AppendValue<T>(
+        T value,
+        string? format,
+        string? name,
+        LogFieldKind kind,
+        string? canonicalFormat = null
+    )
+        where T : IUtf8SpanFormattable
+    {
+        if (Wrapped is not null)
+            foreach (var entry in Wrapped.Entries)
+                entry.AppendFormattable(value, format, name, kind, canonicalFormat);
+        Entry?.AppendFormattable(value, format, name, kind, canonicalFormat);
     }
 
     private readonly void AppendBoxedFormattable<T>(T value, string? format, string? name)
@@ -179,6 +210,11 @@ public ref struct LogMessageHandler
             Half number when Half.IsFinite(number) => LogFieldKind.Number,
             _ => LogFieldKind.Text,
         };
-        Entry!.AppendFormattable((IUtf8SpanFormattable)value!, format, name, kind);
+        IUtf8SpanFormattable formatted = (IUtf8SpanFormattable)value!;
+        if (Wrapped is { Entries.Length: > 1 } && kind == LogFieldKind.Text)
+        {
+            formatted = new CapturedUtf8Value(formatted, format, Wrapped.FormatBudget);
+        }
+        AppendValue(formatted, format, name, kind);
     }
 }

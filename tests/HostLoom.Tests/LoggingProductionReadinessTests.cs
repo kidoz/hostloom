@@ -168,6 +168,197 @@ public sealed class LoggingProductionReadinessTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Injected_LogFast_keeps_exact_128_bit_integer_fields(bool clef)
+    {
+        await using var sink = new CollectingSink();
+        await using var provider = new HostLoomLoggerProvider(
+            clef ? new ClefLogFormatter() : new JsonLogFormatter(),
+            sink,
+            new()
+        );
+        using var factory = LoggerFactory.Create(builder => builder.AddProvider(provider));
+        var logger = factory.CreateLogger<LoggingProductionReadinessTests>();
+        var lower = Int128.MinValue;
+        var upper = UInt128.MaxValue;
+        logger.LogFast(LogLevel.Information, $"{lower} {upper:X}");
+        Assert.True(provider.Flush(TimeSpan.FromSeconds(5)));
+        using var json = JsonDocument.Parse(Assert.Single(sink.Lines()));
+        Assert.Equal(
+            "-170141183460469231731687303715884105728",
+            json.RootElement.GetProperty("lower").GetRawText()
+        );
+        Assert.Equal(
+            "340282366920938463463374607431768211455",
+            json.RootElement.GetProperty("upper").GetRawText()
+        );
+    }
+
+    [Fact]
+    public async Task Injected_LogFast_applies_each_providers_message_and_text_limits()
+    {
+        await using var smallSink = new CollectingSink();
+        await using var largeSink = new CollectingSink();
+        await using var small = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            smallSink,
+            new() { MaxTextFieldLength = 5, MaxMessageLength = 11 }
+        );
+        await using var large = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            largeSink,
+            new() { MaxTextFieldLength = 24_000, MaxMessageLength = 40_000 }
+        );
+        using var factory = LoggerFactory.Create(builder =>
+            builder.AddProvider(small).AddProvider(large)
+        );
+        var logger = factory.CreateLogger<LoggingProductionReadinessTests>();
+        var note = new string('é', 10_000);
+        logger.LogFast(LogLevel.Information, $"item {note} end");
+
+        Assert.True(small.Flush(TimeSpan.FromSeconds(5)));
+        Assert.True(large.Flush(TimeSpan.FromSeconds(5)));
+        using var shortRecord = JsonDocument.Parse(Assert.Single(smallSink.Lines()));
+        using var longRecord = JsonDocument.Parse(Assert.Single(largeSink.Lines()));
+        Assert.Equal("éé…", shortRecord.RootElement.GetProperty("note").GetString());
+        Assert.Equal("item éé…", shortRecord.RootElement.GetProperty("message").GetString());
+        Assert.Equal(note, longRecord.RootElement.GetProperty("note").GetString());
+        Assert.Equal($"item {note} end", longRecord.RootElement.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task Identical_capture_limits_remain_registered_until_the_last_owner_disposes()
+    {
+        var options = new HostLoomLoggerOptions
+        {
+            MaxMessageLength = 32_103,
+            MaxTextFieldLength = 20_103,
+        };
+        var limits = LogCaptureLimits.From(options);
+        await using var firstSink = new CollectingSink();
+        await using var secondSink = new CollectingSink();
+        await using var first = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            firstSink,
+            options
+        );
+        await using var second = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            secondSink,
+            options
+        );
+        using var factory = LoggerFactory.Create(builder => builder.AddProvider(second));
+        var logger = factory.CreateLogger<LoggingProductionReadinessTests>();
+        await Task.WhenAll(first.DisposeAsync().AsTask(), first.DisposeAsync().AsTask());
+        Assert.Single(LogCaptureLimits.Active, item => item == limits);
+        var note = new string('x', 20_000);
+        logger.LogFast(LogLevel.Information, $"{note}");
+        await second.DisposeAsync();
+        using var record = JsonDocument.Parse(Assert.Single(secondSink.Lines()));
+        Assert.Equal(note, record.RootElement.GetProperty("note").GetString());
+        Assert.DoesNotContain(limits, LogCaptureLimits.Active);
+    }
+
+    [Fact]
+    public async Task A_wrapped_provider_can_accept_more_fields_than_the_default_capture_ceiling()
+    {
+        await using var sink = new CollectingSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new() { MaxFieldsPerRecord = 300, AttachMachineName = false }
+        );
+        using var factory = LoggerFactory.Create(builder => builder.AddProvider(provider));
+        var logger = factory.CreateLogger<LoggingProductionReadinessTests>();
+        var handler = new LogMessageHandler(0, 300, logger, LogLevel.Information, out _);
+        for (var i = 0; i < 300; i++)
+            handler.AppendFormatted(i, name: $"Field{i}");
+        logger.LogFast(LogLevel.Information, ref handler);
+        Assert.True(provider.Flush(TimeSpan.FromSeconds(5)));
+        using var json = JsonDocument.Parse(Assert.Single(sink.Lines()));
+        Assert.Equal(299, json.RootElement.GetProperty("Field299").GetInt32());
+    }
+
+    [Fact]
+    public async Task Wrapped_interpolation_snapshots_spans_and_custom_values_before_the_next_hole()
+    {
+        await using var sink = new CollectingSink();
+        await using var provider = new HostLoomLoggerProvider(
+            new JsonLogFormatter(),
+            sink,
+            new() { MaxMessageLength = 50_000, MaxTextFieldLength = 25_000 }
+        );
+        using var factory = LoggerFactory.Create(builder => builder.AddProvider(provider));
+        var logger = factory.CreateLogger<LoggingProductionReadinessTests>();
+        var characters = new string('a', 20_000).ToCharArray();
+        var value = new ChangingUtf8();
+        var handler = new LogMessageHandler(0, 2, logger, LogLevel.Information, out _);
+        handler.AppendFormatted(characters.AsSpan(), name: "Note");
+        handler.AppendFormatted(value, name: "Revision");
+        characters[0] = 'b';
+        value.Revision = 2;
+        logger.LogFast(LogLevel.Information, ref handler);
+        Assert.True(provider.Flush(TimeSpan.FromSeconds(5)));
+        using var record = JsonDocument.Parse(Assert.Single(sink.Lines()));
+        Assert.Equal(new string('a', 20_000), record.RootElement.GetProperty("Note").GetString());
+        Assert.Equal("1", record.RootElement.GetProperty("Revision").GetString());
+        Assert.Equal(1, value.Formats);
+    }
+
+    [Fact]
+    public void A_foreign_logger_can_retain_exact_structured_values_after_LogFast_returns()
+    {
+        var logger = new RetainingLogger();
+        var low = Int128.MinValue;
+        var high = UInt128.MaxValue;
+        var zero = -0.0;
+        logger.LogFast(LogLevel.Information, $"{low} {high} {zero}");
+        Assert.Equal(low, Assert.IsType<Int128>(logger.Fields["low"]));
+        Assert.Equal(high, Assert.IsType<UInt128>(logger.Fields["high"]));
+        Assert.True(double.IsNegative(Assert.IsType<double>(logger.Fields["zero"])));
+    }
+
+    private sealed class ChangingUtf8 : IUtf8SpanFormattable
+    {
+        public int Revision { get; set; } = 1;
+        public int Formats { get; private set; }
+
+        public bool TryFormat(
+            Span<byte> utf8Destination,
+            out int bytesWritten,
+            ReadOnlySpan<char> format,
+            IFormatProvider? provider
+        )
+        {
+            Formats++;
+            return Revision.TryFormat(utf8Destination, out bytesWritten, format, provider);
+        }
+    }
+
+    private sealed class RetainingLogger : ILogger
+    {
+        private IReadOnlyList<KeyValuePair<string, object?>> _state = [];
+        public Dictionary<string, object?> Fields => _state.ToDictionary();
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
+        {
+            _state = Assert.IsAssignableFrom<IReadOnlyList<KeyValuePair<string, object?>>>(state);
+        }
+    }
+
+    [Theory]
     [InlineData(5)]
     [InlineData(300)]
     public async Task Wrapped_fast_logging_accounts_for_rejected_names_and_capture_overflow(

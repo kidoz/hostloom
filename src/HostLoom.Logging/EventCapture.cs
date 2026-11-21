@@ -33,6 +33,16 @@ internal sealed class EventCapture(
         Func<TState, Exception?, string> formatter
     )
     {
+        if (state is LogFastState wrapped)
+        {
+            var snapshot = wrapped.For(options);
+            entry.CaptureFailures = snapshot.CaptureFailures;
+            entry.ImportOverflowHoleFields(snapshot.OverflowHoleFields);
+            CaptureState(entry, snapshot);
+            entry.AppendLiteral(snapshot.ToString());
+            return;
+        }
+
         bool renderFromFields;
         try
         {

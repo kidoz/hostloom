@@ -15,6 +15,8 @@ public sealed class HostLoomLoggerProvider
     private readonly ConcurrentDictionary<string, HostLoomLogger> _loggers = new(
         StringComparer.Ordinal
     );
+    private readonly LogCaptureLimits _captureLimits;
+    private int _disposed;
     private readonly LogPipeline _pipeline;
     private readonly HostLoomLoggerOptions _options;
 
@@ -41,6 +43,7 @@ public sealed class HostLoomLoggerProvider
         }
         _options = options;
         _pipeline = new LogPipeline(formatter, sink, options);
+        _captureLimits = LogCaptureLimits.Register(options);
     }
 
     /// <summary>Records dropped for any reason: overload, timeout, a record the formatter
@@ -101,6 +104,8 @@ public sealed class HostLoomLoggerProvider
 
     public ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            _captureLimits.Unregister();
         _loggers.Clear();
         GC.SuppressFinalize(this);
         // Drains the queue before releasing the sink; an async logger that skips this loses

@@ -42,11 +42,6 @@ internal sealed class HostLoomLogger(
         var entry = LogEntryPool.Rent();
         entry.ApplyCaps(options);
         entry.Level = logLevel;
-        if (state is LoggerExtensions.HandoffState handoff)
-        {
-            entry.CaptureFailures = handoff.CaptureFailures;
-            entry.ImportOverflowHoleFields(handoff.OverflowHoleFields);
-        }
         pipeline.Capture.CaptureEvent(entry, state, exception, formatter);
         entry.FinalizeTemplate();
         Emit(entry, eventId, exception);
