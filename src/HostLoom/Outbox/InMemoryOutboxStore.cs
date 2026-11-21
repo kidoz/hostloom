@@ -238,14 +238,14 @@ public sealed class InMemoryOutboxStore(TimeProvider? timeProvider = null) : IOu
     /// <summary>
     /// Returns a dead-lettered message to the pending set with its attempts reset, the way an
     /// operator would after fixing what made it fail. Returns <see langword="false"/> when the
-    /// message is not dead-lettered.
+    /// message is absent from dead-letter history or its ID is already pending. A collision preserves both entries.
     /// </summary>
     public bool Requeue(Guid messageId)
     {
         lock (_gate)
         {
             var index = _deadLettered.FindIndex(message => message.MessageId == messageId);
-            if (index < 0)
+            if (index < 0 || _entries.ContainsKey(messageId))
             {
                 return false;
             }

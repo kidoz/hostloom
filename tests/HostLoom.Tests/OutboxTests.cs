@@ -10,6 +10,31 @@ namespace HostLoom.Tests;
 public sealed class OutboxTests
 {
     [Fact]
+    public async Task Requeue_preserves_a_newer_claim_with_the_same_id()
+    {
+        var clock = new TestClock();
+        var store = new InMemoryOutboxStore(clock);
+        var ct = TestContext.Current.CancellationToken;
+        var lease = TimeSpan.FromMinutes(1);
+        var old = Message("orders", clock, payload: 1);
+        var current = Message("orders", clock, payload: 2) with { MessageId = old.MessageId };
+        await store.AppendAsync(old, ct);
+        await store.MarkDeadLetteredAsync(
+            Assert.Single(await store.ClaimAsync(1, lease, ct)),
+            "failed",
+            ct
+        );
+        await store.AppendAsync(current, ct);
+        var claim = Assert.Single(await store.ClaimAsync(1, lease, ct));
+        Assert.False(store.Requeue(old.MessageId));
+        Assert.Equal(old.Frame, Assert.Single(store.DeadLettered).Frame);
+        await store.MarkPublishedAsync(claim, ct);
+        Assert.Equal(current.Frame, Assert.Single(store.Published).Frame);
+        Assert.True(store.Requeue(old.MessageId));
+        Assert.Equal(old.Frame, Assert.Single(store.Pending).Frame);
+    }
+
+    [Fact]
     public async Task The_in_memory_store_claims_in_enqueue_order_and_honours_leases()
     {
         var clock = new TestClock();
