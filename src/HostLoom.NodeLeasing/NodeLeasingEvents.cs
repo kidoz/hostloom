@@ -40,7 +40,7 @@ public static class NodeLeasingEvents
 
     /// <summary>
     /// Warning, once per pool: the lock does not coordinate across instances
-    /// (<c>Locking:Enabled = false</c>); the elector follows <c>NodeLeasing:WhenUncoordinated</c>.
+    /// (<c>Locking:Enabled = false</c> or a process-local provider); the elector follows <c>NodeLeasing:WhenUncoordinated</c>.
     /// </summary>
     public static readonly EventId Uncoordinated = new(3509, "NodeLeasingUncoordinated");
 

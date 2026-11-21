@@ -3,6 +3,7 @@ using HostLoom.Leadership.DependencyInjection;
 using HostLoom.Leadership.Testing;
 using HostLoom.Locking;
 using HostLoom.Locking.DependencyInjection;
+using HostLoom.Locking.Testing;
 using HostLoom.Scheduling;
 using HostLoom.Scheduling.DependencyInjection;
 using HostLoom.Scheduling.Leadership;
@@ -249,7 +250,7 @@ public sealed class LeadershipRegistrationTests
     public async Task The_hosted_service_starts_electors_with_the_host_and_releases_on_stop()
     {
         var clock = new TestClock();
-        var backend = new InMemoryLockProvider(clock);
+        var backend = new ManualLockProvider(clock);
         using var host = Build(clock, backend);
         var elector = host.Services.GetRequiredKeyedService<LeaderElector>("scheduler");
 
@@ -267,7 +268,7 @@ public sealed class LeadershipRegistrationTests
     public async Task UseLeader_runs_an_exclusive_schedule_on_the_leader_only_and_follows_a_hand_over()
     {
         var clock = new TestClock();
-        var backend = new InMemoryLockProvider(clock);
+        var backend = new ManualLockProvider(clock);
         var ran = new List<string>();
         using var first = Build(clock, backend, ("first", ran));
         using var second = Build(clock, backend, ("second", ran));
@@ -371,7 +372,7 @@ public sealed class LeadershipRegistrationTests
 
     private static IHost Build(
         TestClock clock,
-        InMemoryLockProvider backend,
+        ManualLockProvider backend,
         (string Name, List<string> Ran)? schedule = null
     ) =>
         new HostBuilder()
@@ -385,7 +386,7 @@ public sealed class LeadershipRegistrationTests
                         locking.Namespace = "billing";
                         locking.DefaultLease = TimeSpan.FromSeconds(15);
                     })
-                    .UseProvider<InMemoryLockProvider>("Shared");
+                    .UseProvider<ManualLockProvider>("Shared");
                 services
                     .AddHostLoomLeadership()
                     .AddRole(

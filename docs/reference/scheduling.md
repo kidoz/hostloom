@@ -106,8 +106,8 @@ another instance holds the claim. A guard never waits, and a backend failure is
 thrown rather than swallowed, because a job that must not run twice cannot run
 when nothing can say whether another instance already does. The claim exposes
 `IsHeld` and `LostToken`; disposing releases it. The guard's `IsCoordinated`
-says whether a claim excludes other instances at all: a guard over a disabled
-lock (`Locking:Enabled = false`) reports `false`, the scheduler logs
+says whether a claim excludes other instances at all: a guard over a disabled lock
+or a process-local provider reports `false`. The scheduler logs
 `ScheduleGuardUncoordinated` (3209) once at construction when it has exclusive
 schedules, and the probe reports the guard as uncoordinated with
 `GuardCoordinated = false`.

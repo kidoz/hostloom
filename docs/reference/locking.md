@@ -26,14 +26,18 @@ the invariant.
 | `ExecuteWithLockAsync<T>(key, action, options, ct)` | Acquire, run `action`, release in `finally`, propagate the action's exception. The action receives the caller's token, linked to the lost-lease token when `OnLost = Cancel`. |
 | `ExecuteWithLockAsync(key, action, options, ct)` | The same without a result. |
 | `TryAcquireAsync(key, options, ct)` | An `ILockHandle`, or null when not acquired. With no options this is skip-if-busy (one attempt). |
-| `IsCoordinated` | `true` when a lease is a real claim on a shared backend; `false` in single-instance mode, where every acquisition is granted at once and coordinates nothing. |
+| `IsCoordinated` | `true` for a lease on a backend shared across processes. Disabled locking and the in-memory provider both report `false`. |
 
 `ILockHandle` is `IAsyncDisposable` and exposes `Key`, `IsHeld`, `LeaseEnd`,
-`IsCoordinated` (`false` for the placeholder single-instance mode hands out,
-which is held for ever and excludes nobody), `LostToken` (cancelled when the
+`IsCoordinated` (the scope reported by the lock), `LostToken` (cancelled when the
 lease ends before release), and
 `ExtendAsync(lease, ct)`, which returns `false` when the lease was already
 lost. Disposing releases; a release failure is logged, never thrown.
+
+The in-memory provider enforces ownership among callers sharing that provider instance.
+Separate instances have independent keys, even within one process. Redis and Valkey coordinate
+processes connected to the same backend and namespace. Custom local providers must implement
+`ILockProvider.IsSharedAcrossProcesses` as `false`. Decorators must forward this property.
 
 A lease starts when the provider accepts the request, not when its answer
 arrives, so `LeaseEnd` and the local expiry timer count the round trip as

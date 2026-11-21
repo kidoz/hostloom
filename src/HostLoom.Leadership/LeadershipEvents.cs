@@ -46,7 +46,7 @@ public static class LeadershipEvents
 
     /// <summary>
     /// Warning, once per role: the lock does not coordinate across instances
-    /// (<c>Locking:Enabled = false</c>); the elector follows <c>Leadership:WhenUncoordinated</c>.
+    /// (<c>Locking:Enabled = false</c> or a process-local provider); the elector follows <c>Leadership:WhenUncoordinated</c>.
     /// </summary>
     public static readonly EventId Uncoordinated = new(3411, "LeadershipUncoordinated");
 

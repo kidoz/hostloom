@@ -48,7 +48,7 @@ public sealed class LeadershipOptions
 
     /// <summary>
     /// What the elector does when the lock does not coordinate across instances
-    /// (<c>Locking:Enabled = false</c>). <see cref="UncoordinatedLeadership.Follow"/>, the
+    /// (<c>Locking:Enabled = false</c> or a process-local provider). <see cref="UncoordinatedLeadership.Follow"/>, the
     /// default, never leads, so replicas over a disabled lock cannot all lead at once;
     /// <see cref="UncoordinatedLeadership.Lead"/> leads without coordination for a single-instance
     /// or development deployment. Either way the condition is logged once per role and reported by

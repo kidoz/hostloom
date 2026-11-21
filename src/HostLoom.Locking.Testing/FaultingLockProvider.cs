@@ -14,6 +14,9 @@ namespace HostLoom.Locking.Testing;
 /// </remarks>
 public sealed class FaultingLockProvider(ILockProvider inner) : ILockProvider
 {
+    /// <inheritdoc />
+    public bool IsSharedAcrossProcesses => Inner.IsSharedAcrossProcesses;
+
     private readonly Lock _gate = new();
     private LockFailureKind _kind;
     private int _remaining;

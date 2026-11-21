@@ -29,8 +29,8 @@ public static class NodeLeasingProbe
             ),
             coordinated ? "Coordination = lease on the lock backend (Locking:Enabled = true)"
             : options.WhenUncoordinated == UncoordinatedNodeAssignment.AssignZero
-                ? "Coordination = none (Locking:Enabled = false): NodeLeasing:WhenUncoordinated = AssignZero, this instance holds node 0 without coordination"
-            : "Coordination = none (Locking:Enabled = false): NodeLeasing:WhenUncoordinated = None, this instance is never assigned",
+                ? "Coordination = none (Locking:Enabled = false or a process-local provider): NodeLeasing:WhenUncoordinated = AssignZero, this instance holds node 0 without coordination"
+            : "Coordination = none (Locking:Enabled = false or a process-local provider): NodeLeasing:WhenUncoordinated = None, this instance is never assigned",
             "Guarantee = at most one holder per node ID while clocks and the lock backend behave; no fencing",
         ];
         return new NodeLeaseDescription(

@@ -97,7 +97,7 @@ internal sealed class LockHandle : ILockHandle
 
     public string Key { get; }
 
-    public bool IsCoordinated => true;
+    public bool IsCoordinated => _owner.IsCoordinated;
 
     public string PrefixedKey => _prefixedKey;
 

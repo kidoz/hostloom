@@ -27,8 +27,8 @@ public static class LeadershipProbe
             ),
             coordinated ? "Coordination = lease on the lock backend (Locking:Enabled = true)"
             : options.WhenUncoordinated == UncoordinatedLeadership.Lead
-                ? "Coordination = none (Locking:Enabled = false): Leadership:WhenUncoordinated = Lead, this instance leads without coordination"
-            : "Coordination = none (Locking:Enabled = false): Leadership:WhenUncoordinated = Follow, this instance never leads",
+                ? "Coordination = none (Locking:Enabled = false or a process-local provider): Leadership:WhenUncoordinated = Lead, this instance leads without coordination"
+            : "Coordination = none (Locking:Enabled = false or a process-local provider): Leadership:WhenUncoordinated = Follow, this instance never leads",
             "Guarantee = at most one leader while clocks and the lock backend behave; no fencing",
         ];
         return new LeadershipDescription(

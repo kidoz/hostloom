@@ -1,6 +1,7 @@
 using HostLoom.Leadership;
 using HostLoom.Leadership.Testing;
 using HostLoom.Locking;
+using HostLoom.Locking.Testing;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
@@ -251,7 +252,7 @@ public sealed class LeaderChannelChaosTests
 
         public Cluster(int acquireFailures = 0, int extendRefusals = 0)
         {
-            Backend = new InMemoryLockProvider(Clock);
+            Backend = new ManualLockProvider(Clock);
             ILockProvider provider = Backend;
             if (extendRefusals > 0)
             {
@@ -276,7 +277,7 @@ public sealed class LeaderChannelChaosTests
 
         public TestClock Clock { get; } = new();
 
-        public InMemoryLockProvider Backend { get; }
+        public ManualLockProvider Backend { get; }
 
         public FaultingLockProvider? AcquireFaults { get; }
 

@@ -65,8 +65,7 @@ The elector owns renewal instead of the lock's automatic extension, which stops 
 container-free one is capped by the lock. Keep `Leadership:RenewInterval` at most half the lease. An unreachable lock provider makes nobody leader, is logged once per outage, and is
 retried on the candidate cadence.
 
-Over a lock that does not coordinate (`Locking:Enabled = false`) the lease is a placeholder every
-instance is granted, so the elector follows `Leadership:WhenUncoordinated`: `Follow`, the default,
+With disabled locking or a process-local provider, the elector follows `Leadership:WhenUncoordinated`: `Follow`, the default,
 never leads, so replicas cannot all lead by accident; `Lead` leads without coordination, for a
 single instance or local development. The condition is logged once per role and reported by
 `IsCoordinated` and the probe. An exception the loop did not expect is logged as

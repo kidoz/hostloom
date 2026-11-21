@@ -93,7 +93,7 @@ public sealed class Scheduler : IAsyncDisposable
             {
                 Logger.LogWarning(
                     SchedulingEvents.GuardUncoordinated,
-                    "The schedule guard {Guard} does not coordinate across instances (Locking:Enabled = false): the {Count} exclusive schedule(s) are not exclusive across instances, and whether they run here follows the guard's uncoordinated behaviour.",
+                    "The schedule guard {Guard} does not coordinate across instances (Locking:Enabled = false or a process-local provider): the {Count} exclusive schedule(s) are not exclusive across instances, and whether they run here follows the guard's uncoordinated behaviour.",
                     guard.GetType().Name,
                     exclusive
                 );

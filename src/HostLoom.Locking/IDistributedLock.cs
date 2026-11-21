@@ -10,9 +10,8 @@ public interface IDistributedLock
 {
     /// <summary>
     /// <see langword="true"/> when a lease is a real claim on a shared backend, so at most one
-    /// holder exists across instances. <see langword="false"/> in single-instance mode
-    /// (<c>Locking:Enabled = false</c>): every acquisition is granted at once and coordinates
-    /// nothing. Consumers that gate leader-only or exclusive work on a lease check this, or
+    /// holder exists across processes. Disabled locks and process-local providers report
+    /// <see langword="false"/>. Local providers still exclude competing owners of the same key. Consumers that gate leader-only or exclusive work on a lease check this, or
     /// <see cref="ILockHandle.IsCoordinated"/> on the handle, before treating a grant as exclusivity.
     /// </summary>
     bool IsCoordinated { get; }

@@ -24,7 +24,7 @@ namespace HostLoom.NodeLeasing;
 /// <c>Locking:MaxHold</c>; a holder must renew for as long as it lives. A stopped elector
 /// releases the lease so a graceful restart hands the ID over at once; a crashed process hands
 /// over when the lease expires. Over a lock that does not coordinate
-/// (<c>Locking:Enabled = false</c>) a lease proves nothing, so the elector follows
+/// (<c>Locking:Enabled = false</c> or a process-local provider) a lease proves nothing, so the elector follows
 /// <see cref="NodeLeasingOptions.WhenUncoordinated"/>, warns once per pool, and reports
 /// <see cref="IsCoordinated"/> as <see langword="false"/>. The loop never stops on an unexpected
 /// exception: it logs, backs off one retry interval, and continues.
@@ -521,7 +521,7 @@ public sealed class NodeIdElector : INodeLeasing, IAsyncDisposable
         {
             _logger.LogWarning(
                 NodeLeasingEvents.Uncoordinated,
-                "The lock for pool '{Pool}' does not coordinate across instances (Locking:Enabled = false). NodeLeasing:WhenUncoordinated = AssignZero: this instance holds node 0 without coordination, and so does every other instance configured this way.",
+                "The lock for pool '{Pool}' does not coordinate across instances (Locking:Enabled = false or a process-local provider). NodeLeasing:WhenUncoordinated = AssignZero: this instance holds node 0 without coordination, and so does every other instance configured this way.",
                 Pool
             );
         }
@@ -529,7 +529,7 @@ public sealed class NodeIdElector : INodeLeasing, IAsyncDisposable
         {
             _logger.LogWarning(
                 NodeLeasingEvents.Uncoordinated,
-                "The lock for pool '{Pool}' does not coordinate across instances (Locking:Enabled = false). NodeLeasing:WhenUncoordinated = None: this instance is never assigned; set AssignZero for a single-instance deployment.",
+                "The lock for pool '{Pool}' does not coordinate across instances (Locking:Enabled = false or a process-local provider). NodeLeasing:WhenUncoordinated = None: this instance is never assigned; set AssignZero for a single-instance deployment.",
                 Pool
             );
         }

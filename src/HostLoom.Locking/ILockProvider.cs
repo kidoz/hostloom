@@ -8,6 +8,11 @@ namespace HostLoom.Locking;
 /// </summary>
 public interface ILockProvider
 {
+    /// <summary>Whether independent processes using the same backend share ownership of keys.
+    /// Existing distributed providers default to true. Local providers must override this property
+    /// and decorators must forward the capability of their inner provider.</summary>
+    bool IsSharedAcrossProcesses => true;
+
     /// <summary>
     /// Takes <paramref name="key"/> for <paramref name="owner"/> for <paramref name="lease"/>, or
     /// returns <see langword="false"/> when another owner holds an unexpired lease. Honour

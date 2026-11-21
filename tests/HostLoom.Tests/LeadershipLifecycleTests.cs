@@ -1,6 +1,7 @@
 using HostLoom.Leadership;
 using HostLoom.Leadership.Testing;
 using HostLoom.Locking;
+using HostLoom.Locking.Testing;
 using Microsoft.Extensions.Hosting;
 using Xunit;
 
@@ -22,7 +23,7 @@ public sealed class LeadershipLifecycleTests
     )
     {
         var clock = new TestClock();
-        var backend = new InMemoryLockProvider(clock);
+        var backend = new ManualLockProvider(clock);
         var provider = new PendingRenewalProvider(backend);
         await using var locks = new DistributedLock(
             new() { Namespace = "billing" },
@@ -84,7 +85,7 @@ public sealed class LeadershipLifecycleTests
     )
     {
         var clock = new TestClock();
-        var backend = new InMemoryLockProvider(clock);
+        var backend = new ManualLockProvider(clock);
         await using var locks = new DistributedLock(
             new() { Namespace = "billing" },
             backend,

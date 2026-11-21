@@ -7,6 +7,9 @@ namespace HostLoom.Locking.Testing;
 /// </summary>
 public sealed class ManualLockProvider(TimeProvider? timeProvider = null) : ILockProvider
 {
+    /// <summary>Simulates a shared backend when test electors use the same provider instance.</summary>
+    public bool IsSharedAcrossProcesses => true;
+
     /// <summary>The owner token used for keys held by the test.</summary>
     public const string TestOwner = "held-by-test";
 

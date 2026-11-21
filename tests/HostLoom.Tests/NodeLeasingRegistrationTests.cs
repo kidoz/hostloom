@@ -1,5 +1,6 @@
 using HostLoom.Locking;
 using HostLoom.Locking.DependencyInjection;
+using HostLoom.Locking.Testing;
 using HostLoom.NodeLeasing;
 using HostLoom.NodeLeasing.DependencyInjection;
 using HostLoom.NodeLeasing.Testing;
@@ -284,7 +285,7 @@ public sealed class NodeLeasingRegistrationTests
     public async Task The_hosted_service_starts_electors_with_the_host_and_releases_on_stop()
     {
         var clock = new TestClock();
-        var backend = new InMemoryLockProvider(clock);
+        var backend = new ManualLockProvider(clock);
         using var host = new HostBuilder()
             .ConfigureServices(services =>
             {
@@ -296,7 +297,7 @@ public sealed class NodeLeasingRegistrationTests
                         locking.Namespace = "orders";
                         locking.DefaultLease = TimeSpan.FromSeconds(15);
                     })
-                    .UseProvider<InMemoryLockProvider>("Shared");
+                    .UseProvider<ManualLockProvider>("Shared");
                 services
                     .AddHostLoomNodeLeasing()
                     .AddPool(
@@ -391,14 +392,28 @@ public sealed class NodeLeasingRegistrationTests
         Assert.False(leasing.IsCoordinated);
     }
 
-    [Fact]
-    public async Task By_default_no_id_is_assigned_over_a_disabled_lock_and_the_warning_and_probe_say_why()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task By_default_no_id_is_assigned_over_a_local_or_disabled_lock_and_the_warning_and_probe_say_why(
+        bool enabled
+    )
     {
         var clock = new TestClock();
-        await using var locks = Disabled();
+        var options = new LockingOptions { Namespace = "catalog", Enabled = enabled };
+        await using var locks = new DistributedLock(
+            options,
+            new InMemoryLockProvider(clock),
+            clock
+        );
+        await using var other = new DistributedLock(
+            options,
+            new InMemoryLockProvider(clock),
+            clock
+        );
         var logger = new RecordingLogger<NodeIdElector>();
         await using var first = Elector(locks, clock, logger);
-        await using var second = Elector(locks, clock);
+        await using var second = Elector(other, clock);
         var changes = new List<NodeLeaseChange>();
         using var _ = first.OnChange(changes.Add);
         Assert.Equal(UncoordinatedNodeAssignment.None, new NodeLeasingOptions().WhenUncoordinated);

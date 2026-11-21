@@ -8,6 +8,9 @@ namespace HostLoom.Locking;
 /// </summary>
 public sealed class InMemoryLockProvider(TimeProvider? timeProvider = null) : ILockProvider
 {
+    /// <inheritdoc />
+    public bool IsSharedAcrossProcesses => false;
+
     private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
     private readonly Dictionary<string, Lease> _leases = new(StringComparer.Ordinal);
     private readonly Lock _gate = new();

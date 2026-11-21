@@ -21,7 +21,7 @@ namespace HostLoom.Leadership;
 /// The elector owns renewal instead of the lock's automatic extension, which stops at
 /// <c>Locking:MaxHold</c>; a leader must renew for as long as it lives. A stopped elector releases
 /// the lease so a graceful restart hands over at once; a crashed process hands over when the
-/// lease expires. Over a lock that does not coordinate (<c>Locking:Enabled = false</c>) a lease
+/// lease expires. Over a lock that does not coordinate (<c>Locking:Enabled = false</c> or a process-local provider) a lease
 /// proves nothing, so the elector follows <see cref="LeadershipOptions.WhenUncoordinated"/>,
 /// warns once per role, and reports <see cref="IsCoordinated"/> as <see langword="false"/>. The
 /// loop never stops on an unexpected exception: it logs, backs off one retry interval, and
@@ -450,7 +450,7 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
         {
             _logger.LogWarning(
                 LeadershipEvents.Uncoordinated,
-                "The lock for role '{Role}' does not coordinate across instances (Locking:Enabled = false). Leadership:WhenUncoordinated = Lead: this instance leads without coordination, and so does every other instance configured this way.",
+                "The lock for role '{Role}' does not coordinate across instances (Locking:Enabled = false or a process-local provider). Leadership:WhenUncoordinated = Lead: this instance leads without coordination, and so does every other instance configured this way.",
                 Role
             );
         }
@@ -458,7 +458,7 @@ public sealed class LeaderElector : ILeadership, IAsyncDisposable
         {
             _logger.LogWarning(
                 LeadershipEvents.Uncoordinated,
-                "The lock for role '{Role}' does not coordinate across instances (Locking:Enabled = false). Leadership:WhenUncoordinated = Follow: this instance never leads; set Lead for a single-instance deployment.",
+                "The lock for role '{Role}' does not coordinate across instances (Locking:Enabled = false or a process-local provider). Leadership:WhenUncoordinated = Follow: this instance never leads; set Lead for a single-instance deployment.",
                 Role
             );
         }

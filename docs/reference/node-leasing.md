@@ -35,7 +35,7 @@ correctness — the same tier as the Kubernetes Lease election, not consensus.
 | --- | --- |
 | `Pool` | the pool name; the lock keys are `nodeid:{pool}:{id}` under the lock's namespace |
 | `NodeId` | the ID held, zero to `NodeLeasing:PoolSize` minus one; `null` while unassigned |
-| `IsCoordinated` | `false` when the lock does not coordinate (`Locking:Enabled = false`); `NodeId` then follows `NodeLeasing:WhenUncoordinated` on every instance alike, and nothing excludes another instance from holding the same ID |
+| `IsCoordinated` | `false` when the lock does not coordinate (disabled locking or a process-local provider); `NodeId` then follows `NodeLeasing:WhenUncoordinated` on every instance alike, and nothing excludes another instance from holding the same ID |
 | `Term` | rises on every acquisition by this instance; not a fencing token |
 | `AssignmentToken` | cancelled when the assignment is lost, released, or stopped; already cancelled while unassigned |
 | `WaitForAssignmentAsync(ct)` | completes with the ID when this instance acquires one, at once when it already holds one; pending and future waits cancel on stop, and calls after disposal throw `ObjectDisposedException` |
@@ -74,8 +74,7 @@ at once, `ReleaseAsync` steps down and stays a candidate. The loop:
   outcome `failed` and logged by the lock as `LockExtendFailed` (3105).
 - A **released** holder waits one retry interval as well. A **stopped**
   elector releases and does not run again.
-- Over a lock that does not coordinate (`Locking:Enabled = false`) a lease is a
-  placeholder every instance is granted, so the elector follows
+- With disabled locking or a process-local provider, the elector follows
   `NodeLeasing:WhenUncoordinated`: `None`, the default, never assigns an ID;
   `AssignZero` assigns ID zero without coordination, deterministic for a single
   instance or local development. Either way `NodeLeasingUncoordinated` (3509) is

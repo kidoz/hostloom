@@ -36,7 +36,7 @@ the Kubernetes Lease election and is not consensus.
 | --- | --- |
 | `Role` | the role name; the default lock key is `leader:{role}` under the lock's namespace |
 | `IsLeader` | `true` while this instance believes it leads |
-| `IsCoordinated` | `false` when the lock does not coordinate (`Locking:Enabled = false`); `IsLeader` then follows `Leadership:WhenUncoordinated` on every instance alike, and nothing excludes another instance from leading |
+| `IsCoordinated` | `false` when the lock does not coordinate (disabled locking or a process-local provider); `IsLeader` then follows `Leadership:WhenUncoordinated` on every instance alike, and nothing excludes another instance from leading |
 | `Term` | rises on every acquisition by this instance; not a fencing token |
 | `LeadershipToken` | cancelled when leadership is lost, resigned, or stopped; already cancelled while not leading |
 | `WaitForLeadershipAsync(ct)` | completes when this instance becomes leader, at once when it already is; pending and future waits cancel on stop, and calls after disposal throw `ObjectDisposedException` |
@@ -70,8 +70,7 @@ once, `ResignAsync` steps down and stays a candidate. The loop:
   outcome `failed` and logged by the lock as `LockExtendFailed` (3105).
 - A **resigned** leader waits one retry interval as well. A **stopped**
   elector releases and does not run again.
-- Over a lock that does not coordinate (`Locking:Enabled = false`) a lease is a
-  placeholder every instance is granted, so the elector follows
+- With disabled locking or a process-local provider, the elector follows
   `Leadership:WhenUncoordinated`: `Follow`, the default, never leads; `Lead`
   leads without coordination. Either way `LeadershipUncoordinated` (3411) is
   logged once per role, `IsCoordinated` is `false`, and the probe says which

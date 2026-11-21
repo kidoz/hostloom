@@ -46,7 +46,7 @@ public sealed class NodeLeasingOptions
 
     /// <summary>
     /// What the elector does when the lock does not coordinate across instances
-    /// (<c>Locking:Enabled = false</c>). <see cref="UncoordinatedNodeAssignment.None"/>, the
+    /// (<c>Locking:Enabled = false</c> or a process-local provider). <see cref="UncoordinatedNodeAssignment.None"/>, the
     /// default, never assigns an ID, so replicas over a disabled lock cannot all take one at
     /// once; <see cref="UncoordinatedNodeAssignment.AssignZero"/> assigns ID zero without
     /// coordination for a single-instance or development deployment. Either way the condition is

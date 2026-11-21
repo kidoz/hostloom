@@ -21,9 +21,7 @@ public interface ILockHandle : IAsyncDisposable
 
     /// <summary>
     /// <see langword="true"/> when this lease was taken on a shared backend and excludes other
-    /// instances. <see langword="false"/> for the placeholder single-instance mode hands out
-    /// (<c>Locking:Enabled = false</c>): it reports <see cref="IsHeld"/> for ever, never loses,
-    /// and excludes nobody.
+    /// processes. Process-local leases and placeholders from disabled locks report <see langword="false"/>.
     /// </summary>
     bool IsCoordinated { get; }
 

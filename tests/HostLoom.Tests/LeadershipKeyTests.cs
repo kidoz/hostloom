@@ -243,7 +243,7 @@ public sealed class LeadershipKeyTests
         var clock = new TestClock();
         await using var locks = new DistributedLock(
             new LockingOptions { Namespace = "billing", MaxKeyLength = 1024 },
-            new InMemoryLockProvider(clock),
+            new HostLoom.Locking.Testing.ManualLockProvider(clock),
             clock
         );
         await using var elector = new LeaderElector("scheduler", locks, options, clock);

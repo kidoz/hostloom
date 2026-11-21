@@ -21,7 +21,7 @@ public interface INodeLeasing
     /// <summary>
     /// <see langword="true"/> while the assignment is decided by a lease on a shared backend, so
     /// at most one instance holds an ID. <see langword="false"/> when the lock does not
-    /// coordinate (<c>Locking:Enabled = false</c>): <see cref="NodeId"/> then follows
+    /// coordinate (<c>Locking:Enabled = false</c> or a process-local provider): <see cref="NodeId"/> then follows
     /// <see cref="NodeLeasingOptions.WhenUncoordinated"/> on every instance alike, and nothing
     /// excludes another instance from holding the same ID.
     /// </summary>

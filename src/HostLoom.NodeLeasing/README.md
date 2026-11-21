@@ -45,8 +45,7 @@ container-free one is capped by the lock. Keep `NodeLeasing:RenewInterval` at mo
 lease. An unreachable lock provider assigns no IDs, is logged once per outage, and is retried on
 the candidate cadence.
 
-Over a lock that does not coordinate (`Locking:Enabled = false`) the lease is a placeholder
-every instance is granted, so the elector follows `NodeLeasing:WhenUncoordinated`: `None`, the
+With disabled locking or a process-local provider, the elector follows `NodeLeasing:WhenUncoordinated`: `None`, the
 default, never assigns an ID, so replicas cannot all take one by accident; `AssignZero` assigns
 ID zero without coordination, deterministic for a single instance or local development. The
 condition is logged once per pool and reported by `IsCoordinated` and the probe. An exception

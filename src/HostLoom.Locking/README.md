@@ -79,8 +79,11 @@ on top of it, abandoning, not cancelling, the provider call it would otherwise o
 answering is reported the same way as contention. `LockingOptions.Enabled = false` is
 single-instance mode: a startup warning, `hostloom.lock.enabled = 0`, and every action running
 immediately; `IDistributedLock.IsCoordinated` and every handle's `IsCoordinated` report `false`
-there, so a consumer that gates exclusive work on a lease can tell the placeholder from a real
-one.
+in this mode.
+
+An enabled in-memory provider enforces leases only for callers sharing its instance. It also
+reports `IsCoordinated = false`. For coordination across processes use a shared backend.
+Custom local providers must override `ILockProvider.IsSharedAcrossProcesses` to return `false`.
 
 `LockingProbe.Describe(lock)` reports the composition without executing anything. Metrics and
 activities live under the `HostLoom.Locking` meter and activity source. Install

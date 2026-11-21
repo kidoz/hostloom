@@ -11,7 +11,7 @@ public interface IScheduleGuard
     /// <summary>
     /// <see langword="true"/> while a claim excludes other instances. <see langword="false"/>
     /// when the guard rests on a lock or a leadership that does not coordinate
-    /// (<c>Locking:Enabled = false</c>): a claim then says nothing about other instances, the
+    /// (<c>Locking:Enabled = false</c> or a process-local provider): a claim then says nothing about other instances, the
     /// scheduler warns once at construction, and <see cref="SchedulingProbe"/> reports the guard
     /// as uncoordinated.
     /// </summary>

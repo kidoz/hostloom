@@ -37,7 +37,7 @@ public static class SchedulingEvents
 
     /// <summary>
     /// Warning at construction: the guard does not coordinate across instances
-    /// (<c>Locking:Enabled = false</c>), so exclusive schedules are not exclusive across instances.
+    /// (<c>Locking:Enabled = false</c> or a process-local provider), so exclusive schedules are not exclusive across instances.
     /// </summary>
     public static readonly EventId GuardUncoordinated = new(3209, "ScheduleGuardUncoordinated");
 }

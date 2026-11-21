@@ -17,7 +17,7 @@ public interface ILeadership
     /// <summary>
     /// <see langword="true"/> while leadership is decided by a lease on a shared backend, so at
     /// most one instance leads. <see langword="false"/> when the lock does not coordinate
-    /// (<c>Locking:Enabled = false</c>): <see cref="IsLeader"/> then follows
+    /// (<c>Locking:Enabled = false</c> or a process-local provider): <see cref="IsLeader"/> then follows
     /// <see cref="LeadershipOptions.WhenUncoordinated"/> on every instance alike, and nothing
     /// excludes another instance from leading at the same time.
     /// </summary>

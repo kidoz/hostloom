@@ -26,7 +26,7 @@ public static class SchedulingProbe
                 : "Scheduling:Enabled = false: (disabled), no schedule runs in this process",
             guardCoordinated
                 ? $"Guard = {guard}"
-                : $"Guard = {guard}: uncoordinated (Locking:Enabled = false), exclusive schedules are not exclusive across instances",
+                : $"Guard = {guard}: uncoordinated (Locking:Enabled = false or a process-local provider), exclusive schedules are not exclusive across instances",
             string.Create(invariant, $"Scheduling:DefaultLease = {scheduler.Options.DefaultLease}"),
         ];
 

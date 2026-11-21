@@ -91,11 +91,11 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
     /// <summary>Longest consumer key accepted, before the namespace prefix.</summary>
     public int MaxKeyLength => Options.MaxKeyLength;
 
-    /// <summary>Whether the lock coordinates across instances or runs actions immediately.</summary>
+    /// <summary>Whether the lock uses its configured provider for acquisition.</summary>
     public bool Enabled => Options.Enabled;
 
     /// <inheritdoc />
-    public bool IsCoordinated => Options.Enabled;
+    public bool IsCoordinated => Options.Enabled && _provider?.IsSharedAcrossProcesses == true;
 
     internal LockingOptions Options { get; }
 

@@ -1,5 +1,6 @@
 using HostLoom.Leadership;
 using HostLoom.Locking;
+using HostLoom.Locking.Testing;
 using Xunit;
 
 namespace HostLoom.Tests;
@@ -363,7 +364,7 @@ public sealed class LeadershipTests
 
         await using var locks = new DistributedLock(
             new LockingOptions { Namespace = "billing" },
-            new InMemoryLockProvider()
+            new ManualLockProvider()
         );
         Assert.Throws<ArgumentException>(() =>
             new LeaderElector("has space", locks, new LeadershipOptions())
@@ -389,7 +390,7 @@ public sealed class LeadershipTests
         )
         {
             _maxHold = maxHold ?? TimeSpan.FromMinutes(10);
-            Backend = new InMemoryLockProvider(Clock);
+            Backend = new ManualLockProvider(Clock);
             ILockProvider provider = Backend;
             if (extendRefusals > 0)
             {
@@ -425,7 +426,7 @@ public sealed class LeadershipTests
 
         public TestClock Clock { get; } = new();
 
-        public InMemoryLockProvider Backend { get; }
+        public ManualLockProvider Backend { get; }
 
         public int Faults => _counting?.Faults ?? 0;
 

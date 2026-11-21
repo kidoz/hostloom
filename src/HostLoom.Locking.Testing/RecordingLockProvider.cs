@@ -19,6 +19,9 @@ public readonly record struct RecordedLockCall(
 /// </summary>
 public sealed class RecordingLockProvider(ILockProvider inner) : ILockProvider
 {
+    /// <inheritdoc />
+    public bool IsSharedAcrossProcesses => Inner.IsSharedAcrossProcesses;
+
     private readonly Lock _gate = new();
     private readonly List<RecordedLockCall> _calls = [];
 

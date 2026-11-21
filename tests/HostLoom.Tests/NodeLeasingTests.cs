@@ -1,4 +1,5 @@
 using HostLoom.Locking;
+using HostLoom.Locking.Testing;
 using HostLoom.NodeLeasing;
 using Microsoft.Extensions.Logging;
 using Xunit;
@@ -495,7 +496,7 @@ public sealed class NodeLeasingTests
 
         await using var locks = new DistributedLock(
             new LockingOptions { Namespace = "orders" },
-            new InMemoryLockProvider()
+            new ManualLockProvider()
         );
         Assert.Throws<ArgumentException>(() =>
             new NodeIdElector("has space", locks, new NodeLeasingOptions())
@@ -527,7 +528,7 @@ public sealed class NodeLeasingTests
         )
         {
             _maxHold = maxHold ?? TimeSpan.FromMinutes(10);
-            Backend = new InMemoryLockProvider(Clock);
+            Backend = new ManualLockProvider(Clock);
             ILockProvider provider = Backend;
             if (extendRefusals > 0)
             {
@@ -557,7 +558,7 @@ public sealed class NodeLeasingTests
 
         public TestClock Clock { get; } = new();
 
-        public InMemoryLockProvider Backend { get; }
+        public ManualLockProvider Backend { get; }
 
         public int Faults => AcquireFaults?.Faulted ?? 0;
 

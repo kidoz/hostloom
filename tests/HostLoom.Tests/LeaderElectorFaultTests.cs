@@ -1,5 +1,6 @@
 using HostLoom.Leadership;
 using HostLoom.Locking;
+using HostLoom.Locking.Testing;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
@@ -230,7 +231,7 @@ public sealed class LeaderElectorFaultTests
     private static DistributedLock Compose(TestClock clock) =>
         new(
             new LockingOptions { Namespace = "catalog", DefaultLease = TimeSpan.FromSeconds(15) },
-            new InMemoryLockProvider(clock),
+            new ManualLockProvider(clock),
             clock
         );
 

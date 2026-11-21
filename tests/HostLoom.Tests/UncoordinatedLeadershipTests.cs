@@ -2,6 +2,7 @@ using HostLoom.Leadership;
 using HostLoom.Leadership.DependencyInjection;
 using HostLoom.Locking;
 using HostLoom.Locking.DependencyInjection;
+using HostLoom.Locking.Testing;
 using HostLoom.Scheduling;
 using HostLoom.Scheduling.DependencyInjection;
 using HostLoom.Scheduling.Leadership;
@@ -24,12 +25,32 @@ public sealed class UncoordinatedLeadershipTests
     private static readonly TimeSpan Retry = TimeSpan.FromSeconds(2);
 
     [Fact]
+    public async Task Local_leases_exclude_only_users_of_the_same_provider()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var options = new LockingOptions { Namespace = "catalog" };
+        await using var first = new DistributedLock(
+            options,
+            new HostLoom.Locking.Testing.RecordingLockProvider(new InMemoryLockProvider())
+        );
+        await using var second = new DistributedLock(options, new InMemoryLockProvider());
+        await using var firstLease = await first.TryAcquireAsync("job", cancellationToken: token);
+        await using var secondLease = await second.TryAcquireAsync("job", cancellationToken: token);
+        Assert.NotNull(firstLease);
+        Assert.NotNull(secondLease);
+        Assert.False(firstLease.IsCoordinated);
+        Assert.False(secondLease.IsCoordinated);
+        Assert.False(new DistributedLockScheduleGuard(first).IsCoordinated);
+        Assert.Null(await first.TryAcquireAsync("job", cancellationToken: token));
+    }
+
+    [Fact]
     public async Task A_disabled_lock_and_its_placeholder_lease_report_no_coordination()
     {
         await using var disabled = Disabled();
         await using var coordinated = new DistributedLock(
             new LockingOptions { Namespace = "catalog" },
-            new InMemoryLockProvider()
+            new ManualLockProvider()
         );
 
         Assert.False(disabled.IsCoordinated);
@@ -50,14 +71,28 @@ public sealed class UncoordinatedLeadershipTests
         Assert.True(lease.IsCoordinated);
     }
 
-    [Fact]
-    public async Task By_default_nobody_leads_over_a_disabled_lock_and_every_gate_says_why()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task By_default_nobody_leads_over_a_local_or_disabled_lock_and_every_gate_says_why(
+        bool enabled
+    )
     {
         var clock = new TestClock();
-        await using var locks = Disabled();
+        var options = new LockingOptions { Namespace = "catalog", Enabled = enabled };
+        await using var locks = new DistributedLock(
+            options,
+            new InMemoryLockProvider(clock),
+            clock
+        );
+        await using var other = new DistributedLock(
+            options,
+            new InMemoryLockProvider(clock),
+            clock
+        );
         var logger = new RecordingLogger<LeaderElector>();
         await using var first = Elector(locks, clock, logger);
-        await using var second = Elector(locks, clock);
+        await using var second = Elector(other, clock);
         var changes = new List<LeadershipChange>();
         using var _ = first.OnChange(changes.Add);
         Assert.Equal(UncoordinatedLeadership.Follow, new LeadershipOptions().WhenUncoordinated);
@@ -309,7 +344,7 @@ public sealed class UncoordinatedLeadershipTests
         var quiet = new RecordingLogger<Scheduler>();
         await using var coordinatedLock = new DistributedLock(
             new LockingOptions { Namespace = "catalog" },
-            new InMemoryLockProvider(clock),
+            new ManualLockProvider(clock),
             clock
         );
         await using var coordinated = new Scheduler(

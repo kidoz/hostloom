@@ -218,7 +218,7 @@ public sealed class LockingRegistrationTests
             "default",
             LockingProbe.Describe(provider.GetRequiredService<IDistributedLock>()).Namespace
         );
-        Assert.True(orders.IsCoordinated);
+        Assert.False(orders.IsCoordinated);
         Assert.False(local.IsCoordinated);
         Assert.NotSame(orders, local);
         Assert.Equal(
