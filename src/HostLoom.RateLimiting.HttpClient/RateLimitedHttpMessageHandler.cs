@@ -62,7 +62,11 @@ public sealed class RateLimitedHttpMessageHandler : DelegatingHandler
         {
             while (true)
             {
-                var lease = await AcquireWithinBudgetAsync(started, cancellationToken)
+                var lease = await AcquireWithinBudgetAsync(
+                        started,
+                        holdsWaitSlot,
+                        cancellationToken
+                    )
                     .ConfigureAwait(false);
                 if (lease.IsAcquired)
                 {
@@ -147,68 +151,61 @@ public sealed class RateLimitedHttpMessageHandler : DelegatingHandler
 
     private async ValueTask<RateLimitLease> AcquireWithinBudgetAsync(
         long started,
+        bool holdsWaitSlot,
         CancellationToken cancellationToken
     )
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfBudgetExpired(started);
-        var acquisition = _limiter.AcquireAsync(1, cancellationToken);
+        var localSlot = false;
+        CancellationTokenSource? deadline = null;
         RateLimitLease lease;
-        if (acquisition.IsCompletedSuccessfully)
+        try
         {
-            lease = acquisition.Result;
-        }
-        else
-        {
-            var pending = acquisition.AsTask();
-            try
+            if (_limiter is not DistributedRateLimiter && !holdsWaitSlot)
             {
-                if (_options.MaxWait <= TimeSpan.Zero)
+                // Reserve a wait slot before calling a limiter that may enqueue and displace
+                // an older waiter. Even when full, an immediately available permit can be used.
+                if (_options.MaxWait == TimeSpan.Zero || !_waitSlots.Wait(0, cancellationToken))
                 {
-                    lease = await pending.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    return _limiter.AttemptAcquire(1);
                 }
-                else
-                {
-                    while (true)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        ThrowIfBudgetExpired(started);
-                        var remaining = _options.MaxWait - Elapsed(started);
-                        if (remaining <= TimeSpan.Zero)
-                        {
-                            throw Rejected(started);
-                        }
-
-                        try
-                        {
-                            lease = await pending
-                                .WaitAsync(
-                                    remaining > MaximumTimerDelay ? MaximumTimerDelay : remaining,
-                                    _timeProvider,
-                                    cancellationToken
-                                )
-                                .ConfigureAwait(false);
-                            break;
-                        }
-                        catch (TimeoutException)
-                        {
-                            // Preserve failures from the limiter itself. A timer chunk expiring
-                            // only ends our wait; it must never replay an acquisition.
-                            if (pending.IsFaulted)
-                            {
-                                using var failedLease = await pending.ConfigureAwait(false);
-                            }
-                        }
-                    }
-                }
+                localSlot = true;
             }
-            catch
+            if (_options.MaxWait > TimeSpan.Zero)
             {
-#pragma warning disable CA2025 // The detached observer owns and disposes any late lease; it uses no handler resources.
-                _ = DisposeAbandonedLeaseAsync(pending);
+                deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            }
+            var acquisition = _limiter.AcquireAsync(1, deadline?.Token ?? cancellationToken);
+            if (acquisition.IsCompletedSuccessfully)
+            {
+                lease = acquisition.Result;
+            }
+            else
+            {
+                var pending = acquisition.AsTask();
+                try
+                {
+                    lease = await WaitForDecisionAsync(pending, started, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+#pragma warning disable CA2025 // Ownership transfers to the observer, including the cancellation source and eventual lease.
+                    _ = DisposeAbandonedLeaseAsync(pending, deadline);
 #pragma warning restore CA2025
-                throw;
+                    deadline = null;
+                    throw;
+                }
             }
+        }
+        finally
+        {
+            if (localSlot)
+            {
+                _waitSlots.Release();
+            }
+            deadline?.Dispose();
         }
 
         try
@@ -224,16 +221,62 @@ public sealed class RateLimitedHttpMessageHandler : DelegatingHandler
         }
     }
 
-    private static async Task DisposeAbandonedLeaseAsync(Task<RateLimitLease> pending)
+    private async Task<RateLimitLease> WaitForDecisionAsync(
+        Task<RateLimitLease> pending,
+        long started,
+        CancellationToken cancellationToken
+    )
+    {
+        if (_options.MaxWait == TimeSpan.Zero)
+        {
+            // The distributed limiter sends a single backend decision without queueing.
+            return await pending.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var remaining = _options.MaxWait - Elapsed(started);
+            if (remaining <= TimeSpan.Zero)
+            {
+                throw Rejected(started);
+            }
+            try
+            {
+                return await pending
+                    .WaitAsync(
+                        remaining > MaximumTimerDelay ? MaximumTimerDelay : remaining,
+                        _timeProvider,
+                        cancellationToken
+                    )
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException) when (!pending.IsFaulted)
+            {
+                // Long budgets span several timers. Keep waiting for the original acquisition.
+            }
+        }
+    }
+
+    private static async Task DisposeAbandonedLeaseAsync(
+        Task<RateLimitLease> pending,
+        CancellationTokenSource? deadline
+    )
     {
         try
         {
+            if (deadline is not null)
+            {
+                await deadline.CancelAsync().ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            }
             using var lease = await pending.ConfigureAwait(false);
         }
         catch (Exception)
         {
-            // The caller has already stopped waiting. Observe a late fault or dispose a late
-            // lease without replaying or refunding an acquisition whose outcome was unknown.
+            // Observe a late fault or dispose the eventual lease after the request ends.
+        }
+        finally
+        {
+            deadline?.Dispose();
         }
     }
 

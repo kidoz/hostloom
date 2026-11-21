@@ -3,7 +3,8 @@ namespace HostLoom.RateLimiting.HttpClient;
 /// <summary>Bounded local waiting for one outgoing HTTP handler pipeline.</summary>
 public sealed class HttpRateLimitOptions
 {
-    /// <summary>Total time a request may wait for permits. Zero rejects immediately.</summary>
+    /// <summary>Total wait budget for permits. Zero probes local limiters synchronously and allows
+    /// one asynchronous, nonqueueing decision from the HostLoom distributed limiter.</summary>
     public TimeSpan MaxWait { get; set; }
 
     /// <summary>Maximum requests in the wait loop for this handler pipeline. Zero disables waiting.</summary>

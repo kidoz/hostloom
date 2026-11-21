@@ -32,3 +32,8 @@ positive `QueueLimit`.
 - Handler disposal does not dispose the shared limiter.
 
 `RateLimitedHttpMessageHandler` also has a public constructor for container-free composition.
+At zero wait, the HTTP handler calls `AttemptAcquire` on a caller-supplied local limiter.
+Such limiters must implement synchronous acquisition to admit requests in this mode.
+HostLoom's distributed limiter can await its single backend decision because it never queues
+for replenishment. With a positive wait budget, the handler cancels a pending acquisition
+when the budget expires. A late lease from a backend that ignores cancellation is disposed.

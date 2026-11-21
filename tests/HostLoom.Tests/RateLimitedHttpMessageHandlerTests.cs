@@ -11,6 +11,52 @@ namespace HostLoom.Tests;
 
 public sealed class RateLimitedHttpMessageHandlerTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Local_limiter_queue_honors_zero_wait_and_the_request_deadline(bool mayWait)
+    {
+        var clock = new TestClock();
+        using var limiter = new ConcurrencyLimiter(
+            new ConcurrencyLimiterOptions
+            {
+                PermitLimit = 1,
+                QueueLimit = 1,
+                QueueProcessingOrder = QueueProcessingOrder.NewestFirst,
+            }
+        );
+        using var held = limiter.AttemptAcquire();
+        using var downstream = new StubHttpHandler(HttpStatusCode.OK);
+        using var client = Client(
+            limiter,
+            downstream,
+            new HttpRateLimitOptions
+            {
+                MaxWait = mayWait ? TimeSpan.FromSeconds(1) : TimeSpan.Zero,
+                QueueLimit = mayWait ? 1 : 0,
+            },
+            clock
+        );
+#pragma warning disable CA2025 // The assertion awaits this request before the client is disposed.
+        var request = Get(client, "https://catalog.example");
+#pragma warning restore CA2025
+        if (mayWait)
+        {
+            Assert.Equal(1, limiter.GetStatistics()!.CurrentQueuedCount);
+            await Assert.ThrowsAsync<RateLimitExceededException>(() =>
+                Get(client, "https://catalog.example")
+            );
+            clock.Advance(TimeSpan.FromSeconds(1));
+        }
+        await Assert.ThrowsAsync<RateLimitExceededException>(() =>
+            request.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken)
+        );
+        await SchedulingTests.WaitUntilAsync(() =>
+            limiter.GetStatistics()!.CurrentQueuedCount == 0
+        );
+        Assert.Equal(0, downstream.Calls);
+    }
+
     [Fact]
     public void Synchronous_send_is_rejected_before_downstream_dispatch()
     {
@@ -293,17 +339,16 @@ public sealed class RateLimitedHttpMessageHandlerTests
 
         public override RateLimiterStatistics? GetStatistics() => null;
 
-        protected override RateLimitLease AttemptAcquireCore(int permitCount) =>
-            TestRateLimitLease.Rejected(TimeSpan.Zero);
+        protected override RateLimitLease AttemptAcquireCore(int permitCount)
+        {
+            Calls++;
+            return _leases.Count > 0 ? _leases.Dequeue() : AlwaysAcquired;
+        }
 
         protected override ValueTask<RateLimitLease> AcquireAsyncCore(
             int permitCount,
             CancellationToken cancellationToken
-        )
-        {
-            Calls++;
-            return ValueTask.FromResult(_leases.Count > 0 ? _leases.Dequeue() : AlwaysAcquired);
-        }
+        ) => ValueTask.FromResult(AttemptAcquireCore(permitCount));
 
         protected override void Dispose(bool disposing)
         {
