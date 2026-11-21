@@ -328,6 +328,12 @@ At concurrency 64 and seed 43, batches 1, 32 and 128 delivered 7.97, 8.00 and 8.
 successful requests/s and processed 7.97, 256.00 and 1024.00 items/s, respectively.
 Refusal rates were 83.24%, 83.15% and 83.04%. The runs recorded 5669, 6677 and 18878
 cgroup memory-limit events through sampling. All three settled pending mutations,
-verified both recovery checks and recorded zero OOMs or member faults. Seven workload
-combinations have completed on the configurable voter count build with three voters.
-Further matrix coverage, contextual measurements and target decisions remain open.
+verified both recovery checks and recorded zero OOMs or member faults.
+
+At batch 32 and seed 43, concurrency 1 delivered 2.00 successful requests/s and
+64.00 items/s, with one refusal out of 601 calls. Concurrency 16 and 64 delivered
+7.98 and 8.00 successful requests/s, with refusal rates of 45.81% and 83.15%.
+All three verified both recovery checks and finished with zero unresolved mutations,
+OOMs or member faults. Eight workload combinations have completed on the configurable
+voter count build with three voters. Further matrix coverage, contextual measurements
+and target decisions remain open.
