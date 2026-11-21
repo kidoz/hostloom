@@ -15,6 +15,39 @@ public sealed class TransportRecoveryRegressionTests
 {
     private static readonly TimeSpan Bounded = TimeSpan.FromSeconds(10);
 
+    [Fact(Timeout = 30_000)]
+    public async Task A_blocked_cancellation_callback_shares_the_listener_drain_deadline()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var clock = new TestClock();
+        await using var broker = new InMemoryRequestBroker(logger: null, clock);
+        var handler = new StubbornHandler();
+        await using var listener = await handler.AttachAsync(broker, events: false, token);
+        var request = StubbornHandler.SendAsync(broker, events: false, token);
+        var delivery = await handler.Entered.Task.WaitAsync(Bounded, token);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim();
+        using var callback = delivery.Register(() =>
+        {
+            entered.TrySetResult();
+            release.Wait(token);
+        });
+        try
+        {
+            var stop = listener.DisposeAsync().AsTask();
+            await entered.Task.WaitAsync(Bounded, token);
+            clock.Advance(InMemoryRequestBroker.HandlerDrainBound);
+            await stop.WaitAsync(Bounded, token);
+            await broker.DisposeAsync().AsTask().WaitAsync(Bounded, token);
+        }
+        finally
+        {
+            release.Set();
+            handler.Release.TrySetResult();
+        }
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => request.WaitAsync(Bounded, token));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

@@ -617,17 +617,23 @@ public sealed class InMemoryRequestBroker
         {
             await drained.WaitAsync(HandlerDrainBound, _clock).ConfigureAwait(false);
         }
-        catch (TimeoutException)
+        catch (TimeoutException) when (!drained.IsFaulted)
         {
+            if (drained.IsCompletedSuccessfully)
+                return;
+            _ = ObserveDrainAsync(drained);
             _logger.LogWarning(
                 new EventId(1404, "InMemoryHandlersAbandoned"),
-                "The in-memory {Subscription} stopped without its handlers: of the {Running} it cancelled, some were still running after {Bound} and may outlive the transport.",
+                "The in-memory {Subscription} exceeded its {Bound} shutdown deadline with {Running} handlers at stop. Outstanding handlers or cancellation callbacks may outlive the transport.",
                 subscription.Name,
-                running,
-                HandlerDrainBound
+                HandlerDrainBound,
+                running
             );
         }
     }
+
+    private static async Task ObserveDrainAsync(Task drained) =>
+        await drained.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
 
     private abstract class Subscription : IAsyncDisposable
     {
@@ -714,23 +720,30 @@ public sealed class InMemoryRequestBroker
             try
             {
                 Remove();
-                try
-                {
-                    await _stopping.CancelAsync().ConfigureAwait(false);
-                }
-                finally
-                {
-                    if (!drained.IsCompleted)
-                        await Owner.DrainAsync(this, drained, running).ConfigureAwait(false);
-                    _stopping.Dispose();
-                    Owner._open.TryRemove(this, out _);
-                }
-
+                await Owner
+                    .DrainAsync(this, FinishStopAsync(drained), running)
+                    .ConfigureAwait(false);
                 stopped.TrySetResult();
             }
             catch (Exception exception)
             {
                 stopped.TrySetException(exception);
+            }
+            finally
+            {
+                Owner._open.TryRemove(this, out _);
+            }
+        }
+
+        private async Task FinishStopAsync(Task drained)
+        {
+            try
+            {
+                await Task.WhenAll(_stopping.CancelAsync(), drained).ConfigureAwait(false);
+            }
+            finally
+            {
+                _stopping.Dispose();
             }
         }
     }
