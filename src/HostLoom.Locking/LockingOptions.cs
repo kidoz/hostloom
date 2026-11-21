@@ -49,6 +49,8 @@ public sealed class LockingOptions
     /// <summary>Longest consumer key accepted, before the namespace prefix.</summary>
     public int MaxKeyLength { get; set; } = 512;
 
+    internal LockingOptions Snapshot() => (LockingOptions)MemberwiseClone();
+
     /// <summary>
     /// Every violation, each naming the option key at fault. Empty when the options are usable.
     /// </summary>

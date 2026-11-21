@@ -50,7 +50,24 @@ internal sealed class AcquisitionAttempt
         PrefixedKey = prefixedKey;
         OwnerToken = ownerToken;
         Deadline = LeaseDeadline.StartingNow(owner.Clock, lease);
-        Reply = Send(lockDisposed);
+        Reply = Send();
+        if (Reply.IsCompleted)
+        {
+            _providerToken.Dispose();
+            return;
+        }
+        try
+        {
+            BoundProviderCall(lockDisposed);
+        }
+        catch
+        {
+            StopProvider();
+            _settled = SettleAsync(Reply);
+            Abandon(TimeProvider.System);
+            throw;
+        }
+        _settled = SettleAsync(Reply);
     }
 
     public string Key { get; }
@@ -74,11 +91,11 @@ internal sealed class AcquisitionAttempt
     /// backend was not reached, and a refusal holds nothing, so neither is released. Repeated
     /// calls do nothing; the caller never waits for the release.
     /// </summary>
-    public void Abandon()
+    public void Abandon(TimeProvider? releaseClock = null)
     {
         if (Interlocked.Exchange(ref _abandoned, 1) == 0)
         {
-            _ = ReleaseWhenSettledAsync();
+            _ = ReleaseWhenSettledAsync(releaseClock ?? _lock.Clock);
         }
     }
 
@@ -96,7 +113,7 @@ internal sealed class AcquisitionAttempt
                 is not LockProviderException { Kind: LockFailureKind.Unavailable },
         };
 
-    private Task<bool> Send(CancellationToken lockDisposed)
+    private Task<bool> Send()
     {
         Task<bool> reply;
         try
@@ -116,13 +133,11 @@ internal sealed class AcquisitionAttempt
             reply = Task.FromException<bool>(exception);
         }
 
-        if (reply.IsCompleted)
-        {
-            // Answered synchronously: nothing to bound, so no timer is ever armed.
-            _providerToken.Dispose();
-            return reply;
-        }
+        return reply;
+    }
 
+    private void BoundProviderCall(CancellationToken lockDisposed)
+    {
         _lockDisposed = lockDisposed.UnsafeRegister(
             static state => ((AcquisitionAttempt)state!).StopProvider(),
             this
@@ -141,10 +156,6 @@ internal sealed class AcquisitionAttempt
         {
             StopProvider();
         }
-
-        // Started last, so the cleanup sees the timer and the registration it has to undo.
-        _settled = SettleAsync(reply);
-        return reply;
     }
 
     /// <summary>
@@ -184,14 +195,14 @@ internal sealed class AcquisitionAttempt
         _providerToken.Dispose();
     }
 
-    private async Task ReleaseWhenSettledAsync()
+    private async Task ReleaseWhenSettledAsync(TimeProvider releaseClock)
     {
         // After the cleanup, so a released orphan leaves no timer behind; and always yielding, so
         // the caller that abandons the attempt never runs the release inline.
         await _settled.ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         if (MayHold(Reply))
         {
-            await ReleaseOrphanAsync().ConfigureAwait(false);
+            await ReleaseOrphanAsync(releaseClock).ConfigureAwait(false);
         }
     }
 
@@ -201,7 +212,7 @@ internal sealed class AcquisitionAttempt
     /// outlive what it releases. The release script only touches this owner's lease, so a
     /// successor that took the key after expiry is never affected. Never throws.
     /// </summary>
-    private async Task ReleaseOrphanAsync()
+    private async Task ReleaseOrphanAsync(TimeProvider releaseClock)
     {
         var lease = Deadline.Lease;
         var bound = lease < OrphanReleaseBound ? lease : OrphanReleaseBound;
@@ -209,7 +220,7 @@ internal sealed class AcquisitionAttempt
         Exception? failure = null;
         try
         {
-            using var timeout = new CancellationTokenSource(bound, _lock.Clock);
+            using var timeout = new CancellationTokenSource(bound, releaseClock);
             var released = await _lock
                 .Provider.ReleaseAsync(PrefixedKey, OwnerToken, timeout.Token)
                 .ConfigureAwait(false);

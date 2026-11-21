@@ -9,6 +9,55 @@ public sealed class LockingTests
 {
     private static readonly TimeSpan OneSecond = TimeSpan.FromSeconds(1);
 
+    [Fact]
+    public async Task Handle_setup_failure_releases_the_grant_and_its_partial_timers()
+    {
+        var clock = new FailingHandleClock();
+        var backend = new InMemoryLockProvider();
+        var options = new LockingOptions { Namespace = "catalog" };
+        await using var locks = new DistributedLock(options, backend, clock);
+        options.DefaultLease = options.MaxLease = TimeSpan.FromDays(60);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            locks
+                .TryAcquireAsync(
+                    "catalog",
+                    cancellationToken: TestContext.Current.CancellationToken
+                )
+                .AsTask()
+        );
+        await SchedulingTests.WaitUntilAsync(() =>
+            backend.Count == 0 && clock.Inner.PendingTimers == 0
+        );
+        clock.Repaired = true;
+        await using var handle = await locks.TryAcquireAsync(
+            "catalog",
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        Assert.NotNull(handle);
+        Assert.True(handle.LeaseEnd - clock.GetUtcNow() <= TimeSpan.FromSeconds(30));
+    }
+
+    private sealed class FailingHandleClock : TimeProvider
+    {
+        public TestClock Inner { get; } = new();
+        public bool Repaired { get; set; }
+        private int _timers;
+
+        public override DateTimeOffset GetUtcNow() => Inner.GetUtcNow();
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period
+        )
+        {
+            if (Interlocked.Increment(ref _timers) >= 2 && !Repaired)
+                throw new InvalidOperationException("Timer unavailable.");
+            return Inner.CreateTimer(callback, state, dueTime, period);
+        }
+    }
+
     [Theory]
     [InlineData("expiry")]
     [InlineData("extend")]

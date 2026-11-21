@@ -35,6 +35,7 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
     )
     {
         ArgumentNullException.ThrowIfNull(options);
+        options = options.Snapshot();
         var problems = options.Validate();
         if (problems.Count > 0)
         {
@@ -351,7 +352,18 @@ public sealed class DistributedLock : IDistributedLock, IAsyncDisposable
                 LockingDiagnostics.Active.Add(1, _namespaceTag);
                 activity?.SetTag("hostloom.lock.acquired", true);
                 activity?.SetTag("hostloom.lock.wait_ms", waited.TotalMilliseconds);
-                return new LockHandle(this, key, prefixed, owner, attempt.Deadline, autoExtend);
+                try
+                {
+                    return new LockHandle(this, key, prefixed, owner, attempt.Deadline, autoExtend);
+                }
+                catch
+                {
+                    // Handle setup can fail because the configured clock cannot create timers.
+                    // Bound the cleanup using an independent clock in that case.
+                    attempt.Abandon(TimeProvider.System);
+                    LockingDiagnostics.Active.Add(-1, _namespaceTag);
+                    throw;
+                }
             }
 
             if (attempts > retry.RetryLimit)

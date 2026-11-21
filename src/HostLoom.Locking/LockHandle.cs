@@ -71,28 +71,49 @@ internal sealed class LockHandle : ILockHandle
         // Timers last, so a lease short enough to fire immediately still finds a complete handle.
         // A round trip that outlasted the lease leaves nothing to hold: the expiry timer fires at
         // once and the handle reports the loss through the usual path.
-        _leaseTimer = owner.Clock.CreateTimer(
-            static state => ((LockHandle)state!).OnLeaseExpired(),
-            this,
-            Timeout.InfiniteTimeSpan,
-            Timeout.InfiniteTimeSpan
-        );
-        _warnTimer = owner.Clock.CreateTimer(
-            static state => ((LockHandle)state!).OnHoldThreshold(),
-            this,
-            NotBefore(remaining * 0.8),
-            Timeout.InfiniteTimeSpan
-        );
-        _extendTimer = autoExtend
-            ? owner.Clock.CreateTimer(
-                static state => ((LockHandle)state!).OnHeartbeat(),
-                this,
-                NotBefore(remaining / 2),
-                Timeout.InfiniteTimeSpan
-            )
-            : null;
-        // Arm only after every timer is owned. Even a zero/early callback can now safely re-arm.
-        _leaseTimer.Change(NotBefore(deadline.Remaining(owner.Clock)), Timeout.InfiniteTimeSpan);
+        lock (_gate)
+        {
+            try
+            {
+                _leaseTimer = owner.Clock.CreateTimer(
+                    static state => ((LockHandle)state!).OnLeaseExpired(),
+                    this,
+                    Timeout.InfiniteTimeSpan,
+                    Timeout.InfiniteTimeSpan
+                );
+                _warnTimer = owner.Clock.CreateTimer(
+                    static state => ((LockHandle)state!).OnHoldThreshold(),
+                    this,
+                    Timeout.InfiniteTimeSpan,
+                    Timeout.InfiniteTimeSpan
+                );
+                _extendTimer = autoExtend
+                    ? owner.Clock.CreateTimer(
+                        static state => ((LockHandle)state!).OnHeartbeat(),
+                        this,
+                        Timeout.InfiniteTimeSpan,
+                        Timeout.InfiniteTimeSpan
+                    )
+                    : null;
+                // Arm only after every timer is owned. Even a zero/early callback can now safely re-arm.
+                _warnTimer.Change(NotBefore(remaining * 0.8), Timeout.InfiniteTimeSpan);
+                _extendTimer?.Change(NotBefore(remaining / 2), Timeout.InfiniteTimeSpan);
+                _leaseTimer.Change(
+                    NotBefore(deadline.Remaining(owner.Clock)),
+                    Timeout.InfiniteTimeSpan
+                );
+            }
+            catch
+            {
+                _state = ReleasedState;
+                _leaseTimer?.Dispose();
+                _warnTimer?.Dispose();
+                _extendTimer?.Dispose();
+                _lost.Dispose();
+                _renewalGate.Dispose();
+                throw;
+            }
+        }
     }
 
     public string Key { get; }
