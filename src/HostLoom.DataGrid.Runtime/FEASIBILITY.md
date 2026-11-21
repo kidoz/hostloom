@@ -334,6 +334,12 @@ At batch 32 and seed 43, concurrency 1 delivered 2.00 successful requests/s and
 64.00 items/s, with one refusal out of 601 calls. Concurrency 16 and 64 delivered
 7.98 and 8.00 successful requests/s, with refusal rates of 45.81% and 83.15%.
 All three verified both recovery checks and finished with zero unresolved mutations,
-OOMs or member faults. Eight workload combinations have completed on the configurable
-voter count build with three voters. Further matrix coverage, contextual measurements
-and target decisions remain open.
+OOMs or member faults.
+
+Batch 1 at concurrency 1 completed the nine seed-43 combinations on the configurable
+voter count build with three voters. It delivered 2.00 successful requests/s, with one
+refusal out of 601 calls. Across the three batch sizes, concurrency 16 and 64 both
+delivered 7.97–8.00 successful requests/s. Refusal rates ranged from 45.75% to 46.60%
+at concurrency 16 and from 83.04% to 83.24% at concurrency 64. All nine runs verified
+both recovery checks and finished with zero unresolved mutations, OOMs or member
+faults. The remaining seeds, contextual measurements and target decisions are open.
