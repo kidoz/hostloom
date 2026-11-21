@@ -37,6 +37,58 @@ public sealed partial class WebSocketGatewayTests
     private static readonly Guid FixtureLiveEvent = new("55555555555555555555555555555555");
     private static readonly Guid FixtureSnapshotEvent = new("66666666666666666666666666666666");
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Test_client_at_size_limit_checks_the_final_fragment(bool overflow)
+    {
+        var token = TestContext.Current.CancellationToken;
+        var protocol = new JsonWebSocketHubProtocol();
+        var frame = new HubFrame { Kind = HubFrameKind.Ping, StreamId = FixturePing };
+        var bytes = protocol.Encode(frame);
+        using var host = new HostBuilder()
+            .ConfigureWebHost(web =>
+                web.UseTestServer()
+                    .Configure(app =>
+                    {
+                        app.UseWebSockets();
+                        app.Run(async context =>
+                        {
+                            using var socket = await context.WebSockets.AcceptWebSocketAsync(
+                                protocol.SubProtocol
+                            );
+                            await socket.SendAsync(
+                                bytes.AsMemory(),
+                                protocol.MessageType,
+                                false,
+                                context.RequestAborted
+                            );
+                            await socket.SendAsync(
+                                overflow ? new byte[1].AsMemory() : Memory<byte>.Empty,
+                                protocol.MessageType,
+                                true,
+                                context.RequestAborted
+                            );
+                        });
+                    })
+            )
+            .Build();
+        await host.StartAsync(token);
+        await using var client = new WebSocketTestClient(host.GetTestServer(), protocol);
+        await client.ConnectAsync(new Uri("ws://localhost/test"), token);
+        if (overflow)
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                client.ReceiveAsync(bytes.Length, token).AsTask()
+            );
+        }
+        else
+        {
+            var actual = await client.ReceiveAsync(bytes.Length, token);
+            Assert.Equal(frame.StreamId, actual.StreamId);
+        }
+    }
+
     [Fact]
     public void Json_protocol_rejects_every_shared_malformed_fixture()
     {

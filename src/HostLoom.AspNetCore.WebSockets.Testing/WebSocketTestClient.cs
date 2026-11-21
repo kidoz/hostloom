@@ -67,11 +67,13 @@ public sealed class WebSocketTestClient : IAsyncDisposable
         var payload = new ArrayBufferWriter<byte>();
         WebSocketMessageType? messageType = null;
 
+        byte[]? overflowProbe = null;
         while (true)
         {
-            var memory = payload.GetMemory(
-                Math.Min(4096, maximumMessageSize - payload.WrittenCount)
-            );
+            var remaining = maximumMessageSize - payload.WrittenCount;
+            var size = Math.Min(4096, remaining);
+            Memory<byte> memory =
+                remaining == 0 ? overflowProbe ??= new byte[1] : payload.GetMemory(size)[..size];
             var result = await Socket.ReceiveAsync(memory, cancellationToken).ConfigureAwait(false);
             if (result.MessageType is WebSocketMessageType.Close)
             {
@@ -86,24 +88,17 @@ public sealed class WebSocketTestClient : IAsyncDisposable
                 throw new InvalidDataException("A fragmented frame changed its message type.");
             }
 
-            payload.Advance(result.Count);
-            if (payload.WrittenCount > maximumMessageSize)
+            if (result.Count > remaining)
             {
                 throw new InvalidDataException(
                     "The received frame exceeded the test client limit."
                 );
             }
 
+            payload.Advance(result.Count);
             if (result.EndOfMessage)
             {
                 break;
-            }
-
-            if (payload.WrittenCount == maximumMessageSize)
-            {
-                throw new InvalidDataException(
-                    "The received frame exceeded the test client limit."
-                );
             }
         }
 
