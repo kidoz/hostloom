@@ -85,6 +85,19 @@ namespace HostLoom.Tests
         }
 
         [Fact]
+        public async Task A_redeclared_mask_preserves_the_strongest_rule_in_the_override_chain()
+        {
+            var catalog = new RegionalCatalog();
+            var (root, _) = await LogAsync(logger =>
+                logger.LogInformation("catalog {@Catalog}", catalog)
+            );
+            var captured = root.GetProperty("Catalog");
+            Assert.Equal("***", captured.GetProperty("Code").GetString());
+            Assert.Equal(0, catalog.Reads);
+            Assert.Equal("***", captured.GetProperty("Label").GetString());
+        }
+
+        [Fact]
         public async Task LogMasked_replaces_or_deterministically_reveals()
         {
             var card = new Payment { Token = "secret-token", Card = "1234567890123456" };
@@ -1003,6 +1016,39 @@ namespace HostLoom.Tests
             {
                 get => base.ApiKey;
                 set => base.ApiKey = value;
+            }
+        }
+
+        private class CatalogBase
+        {
+            [LogMasked(ShowFirst = 1)]
+            public virtual string Code => "catalog-code";
+
+            [LogMasked]
+            public virtual object Label => "catalog-label";
+        }
+
+        private class Catalog : CatalogBase
+        {
+            [LogMasked]
+            public override string Code => base.Code;
+        }
+
+        private sealed class RegionalCatalog : Catalog
+        {
+            [LogMasked(ShowLast = 1)]
+            public override string Label => "catalog-label";
+
+            public int Reads { get; private set; }
+
+            [LogMasked(ShowFirst = 1)]
+            public override string Code
+            {
+                get
+                {
+                    Reads++;
+                    return base.Code;
+                }
             }
         }
 

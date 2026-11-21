@@ -317,7 +317,8 @@ Of the other legacy attributes, `LogReplaced` is honored by masking the member w
 
 Both attributes are found through the inheritance chain: a member annotated on a base class
 stays protected on a derived instance, including when the derived class overrides the
-annotated virtual property. The same holds for the legacy attributes recognized by name under
+annotated virtual property. Masks declared again on overrides combine with every inherited
+mask, including masks on intermediate overrides. The same holds for the legacy attributes recognized by name under
 `MapLegacyAttributes`.
 
 Every applicable programmatic mask (including base classes and interfaces) combines with the

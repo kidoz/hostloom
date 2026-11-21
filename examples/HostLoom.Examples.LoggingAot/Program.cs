@@ -59,6 +59,7 @@ builder.Logging.AddHostLoomLogging(
         logging
             .Destructuring.Preserve<Order>()
             .Preserve<Shipment>()
+            .Preserve<RegionalCatalog>()
             .Mask<Credential>(nameof(Credential.Secret), showLast: 4)
             .Mask<StockAccount>(nameof(Credential.Secret))
 );
@@ -76,6 +77,7 @@ using (var host = builder.Build())
         logger,
         new Dictionary<StockAccount, int> { [new StockAccount("ada", "private-password")] = 7 }
     );
+    logger.LogInformation("Catalog {@Catalog}", new RegionalCatalog());
 } // Disposing the host drains the logging pipeline into the sink.
 
 var lines = sink?.Lines() ?? [];
@@ -84,9 +86,9 @@ foreach (var line in lines)
     Console.WriteLine(line);
 }
 
-if (lines.Length != 4)
+if (lines.Length != 5)
 {
-    Console.WriteLine($"logging mismatches: 4 records expected, got {lines.Length}");
+    Console.WriteLine($"logging mismatches: 5 records expected, got {lines.Length}");
     return 1;
 }
 
@@ -141,6 +143,11 @@ Expect(
     $"the unpreserved invoice written whole or reported, got {invoice} with {failures} failures"
 );
 
+Expect(
+    Field(lines[4], "Catalog") == """{"Code":"***","Label":"***","$type":"RegionalCatalog"}""",
+    "ordinary and covariant overrides keep the full base masks"
+);
+
 Console.WriteLine(
     problems.Count == 0
         ? $"logging verified; unpreserved members {(invoiceReported ? "missing and reported" : "read")}"
@@ -160,6 +167,24 @@ static string? Field(string line, string name)
 {
     using var record = JsonDocument.Parse(line);
     return record.RootElement.TryGetProperty(name, out var value) ? value.GetRawText() : null;
+}
+
+internal class Catalog
+{
+    [LogMasked]
+    public virtual string Code => "catalog-code";
+
+    [LogMasked]
+    public virtual object Label => "catalog-label";
+}
+
+internal sealed class RegionalCatalog : Catalog
+{
+    [LogMasked(ShowFirst = 1)]
+    public override string Code => base.Code;
+
+    [LogMasked(ShowLast = 1)]
+    public override string Label => "catalog-label";
 }
 
 internal sealed record Shipment(string City, int Parcels);

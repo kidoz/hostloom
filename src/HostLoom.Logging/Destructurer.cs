@@ -921,10 +921,7 @@ internal sealed class Destructurer(
         }
 
         MemberInfo member = property is not null ? property : field!;
-        // Attribute.GetCustomAttributes walks a virtual property's override chain. The instance
-        // MemberInfo.GetCustomAttributes(inherit) silently ignores the flag for properties, so an
-        // override of an annotated property would otherwise lose its protection.
-        foreach (var attribute in Attribute.GetCustomAttributes(member, inherit: true))
+        foreach (var attribute in ProtectionAttributes(member))
         {
             switch (attribute)
             {
@@ -963,6 +960,83 @@ internal sealed class Destructurer(
         }
 
         members.Add(new MemberPlan(name, property, field, mask));
+    }
+
+    /// <summary>Read each declaration of a virtual property. Reflection's inherited attribute
+    /// query hides a base mask when an override declares another non-repeatable mask.</summary>
+    [UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2075",
+        Justification = "DestructuringOptions.Preserve keeps the public properties of logged types, including their bases."
+    )]
+    private static IEnumerable<Attribute> ProtectionAttributes(MemberInfo member)
+    {
+        foreach (var attribute in Attribute.GetCustomAttributes(member, inherit: false))
+            yield return attribute;
+
+        if (member is not PropertyInfo { GetMethod: { IsVirtual: true } getter })
+            yield break;
+
+        while (true)
+        {
+            var root = getter.GetBaseDefinition();
+            // The CLR gives a covariant override a new slot. C# marks its getter so
+            // calls through the old signature still dispatch to the override.
+            var covariant = getter.IsDefined(
+                typeof(PreserveBaseOverridesAttribute),
+                inherit: false
+            );
+            if (root.DeclaringType == getter.DeclaringType && !covariant)
+                yield break;
+
+            PropertyInfo? parent = null;
+            for (
+                var type = getter.DeclaringType?.BaseType;
+                type is not null && parent is null;
+                type = type.BaseType
+            )
+            {
+                foreach (
+                    var property in type.GetProperties(
+                        BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly
+                    )
+                )
+                {
+                    if (
+                        property.Name == member.Name
+                        && property.GetMethod is { IsVirtual: true } candidate
+                        && property.GetIndexParameters().Length == 0
+                        && (
+                            covariant
+                                ? candidate.ReturnType.IsAssignableFrom(getter.ReturnType)
+                                : candidate.GetBaseDefinition() == root
+                        )
+                    )
+                    {
+                        parent = property;
+                        break;
+                    }
+                }
+            }
+
+            // The type plan fails closed when trimming removed a declaration whose
+            // protection we would otherwise have had to inspect.
+            if (parent is null)
+                throw new InvalidOperationException("The overridden log member is unavailable.");
+
+            foreach (var attribute in Attribute.GetCustomAttributes(parent, inherit: false))
+            {
+                if (
+                    Attribute.GetCustomAttribute(
+                        attribute.GetType(),
+                        typeof(AttributeUsageAttribute)
+                    )
+                    is not AttributeUsageAttribute { Inherited: false }
+                )
+                    yield return attribute;
+            }
+            getter = parent.GetMethod!;
+        }
     }
 
     /// <summary>Reads a legacy masking attribute's options by property name, so Destructurama
