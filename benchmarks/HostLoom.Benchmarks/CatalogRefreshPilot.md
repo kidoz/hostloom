@@ -44,6 +44,25 @@ Measured locally on 2026-11-22 with an Apple M4 Max, macOS 27.2.1 arm64, 16 logi
 
 Timings run from invocation through reply for each caller, including any wait for another caller's load. The next wave starts after the current reads finish. This closed-loop workload measures burst latency at the stated concurrency. Source delay dominated refresh time. The read budget covers reads after publication. A read queued behind a slow load can wait for that I/O.
 
+## Repeat measurement
+
+One later actor trial reached a refresh p99 of 33.3 ms. To check whether that recurred, we ran three more batches on the same Apple M4 Max on 2026-11-22 at revision `147f0497565c`. Each batch started a fresh Release process with the workload, alternating order, warmup and budgets described above. The batches ran sequentially on a shared workstation. One-second CPU samples during the runs showed 70–82% idle.
+
+Each latency below is the median of five trial p99s, in milliseconds.
+
+| Batch | Worker | Refresh p99 | Current-read p99 | Trials with refresh p99 > 25 ms |
+|---|---|---:|---:|---:|
+| 1 | Actor | 13.83 | 0.126 | 0/5 |
+| 1 | Semaphore | 11.85 | 0.009 | 0/5 |
+| 2 | Actor | 15.01 | 0.135 | 0/5 |
+| 2 | Semaphore | 10.95 | 0.010 | 0/5 |
+| 3 | Actor | 13.50 | 0.111 | 0/5 |
+| 3 | Semaphore | 13.69 | 0.013 | 0/5 |
+
+Across the 15 repeat trials per implementation, refresh p99 ranged from 10.50 to 21.29 ms for the actor and 9.69 to 22.63 ms for the semaphore. Every trial also met the 2 ms current-read budget. Each implementation completed 12,600 refresh calls and 3,600 current reads with exactly 3,600 physical loads. [Per-trial measurements](CatalogRefreshRepeat-2026-11-22.csv)
+
+The earlier threshold exceedance did not recur. Its cause remains unknown. The pilot is closed for the regional catalog example under this workload.
+
 ## Adoption scope
 
 Use the actor in this example because a caller may leave while work still owns the regional state. The actor provides a serialized asynchronous turn and a stop operation that closes admission and joins that turn. The comparison's semaphore implementation must hold and release its gate across I/O, separate the operation task from its caller's wait, and dispose gates only after the harness has joined outstanding work. Both implementations still need the same application logic for version checks, failure handling and sharing attempts. This decision applies to the local worker in an actor-enabled application. The measured budgets are pilot assumptions.
