@@ -15,6 +15,7 @@
     <PackageReference Include="Serilog.Formatting.Compact" />
     <PackageReference Include="Serilog.Sinks.Async" />
     <PackageReference Include="ZiggyCreatures.FusionCache" />
+    <ProjectReference Include="../../src/HostLoom.Transport.InMemory/HostLoom.Transport.InMemory.csproj" />
     <ProjectReference Include="../../src/HostLoom.Actors/HostLoom.Actors.csproj" />
     <ProjectReference Include="../../src/HostLoom.AspNetCore.WebSockets/HostLoom.AspNetCore.WebSockets.csproj" />
     <ProjectReference Include="../../src/HostLoom.Caching/HostLoom.Caching.csproj" />
