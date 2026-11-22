@@ -134,6 +134,14 @@ public sealed class ActorSystemTests
         var release = Signal();
         int disposed = 0;
         await using var system = new ActorSystem(2, 2, Bound);
+        var peer = system
+            .Spawn<int, int>(() =>
+            {
+                var count = 0;
+                return new Worker((delta, _) => ValueTask.FromResult(count += delta));
+            })
+            .Ref;
+        Assert.Equal(7, await peer.AskAsync(7, Bound, Token));
         var actor = system.Spawn<int, int>(() =>
             new Worker(
                 async (_, _) =>
@@ -163,6 +171,8 @@ public sealed class ActorSystemTests
         Assert.Equal(1, disposed);
         Assert.Equal(1, system.Snapshot.Discarded);
         Assert.Equal(1, system.Snapshot.Faults);
+        Assert.Equal(7, await peer.AskAsync(0, Bound, Token));
+        Assert.Equal(8, await peer.AskAsync(1, Bound, Token));
         var live = system.Spawn<int, int>(() =>
             new Worker((value, _) => ValueTask.FromResult(value))
         );
@@ -400,16 +410,15 @@ public sealed class ActorSystemTests
             ValueTask.FromResult(dependency);
     }
 
-    private sealed class BrokenWorker : IActor<string, string>
+    private sealed class StartupWorker : IActor<string, string>
     {
-        public BrokenWorker(ScopedDependency dependency, List<ScopedDependency> partial)
+        public StartupWorker(ScopedDependency dependency, Action<ScopedDependency> construct)
         {
-            partial.Add(dependency);
-            throw new FormatException();
+            construct(dependency);
         }
 
         public ValueTask<string> ReceiveAsync(string message, CancellationToken stopping) =>
-            throw new InvalidOperationException();
+            ValueTask.FromResult(message);
     }
 
     [Theory]
@@ -417,34 +426,115 @@ public sealed class ActorSystemTests
     [InlineData(false)]
     public async Task Hosting_OwnsActorScopesAndRollsBackPartialStartup(bool fail)
     {
-        var services = new ServiceCollection();
+        var builder = Host.CreateApplicationBuilder();
+        builder.ConfigureContainer(
+            new DefaultServiceProviderFactory(new ServiceProviderOptions { ValidateScopes = true })
+        );
         var created = new List<ScopedDependency>();
-        services.AddScoped(_ =>
+        builder.Services.AddScoped(_ =>
         {
             var value = new ScopedDependency();
             created.Add(value);
             return value;
         });
-        services.AddSingleton(new List<ScopedDependency>());
-        services
-            .AddLocalActorSystem(2, 1, Bound)
+        builder
+            .Services.AddLocalActorSystem(2, 1, Bound)
             .AddLocalActor<int, ScopedDependency, ScopedWorker>();
         if (fail)
-            services.AddLocalActor<string, string, BrokenWorker>();
-        await using var provider = services.BuildServiceProvider(validateScopes: true);
-        var service = provider.GetRequiredService<IHostedService>();
+        {
+            builder.Services.AddSingleton<Action<ScopedDependency>>(
+                (ScopedDependency _) => throw new FormatException()
+            );
+            builder.Services.AddLocalActor<string, string, StartupWorker>();
+        }
+
+        using var host = builder.Build();
+        var actor = host.Services.GetRequiredService<IActorRef<int, ScopedDependency>>();
         if (fail)
-            await Assert.ThrowsAsync<FormatException>(() => service.StartAsync(Token));
+            await Assert
+                .ThrowsAsync<FormatException>(() => host.StartAsync(Token))
+                .WaitAsync(Bound, Token);
         else
         {
-            await service.StartAsync(Token);
-            var actor = provider.GetRequiredService<IActorRef<int, ScopedDependency>>();
+            await host.StartAsync(Token).WaitAsync(Bound, Token);
             Assert.Same(created.Single(), await actor.AskAsync(1, Bound, Token));
-            await service.StopAsync(Token);
-            Assert.Equal(ActorAdmission.Stopped, actor.TryTell(2));
+            await host.StopAsync(Token).WaitAsync(Bound, Token);
         }
+        Assert.Equal(ActorAdmission.Stopped, actor.TryTell(2));
         Assert.Equal(fail ? 2 : 1, created.Count);
         Assert.All(created, value => Assert.Equal(1, value.Disposals));
-        Assert.Equal(0, provider.GetRequiredService<ActorSystem>().Snapshot.Actors);
+        Assert.Equal(0, host.Services.GetRequiredService<ActorSystem>().Snapshot.Actors);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task HostStopDuringSecondActorConstruction_JoinsBothScopes(bool factoryThrows)
+    {
+        var entered = new TaskCompletionSource<ScopedDependency>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        using var release = new ManualResetEventSlim();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddScoped<ScopedDependency>();
+        builder.Services.AddSingleton<Action<ScopedDependency>>(dependency =>
+        {
+            entered.SetResult(dependency);
+            if (!release.Wait(Bound, Token))
+                throw new TimeoutException(
+                    "The test did not release the second actor constructor."
+                );
+            if (factoryThrows)
+                throw new FormatException();
+        });
+        builder
+            .Services.AddLocalActorSystem(2, 1, Bound)
+            .AddLocalActor<int, ScopedDependency, ScopedWorker>()
+            .AddLocalActor<string, string, StartupWorker>();
+
+        using var host = builder.Build();
+        var system = host.Services.GetRequiredService<ActorSystem>();
+        var first = host.Services.GetRequiredService<IActorRef<int, ScopedDependency>>();
+        var second = host.Services.GetRequiredService<IActorRef<string, string>>();
+        // DI constructors run synchronously. Run startup separately so the test can stop the host.
+        var startup = Task.Run(() => host.StartAsync(Token), Token);
+        ScopedDependency secondDependency;
+        Exception? error;
+        Task stop;
+        ScopedDependency firstDependency;
+        try
+        {
+            secondDependency = await entered.Task.WaitAsync(Bound, Token);
+            firstDependency = await first.AskAsync(1, Bound, Token);
+            var firstOwner = host.Services.GetRequiredService<ActorHandle<int, ScopedDependency>>();
+            Assert.NotSame(firstDependency, secondDependency);
+            Assert.Equal(2, system.Snapshot.Actors);
+            Assert.Throws<InvalidOperationException>(() => second.TryTell("pending"));
+
+            stop = host.StopAsync(Token);
+            await firstOwner.Completion.WaitAsync(Bound, Token);
+            Assert.Equal(ActorAdmission.Stopped, first.TryTell(2));
+            Assert.Equal(1, firstDependency.Disposals);
+            Assert.Equal(0, secondDependency.Disposals);
+            Assert.Equal(1, system.Snapshot.Actors);
+            Assert.False(stop.IsCompleted);
+            Assert.False(startup.IsCompleted);
+        }
+        finally
+        {
+            release.Set();
+            error = await Record.ExceptionAsync(() => startup).AsTask().WaitAsync(Bound, Token);
+        }
+
+        Assert.IsType(
+            factoryThrows ? typeof(FormatException) : typeof(ObjectDisposedException),
+            error
+        );
+        await stop.WaitAsync(Bound, Token);
+        Assert.Equal(ActorAdmission.Stopped, first.TryTell(3));
+        Assert.Throws<InvalidOperationException>(() => second.TryTell("stopped"));
+        Assert.Equal(1, firstDependency.Disposals);
+        Assert.Equal(1, secondDependency.Disposals);
+        Assert.Equal(0, system.Snapshot.Actors);
     }
 }
