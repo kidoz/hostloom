@@ -176,5 +176,7 @@ public sealed class DataGridLocalEntry
     public DataGridEntryVersion Version { get; }
     public TimeSpan? RemainingTimeToLive { get; }
 
+    internal int ValueByteCount => _value.Length;
+
     public byte[] GetValue() => (byte[])_value.Clone();
 }

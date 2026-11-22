@@ -112,7 +112,7 @@ public sealed partial class DataGridLocalStateMachine
                 if (keys[j].Equals(keys[i]))
                     throw new ArgumentException("Duplicate read key.", nameof(keys));
             result[i] = Read(mapId, keys[i]);
-            size += result[i] is { } entry ? 42 + entry.GetValue().Length : 1;
+            size += result[i] is { } entry ? 42 + entry.ValueByteCount : 1;
             if (size > DataGridProtocolFrame.MaxPayloadByteCount)
                 throw new InvalidOperationException("Read response capacity exceeded.");
         }
