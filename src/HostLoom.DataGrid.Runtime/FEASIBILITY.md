@@ -357,9 +357,9 @@ respectively. Seed 17 recorded one unknown write outcome, and settlement confirm
 the mutation completed. All three runs settled pending mutations and verified both
 recovery checks with zero OOMs or member faults.
 
-At batch 128 and concurrency 1, seeds 17 and 43 delivered 1.98 and 2.00 successful
-requests/s. Each recorded one refusal (0.17%) on a read that returned after the
-sample window. Both runs verified leader-loss and whole-group recovery with zero
-unresolved mutations, OOMs or member faults. Fourteen of 27 workload cases have
-completed on this build. The remaining workload cases, contextual measurements and
-target decisions are open.
+At batch 128 and concurrency 1, seeds 17, 29 and 43 delivered 1.98, 1.99 and 2.00
+successful requests/s. Each recorded one refusal (0.17%) on a read that returned
+after the sample window. All nine batch-128 cases verified leader-loss and whole-group
+recovery with zero unresolved mutations, OOMs or member faults. Fifteen of 27 workload
+cases have completed on this build. The remaining workload cases, contextual
+measurements and target decisions are open.
