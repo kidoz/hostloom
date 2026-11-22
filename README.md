@@ -203,6 +203,10 @@ var client = services.GetRequiredService<IRequestClient<GetGreeting, Greeting>>(
 var reply = await client.GetResponseAsync("greetings", new GetGreeting("Ada"), cancellationToken: stoppingToken);
 ```
 
+## Process-local actors
+
+The experimental actor kernel gives in-memory state one owner across asynchronous messages. Typed references support bounded sends and request/reply. The runnable catalog example queries an actor through a HostLoom request handler. [Actor prototype and example](src/HostLoom.Actors/README.md)
+
 ## Publish and subscribe
 
 A request addresses one handler and expects one reply. An event is published to a topic

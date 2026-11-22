@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>A catalog actor queried through the in-memory request client.</Description>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/HostLoom.Actors.DependencyInjection/HostLoom.Actors.DependencyInjection.csproj" />
+    <ProjectReference Include="../../src/HostLoom.Transport.InMemory/HostLoom.Transport.InMemory.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+</Project>
