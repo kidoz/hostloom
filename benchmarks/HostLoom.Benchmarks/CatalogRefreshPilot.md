@@ -48,11 +48,12 @@ Timings run from invocation through reply for each caller, including any wait fo
 
 Use the actor in this example because a caller may leave while work still owns the regional state. The actor provides a serialized asynchronous turn and a stop operation that closes admission and joins that turn. The comparison's semaphore implementation must hold and release its gate across I/O, separate the operation task from its caller's wait, and dispose gates only after the harness has joined outstanding work. Both implementations still need the same application logic for version checks, failure handling and sharing attempts. This decision applies to the local worker in an actor-enabled application. The measured budgets are pilot assumptions.
 
-Run the example and repeat the comparison from the repository root. The example creates an EU catalog file in a temporary directory, reads version 1, attempts to load an absent version 2, and verifies that the original items remain available.
+Run the example, its regression tests and the timing comparison from the repository root. The example creates an EU catalog file in a temporary directory, reads version 1, attempts to load an absent version 2, and verifies that the original items remain available.
 
 ```sh
 dotnet run -c Release --project examples/HostLoom.Examples.Actors -- --refresh
+dotnet test --project tests/HostLoom.Tests/HostLoom.Tests.csproj -c Release -- --filter-class '*CatalogRefreshTests'
 dotnet run -c Release --project benchmarks/HostLoom.Benchmarks -- --catalog-refresh
 ```
 
-[Application worker and client](../../examples/HostLoom.Examples.Actors/RegionalCatalog.cs) · [Runnable example](../../examples/HostLoom.Examples.Actors/CatalogRefreshExample.cs) · [Comparison harness](CatalogRefreshPilot.cs) · [Directed checks](CatalogRefreshChecks.cs)
+[Application worker and client](../../examples/HostLoom.Examples.Actors/RegionalCatalog.cs) · [Runnable example](../../examples/HostLoom.Examples.Actors/CatalogRefreshExample.cs) · [Comparison harness](CatalogRefreshPilot.cs) · [Regression tests](../../tests/HostLoom.Tests/CatalogRefreshTests.cs)

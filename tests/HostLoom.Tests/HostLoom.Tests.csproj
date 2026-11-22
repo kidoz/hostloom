@@ -74,6 +74,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../HostLoom.DataGrid.ProcessProbe/ProbeConfiguration.cs" Link="DataGrid/ProbeConfiguration.cs" />
+    <Compile Include="../../benchmarks/HostLoom.Benchmarks/CatalogRefreshWorkers.cs" Link="Examples/CatalogRefreshWorkers.cs" />
+    <Compile Include="../../examples/HostLoom.Examples.Actors/RegionalCatalog.cs" Link="Examples/RegionalCatalog.cs" />
     <Compile Include="../../examples/HostLoom.Examples.CompositionDiagnostics/ApplicationCompositionLedger.cs" Link="Examples/ApplicationCompositionLedger.cs" />
     <None
       Include="../../src/HostLoom.AspNetCore.WebSockets/protocol/**/*.json"
