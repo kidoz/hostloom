@@ -23,4 +23,8 @@
     <ProjectReference Include="../../src/HostLoom.Locking.DependencyInjection/HostLoom.Locking.DependencyInjection.csproj" />
     <ProjectReference Include="../../src/HostLoom.Logging/HostLoom.Logging.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../../examples/HostLoom.Examples.Actors/RegionalCatalog.cs" Link="RegionalCatalog.cs" />
+    <Compile Include="../../tests/HostLoom.Conformance/ManualTimeProvider.cs" Link="ManualTimeProvider.cs" />
+  </ItemGroup>
 </Project>

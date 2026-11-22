@@ -11,6 +11,11 @@ internal static class Program
             await ActorCatalogComparison.RunAsync().ConfigureAwait(false);
             return;
         }
+        if (args is ["--catalog-refresh"])
+        {
+            await CatalogRefreshPilot.RunAsync().ConfigureAwait(false);
+            return;
+        }
         BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
     }
 }

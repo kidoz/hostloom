@@ -41,6 +41,8 @@ Register `AddLocalActorSystem` before services that start sending during host st
 
 The runnable catalog example submits an observation, queries the resulting state through HostLoom messaging and checks the reply. From the repository root run `dotnet run -c Release --project examples/HostLoom.Examples.Actors`. [Example](../../examples/HostLoom.Examples.Actors/Program.cs)
 
+For a worker that holds state across I/O, run `dotnet run -c Release --project examples/HostLoom.Examples.Actors -- --refresh`. This example loads a versioned catalog file, shares overlapping refresh attempts and preserves the last published snapshot when a newer file is unavailable. [Regional catalog worker](../../examples/HostLoom.Examples.Actors/RegionalCatalog.cs) · [Semaphore comparison and timeout checks](../../benchmarks/HostLoom.Benchmarks/CatalogRefreshPilot.md)
+
 ## Observability and sizing
 
 `ActorSystem.Snapshot` reads per-system counters without entering any mailbox. Population includes construction and disposal. Under concurrent activity each field is sampled independently. The `HostLoom.Actors` meter exposes population, queued and executing work, refused sends, discarded items, faults, caller timeouts, queue delay and turn duration. Histogram units are seconds. The instrument names and dimensions carry no message data or actor identifiers.

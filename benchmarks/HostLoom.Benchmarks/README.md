@@ -18,6 +18,10 @@ A local Apple M4 Max run on macOS arm64 with .NET 10.0.15 and workstation GC pro
 
 The runner also reports actual offered rate, p50 delay, process-wide managed allocations per completion and an approximate retained-memory delta for 1,024 idle owners. Rates include the producer timers and final drain. The single-owner latency distribution covers only the admitted fraction. The 16-owner rows reached the offered rate, so their maximum throughput remains unmeasured.
 
+## Regional catalog refresh
+
+The refresh pilot compares a per-region actor with a per-region semaphore on the same asynchronous file reads. It covers overlapping callers, source failures, and reading the published version after a timeout. [Workload, results and example](CatalogRefreshPilot.md)
+
 ## Caching and locking
 
 The process-local comparison covers an L1 hit and a real 100-caller miss stampede for HostLoom,

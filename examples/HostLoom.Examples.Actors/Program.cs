@@ -5,6 +5,9 @@ using HostLoom.Transport.InMemory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
+if (args is ["--refresh"])
+    return await HostLoom.Examples.Actors.CatalogRefreshExample.RunAsync().ConfigureAwait(false);
+
 var builder = Host.CreateApplicationBuilder(args);
 builder
     .Services.AddLocalActorSystem(1, 16, TimeSpan.FromSeconds(2))
