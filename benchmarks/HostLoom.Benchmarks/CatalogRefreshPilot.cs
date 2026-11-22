@@ -2,84 +2,15 @@ using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
-using HostLoom.Actors;
 using HostLoom.Examples.Actors;
 
 namespace HostLoom.Benchmarks;
 
 internal static class CatalogRefreshPilot
 {
-    internal static readonly string[] Regions = ["eu", "us", "ap", "ca"];
-    internal static readonly TimeSpan Guard = TimeSpan.FromSeconds(5);
+    private static readonly string[] Regions = ["eu", "us", "ap", "ca"];
+    private static readonly TimeSpan Guard = TimeSpan.FromSeconds(5);
     private const int Versions = 60;
-
-    internal delegate ValueTask<CatalogReply> Send(CatalogRequest request, TimeSpan timeout);
-
-    // The experiment owns a fixed set of regions. It joins outstanding work before disposing the gates.
-    internal sealed class Workers : IAsyncDisposable
-    {
-        private readonly ActorSystem? _system;
-        private readonly List<SemaphoreSlim> _gates = [];
-        private readonly Dictionary<string, Send> _senders = new(StringComparer.Ordinal);
-
-        internal Workers(bool actors, LoadCatalog source, TimeProvider clock)
-        {
-            if (actors)
-                _system = new ActorSystem(Regions.Length, 32, Guard, clock);
-            foreach (var region in Regions)
-            {
-                if (_system is not null)
-                {
-                    _senders.Add(
-                        region,
-                        RegionalCatalogClient.Spawn(_system, region, source, Guard, clock).SendAsync
-                    );
-                }
-                else
-                {
-                    var worker = new RegionalCatalog(region, source);
-                    var gate = new SemaphoreSlim(1, 1);
-                    _gates.Add(gate);
-                    var client = new RegionalCatalogClient(
-                        (request, timeout) =>
-                            new(UnderGateAsync(gate, worker, request).WaitAsync(timeout, clock)),
-                        Guard,
-                        clock
-                    );
-                    _senders.Add(region, client.SendAsync);
-                }
-            }
-        }
-
-        internal Send this[string region] => _senders[region];
-
-        private static async Task<CatalogReply> UnderGateAsync(
-            SemaphoreSlim gate,
-            RegionalCatalog worker,
-            CatalogRequest request
-        )
-        {
-            await gate.WaitAsync().ConfigureAwait(false);
-            try
-            {
-                return await worker
-                    .ReceiveAsync(request, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-            finally
-            {
-                gate.Release();
-            }
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            if (_system is not null)
-                await _system.DisposeAsync().ConfigureAwait(false);
-            foreach (var gate in _gates)
-                gate.Dispose();
-        }
-    }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Globalization",
@@ -88,7 +19,6 @@ internal static class CatalogRefreshPilot
     )]
     internal static async Task RunAsync()
     {
-        await CatalogRefreshChecks.RunAsync().ConfigureAwait(false);
         var root = Directory.CreateTempSubdirectory("hostloom-catalog-refresh-");
         try
         {
@@ -130,10 +60,13 @@ internal static class CatalogRefreshPilot
 
     private readonly record struct Sample(CatalogReply Reply, double Milliseconds);
 
-    private static async Task<Sample> TimedAsync(Send send, CatalogRequest request)
+    private static async Task<Sample> TimedAsync(
+        RegionalCatalogClient client,
+        CatalogRequest request
+    )
     {
         var start = Stopwatch.GetTimestamp();
-        var reply = await send(request, Guard).ConfigureAwait(false);
+        var reply = await client.SendAsync(request, Guard).ConfigureAwait(false);
         return new(reply, Stopwatch.GetElapsedTime(start).TotalMilliseconds);
     }
 
@@ -159,7 +92,13 @@ internal static class CatalogRefreshPilot
             ];
         }
 
-        var workers = new Workers(actors, LoadAsync, TimeProvider.System);
+        var workers = new CatalogRefreshWorkers(
+            Regions,
+            actors,
+            LoadAsync,
+            Guard,
+            TimeProvider.System
+        );
         await using var owned = workers.ConfigureAwait(false);
         var targets = Regions.SelectMany((r, i) => Enumerable.Repeat(r, i == 0 ? 8 : 2)).ToArray();
         var refreshTimes = new List<double>(waves * targets.Length);

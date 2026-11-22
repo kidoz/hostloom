@@ -26,6 +26,5 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../../examples/HostLoom.Examples.Actors/RegionalCatalog.cs" Link="RegionalCatalog.cs" />
-    <Compile Include="../../tests/HostLoom.Conformance/ManualTimeProvider.cs" Link="ManualTimeProvider.cs" />
   </ItemGroup>
 </Project>
