@@ -21,6 +21,11 @@ internal static class Program
             await CatalogRefreshPilot.RunAsync().ConfigureAwait(false);
             return;
         }
+        if (args.Length > 0 && args[0] == "--catalog-replay")
+        {
+            await CatalogCapacityReplay.RunAsync(args).ConfigureAwait(false);
+            return;
+        }
         BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
     }
 }

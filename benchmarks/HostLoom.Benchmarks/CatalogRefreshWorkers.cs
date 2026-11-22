@@ -17,11 +17,13 @@ internal sealed class CatalogRefreshWorkers : IAsyncDisposable
         bool actors,
         LoadCatalog source,
         TimeSpan timeout,
-        TimeProvider clock
+        TimeProvider clock,
+        int mailboxCapacity = 32,
+        Action<Task>? observeSemaphoreTurn = null
     )
     {
         if (actors)
-            _system = new ActorSystem(regions.Length, 32, timeout, clock);
+            _system = new ActorSystem(regions.Length, mailboxCapacity, timeout, clock);
         foreach (var region in regions)
         {
             if (_system is not null)
@@ -38,7 +40,11 @@ internal sealed class CatalogRefreshWorkers : IAsyncDisposable
                 _gates.Add(gate);
                 var client = new RegionalCatalogClient(
                     (request, budget) =>
-                        new(UnderGateAsync(gate, worker, request).WaitAsync(budget, clock)),
+                    {
+                        var turn = UnderGateAsync(gate, worker, request);
+                        observeSemaphoreTurn?.Invoke(turn);
+                        return new(turn.WaitAsync(budget, clock));
+                    },
                     timeout,
                     clock
                 );

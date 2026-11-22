@@ -22,6 +22,8 @@ The runner also reports actual offered rate, p50 delay, process-wide managed all
 
 The refresh pilot compares a per-region actor with a per-region semaphore on the same asynchronous file reads. It covers overlapping callers, source failures, and reading the published version after a timeout. [Workload, results and example](CatalogRefreshPilot.md)
 
+The capacity replay schedules arrivals from a CSV trace and compares mailbox sizes with the semaphore baseline. [Replay instructions and measured results](CatalogCapacityReplay.md)
+
 ## Inbox actor pilot
 
 The inbox pilot compares the shipped in-memory delivery-claim store with an actor-owned claim dictionary. It exercises redelivery, cancellation, expiry, overload and shutdown. [Workload, measurements and adoption decision](ActorInboxPilot.md)
