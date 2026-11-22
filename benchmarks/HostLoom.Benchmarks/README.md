@@ -3,6 +3,21 @@
 BenchmarkDotNet suites for caching, distributed locking, WebSocket envelope codecs, and logging.
 Run them from the repository root on an otherwise idle machine.
 
+## Local catalog actors
+
+Run `dotnet run --project benchmarks/HostLoom.Benchmarks -c Release -- --actor-catalog` to compare the local actor prototype with a private bounded channel. Four producers each offer bursts of 64 observations every 2 ms. Each owner has capacity 64. The payload is a 16-byte value holding an index, an item count and a timestamp. Handlers either complete synchronously or suspend once with `Task.Yield()`. Each case warms up for eight waves and measures three trials of 80 waves, alternating implementation order. The runner checks the number of processed observations and the catalog item total against admitted work after drain.
+
+A local Apple M4 Max run on macOS arm64 with .NET 10.0.15 and workstation GC produced these medians. Each measured trial offered 20,480 messages in about 160 ms. Delay is sampled per admitted observation from immediately before sending to the start of the handler. The p99 column is the median of the three trial p99s.
+
+| Owners | Turns | Actor completions/s | Channel completions/s | Actor / channel rejected | Actor / channel p99 delay |
+|---:|---|---:|---:|---:|---:|
+| 1 | Synchronous | 44,979 | 41,349 | 64.18% / 67.58% | 227 / 81 µs |
+| 1 | Suspended | 37,799 | 35,836 | 70.38% / 71.94% | 315 / 130 µs |
+| 16 | Synchronous | 127,121 | 127,902 | 0% / 0% | 88 / 79 µs |
+| 16 | Suspended | 127,459 | 127,833 | 0% / 0% | 175 / 125 µs |
+
+The runner also reports actual offered rate, p50 delay, process-wide managed allocations per completion and an approximate retained-memory delta for 1,024 idle owners. Rates include the producer timers and final drain. The single-owner latency distribution covers only the admitted fraction. The 16-owner rows reached the offered rate, so their maximum throughput remains unmeasured.
+
 ## Caching and locking
 
 The process-local comparison covers an L1 hit and a real 100-caller miss stampede for HostLoom,
