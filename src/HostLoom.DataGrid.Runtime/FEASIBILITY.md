@@ -344,9 +344,9 @@ at concurrency 16 and from 83.04% to 83.24% at concurrency 64. All nine runs ver
 both recovery checks and finished with zero unresolved mutations, OOMs or member
 faults.
 
-At batch 128 and concurrency 16, seed 17 matched seed 43 at 8.00 successful
-requests/s and 1024.00 items/s with three voters on the same build. The refusal rate
-was 46.37% for seed 17 and 45.75% for seed 43. Seed 17 settled all eight pending
-mutations, verified both recovery checks and recorded zero OOMs or member faults.
-Ten of 27 workload cases have completed on this build. The remaining seed-17 and
-seed-29 cases, contextual measurements and target decisions are open.
+At batch 128 and concurrency 16, seeds 17, 29 and 43 delivered 8.00, 7.95 and 8.00
+successful requests/s and processed 1024.00, 1018.03 and 1024.00 items/s with three
+voters on the same build. Refusal rates were 46.37%, 46.17% and 45.75%. All three
+settled pending mutations, verified both recovery checks and recorded zero OOMs or
+member faults. Eleven of 27 workload cases have completed on this build. The
+remaining workload cases, contextual measurements and target decisions are open.
