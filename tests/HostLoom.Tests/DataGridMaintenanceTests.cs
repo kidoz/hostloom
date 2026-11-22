@@ -52,6 +52,90 @@ public sealed class DataGridMaintenanceTests
         Assert.True(write.Image.Entries.Count < RaftDurableImage.MaxEntries);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void MaintenanceReservesOneEntryForSingletonReelection(int excessEntries)
+    {
+        using var fixture = new DataGridPeerFixture(memberCount: 1);
+        var advance = DataGridCommittedCommandCodec.Encode(
+            DataGridCommittedCommand.AdvanceTime(default)
+        );
+        // The first election, maintenance pair, and second election require four entries.
+        var entries = Enumerable
+            .Range(1, RaftDurableImage.MaxEntries - 4 + excessEntries)
+            .Select(i => new RaftEntry(i, 1, advance))
+            .ToArray();
+        CheckMaintenanceAndReelection(fixture.Configuration, entries, excessEntries == 0);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void MaintenanceReservesOneEncodedTimeAdvanceForSingletonReelection(int excessBytes)
+    {
+        using var fixture = new DataGridPeerFixture(memberCount: 1);
+        var advance = DataGridCommittedCommandCodec.Encode(
+            DataGridCommittedCommand.AdvanceTime(default)
+        );
+        var reclaim = DataGridCommittedCommandCodec.Encode(
+            DataGridCommittedCommand.Reclaim(DataGridPeerFixture.Map, default)
+        );
+        var initialBytes =
+            RaftDurableImage.MaxLogBytes - 3 * advance.Length - reclaim.Length + excessBytes;
+        byte[] Mutation(int length) =>
+            DataGridCommittedCommandCodec.Encode(
+                DataGridFileStorageTests.Mutation(1, new byte[length])
+            );
+
+        var overhead = Mutation(0).Length;
+        var count = RaftDurableImage.MaxLogBytes / DataGridMutationItem.MaxValueByteCount;
+        var valueLength = initialBytes / count - overhead;
+        var command = Mutation(valueLength);
+        var longerCommand = Mutation(valueLength + 1);
+        var entries = Enumerable
+            .Range(1, count)
+            .Select(i => new RaftEntry(i, 1, i <= initialBytes % count ? longerCommand : command))
+            .ToArray();
+        Assert.Equal(initialBytes, entries.Sum(entry => entry.ByteCount));
+        CheckMaintenanceAndReelection(fixture.Configuration, entries, excessBytes == 0);
+    }
+
+    private static void CheckMaintenanceAndReelection(
+        DataGridBootstrapConfiguration configuration,
+        RaftEntry[] entries,
+        bool maintenanceFits
+    )
+    {
+        RaftNode Elect(RaftDurableImage image, long epoch)
+        {
+            var node = new RaftNode(configuration, 0, epoch, image);
+            var timer = Assert.Single(node.Start().OfType<RaftTimer>());
+            PersistWrites(node, node.Timeout(timer.Token, default));
+            Assert.Equal(RaftRole.Leader, node.Role);
+            Assert.Equal(image.LastIndex + 1, node.Durable.CommitIndex);
+            return node;
+        }
+
+        var leader = Elect(new(configuration, 1, 0, entries, entries.Length), 1);
+        var effects = leader.Maintain(new(1));
+        if (maintenanceFits)
+        {
+            PersistWrites(leader, effects);
+            Assert.Equal(entries.Length + 3, leader.Durable.CommitIndex);
+        }
+        else
+            Assert.Empty(effects);
+
+        _ = Elect(leader.Durable, 2);
+    }
+
+    private static void PersistWrites(RaftNode node, IReadOnlyList<RaftEffect> effects)
+    {
+        while (effects.OfType<RaftWrite>().SingleOrDefault() is { } write)
+            effects = node.Persisted(write.Token, true);
+    }
+
     [Fact]
     public void CompactionDistinguishesOversizeBusyPreparedAndUnchangedWithoutLosingState()
     {

@@ -294,12 +294,13 @@ internal sealed class RaftNode
     internal IReadOnlyList<RaftEffect> Maintain(DataGridTimestamp time) =>
         Run(() =>
         {
+            // Leave room after the maintenance pair for the next leader's time advance.
             if (
                 Role != RaftRole.Leader
                 || IsBusy
-                || _durable.LastIndex > long.MaxValue - 2
+                || _durable.LastIndex > long.MaxValue - 3
                 || _durable.LastIndex - _durable.CommitIndex > 126
-                || _durable.Entries.Count > RaftDurableImage.MaxEntries - 2
+                || _durable.Entries.Count > RaftDurableImage.MaxEntries - 3
             )
                 return;
             var advance = DataGridCommittedCommandCodec.Encode(
@@ -312,7 +313,7 @@ internal sealed class RaftNode
                 _durable.Entries.Sum(entry => (long)entry.ByteCount)
                     + advance.Length
                     + reclaim.Length
-                > RaftDurableImage.MaxLogBytes
+                > RaftDurableImage.MaxLogBytes - advance.Length
             )
                 return;
             var entries = new[]
