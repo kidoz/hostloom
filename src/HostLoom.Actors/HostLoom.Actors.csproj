@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Experimental typed process-local actors with bounded mailboxes.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+</Project>
