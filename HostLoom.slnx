@@ -18,6 +18,7 @@
     <Project Path="examples/HostLoom.Examples.Pipelines/HostLoom.Examples.Pipelines.csproj" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/HostLoom.Actors.DependencyInjection/HostLoom.Actors.DependencyInjection.csproj" />
     <Project Path="src/HostLoom.Actors/HostLoom.Actors.csproj" />
     <Project Path="src/HostLoom.DataGrid/HostLoom.DataGrid.csproj" />
     <Project Path="src/HostLoom.DataGrid.Client/HostLoom.DataGrid.Client.csproj" />
