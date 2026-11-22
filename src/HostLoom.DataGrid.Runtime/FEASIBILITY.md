@@ -360,6 +360,10 @@ recovery checks with zero OOMs or member faults.
 At batch 128 and concurrency 1, seeds 17, 29 and 43 delivered 1.98, 1.99 and 2.00
 successful requests/s. Each recorded one refusal (0.17%) on a read that returned
 after the sample window. All nine batch-128 cases verified leader-loss and whole-group
-recovery with zero unresolved mutations, OOMs or member faults. Fifteen of 27 workload
-cases have completed on this build. The remaining workload cases, contextual
-measurements and target decisions are open.
+recovery with zero unresolved mutations, OOMs or member faults.
+
+At batch 32 and concurrency 16, seeds 17 and 43 delivered 8.00 and 7.98 successful
+requests/s, with refusal rates of 46.38% and 45.81%, respectively. Seed 17 settled
+all five pending mutations and verified both recovery checks with zero OOMs or
+member faults. Sixteen of 27 workload cases have completed on this build. The
+remaining workload cases, contextual measurements and target decisions are open.
