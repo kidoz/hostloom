@@ -350,10 +350,11 @@ voters on the same build. Refusal rates were 46.37%, 46.17% and 45.75%. All thre
 settled pending mutations, verified both recovery checks and recorded zero OOMs or
 member faults.
 
-At batch 128 and concurrency 64, seeds 17 and 43 delivered 7.94 and 8.00 successful
-requests/s, with refusal rates of 83.18% and 83.04%. Seed 17 recorded one unknown
-write outcome at the end of sampling. Settlement confirmed completion of that
-mutation and resolved all 61 pending mutations. Both runs verified both recovery
-checks with zero OOMs or member faults. Twelve of 27 workload cases have completed
-on this build. The remaining workload cases, contextual measurements and target
-decisions are open.
+At batch 128 and concurrency 64, seeds 17, 29 and 43 delivered 7.94, 7.92 and 8.00
+successful requests/s, with refusal rates of 83.18%, 83.25% and 83.04%. During the
+sample, the cgroup memory-limit event counter increased by 24645, 8650 and 12880,
+respectively. Seed 17 recorded one unknown write outcome, and settlement confirmed
+the mutation completed. All three runs settled pending mutations and verified both
+recovery checks with zero OOMs or member faults. Thirteen of 27 workload cases have
+completed on this build. The remaining workload cases, contextual measurements and
+target decisions are open.
