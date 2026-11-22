@@ -18,6 +18,7 @@
   </ItemGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../../src/HostLoom.Actors.DependencyInjection/HostLoom.Actors.DependencyInjection.csproj" />
     <ProjectReference Include="../../src/HostLoom.DataGrid/HostLoom.DataGrid.csproj" />
     <ProjectReference Include="../../src/HostLoom.DataGrid.Client/HostLoom.DataGrid.Client.csproj" />
     <ProjectReference Include="../../src/HostLoom.DataGrid.Runtime/HostLoom.DataGrid.Runtime.csproj" />
