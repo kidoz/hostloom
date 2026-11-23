@@ -566,15 +566,7 @@ internal sealed partial class DataGridFileStore : IDisposable
 
     private void ValidateTransition(RaftDurableImage target)
     {
-        // Revalidate even a candidate constructed against another configuration.
-        _ = new RaftDurableImage(
-            _configuration,
-            target.Term,
-            target.Vote,
-            target.Entries,
-            target.CommitIndex,
-            target.Snapshot
-        );
+        target.ValidateFor(_configuration);
         if (
             target.Term < _image.Term
             || target.CommitIndex < _image.CommitIndex
@@ -584,6 +576,8 @@ internal sealed partial class DataGridFileStore : IDisposable
             throw new InvalidDataException("Persistent state cannot move backwards.");
         if (SameSnapshot(_image.Snapshot, target.Snapshot))
         {
+            if (ReferenceEquals(_image.Entries, target.Entries))
+                return;
             foreach (var entry in _image.Entries.Where(entry => entry.Index <= _image.CommitIndex))
                 if (target.LastIndex < entry.Index || !entry.SameAs(target.EntryAt(entry.Index)))
                     throw new InvalidDataException("Committed history cannot change.");
@@ -627,16 +621,27 @@ internal sealed partial class DataGridFileStore : IDisposable
                 DataGridWalRecordKind.HardState,
                 DataGridWalRecovery.HardState(_configuration, target)
             );
-        var common = _image.SnapshotIndex;
-        while (
-            common < Math.Min(_image.LastIndex, target.LastIndex)
-            && _image.EntryAt(common + 1).SameAs(target.EntryAt(common + 1))
-        )
-            common++;
+        var common = _image.LastIndex;
+        if (!ReferenceEquals(_image.Entries, target.Entries))
+        {
+            common = _image.SnapshotIndex;
+            while (
+                common < Math.Min(_image.LastIndex, target.LastIndex)
+                && _image.EntryAt(common + 1).SameAs(target.EntryAt(common + 1))
+            )
+                common++;
+        }
         if (common < _image.LastIndex)
             Add(DataGridWalRecordKind.LogTruncate, DataGridWalRecovery.Position(common + 1));
-        foreach (var entry in target.Entries.Where(entry => entry.Index > common))
-            Add(DataGridWalRecordKind.LogAppend, DataGridWalRecovery.Append(entry));
+        for (
+            var offset = checked((int)(common - target.SnapshotIndex));
+            offset < target.Entries.Count;
+            offset++
+        )
+            Add(
+                DataGridWalRecordKind.LogAppend,
+                DataGridWalRecovery.Append(target.Entries[offset])
+            );
         if (target.CommitIndex != _image.CommitIndex)
             Add(
                 DataGridWalRecordKind.CommitCheckpoint,

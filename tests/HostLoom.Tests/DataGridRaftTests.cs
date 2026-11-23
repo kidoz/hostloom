@@ -500,6 +500,58 @@ public sealed class DataGridRaftTests
     }
 
     [Fact]
+    public void MetadataChangesShareValidatedEntriesAndCheckChangedFields()
+    {
+        var config = Configuration();
+        var source = new RaftDurableImage(config, 2, 0, [Entry(1, 1), Entry(2, 2)], 1);
+        var committed = source.WithMetadata(config, 2, 0, 2);
+        var voted = committed.WithMetadata(config, 3, 2, 2);
+
+        Assert.Same(source.Entries, committed.Entries);
+        Assert.Same(source.Entries, voted.Entries);
+        Assert.Equal(1, source.CommitIndex);
+        Assert.Equal(2, committed.CommitIndex);
+        Assert.Equal(3, voted.Term);
+        Assert.Equal(2, voted.Vote);
+        Assert.Throws<InvalidDataException>(() => source.WithMetadata(config, 1, 0, 1));
+        Assert.Throws<InvalidDataException>(() => source.WithMetadata(config, 2, 0, 3));
+        Assert.Throws<InvalidDataException>(() => source.WithMetadata(config, 2, 3, 1));
+        Assert.Throws<InvalidDataException>(() => voted.ValidateFor(Configuration(memberCount: 1)));
+    }
+
+    [Fact]
+    public void FollowerCommitOnlyAppendReusesEntriesAndWaitsForPersistence()
+    {
+        var config = Configuration();
+        var source = new RaftDurableImage(config, 2, 0, [Entry(1, 1), Entry(2, 2)], 1);
+        var node = new RaftNode(config, 1, 1, source);
+        var append = new RaftMessage(
+            RaftMessageKind.AppendRequest,
+            0,
+            1,
+            2,
+            new(1, 2),
+            Cluster,
+            config.ComputeDigest(),
+            index: 1,
+            previousTerm: 1,
+            commit: 2,
+            entries: [Entry(2, 2)]
+        );
+
+        var effects = node.Receive(append, default);
+        Assert.Empty(effects.OfType<RaftSend>());
+        var write = Assert.Single(effects.OfType<RaftWrite>());
+        Assert.Same(source.Entries, write.Image.Entries);
+        Assert.Equal(1, node.Machine.LastAppliedIndex);
+
+        var ack = Assert.Single(node.Persisted(write.Token, true).OfType<RaftSend>()).Message;
+        Assert.True(ack.Accepted);
+        Assert.Equal(2, ack.Index);
+        Assert.Equal(2, node.Machine.LastAppliedIndex);
+    }
+
+    [Fact]
     public void FollowerAcknowledgesAppendOnlyAfterPersistenceAndReplacesConflictingSuffix()
     {
         var config = Configuration();

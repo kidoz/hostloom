@@ -570,7 +570,7 @@ internal sealed class RaftNode
             Reply(message, RaftMessageKind.AppendResponse, conflict: Math.Max(1, conflict));
             return;
         }
-        var log = _durable.Entries.ToList();
+        List<RaftEntry>? replacement = null;
         var expected = message.Index;
         var termBefore = message.PreviousTerm;
         foreach (var entry in message.Entries)
@@ -583,9 +583,11 @@ internal sealed class RaftNode
             )
                 throw new InvalidDataException("Invalid append entry order/term.");
             termBefore = entry.Term;
+            IReadOnlyList<RaftEntry> log = replacement ?? _durable.Entries;
             if (entry.Index <= (log.Count == 0 ? _durable.SnapshotIndex : log[^1].Index))
             {
-                var old = log[checked((int)(entry.Index - _durable.SnapshotIndex - 1))];
+                var offset = checked((int)(entry.Index - _durable.SnapshotIndex - 1));
+                var old = log[offset];
                 if (old.Term == entry.Term)
                 {
                     if (!old.SameAs(entry))
@@ -594,24 +596,28 @@ internal sealed class RaftNode
                 }
                 if (entry.Index <= _durable.CommitIndex)
                     throw new InvalidDataException("Attempted committed-log truncation.");
-                log.RemoveAll(existing => existing.Index >= entry.Index);
+                replacement ??= _durable.Entries.ToList();
+                replacement.RemoveRange(offset, replacement.Count - offset);
             }
-            log.Add(entry);
+            (replacement ??= _durable.Entries.ToList()).Add(entry);
         }
         var commit = Math.Max(_durable.CommitIndex, Math.Min(message.Commit, expected));
-        var changed =
-            commit != _durable.CommitIndex
-            || log.Count != _durable.Entries.Count
-            || log.Where((entry, i) => !entry.SameAs(_durable.Entries[i])).Any();
-        if (!changed)
+        if (replacement is null && commit == _durable.CommitIndex)
         {
             Reply(message, RaftMessageKind.AppendResponse, true, expected);
             return;
         }
-        Persist(
-            new(_configuration, CurrentTerm, _durable.Vote, log, commit, _durable.Snapshot),
-            () => Reply(message, RaftMessageKind.AppendResponse, true, expected)
-        );
+        var image = replacement is null
+            ? _durable.WithMetadata(_configuration, CurrentTerm, _durable.Vote, commit)
+            : new(
+                _configuration,
+                CurrentTerm,
+                _durable.Vote,
+                replacement,
+                commit,
+                _durable.Snapshot
+            );
+        Persist(image, () => Reply(message, RaftMessageKind.AppendResponse, true, expected));
     }
 
     private void ReceiveSnapshot(RaftMessage message)
@@ -690,14 +696,7 @@ internal sealed class RaftNode
             )
             {
                 Persist(
-                    new(
-                        _configuration,
-                        CurrentTerm,
-                        _durable.Vote,
-                        _durable.Entries,
-                        index,
-                        _durable.Snapshot
-                    ),
+                    _durable.WithMetadata(_configuration, CurrentTerm, _durable.Vote, index),
                     Replicate
                 );
                 return;
@@ -856,7 +855,7 @@ internal sealed class RaftNode
     }
 
     private RaftDurableImage Image(long term, int? vote) =>
-        new(_configuration, term, vote, _durable.Entries, _durable.CommitIndex, _durable.Snapshot);
+        _durable.WithMetadata(_configuration, term, vote, _durable.CommitIndex);
 
     private void StepDown()
     {

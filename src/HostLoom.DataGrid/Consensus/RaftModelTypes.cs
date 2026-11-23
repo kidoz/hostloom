@@ -95,6 +95,8 @@ internal sealed class RaftDurableImage
     internal const int CompactEntryThreshold = 1024;
     internal const int CompactByteThreshold = 4 * 1024 * 1024;
 
+    private readonly DataGridBootstrapConfiguration _configuration;
+
     internal RaftDurableImage(
         DataGridBootstrapConfiguration configuration,
         long term = 0,
@@ -104,14 +106,8 @@ internal sealed class RaftDurableImage
         DataGridLocalSnapshot? snapshot = null
     )
     {
-        ArgumentNullException.ThrowIfNull(configuration);
-        if (
-            term < 0
-            || vote < 0
-            || vote >= configuration.MemberCount
-            || (term == 0 && vote is not null)
-        )
-            throw new InvalidDataException("Invalid persistent term/vote.");
+        ValidateHardState(configuration, term, vote);
+        _configuration = configuration;
         Term = term;
         Vote = vote;
         Snapshot = snapshot;
@@ -138,10 +134,19 @@ internal sealed class RaftDurableImage
             previous = entry.Index;
             previousTerm = entry.Term;
         }
-        if (previousTerm > term || commitIndex < SnapshotIndex || commitIndex > previous)
-            throw new InvalidDataException("Invalid persistent commit position.");
+        ValidateCommitPosition(term, commitIndex, SnapshotIndex, previous, previousTerm);
         Entries = Array.AsReadOnly(log);
         CommitIndex = commitIndex;
+    }
+
+    private RaftDurableImage(RaftDurableImage source, long term, int? vote, long commitIndex)
+    {
+        _configuration = source._configuration;
+        Term = term;
+        Vote = vote;
+        Entries = source.Entries;
+        CommitIndex = commitIndex;
+        Snapshot = source.Snapshot;
     }
 
     internal long Term { get; }
@@ -151,6 +156,56 @@ internal sealed class RaftDurableImage
     internal DataGridLocalSnapshot? Snapshot { get; }
     internal long SnapshotIndex => Snapshot?.Descriptor.LastIncludedIndex ?? 0;
     internal long LastIndex => Entries.Count == 0 ? SnapshotIndex : Entries[^1].Index;
+
+    internal RaftDurableImage WithMetadata(
+        DataGridBootstrapConfiguration configuration,
+        long term,
+        int? vote,
+        long commitIndex
+    )
+    {
+        if (!ReferenceEquals(_configuration, configuration))
+            return new(configuration, term, vote, Entries, commitIndex, Snapshot);
+
+        // Entries and snapshot are immutable. Only the changed metadata needs validation.
+        ValidateHardState(configuration, term, vote);
+        ValidateCommitPosition(term, commitIndex, SnapshotIndex, LastIndex, TermAt(LastIndex));
+        return new(this, term, vote, commitIndex);
+    }
+
+    internal void ValidateFor(DataGridBootstrapConfiguration configuration)
+    {
+        if (!ReferenceEquals(_configuration, configuration))
+            _ = new RaftDurableImage(configuration, Term, Vote, Entries, CommitIndex, Snapshot);
+    }
+
+    private static void ValidateHardState(
+        DataGridBootstrapConfiguration configuration,
+        long term,
+        int? vote
+    )
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        if (
+            term < 0
+            || vote < 0
+            || vote >= configuration.MemberCount
+            || (term == 0 && vote is not null)
+        )
+            throw new InvalidDataException("Invalid persistent term/vote.");
+    }
+
+    private static void ValidateCommitPosition(
+        long term,
+        long commitIndex,
+        long snapshotIndex,
+        long lastIndex,
+        long lastTerm
+    )
+    {
+        if (lastTerm > term || commitIndex < snapshotIndex || commitIndex > lastIndex)
+            throw new InvalidDataException("Invalid persistent commit position.");
+    }
 
     internal long TermAt(long index) =>
         index == 0 ? 0

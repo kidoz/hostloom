@@ -223,6 +223,8 @@ def execute_owned(
             str(ROOT),
             "src",
             "tests",
+            "benchmarks/HostLoom.Benchmarks/CatalogRefreshWorkers.cs",
+            "examples/HostLoom.Examples.Actors/RegionalCatalog.cs",
             "examples/HostLoom.Examples.CompositionDiagnostics/ApplicationCompositionLedger.cs",
             "global.json",
             "Directory.Build.props",
