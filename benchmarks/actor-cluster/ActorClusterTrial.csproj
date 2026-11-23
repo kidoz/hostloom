@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Akka.Cluster.Sharding" Version="1.5.75" />
+    <PackageReference Include="Microsoft.Orleans.Server" Version="10.4.2" />
+    <PackageReference Include="Microsoft.Orleans.Clustering.Redis" Version="10.4.2" />
+    <PackageReference Include="StackExchange.Redis" Version="2.11.0" />
+    <None Update="commit.lua;witness.lua" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

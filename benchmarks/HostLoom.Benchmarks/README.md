@@ -24,6 +24,8 @@ The refresh pilot compares a per-region actor with a per-region semaphore on the
 
 The capacity replay schedules arrivals from a CSV trace and compares mailbox sizes with the semaphore baseline. [Replay instructions and measured results](CatalogCapacityReplay.md)
 
+For cross-host ownership, a separate Docker fixture compares Orleans and Akka.NET during a peer partition. [Cross-host actor recovery trial](../actor-cluster/README.md)
+
 ## Inbox actor pilot
 
 The inbox pilot compares the shipped in-memory delivery-claim store with an actor-owned claim dictionary. It exercises redelivery, cancellation, expiry, overload and shutdown. [Workload, measurements and adoption decision](ActorInboxPilot.md)

@@ -1,0 +1,174 @@
+[
+  {
+    "run": "a",
+    "runtime": "orleans",
+    "initial_routes": [
+      "n1:14bcfe842cbb499c88223f359446c871|",
+      "n1:14bcfe842cbb499c88223f359446c871|"
+    ],
+    "old_owner": "n1:14bcfe842cbb499c88223f359446c871",
+    "new_owner": "n2:c6199c7c51124dc9be350bea48158f9e",
+    "survivors": [
+      "n0",
+      "n2"
+    ],
+    "initial_members": 3,
+    "acknowledged_before": [
+      "n1:14bcfe842cbb499c88223f359446c871|committed",
+      "n1:14bcfe842cbb499c88223f359446c871|committed"
+    ],
+    "replacement_restored": [
+      "first@n1:14bcfe842cbb499c88223f359446c871",
+      "second@n1:14bcfe842cbb499c88223f359446c871"
+    ],
+    "seconds_until_replacement_read": 28.02,
+    "replacement_before_grant": "fenced",
+    "former_writer_before_transfer": "committed",
+    "transfer_witnesses": [
+      "n0",
+      "n2"
+    ],
+    "stale_commit": "fenced",
+    "retry": "duplicate",
+    "acknowledged_after": [
+      "n2:c6199c7c51124dc9be350bea48158f9e|committed",
+      "n2:c6199c7c51124dc9be350bea48158f9e|committed"
+    ],
+    "final_journal": [
+      "first@n1:14bcfe842cbb499c88223f359446c871",
+      "second@n1:14bcfe842cbb499c88223f359446c871",
+      "at-handoff@n1:14bcfe842cbb499c88223f359446c871",
+      "third@n2:c6199c7c51124dc9be350bea48158f9e",
+      "fourth@n2:c6199c7c51124dc9be350bea48158f9e"
+    ]
+  },
+  {
+    "run": "a",
+    "runtime": "akka",
+    "initial_routes": [
+      "n0:261a712675e6434d98896e64188c9dcb|",
+      "n0:261a712675e6434d98896e64188c9dcb|"
+    ],
+    "old_owner": "n0:261a712675e6434d98896e64188c9dcb",
+    "new_owner": "n1:99254c0b536e4beaa49f9c8dfa29f534",
+    "survivors": [
+      "n1",
+      "n2"
+    ],
+    "initial_members": 3,
+    "acknowledged_before": [
+      "n0:261a712675e6434d98896e64188c9dcb|committed",
+      "n0:261a712675e6434d98896e64188c9dcb|committed"
+    ],
+    "replacement_restored": [
+      "second@n0:261a712675e6434d98896e64188c9dcb",
+      "first@n0:261a712675e6434d98896e64188c9dcb"
+    ],
+    "seconds_until_replacement_read": 19.33,
+    "replacement_before_grant": "fenced",
+    "former_writer_before_transfer": "committed",
+    "transfer_witnesses": [
+      "n1",
+      "n2"
+    ],
+    "stale_commit": "fenced",
+    "retry": "duplicate",
+    "acknowledged_after": [
+      "n1:99254c0b536e4beaa49f9c8dfa29f534|committed",
+      "n1:99254c0b536e4beaa49f9c8dfa29f534|committed"
+    ],
+    "final_journal": [
+      "second@n0:261a712675e6434d98896e64188c9dcb",
+      "first@n0:261a712675e6434d98896e64188c9dcb",
+      "at-handoff@n0:261a712675e6434d98896e64188c9dcb",
+      "third@n1:99254c0b536e4beaa49f9c8dfa29f534",
+      "fourth@n1:99254c0b536e4beaa49f9c8dfa29f534"
+    ]
+  },
+  {
+    "run": "b",
+    "runtime": "orleans",
+    "initial_routes": [
+      "n0:8cf3602f27ed4e69a76af5defc7630fa|",
+      "n0:8cf3602f27ed4e69a76af5defc7630fa|"
+    ],
+    "old_owner": "n0:8cf3602f27ed4e69a76af5defc7630fa",
+    "new_owner": "n1:eee725e42b284181a120f3b301bdd85b",
+    "survivors": [
+      "n1",
+      "n2"
+    ],
+    "initial_members": 3,
+    "acknowledged_before": [
+      "n0:8cf3602f27ed4e69a76af5defc7630fa|committed",
+      "n0:8cf3602f27ed4e69a76af5defc7630fa|committed"
+    ],
+    "replacement_restored": [
+      "second@n0:8cf3602f27ed4e69a76af5defc7630fa",
+      "first@n0:8cf3602f27ed4e69a76af5defc7630fa"
+    ],
+    "seconds_until_replacement_read": 24.08,
+    "replacement_before_grant": "fenced",
+    "former_writer_before_transfer": "committed",
+    "transfer_witnesses": [
+      "n1",
+      "n2"
+    ],
+    "stale_commit": "fenced",
+    "retry": "duplicate",
+    "acknowledged_after": [
+      "n1:eee725e42b284181a120f3b301bdd85b|committed",
+      "n1:eee725e42b284181a120f3b301bdd85b|committed"
+    ],
+    "final_journal": [
+      "second@n0:8cf3602f27ed4e69a76af5defc7630fa",
+      "first@n0:8cf3602f27ed4e69a76af5defc7630fa",
+      "at-handoff@n0:8cf3602f27ed4e69a76af5defc7630fa",
+      "fourth@n1:eee725e42b284181a120f3b301bdd85b",
+      "third@n1:eee725e42b284181a120f3b301bdd85b"
+    ]
+  },
+  {
+    "run": "b",
+    "runtime": "akka",
+    "initial_routes": [
+      "n1:a9756797bddb4603a0424f6711c4644e|",
+      "n1:a9756797bddb4603a0424f6711c4644e|"
+    ],
+    "old_owner": "n1:a9756797bddb4603a0424f6711c4644e",
+    "new_owner": "n0:2bb54eb253504bf6918bd4e0263f7dbb",
+    "survivors": [
+      "n0",
+      "n2"
+    ],
+    "initial_members": 3,
+    "acknowledged_before": [
+      "n1:a9756797bddb4603a0424f6711c4644e|committed",
+      "n1:a9756797bddb4603a0424f6711c4644e|committed"
+    ],
+    "replacement_restored": [
+      "second@n1:a9756797bddb4603a0424f6711c4644e",
+      "first@n1:a9756797bddb4603a0424f6711c4644e"
+    ],
+    "seconds_until_replacement_read": 17.29,
+    "replacement_before_grant": "fenced",
+    "former_writer_before_transfer": "committed",
+    "transfer_witnesses": [
+      "n0",
+      "n2"
+    ],
+    "stale_commit": "fenced",
+    "retry": "duplicate",
+    "acknowledged_after": [
+      "n0:2bb54eb253504bf6918bd4e0263f7dbb|committed",
+      "n0:2bb54eb253504bf6918bd4e0263f7dbb|committed"
+    ],
+    "final_journal": [
+      "second@n1:a9756797bddb4603a0424f6711c4644e",
+      "first@n1:a9756797bddb4603a0424f6711c4644e",
+      "at-handoff@n1:a9756797bddb4603a0424f6711c4644e",
+      "third@n0:2bb54eb253504bf6918bd4e0263f7dbb",
+      "fourth@n0:2bb54eb253504bf6918bd4e0263f7dbb"
+    ]
+  }
+]
