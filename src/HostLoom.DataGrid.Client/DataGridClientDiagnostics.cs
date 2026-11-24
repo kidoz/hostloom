@@ -64,6 +64,7 @@ public static class DataGridClientDiagnostics
         kind switch
         {
             DataGridMessageKind.Read => "read",
+            DataGridMessageKind.PollChanges => "poll_changes",
             DataGridMessageKind.Mutation => "mutation",
             DataGridMessageKind.OpenSession => "open_session",
             DataGridMessageKind.CloseSession => "close_session",

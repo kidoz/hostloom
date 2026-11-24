@@ -30,6 +30,28 @@ expected version. Only the physical attempt UUID changes. Conditional rejection 
 mutation vector. Batch reads capture values, versions and remaining TTLs at one committed time;
 a vector that exceeds frame capacity fails as a whole.
 
+### Poll committed changes
+
+Pass `DataGridClientRequest.PollChanges(mapId, cursor)` to `ExecuteAsync` and check
+`Reply.ChangePage`. The principal needs the map's `DataGridMapActions.ObserveChanges`
+grant. This is a session-free call. A successful page follows a freshly committed
+leader barrier and carries the capture's applied index and grid time. It contains
+up to 128 changed keys and their commit indices. The feed carries key names without
+values. Expiration produces a key change when physically reclaimed. Consumers
+tracking TTLs can use the applied grid time before reclamation.
+
+Start with a null cursor to capture an empty page at the current tail. Resume with
+the returned `Cursor`, and poll again promptly when `HasMore` is true. If `Gap`
+is true, discard any state that depended on the old position and re-establish a
+baseline from the returned tail. A gap can follow a member switch, restart,
+snapshot jump or history expiry. Requests reuse the existing bounded SDK call,
+deadline and redirect rules. Each poll incurs a committed read barrier. A leader
+that loses quorum can return an availability failure. Both client and server must
+support the polling opcodes. Keep polling separate from histories submitted to
+`DataGridClientHistoryChecker`, which checks map and session operations.
+
+### Admission and outcomes
+
 `ExecuteAsync` admits at most eight concurrent calls, tries at most three physical exchanges
 and two redirects within five seconds, and permits two connection starts per second with burst
 two per client instance. Reconnect delay includes bounded jitter (50–500 ms); server hints may

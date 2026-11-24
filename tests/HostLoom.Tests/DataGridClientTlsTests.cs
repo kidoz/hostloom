@@ -594,7 +594,8 @@ public sealed class DataGridClientTlsTests
         internal ClientCluster(
             Action<int, DataGridStorageStep>? observe = null,
             TimeProvider? timeProvider = null,
-            int memberCount = 3
+            int memberCount = 3,
+            bool allowChangeObservation = false
         )
         {
             Peer = new(memberCount: memberCount);
@@ -629,7 +630,13 @@ public sealed class DataGridClientTlsTests
                         [
                             new(
                                 DataGridPeerFixture.Map,
-                                DataGridMapActions.Read | DataGridMapActions.Mutate
+                                DataGridMapActions.Read
+                                    | DataGridMapActions.Mutate
+                                    | (
+                                        allowChangeObservation
+                                            ? DataGridMapActions.ObserveChanges
+                                            : DataGridMapActions.None
+                                    )
                             ),
                         ]
                     ),

@@ -176,7 +176,9 @@ public sealed class DataGridClient : IAsyncDisposable
         DataGridClientReply Unavailable() =>
             DataGridClientReply.Failed(
                 new(
-                    mayHaveBeenAdmitted && request.Kind != DataGridMessageKind.Read
+                    mayHaveBeenAdmitted
+                    && request.Kind
+                        is not (DataGridMessageKind.Read or DataGridMessageKind.PollChanges)
                         ? DataGridClientFailureCode.OutcomeUnknown
                         : DataGridClientFailureCode.QuorumUnavailable,
                     mayHaveBeenAdmitted

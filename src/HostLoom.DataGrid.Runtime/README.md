@@ -88,9 +88,11 @@ returns an explicit gap and the current tail for re-establishing a baseline.
 Snapshot installation that jumps over unapplied entries resets the generation.
 Local compaction keeps it.
 
-These are internal calls serialized by the runtime. Authenticated remote polling,
-leader authority, and cache invalidation wiring are pending. L1 remains disabled
-for the experimental DataGrid cache profile.
+Authenticated [client polls](../HostLoom.DataGrid.Client/README.md#poll-committed-changes)
+use the ordinary bounded client path and obtain a fresh leader barrier. The runtime captures
+the page and its applied index inside the same serialized commit turn. Each poll consumes
+its own barrier. Cache invalidation wiring is pending and the experimental DataGrid cache
+profile still uses L2 only.
 
 ## Admission and lifecycle
 

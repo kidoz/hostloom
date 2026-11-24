@@ -58,15 +58,17 @@ its capacity refusal uses the existing outbound connection/capacity reason. Gate
 counters still describe gate leases, not retiring invocation tasks. The runtime drains its sender workers before releasing
 the transport. Local send completion or cancellation does not prove remote rollback.
 
-The separate client ALPN accepts ClientHello and unary mutation/read/session messages only.
+The separate client ALPN accepts ClientHello and unary mutation, read, change poll and session messages.
 Client certificates require private-root chain/client EKU/expiry validation and explicit leaf-pin
-principal binding. Immutable per-map read/mutation grants and a separate session grant default
+principal binding. Immutable per-map read, mutation and change observation grants and a separate session grant default
 to deny and run before actor admission. Up to 128 principals, 16 grants each and 4096 denied
 fingerprints are configured explicitly. The envelope sender must equal the TLS-bound principal;
 that principal supplies session ownership to the actor. Successful client responses bind the
 member, logical session/request and physical attempt. Unknown directions, counts, flags,
 versions, trailing bytes and unsupported hellos reject before dispatch. Client builds may differ;
 protocol/command/configuration must match. Client request/handshake deadlines are five seconds.
+`ObserveChanges` must be granted explicitly because polling can disclose changed key names
+across a map. Each poll uses the same request reservations and fair client admission as a read.
 
 Client-listener Start and disposal share one lifecycle lock. A bind failure leaves the unstarted
 instance available for retry after the conflict is removed; its owner still disposes it if retry

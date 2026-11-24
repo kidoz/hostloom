@@ -32,6 +32,7 @@ docker exec "$container_id" timeout --kill-after=15s 900s bash -euo pipefail -c 
     tar -C /source --exclude=bin --exclude=obj --exclude=TestResults --exclude=__pycache__ -cf - \
         src tests benchmarks/HostLoom.Benchmarks/CatalogRefreshWorkers.cs \
         examples/HostLoom.Examples.Actors/RegionalCatalog.cs \
+        examples/HostLoom.Examples.Actors/RegionalCatalogOwner.cs \
         examples/HostLoom.Examples.CompositionDiagnostics/ApplicationCompositionLedger.cs \
         global.json Directory.Build.props Directory.Build.targets Directory.Packages.props .editorconfig HostLoom.slnx \
         | tar -C /work -xf -

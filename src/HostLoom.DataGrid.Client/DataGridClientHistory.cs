@@ -72,11 +72,12 @@ public sealed class DataGridClientHistory
                     .Range(0, read.Count)
                     .Sum(i => (long)(read.GetItem(i)?.GetValue().Length ?? 0) + 42)
                 : 4096;
+            size += PageBytes(outcome.Reply.ChangePage);
             if (_bytes + size > 64L * 1024 * 1024)
                 throw new InvalidOperationException(
                     "History response capacity exceeded; experiment is inconclusive."
                 );
-            size += outcome.Attempts.Count * 128L;
+            size += outcome.Attempts.Sum(attempt => 128L + PageBytes(attempt.Reply?.ChangePage));
             if (_bytes + size > 64L * 1024 * 1024)
                 throw new InvalidOperationException(
                     "History attempt capacity exceeded; experiment is inconclusive."
@@ -85,6 +86,9 @@ public sealed class DataGridClientHistory
             _operations[id] = operation with { CompletionOrder = ++_order, Outcome = outcome };
         }
     }
+
+    private static long PageBytes(DataGridChangePage? page) =>
+        page is null ? 0 : 60L + page.Changes.Sum(change => 10L + change.Key.ByteCount);
 }
 
 public sealed class DataGridClientOutcome

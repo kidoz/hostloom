@@ -377,12 +377,42 @@ internal sealed class RaftNode
             );
         });
 
+    internal IReadOnlyList<RaftEffect> PollChanges(
+        Guid requestId,
+        Guid map,
+        DataGridChangeCursor? after,
+        DataGridTimestamp time
+    ) =>
+        Run(() =>
+        {
+            if (
+                _changes is null
+                || !Enumerable
+                    .Range(0, _configuration.MapCount)
+                    .Any(i => _configuration.GetMap(i).MapId == map)
+            )
+            {
+                _effects.Add(new RaftCompletion(requestId, RaftCompletionKind.InvalidRequest));
+                return;
+            }
+            Admit(
+                requestId,
+                DataGridCommittedCommand.AdvanceTime(time),
+                map,
+                null,
+                pollChanges: true,
+                after: after
+            );
+        });
+
     private void Admit(
         Guid requestId,
         DataGridCommittedCommand command,
         Guid? map,
         DataGridKey? key,
-        IReadOnlyList<DataGridKey>? keys = null
+        IReadOnlyList<DataGridKey>? keys = null,
+        bool pollChanges = false,
+        DataGridChangeCursor? after = null
     )
     {
         if (requestId == Guid.Empty)
@@ -410,7 +440,10 @@ internal sealed class RaftNode
         }
         var index = _durable.LastIndex + 1;
         var deadline = NewToken();
-        _clients.Add(requestId, new(requestId, index, deadline, map, key, keys));
+        _clients.Add(
+            requestId,
+            new(requestId, index, deadline, map, key, keys, pollChanges, after)
+        );
         _effects.Add(new RaftTimer(deadline, 5000));
         AppendLocal(new(index, CurrentTerm, bytes));
     }
@@ -808,6 +841,21 @@ internal sealed class RaftNode
                     );
                     continue;
                 }
+                if (client.PollChanges)
+                {
+                    Complete(
+                        client,
+                        RaftCompletionKind.Changes,
+                        index,
+                        changePage: _changes!.Read(
+                            client.Map!.Value,
+                            client.After,
+                            _machine.AppliedTime,
+                            index
+                        )
+                    );
+                    continue;
+                }
                 DataGridReadResult? read = null;
                 if (client.IsRead)
                 {
@@ -887,13 +935,23 @@ internal sealed class RaftNode
         DataGridApplyResult? result = null,
         DataGridLocalEntry? entry = null,
         DataGridReadResult? read = null,
-        bool timedOut = false
+        bool timedOut = false,
+        DataGridChangePage? changePage = null
     )
     {
         _clients.Remove(client.RequestId);
         _effects.Add(new RaftCancelTimer(client.Deadline));
         _effects.Add(
-            new RaftCompletion(client.RequestId, kind, index, result, entry, read, timedOut)
+            new RaftCompletion(
+                client.RequestId,
+                kind,
+                index,
+                result,
+                entry,
+                read,
+                timedOut,
+                changePage
+            )
         );
     }
 
@@ -974,7 +1032,9 @@ internal sealed class RaftNode
         RaftToken Deadline,
         Guid? Map,
         DataGridKey? Key,
-        IReadOnlyList<DataGridKey>? Keys = null
+        IReadOnlyList<DataGridKey>? Keys,
+        bool PollChanges,
+        DataGridChangeCursor? After
     )
     {
         internal bool IsRead => Map is not null;

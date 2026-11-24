@@ -1,23 +1,10 @@
 namespace HostLoom.DataGrid.Runtime;
 
-internal readonly record struct DataGridChangeCursor(Guid Generation, Guid Map, long Sequence);
-
-internal readonly record struct DataGridCommittedChange(long Index, DataGridKey Key);
-
-internal sealed record DataGridChangePage(
-    DataGridChangeCursor Cursor,
-    IReadOnlyList<DataGridCommittedChange> Changes,
-    DataGridTimestamp AppliedTime,
-    bool Gap,
-    bool HasMore
-);
-
 /// <summary>The serialized owner's bounded history of committed map changes.</summary>
 internal sealed class DataGridChangeFeed(TimeProvider time) : IDataGridCommittedChangeSink
 {
     internal const int MaxChanges = 4096;
     internal const int MaxBytes = 4 * 1024 * 1024;
-    internal const int MaxPageSize = 128;
     internal static readonly TimeSpan MaxAge = TimeSpan.FromSeconds(30);
 
     private readonly Queue<Retained> _history = new();
@@ -40,16 +27,17 @@ internal sealed class DataGridChangeFeed(TimeProvider time) : IDataGridCommitted
 
     void IDataGridCommittedChangeSink.Reset() => Reset();
 
-    internal DataGridChangePage Read(
+    public DataGridChangePage Read(
         Guid map,
         DataGridChangeCursor? after,
-        DataGridTimestamp appliedTime
+        DataGridTimestamp appliedTime,
+        long appliedIndex = 0
     )
     {
         Prune(time.GetTimestamp());
         var tail = new DataGridChangeCursor(_generation, map, _tail);
         if (after is not { } cursor)
-            return new(tail, [], appliedTime, Gap: false, HasMore: false);
+            return new(tail, [], appliedTime, appliedIndex, gap: false, hasMore: false);
         var oldestPosition = _history.TryPeek(out var first) ? first.Sequence - 1 : _tail;
         if (
             cursor.Generation != _generation
@@ -57,7 +45,7 @@ internal sealed class DataGridChangeFeed(TimeProvider time) : IDataGridCommitted
             || cursor.Sequence < oldestPosition
             || cursor.Sequence > _tail
         )
-            return new(tail, [], appliedTime, Gap: true, HasMore: false);
+            return new(tail, [], appliedTime, appliedIndex, gap: true, hasMore: false);
 
         var changes = new List<DataGridCommittedChange>();
         var sequence = cursor.Sequence;
@@ -69,7 +57,7 @@ internal sealed class DataGridChangeFeed(TimeProvider time) : IDataGridCommitted
             if (entry.Map != map)
                 continue;
             changes.Add(entry.Change);
-            if (changes.Count == MaxPageSize)
+            if (changes.Count == DataGridChangePage.MaxChanges)
                 break;
         }
         return new(
@@ -77,10 +65,11 @@ internal sealed class DataGridChangeFeed(TimeProvider time) : IDataGridCommitted
             {
                 Sequence = sequence,
             },
-            changes.AsReadOnly(),
+            changes.ToArray(),
             appliedTime,
-            Gap: false,
-            HasMore: sequence < _tail
+            appliedIndex,
+            gap: false,
+            hasMore: sequence < _tail
         );
     }
 

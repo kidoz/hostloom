@@ -5,4 +5,10 @@ internal interface IDataGridCommittedChangeSink
 {
     void Record(long index, Guid map, DataGridKey key);
     void Reset();
+    DataGridChangePage Read(
+        Guid map,
+        DataGridChangeCursor? after,
+        DataGridTimestamp appliedTime,
+        long appliedIndex
+    );
 }

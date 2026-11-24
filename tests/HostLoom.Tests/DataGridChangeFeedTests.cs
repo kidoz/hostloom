@@ -89,7 +89,7 @@ public sealed class DataGridChangeFeedTests
         var first = feed.Read(Map, start, default);
         Assert.False(first.Gap);
         Assert.True(first.HasMore);
-        Assert.Equal(DataGridChangeFeed.MaxPageSize, first.Changes.Count);
+        Assert.Equal(DataGridChangePage.MaxChanges, first.Changes.Count);
         Assert.Equal(1, first.Changes[0].Index);
         sink.Record(capacity + 1, Map, key);
 

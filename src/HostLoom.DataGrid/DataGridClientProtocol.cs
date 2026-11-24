@@ -79,7 +79,8 @@ public sealed class DataGridClientRequest
         Guid nonce = default,
         DataGridTimestamp notAfter = default,
         long session = 0,
-        ulong number = 0
+        ulong number = 0,
+        DataGridChangeCursor? changeCursor = null
     )
     {
         Kind = kind;
@@ -90,6 +91,7 @@ public sealed class DataGridClientRequest
         OpenNotAfter = notAfter;
         SessionNumber = session;
         RequestNumber = number;
+        ChangeCursor = changeCursor;
     }
 
     public DataGridMessageKind Kind { get; }
@@ -100,6 +102,7 @@ public sealed class DataGridClientRequest
     public DataGridTimestamp OpenNotAfter { get; }
     public long SessionNumber { get; }
     public ulong RequestNumber { get; }
+    public DataGridChangeCursor? ChangeCursor { get; }
 
     public static DataGridClientRequest Mutate(DataGridMutationCommand command)
     {
@@ -131,6 +134,19 @@ public sealed class DataGridClientRequest
         return new(DataGridMessageKind.Read, map, owned);
     }
 
+    /// <summary>Polls for committed changes, or starts at the current tail when after is null.</summary>
+    public static DataGridClientRequest PollChanges(Guid map, DataGridChangeCursor? after = null)
+    {
+        if (map == Guid.Empty)
+            throw new ArgumentException("Map identity required.", nameof(map));
+        if (
+            after is { } cursor
+            && (cursor.Map == Guid.Empty || cursor.Generation == Guid.Empty || cursor.Sequence < 0)
+        )
+            throw new ArgumentException("Invalid change cursor.", nameof(after));
+        return new(DataGridMessageKind.PollChanges, map, changeCursor: after);
+    }
+
     public static DataGridClientRequest OpenSession(Guid nonce, DataGridTimestamp notAfter)
     {
         if (nonce == Guid.Empty || notAfter.UtcTicks <= 0)
@@ -153,25 +169,29 @@ public sealed class DataGridClientReply
         DataGridMessageKind kind,
         DataGridApplyResult? result = null,
         DataGridReadResult? read = null,
-        DataGridClientFailure? failure = null
+        DataGridClientFailure? failure = null,
+        DataGridChangePage? changePage = null
     )
     {
         Kind = kind;
         Result = result;
         Read = read;
         Failure = failure;
+        ChangePage = changePage;
     }
 
     public DataGridMessageKind Kind { get; }
     public DataGridApplyResult? Result { get; }
     public DataGridReadResult? Read { get; }
     public DataGridClientFailure? Failure { get; }
+    public DataGridChangePage? ChangePage { get; }
 
     internal static DataGridClientReply Completed(
         DataGridMessageKind kind,
         DataGridApplyResult? result = null,
-        DataGridReadResult? read = null
-    ) => new(kind, result, read);
+        DataGridReadResult? read = null,
+        DataGridChangePage? changePage = null
+    ) => new(kind, result, read, changePage: changePage);
 
     public static DataGridClientReply Failed(DataGridClientFailure failure)
     {
@@ -251,6 +271,12 @@ public static class DataGridClientCodec
                 foreach (var key in request.Keys)
                     writer.Key(key);
                 break;
+            case DataGridMessageKind.PollChanges:
+                writer.Id(request.MapId);
+                writer.Number(request.ChangeCursor is null ? 0u : 1u, 1);
+                if (request.ChangeCursor is { } cursor)
+                    DataGridClientChangeCodec.WriteCursor(writer, cursor);
+                break;
             case DataGridMessageKind.OpenSession:
                 writer.Id(request.OpenNonce);
                 writer.Number((ulong)request.OpenNotAfter.UtcTicks, 8);
@@ -290,6 +316,13 @@ public static class DataGridClientCodec
                     for (var i = 0; i < count; i++)
                         keys[i] = reader.Key(allowEmpty: false)!;
                     result = DataGridClientRequest.Read(map, keys);
+                    break;
+                case DataGridMessageKind.PollChanges:
+                    var changeMap = reader.Id();
+                    result = DataGridClientRequest.PollChanges(
+                        changeMap,
+                        reader.Flag() ? DataGridClientChangeCodec.ReadCursor(ref reader) : null
+                    );
                     break;
                 case DataGridMessageKind.OpenSession:
                     result = DataGridClientRequest.OpenSession(reader.Id(), reader.Time());
@@ -370,6 +403,9 @@ public static class DataGridClientCodec
                     writer.Number((ulong)reply.Result!.SessionNumber, 8);
                     writer.Number((ulong)reply.Result.SessionExpiresAt!.Value.UtcTicks, 8);
                     break;
+                case DataGridMessageKind.PollChangesResult:
+                    DataGridClientChangeCodec.WritePage(writer, reply.ChangePage!);
+                    break;
                 case DataGridMessageKind.CloseSessionResult:
                     break;
                 default:
@@ -413,6 +449,11 @@ public static class DataGridClientCodec
                 var admission = reader.Flag();
                 if (reader.Number(1) != 0)
                     throw new InvalidDataException("Reserved failure field.");
+                if (
+                    request.Kind == DataGridMessageKind.PollChanges
+                    && code == DataGridClientFailureCode.OutcomeUnknown
+                )
+                    throw new InvalidDataException("Invalid change poll failure.");
                 var redirect = reader.Id(allowEmpty: true);
                 var retry = reader.Number(2);
                 if (
@@ -494,6 +535,14 @@ public static class DataGridClientCodec
                 }
                 reply = DataGridClientReply.Completed(frame.Kind, read: new(time, items));
             }
+            else if (
+                request.Kind == DataGridMessageKind.PollChanges
+                && frame.Kind == DataGridMessageKind.PollChangesResult
+            )
+                reply = DataGridClientReply.Completed(
+                    frame.Kind,
+                    changePage: DataGridClientChangeCodec.ReadPage(ref reader, request)
+                );
             else if (
                 request.Kind == DataGridMessageKind.OpenSession
                 && frame.Kind == DataGridMessageKind.OpenSessionResult

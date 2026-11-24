@@ -38,6 +38,7 @@ internal enum RaftCompletionKind
     Unavailable,
     InvalidRequest,
     CapacityExceeded,
+    Changes,
 }
 
 internal readonly record struct RaftToken(long Epoch, long Sequence);
@@ -297,7 +298,8 @@ internal sealed record RaftCompletion(
     DataGridApplyResult? Result = null,
     DataGridLocalEntry? Entry = null,
     DataGridReadResult? ReadResult = null,
-    bool TimedOut = false
+    bool TimedOut = false,
+    DataGridChangePage? ChangePage = null
 ) : RaftEffect;
 
 internal sealed record RaftFault(string Reason) : RaftEffect;

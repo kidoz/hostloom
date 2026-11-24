@@ -21,6 +21,8 @@ public enum DataGridMessageKind
     OpenSessionResult = 8,
     CloseSession = 9,
     CloseSessionResult = 10,
+    PollChanges = 11,
+    PollChangesResult = 12,
     VoteRequest = 16,
     VoteResponse = 17,
     AppendRequest = 18,
@@ -155,7 +157,7 @@ public sealed class DataGridProtocolFrame
     private static bool IsValidKind(DataGridMessageKind kind) =>
         kind
             is >= DataGridMessageKind.ClientHello
-                and <= DataGridMessageKind.CloseSessionResult
+                and <= DataGridMessageKind.PollChangesResult
                 or >= DataGridMessageKind.VoteRequest
                 and <= DataGridMessageKind.ReadBarrierResponse
                 or DataGridMessageKind.Failure;

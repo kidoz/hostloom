@@ -202,17 +202,20 @@ internal sealed class DataGridPeerRuntime
         DataGridKey? key,
         CancellationToken token,
         IReadOnlyList<DataGridKey>? keys = null,
-        Guid principal = default
+        Guid principal = default,
+        DataGridClientRequest? poll = null
     )
     {
         token.ThrowIfCancellationRequested();
-        var operation = DataGridRuntimeDiagnostics.Operation(command);
+        var operation = poll is null
+            ? DataGridRuntimeDiagnostics.Operation(command)
+            : "poll_changes";
         var started = Stopwatch.GetTimestamp();
         var outcome = "faulted";
         DataGridRuntimeDiagnostics.Begin(operation);
         try
         {
-            var result = await SubmitCore(command, map, key, token, keys, principal)
+            var result = await SubmitCore(command, map, key, keys, principal, poll, token)
                 .ConfigureAwait(false);
             outcome = DataGridRuntimeDiagnostics.Outcome(result.Kind);
             if (result.TimedOut)
@@ -253,9 +256,10 @@ internal sealed class DataGridPeerRuntime
         DataGridCommittedCommand? command,
         Guid? map,
         DataGridKey? key,
-        CancellationToken token,
-        IReadOnlyList<DataGridKey>? keys = null,
-        Guid principal = default
+        IReadOnlyList<DataGridKey>? keys,
+        Guid principal,
+        DataGridClientRequest? poll,
+        CancellationToken token
     )
     {
         token.ThrowIfCancellationRequested();
@@ -295,13 +299,19 @@ internal sealed class DataGridPeerRuntime
                         return;
                     }
                     _pending.Add(id, (result, command is null, reservation));
-                    Apply(
-                        command is null
-                            ? keys is null
-                                ? _node.Read(id, map!.Value, key!, Now())
-                                : _node.ReadMany(id, map!.Value, keys, Now())
-                            : _node.Propose(id, command)
-                    );
+                    var effects = (command, poll, keys) switch
+                    {
+                        ({ } proposal, _, _) => _node.Propose(id, proposal),
+                        (_, { } request, _) => _node.PollChanges(
+                            id,
+                            request.MapId,
+                            request.ChangeCursor,
+                            Now()
+                        ),
+                        (_, _, { } batch) => _node.ReadMany(id, map!.Value, batch, Now()),
+                        _ => _node.Read(id, map!.Value, key!, Now()),
+                    };
+                    Apply(effects);
                 },
                 exception =>
                 {
@@ -354,7 +364,7 @@ internal sealed class DataGridPeerRuntime
         {
             var command = request.Kind switch
             {
-                DataGridMessageKind.Read => null,
+                DataGridMessageKind.Read or DataGridMessageKind.PollChanges => null,
                 DataGridMessageKind.Mutation => DataGridCommittedCommand.Mutate(
                     principal,
                     request.Mutation!,
@@ -380,7 +390,8 @@ internal sealed class DataGridPeerRuntime
                     null,
                     cancellationToken,
                     request.Kind == DataGridMessageKind.Read ? request.Keys : null,
-                    principal
+                    principal,
+                    request.Kind == DataGridMessageKind.PollChanges ? request : null
                 )
                 .ConfigureAwait(false);
         }
@@ -399,7 +410,7 @@ internal sealed class DataGridPeerRuntime
         {
             return DataGridClientReply.Failed(
                 new(
-                    request.Kind == DataGridMessageKind.Read
+                    request.Kind is DataGridMessageKind.Read or DataGridMessageKind.PollChanges
                         ? DataGridClientFailureCode.QuorumUnavailable
                         : DataGridClientFailureCode.OutcomeUnknown,
                     true
@@ -410,6 +421,11 @@ internal sealed class DataGridPeerRuntime
             return DataGridClientReply.Completed(
                 DataGridMessageKind.ReadResult,
                 read: completion.ReadResult!
+            );
+        if (completion.Kind == RaftCompletionKind.Changes)
+            return DataGridClientReply.Completed(
+                DataGridMessageKind.PollChangesResult,
+                changePage: completion.ChangePage!
             );
         if (completion.Kind == RaftCompletionKind.Applied)
         {
@@ -524,7 +540,17 @@ internal sealed class DataGridPeerRuntime
                 .Any(i => _configuration.GetMap(i).MapId == map)
         )
             throw new ArgumentException("Unknown map.", nameof(map));
-        return Invoke(() => _changeFeed.Read(map, after, _node.Machine.AppliedTime), 128, token);
+        return Invoke(
+            () =>
+                _changeFeed.Read(
+                    map,
+                    after,
+                    _node.Machine.AppliedTime,
+                    _node.Machine.LastAppliedIndex
+                ),
+            128,
+            token
+        );
     }
 
     private async Task Watch(long index, bool leader, CancellationToken token)

@@ -212,6 +212,7 @@ public static partial class DataGridRuntimeDiagnostics
         {
             RaftCompletionKind.Applied => "applied",
             RaftCompletionKind.Read => "read",
+            RaftCompletionKind.Changes => "changes",
             RaftCompletionKind.NotLeader => "not_leader",
             RaftCompletionKind.Busy => "busy",
             RaftCompletionKind.OutcomeUnknown => "outcome_unknown",

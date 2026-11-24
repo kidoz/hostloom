@@ -9,12 +9,15 @@ public enum DataGridMapActions
     None = 0,
     Read = 1,
     Mutate = 2,
+    ObserveChanges = 4,
 }
 
 public readonly record struct DataGridMapGrant(Guid MapId, DataGridMapActions Actions);
 
 public sealed class DataGridClientPrincipal
 {
+    private const DataGridMapActions AllActions =
+        DataGridMapActions.Read | DataGridMapActions.Mutate | DataGridMapActions.ObserveChanges;
     private readonly byte[] _fingerprint;
 
     public DataGridClientPrincipal(
@@ -34,9 +37,8 @@ public sealed class DataGridClientPrincipal
         if (
             owned.Any(map =>
                 map.MapId == Guid.Empty
-                || map.Actions
-                    is <= DataGridMapActions.None
-                        or > (DataGridMapActions.Read | DataGridMapActions.Mutate)
+                || map.Actions == DataGridMapActions.None
+                || (map.Actions & ~AllActions) != 0
             )
             || owned.Select(map => map.MapId).Distinct().Count() != owned.Length
         )
@@ -53,20 +55,19 @@ public sealed class DataGridClientPrincipal
     internal bool Matches(ReadOnlySpan<byte> fingerprint) =>
         CryptographicOperations.FixedTimeEquals(fingerprint, _fingerprint);
 
-    internal bool Allows(DataGridClientRequest request) =>
-        request.Kind is DataGridMessageKind.OpenSession or DataGridMessageKind.CloseSession
-            ? AllowSessions
-            : Maps.Any(map =>
-                map.MapId == request.MapId
-                && (
-                    map.Actions
-                    & (
-                        request.Kind == DataGridMessageKind.Read
-                            ? DataGridMapActions.Read
-                            : DataGridMapActions.Mutate
-                    )
-                ) != 0
-            );
+    internal bool Allows(DataGridClientRequest request)
+    {
+        if (request.Kind is DataGridMessageKind.OpenSession or DataGridMessageKind.CloseSession)
+            return AllowSessions;
+        var action = request.Kind switch
+        {
+            DataGridMessageKind.Read => DataGridMapActions.Read,
+            DataGridMessageKind.Mutation => DataGridMapActions.Mutate,
+            DataGridMessageKind.PollChanges => DataGridMapActions.ObserveChanges,
+            _ => DataGridMapActions.None,
+        };
+        return Maps.Any(map => map.MapId == request.MapId && (map.Actions & action) != 0);
+    }
 }
 
 /// <summary>Immutable explicit client identities and grants; the caller retains root/certificate lifetimes.</summary>
