@@ -43,6 +43,8 @@ The runnable catalog example submits an observation, queries the resulting state
 
 For a worker that holds state across I/O, run `dotnet run -c Release --project examples/HostLoom.Examples.Actors -- --refresh`. This example loads a versioned catalog file, shares overlapping refresh attempts and preserves the last published snapshot when a newer file is unavailable. [Regional catalog worker](../../examples/HostLoom.Examples.Actors/RegionalCatalog.cs) · [Semaphore comparison and timeout checks](../../benchmarks/HostLoom.Benchmarks/CatalogRefreshPilot.md)
 
+The catalog client returns `Overloaded` when a new read or refresh finds a full mailbox and `Unavailable` when admission has closed. Both replies carry an empty snapshot reference and the refused request never enters the handler. A refresh for a version already in flight shares the admitted attempt. A source read failure returns `SourceUnavailable` with the last published snapshot. Caller timeouts still leave the outcome of admitted work uncertain. [Catalog client and overload tests](../../tests/HostLoom.Tests/CatalogRefreshTests.cs)
+
 ## Observability and sizing
 
 `ActorSystem.Snapshot` reads per-system counters without entering any mailbox. Population includes construction and disposal. Under concurrent activity each field is sampled independently. The `HostLoom.Actors` meter exposes population, queued and executing work, refused sends, discarded items, faults, caller timeouts, queue delay and turn duration. Histogram units are seconds. The instrument names and dimensions carry no message data or actor identifiers.

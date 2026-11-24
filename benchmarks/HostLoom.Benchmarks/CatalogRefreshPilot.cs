@@ -150,7 +150,8 @@ internal static class CatalogRefreshPilot
             var (reply, ms) = samples[i];
             var snapshot = reply.Snapshot;
             if (
-                reply.SourceUnavailable
+                reply.Status != CatalogStatus.Published
+                || snapshot is null
                 || snapshot.Region != regions[i]
                 || snapshot.Version != version
                 || !snapshot.Items.SequenceEqual(ExpectedItems(regions[i], version))

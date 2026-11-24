@@ -275,8 +275,11 @@ internal static class CatalogCapacityReplay
             }
             var callerMs = Stopwatch.GetElapsedTime(sent).TotalMilliseconds;
             var reply = await operation.ConfigureAwait(false);
+            if (reply.Status == CatalogStatus.Overloaded)
+                return new(Execution.Refused, timedOut, callerMs);
             if (
-                reply.SourceUnavailable
+                reply.Status != CatalogStatus.Published
+                || reply.Snapshot is null
                 || reply.Snapshot.Region != row.Region
                 || reply.Snapshot.Version != row.Version
                 || reply.Snapshot.Items.Length != 1
@@ -284,14 +287,6 @@ internal static class CatalogCapacityReplay
             )
                 throw new InvalidOperationException("Unexpected catalog contents or version.");
             return new(Execution.Executed, timedOut, callerMs);
-        }
-        catch (ActorAdmissionException error) when (error.Reason == ActorAdmission.Full)
-        {
-            return new(
-                Execution.Refused,
-                timedOut,
-                Stopwatch.GetElapsedTime(sent).TotalMilliseconds
-            );
         }
         catch (ActorTerminatedException)
         {

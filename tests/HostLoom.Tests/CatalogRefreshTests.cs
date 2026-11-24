@@ -58,7 +58,8 @@ public sealed class CatalogRefreshTests
 
     private static void AssertPublished(CatalogReply reply, string region, int version)
     {
-        Assert.False(reply.SourceUnavailable);
+        Assert.Equal(CatalogStatus.Published, reply.Status);
+        Assert.NotNull(reply.Snapshot);
         Assert.Equal(region, reply.Snapshot.Region);
         Assert.Equal(version, reply.Snapshot.Version);
         Assert.Equal(
@@ -92,7 +93,7 @@ public sealed class CatalogRefreshTests
         var replies = await Task.WhenAll(first, second);
 
         AssertPublished(replies[0], "eu", 1);
-        Assert.False(replies[1].SourceUnavailable);
+        Assert.Equal(CatalogStatus.Published, replies[1].Status);
         Assert.Same(replies[0].Snapshot, replies[1].Snapshot);
         Assert.Equal(1, source.Reads("eu", 1));
         Assert.Equal(1, source.Reads("us", 1));
@@ -121,7 +122,7 @@ public sealed class CatalogRefreshTests
         source.Finish(false);
         foreach (var reply in await Task.WhenAll(first, second))
         {
-            Assert.True(reply.SourceUnavailable);
+            Assert.Equal(CatalogStatus.SourceUnavailable, reply.Status);
             Assert.Same(original.Snapshot, reply.Snapshot);
         }
         var current = await SendAsync(client, CatalogRequest.Read);
@@ -132,7 +133,7 @@ public sealed class CatalogRefreshTests
         var retry = await SendAsync(client, target);
         AssertPublished(retry, "eu", 2);
         var stale = await SendAsync(client, CatalogRequest.Refresh(1));
-        Assert.False(stale.SourceUnavailable);
+        Assert.Equal(CatalogStatus.Published, stale.Status);
         Assert.Same(retry.Snapshot, stale.Snapshot);
         Assert.Equal(2, source.Reads("eu", 2));
         Assert.Equal(3, source.TotalReads);
@@ -174,6 +175,71 @@ public sealed class CatalogRefreshTests
     }
 
     [Fact]
+    public async Task RefusedRequestsSkipTheHandlerAndCanRetryAfterTheMailboxDrains()
+    {
+        var clock = new ManualTimeProvider();
+        await using var system = new ActorSystem(2, 1, Bound, clock);
+        var first = CatalogRequest.Refresh(1);
+        var second = CatalogRequest.Refresh(2);
+        var third = CatalogRequest.Refresh(3);
+        var probe = new ActorTestProbe<CatalogRequest, CatalogReply>(
+            3,
+            Bound,
+            request =>
+                new(
+                    CatalogStatus.Published,
+                    new CatalogSnapshot("eu", request.MinimumVersion.GetValueOrDefault(), [])
+                )
+        );
+        var handle = system.Spawn<CatalogRequest, CatalogReply>(() => probe);
+        var client = new RegionalCatalogClient(
+            (request, timeout) => handle.Ref.AskAsync(request, timeout),
+            Bound,
+            clock
+        );
+        var peer = RegionalCatalogClient.Spawn(system, "us", new Source(1).LoadAsync, Bound, clock);
+
+        var active = SendAsync(client, first);
+        Task<CatalogReply> queued;
+        Task<CatalogReply> duplicate;
+        try
+        {
+            await probe.WaitForFirstEntryAsync(Token);
+            queued = SendAsync(client, second);
+            duplicate = SendAsync(client, second);
+            foreach (var request in new[] { third, CatalogRequest.Read })
+            {
+                var refused = await SendAsync(client, request);
+                Assert.Equal(CatalogStatus.Overloaded, refused.Status);
+                Assert.Null(refused.Snapshot);
+            }
+            AssertPublished(await SendAsync(peer, first), "us", 1);
+            Assert.Equal([first], probe.Entries);
+        }
+        finally
+        {
+            probe.Release();
+        }
+
+        Assert.Equal(CatalogStatus.Published, (await active).Status);
+        var admitted = await queued;
+        Assert.Equal(CatalogStatus.Published, admitted.Status);
+        Assert.Equal(admitted, await duplicate);
+        Assert.Equal([first, second], probe.Entries);
+        var retry = await SendAsync(client, third);
+        Assert.Equal(CatalogStatus.Published, retry.Status);
+        Assert.Equal(3, retry.Snapshot?.Version);
+        await handle.StopAsync(Token).WaitAsync(Bound, Token);
+        foreach (var request in new[] { third, CatalogRequest.Read })
+        {
+            var refused = await SendAsync(client, request);
+            Assert.Equal(CatalogStatus.Unavailable, refused.Status);
+            Assert.Null(refused.Snapshot);
+        }
+        Assert.Equal([first, second, third], probe.Entries);
+    }
+
+    [Fact]
     public async Task ActorShutdownDrainsAbandonedRefreshAndQueuedReadAndClosesAdmission()
     {
         var clock = new ManualTimeProvider();
@@ -189,10 +255,9 @@ public sealed class CatalogRefreshTests
         var stop = system.StopAsync(Token);
         Assert.False(read.IsCompleted);
         Assert.False(stop.IsCompleted);
-        var rejected = await Assert.ThrowsAsync<ActorAdmissionException>(() =>
-            SendAsync(client, CatalogRequest.Read)
-        );
-        Assert.Equal(ActorAdmission.Stopped, rejected.Reason);
+        var rejected = await SendAsync(client, CatalogRequest.Read);
+        Assert.Equal(CatalogStatus.Unavailable, rejected.Status);
+        Assert.Null(rejected.Snapshot);
         source.Finish(true);
 
         AssertPublished(await read, "eu", 1);

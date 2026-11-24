@@ -5,9 +5,17 @@ namespace HostLoom.Examples.Actors;
 
 internal sealed record CatalogSnapshot(string Region, int Version, ImmutableArray<string> Items);
 
+internal enum CatalogStatus
+{
+    Unavailable,
+    Published,
+    SourceUnavailable,
+    Overloaded,
+}
+
 internal readonly record struct CatalogReply(
-    CatalogSnapshot Snapshot,
-    bool SourceUnavailable = false
+    CatalogStatus Status,
+    CatalogSnapshot? Snapshot = null
 );
 
 // A null minimum requests a read. A positive minimum requests that version or a newer snapshot.
@@ -51,10 +59,10 @@ internal sealed class RegionalCatalog(string region, LoadCatalog load)
             }
             catch (IOException)
             {
-                return new(_published, SourceUnavailable: true);
+                return new(CatalogStatus.SourceUnavailable, _published);
             }
         }
-        return new(_published);
+        return new(CatalogStatus.Published, _published);
     }
 }
 
@@ -90,7 +98,7 @@ internal sealed class RegionalCatalogClient(
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(callerTimeout, TimeSpan.Zero);
         if (request.MinimumVersion is not int version)
-            return send(request, callerTimeout);
+            return SendToWorkerAsync(request, callerTimeout);
 
         TaskCompletionSource<CatalogReply> attempt;
         Task<CatalogReply> wait;
@@ -106,6 +114,25 @@ internal sealed class RegionalCatalogClient(
         return new(wait);
     }
 
+    private async ValueTask<CatalogReply> SendToWorkerAsync(
+        CatalogRequest request,
+        TimeSpan timeout
+    )
+    {
+        try
+        {
+            return await send(request, timeout).ConfigureAwait(false);
+        }
+        catch (ActorAdmissionException error) when (error.Reason == ActorAdmission.Full)
+        {
+            return new(CatalogStatus.Overloaded);
+        }
+        catch (ActorAdmissionException error) when (error.Reason == ActorAdmission.Stopped)
+        {
+            return new(CatalogStatus.Unavailable);
+        }
+    }
+
     private async Task RunAsync(
         CatalogRequest request,
         int version,
@@ -114,7 +141,7 @@ internal sealed class RegionalCatalogClient(
     {
         try
         {
-            var reply = await send(request, operationTimeout).ConfigureAwait(false);
+            var reply = await SendToWorkerAsync(request, operationTimeout).ConfigureAwait(false);
             lock (_gate)
             {
                 _pending.Remove(version);
