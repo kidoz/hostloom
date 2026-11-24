@@ -20,6 +20,7 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="../../src/HostLoom.Actors.DependencyInjection/HostLoom.Actors.DependencyInjection.csproj" />
     <ProjectReference Include="../../src/HostLoom.DataGrid/HostLoom.DataGrid.csproj" />
+    <ProjectReference Include="../../src/HostLoom.DataGrid.Caching/HostLoom.DataGrid.Caching.csproj" />
     <ProjectReference Include="../../src/HostLoom.DataGrid.Client/HostLoom.DataGrid.Client.csproj" />
     <ProjectReference Include="../../src/HostLoom.DataGrid.Runtime/HostLoom.DataGrid.Runtime.csproj" />
     <ProjectReference Include="../../src/HostLoom.DataGrid.Storage/HostLoom.DataGrid.Storage.csproj" />

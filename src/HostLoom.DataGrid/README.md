@@ -32,7 +32,8 @@ A backward clock jump freezes grid time until the clock catches up; expired data
 when application preserves the high-water mark. A forward jump can expire data early in elapsed
 time. No physical elapsed-time accuracy is promised across arbitrary clock jumps, pauses or
 outages. Strong reads must establish authority and commit a fresh time sample before capturing
-value/version/remaining TTL together. The later cache adapter still requires conformance evidence.
+value/version/remaining TTL together. The [experimental L2 store](../HostLoom.DataGrid.Caching/README.md)
+uses this capture through the client.
 
 `DataGridWalRecord` encodes owned v1 WAL frames with a 20-byte big-endian header and SHA-256
 trailer. The 2 MiB limit includes header and checksum. Decoding requires exactly one complete

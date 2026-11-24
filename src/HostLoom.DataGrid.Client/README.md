@@ -1,8 +1,8 @@
 # HostLoom.DataGrid.Client
 
 Experimental, non-packable unary client for the native data-grid prototype. It depends on
-transport and the dependency-free grid contracts. The server/actor composition is still internal;
-there is no supported deployment host, cache adapter or production readiness claim.
+transport and the dependency-free grid contracts. The server/actor composition is still internal.
+The [experimental L2 cache store](../HostLoom.DataGrid.Caching/README.md) uses this client.
 
 `DataGridClientOptions` binds every configured voter to client-listener ports, exact DNS SANs,
 SHA-256 leaf pins and a private trust root. The certificate must hold a private key and be bound

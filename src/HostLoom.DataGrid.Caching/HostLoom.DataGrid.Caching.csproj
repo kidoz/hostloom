@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Experimental distributed cache store over the native data grid.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HostLoom.Caching/HostLoom.Caching.csproj" />
+    <ProjectReference Include="../HostLoom.DataGrid.Client/HostLoom.DataGrid.Client.csproj" />
+  </ItemGroup>
+</Project>

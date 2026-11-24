@@ -212,6 +212,7 @@ Their public runtime, storage, transport, and client contracts are documented
 in the [runtime source guide](https://github.com/kidoz/hostloom/tree/main/src/HostLoom.DataGrid.Runtime).
 The [resource inventory](https://github.com/kidoz/hostloom/blob/main/src/HostLoom.DataGrid.Runtime/RESOURCE_LIMITS.md)
 distinguishes queued, executing, and retained ownership; logical byte quotas are not heap limits.
-The declared full-size workload remains unqualified in the selected two-GiB fixture. Cache
-integration and production packaging remain gated on feasibility and explicit acceptance targets;
-passing bounded tests or smoke workloads does not close that gate.
+The [experimental L2 cache store](https://github.com/kidoz/hostloom/tree/main/src/HostLoom.DataGrid.Caching)
+can be used with an explicit cache profile and the local tier disabled. Cross-client invalidation
+is pending. Workload acceptance and production packaging still require feasibility evidence and
+explicit targets.

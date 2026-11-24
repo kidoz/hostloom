@@ -22,6 +22,7 @@
     <Project Path="src/HostLoom.Actors.DependencyInjection/HostLoom.Actors.DependencyInjection.csproj" />
     <Project Path="src/HostLoom.Actors/HostLoom.Actors.csproj" />
     <Project Path="src/HostLoom.DataGrid/HostLoom.DataGrid.csproj" />
+    <Project Path="src/HostLoom.DataGrid.Caching/HostLoom.DataGrid.Caching.csproj" />
     <Project Path="src/HostLoom.DataGrid.Client/HostLoom.DataGrid.Client.csproj" />
     <Project Path="src/HostLoom.DataGrid.Transport/HostLoom.DataGrid.Transport.csproj" />
     <Project Path="src/HostLoom.DataGrid.Runtime/HostLoom.DataGrid.Runtime.csproj" />
