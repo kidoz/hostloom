@@ -41,10 +41,13 @@ internal delegate ValueTask<ImmutableArray<string>> LoadCatalog(
 );
 
 /// <summary>One instance per region, with all calls serialized by its owner.</summary>
-internal sealed class RegionalCatalog(string region, LoadCatalog load)
+internal sealed class RegionalCatalog(CatalogSnapshot initial, LoadCatalog load)
     : IActor<CatalogRequest, CatalogReply>
 {
-    private CatalogSnapshot _published = new(region, 0, []);
+    private CatalogSnapshot _published = initial;
+
+    internal RegionalCatalog(string region, LoadCatalog load)
+        : this(new CatalogSnapshot(region, 0, []), load) { }
 
     public async ValueTask<CatalogReply> ReceiveAsync(
         CatalogRequest request,
@@ -55,8 +58,8 @@ internal sealed class RegionalCatalog(string region, LoadCatalog load)
         {
             try
             {
-                var items = await load(region, version, stopping).ConfigureAwait(false);
-                _published = new(region, version, items);
+                var items = await load(_published.Region, version, stopping).ConfigureAwait(false);
+                _published = new(_published.Region, version, items);
             }
             catch (IOException)
             {
@@ -88,12 +91,14 @@ internal sealed class RegionalCatalogClient(
         var reference = system
             .Spawn<CatalogRequest, CatalogReply>(() => new RegionalCatalog(region, load))
             .Ref;
-        return new(
-            (request, timeout) => reference.AskAsync(request, timeout),
-            operationTimeout,
-            clock
-        );
+        return FromReference(reference, operationTimeout, clock);
     }
+
+    internal static RegionalCatalogClient FromReference(
+        IActorRef<CatalogRequest, CatalogReply> reference,
+        TimeSpan operationTimeout,
+        TimeProvider clock
+    ) => new((request, timeout) => reference.AskAsync(request, timeout), operationTimeout, clock);
 
     // Observe the published version in mailbox order. A check never starts a source load.
     internal async ValueTask<CatalogReply> CheckVersionAsync(

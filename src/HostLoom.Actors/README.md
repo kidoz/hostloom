@@ -47,6 +47,19 @@ The catalog client returns `Overloaded` when a new read or refresh finds a full 
 
 After a refresh times out, call `catalog.CheckVersionAsync(minimumVersion, callerTimeout)` with a fresh wait budget. It reads the snapshot in mailbox order without loading the source. `Published` means the snapshot meets or exceeds the requested version, so the caller can use it. `BelowMinimum` includes the older snapshot observed and the caller may retry the same version if it still needs it. A later refresh for that version reuses an already-published snapshot or joins a matching in-flight load. If the check itself times out or returns `Overloaded` or `Unavailable`, the version remains unknown to that caller. A version check establishes which data is available at the time of the read, regardless of which caller published it.
 
+## Recovering a regional catalog
+
+The example gives each region an owner that watches its worker’s completion. On a handler fault, the owner reads the authoritative version and its items, then opens ingress on a fresh actor in the same system. Old references stay closed. Requests to that region receive `Unavailable` during reconstruction. If the source read fails, the owner reports the error and keeps ingress closed until the application runs the owner again. A graceful stop ends the owner loop. [Regional catalog owner](../../examples/HostLoom.Examples.Actors/RegionalCatalogOwner.cs) · [Fault and recovery tests](../../tests/HostLoom.Tests/CatalogRecoveryTests.cs)
+
+Run the process-restart check from the repository root:
+
+```sh
+dotnet build -c Release examples/HostLoom.Examples.Actors
+uv run --locked python -B scripts/test-catalog-recovery.py
+```
+
+The fixture writes each immutable version file before atomically replacing `eu.current`. It waits for the first process to serve version 2, leaves an unpublished version 3 on disk, and kills that process. The fresh process must read version 2 from the manifest and return both items. The fixture uses a temporary directory on the same filesystem throughout the restart. [Process check](../../scripts/test-catalog-recovery.py)
+
 ## Observability and sizing
 
 `ActorSystem.Snapshot` reads per-system counters without entering any mailbox. Population includes construction and disposal. Under concurrent activity each field is sampled independently. The `HostLoom.Actors` meter exposes population, queued and executing work, refused sends, discarded items, faults, caller timeouts, queue delay and turn duration. Histogram units are seconds. The instrument names and dimensions carry no message data or actor identifiers.

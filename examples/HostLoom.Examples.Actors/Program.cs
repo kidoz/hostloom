@@ -8,6 +8,11 @@ using Microsoft.Extensions.Hosting;
 if (args is ["--refresh"])
     return await HostLoom.Examples.Actors.CatalogRefreshExample.RunAsync().ConfigureAwait(false);
 
+if (args is ["--recover", var directory])
+    return await HostLoom
+        .Examples.Actors.CatalogRecoveryExample.RunAsync(directory)
+        .ConfigureAwait(false);
+
 var builder = Host.CreateApplicationBuilder(args);
 builder
     .Services.AddLocalActorSystem(1, 16, TimeSpan.FromSeconds(2))
