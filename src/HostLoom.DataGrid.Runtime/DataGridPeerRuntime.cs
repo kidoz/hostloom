@@ -35,6 +35,7 @@ internal sealed class DataGridPeerRuntime
     private readonly DataGridFileStore _store;
     private readonly DataGridBootstrapConfiguration _configuration;
     private readonly RaftNode _node;
+    private readonly DataGridChangeFeed _changeFeed;
 
     [SuppressMessage(
         "Usage",
@@ -99,6 +100,7 @@ internal sealed class DataGridPeerRuntime
         _configuration = credentials.Configuration;
         _memberOrdinal = credentials.LocalMember;
         _time = timeProvider ?? TimeProvider.System;
+        _changeFeed = new(_time);
         _lastMaintenance = _time.GetTimestamp();
         DataGridPeerTransport? transport = null;
         try
@@ -108,7 +110,8 @@ internal sealed class DataGridPeerRuntime
                 credentials.Configuration,
                 credentials.LocalMember,
                 processEpoch,
-                store.Image
+                store.Image,
+                _changeFeed
             );
             _status = Capture(false);
             if (
@@ -509,6 +512,21 @@ internal sealed class DataGridPeerRuntime
     internal Task WaitForAppliedAsync(long index, CancellationToken token) =>
         Watch(index, leader: false, token);
 
+    internal Task<DataGridChangePage> ReadChangesAsync(
+        Guid map,
+        DataGridChangeCursor? after,
+        CancellationToken token
+    )
+    {
+        if (
+            !Enumerable
+                .Range(0, _configuration.MapCount)
+                .Any(i => _configuration.GetMap(i).MapId == map)
+        )
+            throw new ArgumentException("Unknown map.", nameof(map));
+        return Invoke(() => _changeFeed.Read(map, after, _node.Machine.AppliedTime), 128, token);
+    }
+
     private async Task Watch(long index, bool leader, CancellationToken token)
     {
         var result = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -776,6 +794,7 @@ internal sealed class DataGridPeerRuntime
             foreach (var watcher in _watchers)
                 watcher.Completion.TrySetException(error);
             _watchers.Clear();
+            _changeFeed.Reset();
             var tasks = _timers
                 .Values.Select(item => item.Task)
                 .Concat(_sends.Values.Select(item => item.Task))

@@ -72,6 +72,26 @@ former 8-MiB snapshot mismatch; it is not a measured heap, supported-capacity or
 Members must use matching builds. Do not mix these prototype limits with older 8-MiB members;
 deployment, downgrade and production resource qualification remain separate work.
 
+## Committed change history
+
+The runtime retains a server-local history of keys changed by committed writes,
+removals and physical expiry reclamation. Rejected conditionals and retained
+retries add no record. History records carry the committed index and key, and
+each page reports the runtime's applied grid time. A page contains at most 128
+changes.
+
+The owner retains at most 4096 records and charges at most 4 MiB of key bytes and
+record metadata. It prunes entries aged 30 seconds on the next append or poll.
+A cursor binds to one map and one runtime generation. A poll starts at the
+current tail when no cursor is supplied. A cursor outside retained history
+returns an explicit gap and the current tail for re-establishing a baseline.
+Snapshot installation that jumps over unapplied entries resets the generation.
+Local compaction keeps it.
+
+These are internal calls serialized by the runtime. Authenticated remote polling,
+leader authority, and cache invalidation wiring are pending. L1 remains disabled
+for the experimental DataGrid cache profile.
+
 ## Admission and lifecycle
 
 Separate control/client queues reserve 256/128 items and 16 MiB each. Control receives at most

@@ -60,7 +60,14 @@ public sealed partial class DataGridLocalStateMachine
         );
     }
 
-    public DataGridApplyResult Apply(long committedIndex, DataGridCommittedCommand command)
+    public DataGridApplyResult Apply(long committedIndex, DataGridCommittedCommand command) =>
+        Apply(committedIndex, command, null);
+
+    internal DataGridApplyResult Apply(
+        long committedIndex,
+        DataGridCommittedCommand command,
+        IDataGridCommittedChangeSink? changes
+    )
     {
         ArgumentNullException.ThrowIfNull(command);
         if (LastAppliedIndex == long.MaxValue || committedIndex != LastAppliedIndex + 1)
@@ -74,8 +81,12 @@ public sealed partial class DataGridLocalStateMachine
             DataGridCommittedCommandKind.TimeAdvance => RetireSessions(),
             DataGridCommittedCommandKind.OpenSession => Open(command),
             DataGridCommittedCommandKind.CloseSession => Close(command),
-            DataGridCommittedCommandKind.Reclaim => ReclaimMap(command.MapId),
-            DataGridCommittedCommandKind.Mutation => Mutate(command.PrincipalId, command.Mutation!),
+            DataGridCommittedCommandKind.Reclaim => ReclaimMap(command.MapId, changes),
+            DataGridCommittedCommandKind.Mutation => Mutate(
+                command.PrincipalId,
+                command.Mutation!,
+                changes
+            ),
             _ => throw new InvalidOperationException("Unknown committed command."),
         };
     }
@@ -188,7 +199,11 @@ public sealed partial class DataGridLocalStateMachine
         return new(DataGridApplyStatus.Completed);
     }
 
-    private DataGridApplyResult Mutate(Guid principal, DataGridMutationCommand command)
+    private DataGridApplyResult Mutate(
+        Guid principal,
+        DataGridMutationCommand command,
+        IDataGridCommittedChangeSink? changes
+    )
     {
         if (!TrySession(command.SessionNumber, principal, out var session))
             return Failure(DataGridApplyStatus.SessionExpired);
@@ -237,9 +252,14 @@ public sealed partial class DataGridLocalStateMachine
         }
         var items = new DataGridMutationResult[command.ItemCount];
         for (var i = 0; i < items.Length; i++)
+        {
+            var item = command.GetItem(i);
             items[i] = invalid
                 ? new(DataGridMutationStatus.InvalidRequest)
-                : ApplyItem(map, command.Kind, command.GetItem(i), i, expiration);
+                : ApplyItem(map, command.Kind, item, i, expiration);
+            if (items[i].Status is DataGridMutationStatus.Stored or DataGridMutationStatus.Removed)
+                changes?.Record(LastAppliedIndex, command.MapId, item.Key);
+        }
         var result = new DataGridApplyResult(DataGridApplyStatus.Completed, items);
         _resultBytes += reservedBytes - ResultBytes(session.Result);
         session.LastSequence = command.RequestNumber;
@@ -318,7 +338,7 @@ public sealed partial class DataGridLocalStateMachine
         return new(DataGridApplyStatus.Completed);
     }
 
-    private DataGridApplyResult ReclaimMap(Guid id)
+    private DataGridApplyResult ReclaimMap(Guid id, IDataGridCommittedChangeSink? changes)
     {
         var map = FindMap(id);
         if (map is null)
@@ -348,6 +368,7 @@ public sealed partial class DataGridLocalStateMachine
                 map.Bytes -= entry.Key.ByteCount + entry.Value.Length;
                 if (map.ExpiredReclaimed < long.MaxValue)
                     map.ExpiredReclaimed++;
+                changes?.Record(LastAppliedIndex, id, entry.Key);
             }
         }
         _maintenanceMapOrdinal = (Array.IndexOf(_maps, map) + 1) % _maps.Length;

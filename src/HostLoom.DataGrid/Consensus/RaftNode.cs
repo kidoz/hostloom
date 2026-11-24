@@ -22,12 +22,14 @@ internal sealed class RaftNode
     private DataGridTimestamp _eventTime;
     private RaftDurableImage _durable;
     private DataGridLocalStateMachine _machine;
+    private readonly IDataGridCommittedChangeSink? _changes;
 
     internal RaftNode(
         DataGridBootstrapConfiguration configuration,
         int id,
         long epoch,
-        RaftDurableImage durable
+        RaftDurableImage durable,
+        IDataGridCommittedChangeSink? changes = null
     )
     {
         if (id < 0 || id >= configuration.MemberCount || epoch <= 0)
@@ -45,6 +47,7 @@ internal sealed class RaftNode
             : new(configuration);
         ApplyCommitted();
         _effects.Clear();
+        _changes = changes;
     }
 
     internal RaftRole Role { get; private set; }
@@ -773,11 +776,14 @@ internal sealed class RaftNode
         if (snapshotChanged && _durable.Snapshot is { } snapshot)
         {
             if (_machine.LastAppliedIndex < _durable.SnapshotIndex)
+            {
                 _machine = DataGridLocalStateMachine.RestoreSnapshot(
                     _configuration,
                     snapshot,
                     borrowValues: true
                 );
+                _changes?.Reset();
+            }
             else
                 // Remote images at or below the committed index never reach persistence.
                 _machine.UseCompactedSnapshotValues(snapshot);
@@ -787,7 +793,8 @@ internal sealed class RaftNode
             var index = _machine.LastAppliedIndex + 1;
             var result = _machine.Apply(
                 index,
-                DataGridCommittedCommandCodec.ReadFrom(_durable.EntryAt(index).GetCommand())
+                DataGridCommittedCommandCodec.ReadFrom(_durable.EntryAt(index).GetCommand()),
+                _changes
             );
             foreach (var client in _clients.Values.Where(client => client.Index == index).ToArray())
             {
