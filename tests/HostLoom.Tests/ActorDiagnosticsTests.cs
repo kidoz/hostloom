@@ -66,12 +66,12 @@ public sealed class ActorDiagnosticsTests
 
         var clock = new TestClock();
         await using var system = new ActorSystem(1, 1, Bound, clock);
-        var worker = new PausedActor();
-        var actor = system.Spawn<int, int>(() => worker);
+        var probe = new ActorTestProbe<int, int>(2, Bound, value => value);
+        var actor = system.Spawn<int, int>(() => probe);
         try
         {
             Assert.Equal(ActorAdmission.Accepted, actor.Ref.TryTell(1));
-            await worker.Entered.Task.WaitAsync(Bound, token);
+            await probe.WaitForFirstEntryAsync(token);
             clock.Advance(TimeSpan.FromMilliseconds(250));
             var budget = TimeSpan.FromMilliseconds(125);
             var queued = actor.Ref.AskAsync(2, budget, token).AsTask();
@@ -81,14 +81,15 @@ public sealed class ActorDiagnosticsTests
             clock.Advance(budget);
             await Assert.ThrowsAsync<TimeoutException>(() => queued).WaitAsync(Bound, token);
             AssertMailboxCounts(population: 1, queued: 1, executing: 1, timeouts: 1);
+            Assert.Equal([1], probe.Entries);
         }
         finally
         {
-            worker.Release.TrySetResult();
+            probe.Release();
         }
 
         await actor.StopAsync(token).WaitAsync(Bound, token);
-        Assert.Equal([1, 2], worker.Handled);
+        Assert.Equal([1, 2], probe.Entries);
         AssertMailboxCounts(population: 0, queued: 0, executing: 0, timeouts: 1);
         Assert.All(
             timings,
@@ -118,25 +119,5 @@ public sealed class ActorDiagnosticsTests
         Assert.Equal(0, measurementTags);
         Assert.Empty(instrument.Tags ?? []);
         Assert.Empty(instrument.Meter.Tags ?? []);
-    }
-
-    private sealed class PausedActor : IActor<int, int>
-    {
-        internal TaskCompletionSource Entered { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal TaskCompletionSource Release { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal List<int> Handled { get; } = [];
-
-        public async ValueTask<int> ReceiveAsync(int message, CancellationToken stopping)
-        {
-            Handled.Add(message);
-            if (message == 1)
-            {
-                Entered.SetResult();
-                await Release.Task.WaitAsync(Bound, stopping);
-            }
-            return message;
-        }
     }
 }

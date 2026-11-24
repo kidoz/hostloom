@@ -34,46 +34,40 @@ public sealed class ActorSystemTests
     public async Task BoundedActor_OwnsStateAcrossAwait_AndDrainsAdmittedWork()
     {
         await using var system = new ActorSystem(2, 2, Bound);
-        var entered = Signal();
-        var release = Signal();
-        var seen = new List<int>();
-        var first = system.Spawn<int, int>(() =>
-            new Worker(
-                async (value, _) =>
-                {
-                    seen.Add(value);
-                    if (value == 1)
-                    {
-                        entered.SetResult();
-                        await release.Task.WaitAsync(Bound, Token);
-                    }
-                    return seen.Count;
-                }
-            )
-        );
-        Assert.Equal(ActorAdmission.Accepted, first.Ref.TryTell(1));
-        await entered.Task.WaitAsync(Bound, Token);
-        var reply = first.Ref.AskAsync(2, Bound, Token);
-        Assert.Equal(ActorAdmission.Accepted, first.Ref.TryTell(3));
-        Assert.Equal(ActorAdmission.Full, first.Ref.TryTell(4));
-        var rejected = await Assert.ThrowsAsync<ActorAdmissionException>(async () =>
-            await first.Ref.AskAsync(5, Bound, Token)
-        );
-        Assert.Equal(ActorAdmission.Full, rejected.Reason);
-        Assert.Equal(2, system.Snapshot.Queued);
-        Assert.Equal(1, system.Snapshot.Executing);
+        var completed = 0;
+        var probe = new ActorTestProbe<int, int>(3, Bound, _ => ++completed);
+        var first = system.Spawn<int, int>(() => probe);
+        ValueTask<int> reply;
+        Task drain;
+        try
+        {
+            Assert.Equal(ActorAdmission.Accepted, first.Ref.TryTell(1));
+            await probe.WaitForFirstEntryAsync(Token);
+            reply = first.Ref.AskAsync(2, Bound, Token);
+            Assert.Equal(ActorAdmission.Accepted, first.Ref.TryTell(3));
+            Assert.Equal(ActorAdmission.Full, first.Ref.TryTell(4));
+            var rejected = await Assert.ThrowsAsync<ActorAdmissionException>(async () =>
+                await first.Ref.AskAsync(5, Bound, Token)
+            );
+            Assert.Equal(ActorAdmission.Full, rejected.Reason);
+            Assert.Equal(2, system.Snapshot.Queued);
+            Assert.Equal(1, system.Snapshot.Executing);
 
-        var other = system.Spawn<int, int>(() =>
-            new Worker((value, _) => ValueTask.FromResult(value))
-        );
-        Assert.Equal(6, await other.Ref.AskAsync(6, Bound, Token));
-        var drain = first.StopAsync(Token);
-        Assert.False(drain.IsCompleted);
-        Assert.Equal(ActorAdmission.Stopped, first.Ref.TryTell(7));
-        release.SetResult();
+            var other = system.Spawn<int, int>(() =>
+                new Worker((value, _) => ValueTask.FromResult(value))
+            );
+            Assert.Equal(6, await other.Ref.AskAsync(6, Bound, Token));
+            drain = first.StopAsync(Token);
+            Assert.False(drain.IsCompleted);
+            Assert.Equal(ActorAdmission.Stopped, first.Ref.TryTell(7));
+        }
+        finally
+        {
+            probe.Release();
+        }
         Assert.Equal(2, await reply);
         await drain.WaitAsync(Bound, Token);
-        Assert.Equal([1, 2, 3], seen);
+        Assert.Equal([1, 2, 3], probe.Entries);
         var replacement = system.Spawn<int, int>(() =>
             new Worker((value, _) => ValueTask.FromResult(value))
         );
@@ -86,42 +80,31 @@ public sealed class ActorSystemTests
     {
         var clock = new TestClock();
         await using var system = new ActorSystem(1, 3, Bound, clock);
-        var entered = Signal();
-        var release = Signal();
-        var seen = new List<int>();
-        var actor = system.Spawn<int, int>(() =>
-            new Worker(
-                async (value, _) =>
-                {
-                    seen.Add(value);
-                    if (value == 1)
-                    {
-                        entered.SetResult();
-                        await release.Task.WaitAsync(Bound, Token);
-                    }
-                    return value;
-                }
-            )
-        );
+        var probe = new ActorTestProbe<int, int>(3, Bound, value => value);
+        var actor = system.Spawn<int, int>(() => probe);
         using var cancellation = new CancellationTokenSource();
-        var active = actor.Ref.AskAsync(1, Bound, cancellation.Token).AsTask();
-        await entered.Task.WaitAsync(Bound, Token);
-        var queued = actor.Ref.AskAsync(2, Bound, cancellation.Token).AsTask();
-        var expires = actor.Ref.AskAsync(3, Bound, Token).AsTask();
-        await cancellation.CancelAsync();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => active);
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued);
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-            await actor.Ref.AskAsync(4, Bound, cancellation.Token)
-        );
-        clock.Advance(Bound);
-        await Assert.ThrowsAsync<TimeoutException>(() =>
-            expires.WaitAsync(TimeSpan.FromSeconds(2), Token)
-        );
-        Assert.Equal(1, system.Snapshot.Timeouts);
-        release.SetResult();
+        try
+        {
+            var active = actor.Ref.AskAsync(1, Bound, cancellation.Token).AsTask();
+            await probe.WaitForFirstEntryAsync(Token);
+            var queued = actor.Ref.AskAsync(2, Bound, cancellation.Token).AsTask();
+            var expires = actor.Ref.AskAsync(3, Bound, Token).AsTask();
+            await cancellation.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => active);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+                await actor.Ref.AskAsync(4, Bound, cancellation.Token)
+            );
+            clock.Advance(Bound);
+            await Assert.ThrowsAsync<TimeoutException>(() => expires).WaitAsync(Bound, Token);
+            Assert.Equal(1, system.Snapshot.Timeouts);
+        }
+        finally
+        {
+            probe.Release();
+        }
         await actor.StopAsync(Token).WaitAsync(Bound, Token);
-        Assert.Equal([1, 2, 3], seen);
+        Assert.Equal([1, 2, 3], probe.Entries);
         Assert.Equal(0, clock.PendingTimers);
     }
 
