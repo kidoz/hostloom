@@ -11,6 +11,7 @@ internal enum CatalogStatus
     Published,
     SourceUnavailable,
     Overloaded,
+    BelowMinimum,
 }
 
 internal readonly record struct CatalogReply(
@@ -92,6 +93,22 @@ internal sealed class RegionalCatalogClient(
             operationTimeout,
             clock
         );
+    }
+
+    // Observe the published version in mailbox order. A check never starts a source load.
+    internal async ValueTask<CatalogReply> CheckVersionAsync(
+        int minimumVersion,
+        TimeSpan callerTimeout
+    )
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(minimumVersion, 1);
+        var reply = await SendAsync(CatalogRequest.Read, callerTimeout).ConfigureAwait(false);
+        if (
+            reply is { Status: CatalogStatus.Published, Snapshot: { } snapshot }
+            && snapshot.Version < minimumVersion
+        )
+            return reply with { Status = CatalogStatus.BelowMinimum };
+        return reply;
     }
 
     internal ValueTask<CatalogReply> SendAsync(CatalogRequest request, TimeSpan callerTimeout)

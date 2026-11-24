@@ -52,15 +52,11 @@ internal static class CatalogRefreshExample
             var missing = await catalog
                 .SendAsync(CatalogRequest.Refresh(2), budget)
                 .ConfigureAwait(false);
-            var current = await catalog
-                .SendAsync(CatalogRequest.Read, budget)
-                .ConfigureAwait(false);
-            if (current.Status != CatalogStatus.Published || current.Snapshot is null)
+            var current = await catalog.CheckVersionAsync(2, budget).ConfigureAwait(false);
+            if (current.Status != CatalogStatus.BelowMinimum || current.Snapshot is null)
                 return 1;
             await system.StopAsync().ConfigureAwait(false);
-            var stopped = await catalog
-                .SendAsync(CatalogRequest.Read, budget)
-                .ConfigureAwait(false);
+            var stopped = await catalog.CheckVersionAsync(2, budget).ConfigureAwait(false);
             Console.WriteLine(
                 $"Region {current.Snapshot.Region}, published version {current.Snapshot.Version}, items {string.Join(", ", current.Snapshot.Items)}. Version 1 source reads: {versionOneReads}."
             );

@@ -162,14 +162,25 @@ public sealed class CatalogRefreshTests
         clock.Advance(CallerBudget);
         await Assert.ThrowsAsync<TimeoutException>(() => caller).WaitAsync(Bound, Token);
 
-        var read = SendAsync(client, CatalogRequest.Read);
-        Assert.False(read.IsCompleted);
-        source.Finish(succeeds);
-        var current = await read;
+        var earlyCheck = client.CheckVersionAsync(2, CallerBudget).AsTask();
+        clock.Advance(CallerBudget);
+        await Assert.ThrowsAsync<TimeoutException>(() => earlyCheck).WaitAsync(Bound, Token);
 
-        AssertPublished(current, "eu", succeeds ? 2 : 1);
-        if (!succeeds)
+        var check = client.CheckVersionAsync(2, Bound).AsTask();
+        Assert.False(check.IsCompleted);
+        source.Finish(succeeds);
+        var current = await check.WaitAsync(Bound, Token);
+
+        if (succeeds)
+            AssertPublished(current, "eu", 2);
+        else
+        {
+            Assert.Equal(CatalogStatus.BelowMinimum, current.Status);
             Assert.Same(original.Snapshot, current.Snapshot);
+        }
+        var olderTarget = await client.CheckVersionAsync(1, Bound).AsTask().WaitAsync(Bound, Token);
+        AssertPublished(olderTarget, "eu", succeeds ? 2 : 1);
+        Assert.Same(current.Snapshot, olderTarget.Snapshot);
         Assert.Equal(1, source.Reads("eu", 2));
         Assert.Equal(2, source.TotalReads);
     }
@@ -213,6 +224,9 @@ public sealed class CatalogRefreshTests
                 Assert.Equal(CatalogStatus.Overloaded, refused.Status);
                 Assert.Null(refused.Snapshot);
             }
+            var check = await client.CheckVersionAsync(3, Bound).AsTask().WaitAsync(Bound, Token);
+            Assert.Equal(CatalogStatus.Overloaded, check.Status);
+            Assert.Null(check.Snapshot);
             AssertPublished(await SendAsync(peer, first), "us", 1);
             Assert.Equal([first], probe.Entries);
         }
@@ -236,6 +250,12 @@ public sealed class CatalogRefreshTests
             Assert.Equal(CatalogStatus.Unavailable, refused.Status);
             Assert.Null(refused.Snapshot);
         }
+        var stoppedCheck = await client
+            .CheckVersionAsync(3, Bound)
+            .AsTask()
+            .WaitAsync(Bound, Token);
+        Assert.Equal(CatalogStatus.Unavailable, stoppedCheck.Status);
+        Assert.Null(stoppedCheck.Snapshot);
         Assert.Equal([first, second, third], probe.Entries);
     }
 
